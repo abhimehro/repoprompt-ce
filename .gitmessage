@@ -1,0 +1,21 @@
+<subject>
+
+Context:
+- PR: #
+- Category: <Sentinel|Bolt|Palette>
+- Inputs: <Copilot,Gemini,Human>
+
+Changes:
+- 
+
+Verification:
+- 
+
+Notes:
+- 
+
+Autofix-PR: #
+Autofix-Cycle: 
+Review-Inputs: Copilot,Gemini,Human
+Mode: T2+S+H
+
