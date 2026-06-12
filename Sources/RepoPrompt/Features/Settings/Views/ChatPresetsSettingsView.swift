@@ -890,8 +890,10 @@ private struct ChatPresetEditView: View {
 
                             // Add button
                             if !isReadOnly {
+                                // ⚡ Bolt: Cache filtered array to prevent double iteration during SwiftUI render pass
+                                let availablePrompts = promptViewModel.storedPrompts.filter { !selectedStoredPromptIDs.contains($0.id) }
                                 Menu {
-                                    ForEach(promptViewModel.storedPrompts.filter { !selectedStoredPromptIDs.contains($0.id) }) { prompt in
+                                    ForEach(availablePrompts) { prompt in
                                         Button(action: {
                                             selectedStoredPromptIDs.insert(prompt.id)
                                         }) {
@@ -907,7 +909,7 @@ private struct ChatPresetEditView: View {
                                 }
                                 .menuStyle(BorderlessButtonMenuStyle())
                                 .menuIndicator(.hidden)
-                                .disabled(promptViewModel.storedPrompts.filter { !selectedStoredPromptIDs.contains($0.id) }.isEmpty)
+                                .disabled(availablePrompts.isEmpty)
                             }
                         }
                     }

@@ -53,6 +53,13 @@ enum PromptPackagingService {
         }
     }
 
+    // ⚡ Bolt: Cache expensive DateFormatter to improve prompt generation speed
+    private static let iso8601MinuteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        return formatter
+    }()
+
     static func partitionPromptEntriesForGitDiff(
         _ entries: [PromptFileEntry]
     ) -> (diffEntries: [PromptFileEntry], codeEntries: [PromptFileEntry]) {
@@ -507,8 +514,7 @@ enum PromptPackagingService {
         if !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+                let dateFormatter = Self.iso8601MinuteFormatter
                 let dateString = dateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
@@ -619,8 +625,7 @@ enum PromptPackagingService {
         if includeUserPrompt, !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+                let dateFormatter = Self.iso8601MinuteFormatter
                 let dateString = dateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
@@ -724,8 +729,7 @@ enum PromptPackagingService {
         if includeUserPrompt, !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+                let dateFormatter = Self.iso8601MinuteFormatter
                 let dateString = dateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
