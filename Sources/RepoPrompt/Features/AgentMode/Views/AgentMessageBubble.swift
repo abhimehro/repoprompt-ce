@@ -123,6 +123,7 @@ private struct MessageFooterStrip: View {
             }
         }
         .hoverTooltip("Copy message")
+        .accessibilityLabel("Copy message")
     }
 
     @ViewBuilder
@@ -145,6 +146,7 @@ private struct MessageFooterStrip: View {
                 }
             }
             .hoverTooltip("Handoff to new chat")
+            .accessibilityLabel("Handoff to new chat")
             .popover(isPresented: $showHandoffPopover, arrowEdge: .bottom) {
                 AgentHandoffPopover(config: config) {
                     showHandoffPopover = false
