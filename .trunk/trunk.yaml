@@ -6,7 +6,6 @@ cli:
 # Many linters and tools depend on runtimes - configure them here. (https://docs.trunk.io/runtimes)
 runtimes:
   enabled:
-    - ruby@3.4.2
     - go@1.21.0
     - node@22.16.0
     - python@3.14.4
@@ -14,26 +13,20 @@ runtimes:
 lint:
   disabled:
     - markdownlint
+    - prettier
   enabled:
-    - brakeman@5.4.0
-    - gofmt@1.20.4
-    - gokart@0.5.1
-    - golangci-lint2@2.6.1
-    - rustfmt@1.65.0
-    - swiftformat@0.55.5
-    - swiftlint@0.58.2
     - grype@0.114.0
     - pinact@4.1.0
     - actionlint@1.7.12
     - bandit@1.9.4
     - black@26.5.1
     - checkov@3.3.1
+    - deno@2.5.6
     - dotenv-linter@4.0.0
     - git-diff-check
     - hadolint@2.14.0
     - isort@8.0.1
     - osv-scanner@2.3.8
-    - prettier@3.8.4
     - ruff@0.15.17
     - shellcheck@0.11.0
     - shfmt@3.6.0
@@ -46,11 +39,11 @@ actions:
   disabled:
     - trufflehog-pre-commit
     - commitlint
-    - trunk-check-pre-push
-  enabled:
     - trunk-check-pre-commit
-    - trunk-announce
     - trunk-fmt-pre-commit
+  enabled:
+    - trunk-check-pre-push
+    - trunk-announce
     - trunk-upgrade-available
 plugins:
   sources:
