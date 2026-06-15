@@ -383,6 +383,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .hoverTooltip("Open documentation")
+                .accessibilityLabel("Open documentation")
             }
             if let caption {
                 Text(caption)
@@ -573,6 +575,8 @@ struct APISettingsView: View {
                         }
                         .disabled(customModel.wrappedValue.isEmpty)
                         .buttonStyle(CustomButtonStyle())
+                        .hoverTooltip("Save custom model")
+                        .accessibilityLabel("Save custom model")
 
                         Button(action: {
                             // Clear the custom model field and persist the change
@@ -603,6 +607,8 @@ struct APISettingsView: View {
                         }
                         .disabled(customModel.wrappedValue.isEmpty)
                         .buttonStyle(CustomButtonStyle())
+                        .hoverTooltip("Delete custom model")
+                        .accessibilityLabel("Delete custom model")
                     }
 
                     if !customModel.wrappedValue.isEmpty {
@@ -627,6 +633,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .hoverTooltip("Open Azure Portal")
+                .accessibilityLabel("Open Azure Portal")
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -704,6 +712,8 @@ struct APISettingsView: View {
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .hoverTooltip("Open Ollama download page")
+                    .accessibilityLabel("Open Ollama download page")
                 }
                 Text("Ollama uses port 11434 | LM Studio uses port 1234")
                     .font(.caption)
