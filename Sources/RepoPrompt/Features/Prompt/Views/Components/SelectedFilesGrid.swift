@@ -319,6 +319,7 @@ private struct PromptFileTagRow: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Preview File")
+                .accessibilityLabel("Preview File")
                 .onHover { hoveringPreview = $0 }
 
                 Button(action: copyToClipboard) {
@@ -330,6 +331,7 @@ private struct PromptFileTagRow: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip(kind == .codemap ? "Copy Codemap" : "Copy File Content")
+                .accessibilityLabel(kind == .codemap ? "Copy Codemap" : "Copy File Content")
                 .onHover { hoveringCopy = $0 }
 
                 Button {
@@ -343,6 +345,7 @@ private struct PromptFileTagRow: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Remove")
+                .accessibilityLabel("Remove")
                 .onHover { hoveringRemove = $0 }
             }
             .padding(.horizontal, 4)
