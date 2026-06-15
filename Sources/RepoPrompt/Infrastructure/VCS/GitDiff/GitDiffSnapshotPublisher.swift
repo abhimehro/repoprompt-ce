@@ -133,21 +133,29 @@ actor GitDiffSnapshotPublisher {
     }
 
     /// Resolve snapshot ID for repo-scoped storage
+    private static let snapshotDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let snapshotTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "HHmm"
+        return formatter
+    }()
+
     private func resolveSnapshotID(override: String?, workspaceDirectory: URL, repoKey: String) -> String {
         if let override, override.lowercased() != "auto" {
             return override
         }
         let now = Date()
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dateFormatter.timeZone = TimeZone.current
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        let timeFormatter = DateFormatter()
-        timeFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timeFormatter.timeZone = TimeZone.current
-        timeFormatter.dateFormat = "HHmm"
-        let datePart = dateFormatter.string(from: now)
-        let timePart = timeFormatter.string(from: now)
+        let datePart = Self.snapshotDateFormatter.string(from: now)
+        let timePart = Self.snapshotTimeFormatter.string(from: now)
         let baseID = "\(datePart)/\(timePart)"
         if !store.snapshotExists(workspaceDirectory: workspaceDirectory, repoKey: repoKey, snapshotID: baseID) {
             return baseID

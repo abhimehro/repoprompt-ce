@@ -2174,6 +2174,14 @@ final actor ClaudeNativeProcessSessionController {
         return normalized.isEmpty ? "unknown-session" : normalized
     }
 
+    private static let rawEventLogFileTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+
     private static func makeRawEventLogFileURL(
         workspacePath: String?,
         sessionID: String,
@@ -2194,11 +2202,7 @@ final actor ClaudeNativeProcessSessionController {
         } catch {
             return nil
         }
-        let timestampFormatter = DateFormatter()
-        timestampFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timestampFormatter.timeZone = TimeZone(secondsFromGMT: 0)
-        timestampFormatter.dateFormat = "yyyyMMdd-HHmmss"
-        let timestamp = timestampFormatter.string(from: Date())
+        let timestamp = Self.rawEventLogFileTimestampFormatter.string(from: Date())
         let fileName = "claude-session-\(sessionID)-\(timestamp).jsonl"
         return baseDirectory.appendingPathComponent(fileName)
     }

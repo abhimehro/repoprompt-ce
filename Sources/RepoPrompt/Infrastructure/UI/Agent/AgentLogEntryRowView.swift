@@ -42,10 +42,14 @@ struct AgentLogEntryRowView: View {
         return entry.message
     }
 
-    private var timestamp: String {
+    private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: entry.timestamp)
+        return formatter
+    }()
+
+    private var timestamp: String {
+        return Self.timestampFormatter.string(from: entry.timestamp)
     }
 
     private var icon: String {
