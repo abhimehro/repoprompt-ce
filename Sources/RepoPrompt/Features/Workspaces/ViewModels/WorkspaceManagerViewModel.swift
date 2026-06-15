@@ -5027,17 +5027,21 @@ class WorkspaceManagerViewModel: ObservableObject {
         )
 
         let directory = try duplicateCleanupBackupDirectoryURL()
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let fileURL = directory.appendingPathComponent("workspace-dedup-\(formatter.string(from: backup.createdAt)).json")
+        let fileURL = directory.appendingPathComponent("workspace-dedup-\(Self.duplicateCleanupBackupDateFormatter.string(from: backup.createdAt)).json")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(backup).write(to: fileURL, options: .atomic)
         return fileURL
     }
+
+    private static let duplicateCleanupBackupDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
 
     private nonisolated static func duplicateCleanupBackupDirectoryURL() throws -> URL {
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
