@@ -282,10 +282,15 @@ final class AppSettingsMCPService: Service {
         return .object(envelope)
     }
 
-    private static func iso8601Timestamp() -> String {
+    // ⚡ Bolt: Cache expensive ISO8601DateFormatter to improve timestamp generation speed
+    private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: Date())
+        return formatter
+    }()
+
+    private static func iso8601Timestamp() -> String {
+        return timestampFormatter.string(from: Date())
     }
 
     private static func valuesEqual(_ lhs: Value, _ rhs: Value) -> Bool {
