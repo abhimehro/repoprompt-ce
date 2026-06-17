@@ -595,6 +595,8 @@ struct EnhancedCodeBlock: View {
                 .frame(width: 24, height: 24)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Copy code")
+        .hoverTooltip("Copy code")
         .padding(8) // keep padding inside overlay
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.1)) {
