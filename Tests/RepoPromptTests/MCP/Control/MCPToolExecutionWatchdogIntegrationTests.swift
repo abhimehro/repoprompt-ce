@@ -64,6 +64,326 @@ import XCTest
             }
         }
 
+        func testSameWindowExclusiveResourceReleasesBeforeCompletionObserverTail() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let manager = fixture.networkManager
+                let firstEndpoint = try fixture.endpointA()
+                let secondEndpoint = try fixture.endpointARead()
+                let providerProbe = MCPPostProviderAdmissionProbe()
+                let observerTailGate = MCPExecutionIgnoringCancellationGate()
+                var firstTask: Task<PersistentMCPTestRPCResponse, Error>?
+                var secondTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.manageSelection) {
+                    await providerProbe.record(connectionID: ServerNetworkManager.currentConnectionID)
+                }
+                await manager.debugSetBeforeToolCompletionObserversForTesting { connectionID, toolName in
+                    guard connectionID == firstEndpoint.connectionID,
+                          toolName == MCPWindowToolName.manageSelection
+                    else { return }
+                    await observerTailGate.enterAndWait()
+                }
+
+                do {
+                    let arguments: [String: Any] = [
+                        "op": "get",
+                        "context_id": fixture.contextA.tabID.uuidString,
+                        "_rawJSON": true
+                    ]
+                    let blockedFirst = Task {
+                        try await firstEndpoint.callTool(
+                            name: MCPWindowToolName.manageSelection,
+                            arguments: arguments
+                        )
+                    }
+                    firstTask = blockedFirst
+                    try await observerTailGate.waitUntilEntered(count: 1)
+                    try await providerProbe.waitUntilEntered(connectionID: firstEndpoint.connectionID)
+
+                    let firstLimiter = await manager.connectionLimiterSnapshotForTesting(
+                        connectionID: firstEndpoint.connectionID,
+                        lane: .ordinary
+                    )
+                    XCTAssertEqual(firstLimiter?.activePermitCount, 1)
+
+                    let competingSecond = Task {
+                        try await secondEndpoint.callTool(
+                            name: MCPWindowToolName.manageSelection,
+                            arguments: arguments
+                        )
+                    }
+                    secondTask = competingSecond
+                    try await providerProbe.waitUntilEntered(connectionID: secondEndpoint.connectionID)
+                    _ = try await competingSecond.value
+                    secondTask = nil
+
+                    await observerTailGate.release()
+                    _ = try await blockedFirst.value
+                    firstTask = nil
+
+                    await manager.debugSetBeforeToolCompletionObserversForTesting(nil)
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPWindowToolName.manageSelection,
+                        operation: nil
+                    )
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    await observerTailGate.release()
+                    firstTask?.cancel()
+                    secondTask?.cancel()
+                    if let firstTask { _ = try? await firstTask.value }
+                    if let secondTask { _ = try? await secondTask.value }
+                    await manager.debugSetBeforeToolCompletionObserversForTesting(nil)
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPWindowToolName.manageSelection,
+                        operation: nil
+                    )
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testSameWindowSmallReadResourcesReleaseBeforeFormattingTail() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let manager = fixture.networkManager
+                let firstEndpoint = try fixture.endpointA()
+                let secondEndpoint = try fixture.endpointARead()
+                let thirdEndpoint = try fixture.endpointAQueuedSearch()
+                let providerProbe = MCPPostProviderAdmissionProbe()
+                let formattingTailGate = MCPExecutionIgnoringCancellationGate()
+                let blockedConnectionIDs = Set([firstEndpoint.connectionID, secondEndpoint.connectionID])
+                var tasks: [Task<PersistentMCPTestRPCResponse, Error>] = []
+
+                await manager.debugSetResolvedToolOperationOverride(toolName: MCPWindowToolName.readFile) {
+                    await providerProbe.record(connectionID: ServerNetworkManager.currentConnectionID)
+                }
+                await manager.debugSetBeforeToolResultFormattingForTesting { connectionID, toolName in
+                    guard blockedConnectionIDs.contains(connectionID),
+                          toolName == MCPWindowToolName.readFile
+                    else { return }
+                    await formattingTailGate.enterAndWait()
+                }
+
+                do {
+                    let arguments: [String: Any] = [
+                        "path": fixture.contextA.fileURL.path,
+                        "context_id": fixture.contextA.tabID.uuidString,
+                        "_rawJSON": true
+                    ]
+                    let first = Task {
+                        try await firstEndpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: arguments
+                        )
+                    }
+                    let second = Task {
+                        try await secondEndpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: arguments
+                        )
+                    }
+                    tasks = [first, second]
+                    try await formattingTailGate.waitUntilEntered(count: 2)
+                    try await providerProbe.waitUntilEntered(connectionID: firstEndpoint.connectionID)
+                    try await providerProbe.waitUntilEntered(connectionID: secondEndpoint.connectionID)
+
+                    for endpoint in [firstEndpoint, secondEndpoint] {
+                        let limiter = await manager.connectionLimiterSnapshotForTesting(
+                            connectionID: endpoint.connectionID,
+                            lane: .smallRead
+                        )
+                        XCTAssertEqual(limiter?.activePermitCount, 1)
+                    }
+
+                    let third = Task {
+                        try await thirdEndpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: arguments
+                        )
+                    }
+                    tasks.append(third)
+                    try await providerProbe.waitUntilEntered(connectionID: thirdEndpoint.connectionID)
+                    _ = try await third.value
+                    tasks.removeLast()
+
+                    await formattingTailGate.release()
+                    _ = try await first.value
+                    _ = try await second.value
+                    tasks.removeAll()
+
+                    await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPWindowToolName.readFile,
+                        operation: nil
+                    )
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    await formattingTailGate.release()
+                    tasks.forEach { $0.cancel() }
+                    for task in tasks {
+                        _ = try? await task.value
+                    }
+                    await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPWindowToolName.readFile,
+                        operation: nil
+                    )
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testAppWideExclusiveResourceReleasesBeforeFormattingTail() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let manager = fixture.networkManager
+                let firstEndpoint = try fixture.endpointA()
+                let secondEndpoint = try fixture.endpointB()
+                let providerProbe = MCPPostProviderAdmissionProbe()
+                let formattingTailGate = MCPExecutionIgnoringCancellationGate()
+                var appSettingsScope: MCPAppSettingsServiceScope?
+                var firstTask: Task<PersistentMCPTestRPCResponse, Error>?
+                var secondTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                await manager.debugSetResolvedToolOperationOverride(toolName: MCPGlobalToolName.appSettings) {
+                    await providerProbe.record(connectionID: ServerNetworkManager.currentConnectionID)
+                }
+                await manager.debugSetBeforeToolResultFormattingForTesting { connectionID, toolName in
+                    guard connectionID == firstEndpoint.connectionID,
+                          toolName == MCPGlobalToolName.appSettings
+                    else { return }
+                    await formattingTailGate.enterAndWait()
+                }
+
+                do {
+                    let installedScope = try await MCPAppSettingsServiceScope.install()
+                    appSettingsScope = installedScope
+                    let arguments: [String: Any] = [
+                        "op": "get",
+                        "key": "ui.appearance_mode",
+                        "_rawJSON": true
+                    ]
+                    let blockedFirst = Task {
+                        try await firstEndpoint.callTool(
+                            name: MCPGlobalToolName.appSettings,
+                            arguments: arguments
+                        )
+                    }
+                    firstTask = blockedFirst
+                    try await formattingTailGate.waitUntilEntered(count: 1)
+                    try await providerProbe.waitUntilEntered(connectionID: firstEndpoint.connectionID)
+
+                    let firstLimiter = await manager.connectionLimiterSnapshotForTesting(
+                        connectionID: firstEndpoint.connectionID,
+                        lane: .ordinary
+                    )
+                    XCTAssertEqual(firstLimiter?.activePermitCount, 1)
+
+                    let competingSecond = Task {
+                        try await secondEndpoint.callTool(
+                            name: MCPGlobalToolName.appSettings,
+                            arguments: arguments
+                        )
+                    }
+                    secondTask = competingSecond
+                    try await providerProbe.waitUntilEntered(connectionID: secondEndpoint.connectionID)
+                    _ = try await competingSecond.value
+                    secondTask = nil
+
+                    await formattingTailGate.release()
+                    _ = try await blockedFirst.value
+                    firstTask = nil
+
+                    await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPGlobalToolName.appSettings,
+                        operation: nil
+                    )
+                    await installedScope.restore()
+                    installedScope.assertRestored()
+                    appSettingsScope = nil
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    await formattingTailGate.release()
+                    firstTask?.cancel()
+                    secondTask?.cancel()
+                    if let firstTask { _ = try? await firstTask.value }
+                    if let secondTask { _ = try? await secondTask.value }
+                    await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                    await manager.debugSetResolvedToolOperationOverride(
+                        toolName: MCPGlobalToolName.appSettings,
+                        operation: nil
+                    )
+                    if let appSettingsScope {
+                        await appSettingsScope.restore()
+                        appSettingsScope.assertRestored()
+                    }
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testManageSelectionAndFileActionsReportReplyConstructionPhase() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let recorder = MCPExecutionTraceRecorder()
+                let createdFileURL = fixture.contextA.fileURL
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("watchdog-phase-\(UUID().uuidString).txt")
+                MCPToolExecutionTracer.setTestSink { recorder.append($0) }
+                do {
+                    let endpoint = try fixture.endpointA()
+                    _ = try await endpoint.callTool(
+                        name: MCPWindowToolName.manageSelection,
+                        arguments: [
+                            "op": "get",
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ]
+                    )
+                    _ = try await endpoint.callTool(
+                        name: MCPWindowToolName.fileActions,
+                        arguments: [
+                            "action": "create",
+                            "path": createdFileURL.path,
+                            "content": "watchdog phase fixture\n",
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ]
+                    )
+
+                    let events = recorder.snapshot().filter { $0.connectionID == endpoint.connectionID }
+                    let selectionCompleted = try XCTUnwrap(events.last {
+                        $0.toolName == MCPWindowToolName.manageSelection && $0.phase == .handlerCompleted
+                    })
+                    XCTAssertEqual(selectionCompleted.handlerPhase?.phase, .manageSelectionReplyConstruction)
+                    XCTAssertEqual(selectionCompleted.handlerPhase?.transition, .completed)
+
+                    let fileActionCompleted = try XCTUnwrap(events.last {
+                        $0.toolName == MCPWindowToolName.fileActions && $0.phase == .handlerCompleted
+                    })
+                    XCTAssertEqual(fileActionCompleted.handlerPhase?.phase, .fileActionsReplyConstruction)
+                    XCTAssertEqual(fileActionCompleted.handlerPhase?.transition, .completed)
+
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    try? FileManager.default.removeItem(at: createdFileURL)
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    try? FileManager.default.removeItem(at: createdFileURL)
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         func testAskUserLifecycleExemptionDoesNotInstallExecutionWatchdog() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)
@@ -845,6 +1165,456 @@ import XCTest
             }
         }
 
+        func testRealManageSelectionDrainTimeoutSettlesDuringGraceAndKeepsQueuedCallUsable() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let clock = ExecutionWatchdogManualClock()
+                let gate = MCPExecutionIgnoringCancellationGate()
+                let recorder = MCPExecutionTraceRecorder()
+                let manager = fixture.networkManager
+                let server = fixture.contextA.window.mcpServer
+                var endpoint: PersistentMCPTestEndpoint?
+                var manageTask: Task<PersistentMCPTestRPCResponse, Error>?
+                var queuedReadTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                MCPToolExecutionTracer.setTestSink { recorder.append($0) }
+                server.setReadFileAutoSelectionCanonicalApplyGateForTesting {
+                    await gate.enterAndWait()
+                }
+                do {
+                    let clientName = "real-manage-selection-watchdog-\(UUID().uuidString)"
+                    await manager.installClientConnectionPolicy(
+                        for: clientName,
+                        windowID: fixture.contextA.window.windowID,
+                        restrictedTools: [],
+                        tabID: fixture.contextA.tabID,
+                        runID: UUID(),
+                        additionalTools: [],
+                        purpose: .agentModeRun
+                    )
+                    let createdEndpoint = try await PersistentMCPTestEndpoint.make(
+                        label: "real-manage-selection-watchdog",
+                        networkManager: manager,
+                        clientName: clientName,
+                        requiredToolNames: [
+                            MCPWindowToolName.readFile,
+                            MCPWindowToolName.manageSelection
+                        ]
+                    )
+                    endpoint = createdEndpoint
+                    let readTask = Task {
+                        try await createdEndpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: ["path": fixture.contextA.fileURL.path]
+                        )
+                    }
+                    try await gate.waitUntilEntered(count: 1)
+                    _ = try await readTask.value
+
+                    await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
+                    let activeManageTask = Task {
+                        try await createdEndpoint.callTool(
+                            name: MCPWindowToolName.manageSelection,
+                            arguments: ["op": "get"]
+                        )
+                    }
+                    manageTask = activeManageTask
+                    try await clock.waitForSleeperCount(1)
+                    let waiterRegistered = await Self.waitUntil {
+                        server.readFileAutoSelectionDiagnosticsSnapshot().canonicalWaiterCount == 1
+                    }
+                    XCTAssertTrue(waiterRegistered)
+
+                    let activeQueuedReadTask = Task {
+                        try await createdEndpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: ["path": fixture.contextA.fileURL.path]
+                        )
+                    }
+                    queuedReadTask = activeQueuedReadTask
+                    let queuedReadResponse = try await activeQueuedReadTask.value
+                    queuedReadTask = nil
+                    let queuedReadText = try Self.toolResultText(queuedReadResponse)
+                    XCTAssertTrue(queuedReadText.contains(fixture.contextA.sentinel), queuedReadText)
+
+                    try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
+                    let timeoutResponse = try await activeManageTask.value
+                    manageTask = nil
+                    let timeoutText = try Self.toolResultText(timeoutResponse)
+                    XCTAssertEqual(timeoutText.components(separatedBy: "tool_execution_timeout").count - 1, 1, timeoutText)
+                    XCTAssertEqual(server.readFileAutoSelectionDiagnosticsSnapshot().canonicalWaiterCount, 0)
+                    XCTAssertEqual(server.readFileAutoSelectionDiagnosticsSnapshot().canonicalWorkerCount, 1)
+
+                    let isTerminal = await manager.debugIsExecutionWatchdogTerminal(connectionID: createdEndpoint.connectionID)
+                    XCTAssertFalse(isTerminal)
+                    let events = recorder.snapshot().filter {
+                        $0.connectionID == createdEndpoint.connectionID
+                            && $0.toolName == MCPWindowToolName.manageSelection
+                    }
+                    XCTAssertTrue(events.contains { $0.phase == .deadlineExpired })
+                    XCTAssertFalse(events.contains { $0.phase == .cleanupGraceExpired })
+                    XCTAssertFalse(events.contains { $0.phase == .connectionForceDisconnectRequested })
+
+                    await gate.release()
+                    server.setReadFileAutoSelectionCanonicalApplyGateForTesting(nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    _ = try await createdEndpoint.callTool(
+                        name: MCPWindowToolName.manageSelection,
+                        arguments: ["op": "get"]
+                    )
+                    _ = try await createdEndpoint.client.request(method: "tools/list", params: [:])
+
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await Self.cleanupEndpoint(createdEndpoint, manager: manager)
+                    endpoint = nil
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    manageTask?.cancel()
+                    queuedReadTask?.cancel()
+                    await gate.release()
+                    server.setReadFileAutoSelectionCanonicalApplyGateForTesting(nil)
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    if let manageTask { _ = try? await manageTask.value }
+                    if let queuedReadTask { _ = try? await queuedReadTask.value }
+                    if let endpoint { await Self.cleanupEndpoint(endpoint, manager: manager) }
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testRealFileActionTimeoutDetachesIOReconcilesCatalogAndKeepsQueuedCallUsable() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let clock = ExecutionWatchdogManualClock()
+                let gate = MCPExecutionIgnoringCancellationGate()
+                let recorder = MCPExecutionTraceRecorder()
+                let manager = fixture.networkManager
+                let store = fixture.contextA.window.workspaceFileContextStore
+                try await store.startWatchingRoot(id: fixture.contextA.rootID)
+                let loadedService = await store.fileSystemServiceForTesting(rootID: fixture.contextA.rootID)
+                let service = try XCTUnwrap(loadedService)
+                let createdURL = fixture.contextA.rootURL.appendingPathComponent("CreatedAfterWatchdog.swift")
+                var fileActionTask: Task<PersistentMCPTestRPCResponse, Error>?
+                var queuedReadTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                MCPToolExecutionTracer.setTestSink { recorder.append($0) }
+                await service.setMutationIOWillBeginHandlerForTesting { operation in
+                    guard operation == .create else { return }
+                    await gate.enterAndWait()
+                }
+                do {
+                    let endpoint = try fixture.endpointA()
+                    _ = try await endpoint.callTool(
+                        name: "bind_context",
+                        arguments: [
+                            "op": "bind",
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ]
+                    )
+                    await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
+                    let activeFileActionTask = Task {
+                        try await endpoint.callTool(
+                            name: MCPWindowToolName.fileActions,
+                            arguments: [
+                                "action": "create",
+                                "path": createdURL.path,
+                                "content": "struct CreatedAfterWatchdog {}\n"
+                            ]
+                        )
+                    }
+                    fileActionTask = activeFileActionTask
+                    try await clock.waitForSleeperCount(1)
+                    try await gate.waitUntilEntered(count: 1)
+
+                    let activeQueuedReadTask = Task {
+                        try await endpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: ["path": fixture.contextA.fileURL.path]
+                        )
+                    }
+                    queuedReadTask = activeQueuedReadTask
+                    let queuedReadResponse = try await activeQueuedReadTask.value
+                    queuedReadTask = nil
+                    let queuedReadText = try Self.toolResultText(queuedReadResponse)
+                    XCTAssertTrue(queuedReadText.contains(fixture.contextA.sentinel), queuedReadText)
+
+                    try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
+                    let timeoutResponse = try await activeFileActionTask.value
+                    fileActionTask = nil
+                    let timeoutText = try Self.toolResultText(timeoutResponse)
+                    XCTAssertEqual(timeoutText.components(separatedBy: "tool_execution_timeout").count - 1, 1, timeoutText)
+                    let pendingWaiters = await service.pendingMutationWaiterCountForTesting()
+                    XCTAssertEqual(pendingWaiters, 0)
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: createdURL.path))
+
+                    let isTerminal = await manager.debugIsExecutionWatchdogTerminal(connectionID: endpoint.connectionID)
+                    XCTAssertFalse(isTerminal)
+                    let events = recorder.snapshot().filter {
+                        $0.connectionID == endpoint.connectionID
+                            && $0.toolName == MCPWindowToolName.fileActions
+                    }
+                    XCTAssertTrue(events.contains { $0.phase == .deadlineExpired })
+                    XCTAssertFalse(events.contains { $0.phase == .cleanupGraceExpired })
+                    XCTAssertFalse(events.contains { $0.phase == .connectionForceDisconnectRequested })
+
+                    await gate.release()
+                    let reconciled = await Self.waitUntil {
+                        guard FileManager.default.fileExists(atPath: createdURL.path) else { return false }
+                        return await store.file(
+                            rootID: fixture.contextA.rootID,
+                            relativePath: "CreatedAfterWatchdog.swift"
+                        ) != nil
+                    }
+                    XCTAssertTrue(reconciled)
+                    let finalWaiters = await service.pendingMutationWaiterCountForTesting()
+                    XCTAssertEqual(finalWaiters, 0)
+
+                    await service.setMutationIOWillBeginHandlerForTesting(nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    _ = try await endpoint.client.request(method: "tools/list", params: [:])
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    fileActionTask?.cancel()
+                    queuedReadTask?.cancel()
+                    await gate.release()
+                    await service.setMutationIOWillBeginHandlerForTesting(nil)
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    if let fileActionTask { _ = try? await fileActionTask.value }
+                    if let queuedReadTask { _ = try? await queuedReadTask.value }
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testRealFileActionOverwriteTimeoutDetachesIOReconcilesCatalogAndKeepsQueuedCallUsable() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let clock = ExecutionWatchdogManualClock()
+                let gate = MCPExecutionIgnoringCancellationGate()
+                let recorder = MCPExecutionTraceRecorder()
+                let manager = fixture.networkManager
+                let store = fixture.contextA.window.workspaceFileContextStore
+                let relativePath = "OverwriteAfterWatchdog.swift"
+                let fileURL = fixture.contextA.rootURL.appendingPathComponent(relativePath)
+                _ = try await store.createFile(
+                    rootID: fixture.contextA.rootID,
+                    relativePath: relativePath,
+                    content: "old"
+                )
+                try await store.startWatchingRoot(id: fixture.contextA.rootID)
+                let loadedService = await store.fileSystemServiceForTesting(rootID: fixture.contextA.rootID)
+                let service = try XCTUnwrap(loadedService)
+                var fileActionTask: Task<PersistentMCPTestRPCResponse, Error>?
+                var queuedReadTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                MCPToolExecutionTracer.setTestSink { recorder.append($0) }
+                await service.setMutationIOWillBeginHandlerForTesting { operation in
+                    guard operation == .edit else { return }
+                    await gate.enterAndWait()
+                }
+                do {
+                    let endpoint = try fixture.endpointA()
+                    _ = try await endpoint.callTool(
+                        name: "bind_context",
+                        arguments: [
+                            "op": "bind",
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ]
+                    )
+                    await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
+                    let activeFileActionTask = Task {
+                        try await endpoint.callTool(
+                            name: MCPWindowToolName.fileActions,
+                            arguments: [
+                                "action": "create",
+                                "path": fileURL.path,
+                                "content": "new",
+                                "if_exists": "overwrite"
+                            ]
+                        )
+                    }
+                    fileActionTask = activeFileActionTask
+                    try await clock.waitForSleeperCount(1)
+                    try await gate.waitUntilEntered(count: 1)
+
+                    let activeQueuedReadTask = Task {
+                        try await endpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: ["path": fixture.contextA.fileURL.path]
+                        )
+                    }
+                    queuedReadTask = activeQueuedReadTask
+                    let queuedReadResponse = try await activeQueuedReadTask.value
+                    queuedReadTask = nil
+                    let queuedReadText = try Self.toolResultText(queuedReadResponse)
+                    XCTAssertTrue(queuedReadText.contains(fixture.contextA.sentinel), queuedReadText)
+
+                    try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
+                    let timeoutResponse = try await activeFileActionTask.value
+                    fileActionTask = nil
+                    let timeoutText = try Self.toolResultText(timeoutResponse)
+                    XCTAssertEqual(timeoutText.components(separatedBy: "tool_execution_timeout").count - 1, 1, timeoutText)
+                    let pendingWaiters = await service.pendingMutationWaiterCountForTesting()
+                    XCTAssertEqual(pendingWaiters, 0)
+                    XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), "old")
+
+                    let isTerminal = await manager.debugIsExecutionWatchdogTerminal(connectionID: endpoint.connectionID)
+                    XCTAssertFalse(isTerminal)
+                    let events = recorder.snapshot().filter {
+                        $0.connectionID == endpoint.connectionID
+                            && $0.toolName == MCPWindowToolName.fileActions
+                    }
+                    XCTAssertTrue(events.contains { $0.phase == .deadlineExpired })
+                    XCTAssertFalse(events.contains { $0.phase == .cleanupGraceExpired })
+                    XCTAssertFalse(events.contains { $0.phase == .connectionForceDisconnectRequested })
+
+                    await gate.release()
+                    let reconciled = await Self.waitUntil {
+                        guard (try? String(contentsOf: fileURL, encoding: .utf8)) == "new" else { return false }
+                        return await (try? store.readContent(
+                            rootID: fixture.contextA.rootID,
+                            relativePath: relativePath
+                        )) == "new"
+                    }
+                    XCTAssertTrue(reconciled)
+                    let finalWaiters = await service.pendingMutationWaiterCountForTesting()
+                    XCTAssertEqual(finalWaiters, 0)
+
+                    await service.setMutationIOWillBeginHandlerForTesting(nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    _ = try await endpoint.client.request(method: "tools/list", params: [:])
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    fileActionTask?.cancel()
+                    queuedReadTask?.cancel()
+                    await gate.release()
+                    await service.setMutationIOWillBeginHandlerForTesting(nil)
+                    MCPToolExecutionTracer.setTestSink(nil)
+                    await manager.debugResetToolExecutionWatchdogEnvironment()
+                    if let fileActionTask { _ = try? await fileActionTask.value }
+                    if let queuedReadTask { _ = try? await queuedReadTask.value }
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
+        func testReadAutoSelectionThenImmediateManageSelectionAddAndGetPreservesCanonicalOwnership() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let gate = MCPExecutionIgnoringCancellationGate()
+                let server = fixture.contextA.window.mcpServer
+                let store = fixture.contextA.window.workspaceFileContextStore
+                let manager = fixture.networkManager
+                let secondRelativePath = "Sources/ImmediateOwnership.swift"
+                let secondURL = fixture.contextA.rootURL.appendingPathComponent(secondRelativePath)
+                var endpoint: PersistentMCPTestEndpoint?
+                _ = try await store.createFile(
+                    rootID: fixture.contextA.rootID,
+                    relativePath: secondRelativePath,
+                    content: "struct ImmediateOwnership {}\n"
+                )
+                server.setReadFileAutoSelectionCanonicalApplyGateForTesting {
+                    await gate.enterAndWait()
+                }
+                do {
+                    let clientName = "selection-ownership-\(UUID().uuidString)"
+                    await manager.installClientConnectionPolicy(
+                        for: clientName,
+                        windowID: fixture.contextA.window.windowID,
+                        restrictedTools: [],
+                        tabID: fixture.contextA.tabID,
+                        runID: UUID(),
+                        additionalTools: [],
+                        purpose: .agentModeRun
+                    )
+                    let createdEndpoint = try await PersistentMCPTestEndpoint.make(
+                        label: "selection-ownership",
+                        networkManager: manager,
+                        clientName: clientName,
+                        requiredToolNames: [
+                            MCPWindowToolName.readFile,
+                            MCPWindowToolName.manageSelection
+                        ]
+                    )
+                    endpoint = createdEndpoint
+                    _ = try await createdEndpoint.callTool(
+                        name: MCPWindowToolName.manageSelection,
+                        arguments: ["op": "clear"]
+                    )
+                    let readTask = Task {
+                        try await createdEndpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: ["path": fixture.contextA.fileURL.path]
+                        )
+                    }
+                    try await gate.waitUntilEntered(count: 1)
+                    _ = try await readTask.value
+
+                    let addTask = Task {
+                        try await createdEndpoint.callTool(
+                            name: MCPWindowToolName.manageSelection,
+                            arguments: [
+                                "op": "add",
+                                "paths": [secondURL.path],
+                                "view": "files"
+                            ]
+                        )
+                    }
+                    let waiterRegistered = await Self.waitUntil {
+                        server.readFileAutoSelectionDiagnosticsSnapshot().canonicalWaiterCount == 1
+                    }
+                    XCTAssertTrue(waiterRegistered)
+                    await gate.release()
+                    server.setReadFileAutoSelectionCanonicalApplyGateForTesting(nil)
+                    _ = try await addTask.value
+
+                    let getResponse = try await createdEndpoint.callTool(
+                        name: MCPWindowToolName.manageSelection,
+                        arguments: [
+                            "op": "get",
+                            "view": "files"
+                        ]
+                    )
+                    let getText = try Self.toolResultText(getResponse)
+                    XCTAssertTrue(getText.contains(fixture.contextA.fileURL.lastPathComponent), getText)
+                    XCTAssertTrue(getText.contains(secondURL.lastPathComponent), getText)
+
+                    let canonical = try XCTUnwrap(
+                        server.tabContextByConnectionID[createdEndpoint.connectionID]?.selection
+                    )
+                    XCTAssertEqual(
+                        Set(canonical.selectedPaths),
+                        Set([fixture.contextA.fileURL.path, secondURL.path])
+                    )
+                    let mirrored = try XCTUnwrap(
+                        fixture.contextA.window.workspaceManager.composeTab(with: fixture.contextA.tabID)?.selection
+                    )
+                    XCTAssertEqual(Set(mirrored.selectedPaths), Set(canonical.selectedPaths))
+
+                    await Self.cleanupEndpoint(createdEndpoint, manager: manager)
+                    endpoint = nil
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    await gate.release()
+                    server.setReadFileAutoSelectionCanonicalApplyGateForTesting(nil)
+                    if let endpoint { await Self.cleanupEndpoint(endpoint, manager: manager) }
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         func testWindowIDInjectionAndExplicitValueReachResolvedProviderArguments() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)
@@ -896,7 +1666,7 @@ import XCTest
             }
         }
 
-        func testUncooperativeDeadlineForceDisconnectsAndQueuedCallNeverEntersProvider() async throws {
+        func testUncooperativeSmallReadDeadlineForceDisconnectsAndCallBeyondCapacityNeverEntersProvider() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)
                 let clock = ExecutionWatchdogManualClock()
@@ -923,7 +1693,19 @@ import XCTest
                     try await clock.waitForSleeperCount(1)
                     try await operationGate.waitUntilEntered(count: 1)
 
-                    let queued = Task {
+                    let second = Task {
+                        try await endpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: [
+                                "path": fixture.contextA.fileURL.path,
+                                "context_id": fixture.contextA.tabID.uuidString
+                            ]
+                        )
+                    }
+                    try await clock.waitForSleeperCount(2)
+                    try await operationGate.waitUntilEntered(count: 2)
+
+                    let queuedBeyondCapacity = Task {
                         try await endpoint.callTool(
                             name: MCPWindowToolName.readFile,
                             arguments: [
@@ -933,14 +1715,17 @@ import XCTest
                         )
                     }
                     try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
-                    try await clock.waitForSleeperCount(1)
+                    try await clock.waitForSleeperCount(2)
+                    try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolExecutionDeadline)
+                    try await clock.waitForSleeperCount(2)
                     try await clock.advanceNext(expected: MCPTimeoutPolicy.boundedToolCancellationCleanupGrace)
 
                     await Self.assertSocketClosed(first)
-                    await Self.assertSocketClosed(queued)
+                    await Self.assertSocketClosed(second)
+                    await Self.assertSocketClosed(queuedBeyondCapacity)
                     let enteredCount = await operationGate.enteredCount()
                     let isTerminal = await manager.debugIsExecutionWatchdogTerminal(connectionID: endpoint.connectionID)
-                    XCTAssertEqual(enteredCount, 1)
+                    XCTAssertEqual(enteredCount, MCPToolAdmissionPolicy.smallReadPerWindowLimit)
                     XCTAssertTrue(isTerminal)
 
                     let events = recorder.snapshot().filter {
@@ -964,6 +1749,21 @@ import XCTest
                     throw error
                 }
             }
+        }
+
+        private static func waitUntil(
+            timeout: Duration = .seconds(10),
+            condition: () async -> Bool
+        ) async -> Bool {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: timeout)
+            while clock.now < deadline {
+                if await condition() {
+                    return true
+                }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return await condition()
         }
 
         private static func cleanupEndpoint(
@@ -1201,6 +2001,37 @@ import XCTest
             cancellationCount += 1
             continuation?.resume(throwing: CancellationError())
             continuation = nil
+        }
+    }
+
+    private actor MCPPostProviderAdmissionProbe {
+        private static let synchronizationTimeout: Duration = .seconds(10)
+
+        private var connectionIDs: [UUID] = []
+
+        func record(connectionID: UUID?) -> Value {
+            if let connectionID {
+                connectionIDs.append(connectionID)
+            }
+            return .object(["status": .string("ok")])
+        }
+
+        func waitUntilEntered(
+            connectionID: UUID,
+            timeout: Duration = synchronizationTimeout
+        ) async throws {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: timeout)
+            while !connectionIDs.contains(connectionID) {
+                try Task.checkCancellation()
+                guard clock.now < deadline else {
+                    throw MCPExecutionWatchdogIntegrationFixtureError.gateDidNotEnter(
+                        expected: 1,
+                        actual: connectionIDs.count
+                    )
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
         }
     }
 

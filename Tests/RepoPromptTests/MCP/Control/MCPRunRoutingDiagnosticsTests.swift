@@ -64,55 +64,75 @@ final class MCPRunRoutingDiagnosticsTests: XCTestCase {
         #endif
     }
 
-    func testRunRoutingHistoryBoundsFieldCountAndValueLength() async throws {
+    func testRunRoutingHistoryBoundsFieldsValuesCapacityAndLimitOrdering() async throws {
         #if DEBUG
-            let runID = UUID()
-            await manager.debugClearRunRoutingHistoryForTesting()
-            let fields = Dictionary(uniqueKeysWithValues: (0 ..< 40).map { index in
-                (String(format: "field_%02d", index), String(repeating: "v", count: 900))
-            })
+            do {
+                let caseLabel = "testRunRoutingHistoryBoundsFieldCountAndValueLength"
+                let runID = UUID()
+                await manager.debugClearRunRoutingHistoryForTesting()
+                let fields = Dictionary(uniqueKeysWithValues: (0 ..< 40).map { index in
+                    (String(format: "field_%02d", index), String(repeating: "v", count: 900))
+                })
 
-            await manager.debugRecordRunRoutingEvent(
-                runID: runID,
-                event: String(repeating: "e", count: 200),
-                fields: fields
-            )
-
-            let payload = await manager.debugRunRoutingHistoryPayload(runID: runID, limit: 1)
-            let events = try XCTUnwrap(payload["events"] as? [[String: Any]])
-            let event = try XCTUnwrap(events.first)
-            let boundedFields = try XCTUnwrap(event["fields"] as? [String: String])
-            XCTAssertEqual((event["event"] as? String)?.count, 96)
-            XCTAssertEqual(boundedFields.count, 32)
-            XCTAssertTrue(boundedFields.values.allSatisfy { $0.count == 512 })
-            XCTAssertNotNil(boundedFields["field_00"])
-            XCTAssertNil(boundedFields["field_39"])
-        #else
-            throw XCTSkip("Run routing history is DEBUG-only.")
-        #endif
-    }
-
-    func testRunRoutingHistoryIsBoundedAndReportsDroppedEvents() async throws {
-        #if DEBUG
-            let runID = UUID()
-            await manager.debugClearRunRoutingHistoryForTesting()
-
-            for index in 0 ..< 1005 {
                 await manager.debugRecordRunRoutingEvent(
                     runID: runID,
-                    event: "event_\(index)"
+                    event: String(repeating: "e", count: 200),
+                    fields: fields
                 )
+
+                let payload = await manager.debugRunRoutingHistoryPayload(runID: runID, limit: 1)
+                let events = try XCTUnwrap(payload["events"] as? [[String: Any]], caseLabel)
+                let event = try XCTUnwrap(events.first, caseLabel)
+                let boundedFields = try XCTUnwrap(event["fields"] as? [String: String], caseLabel)
+                XCTAssertEqual((event["event"] as? String)?.count, 96, caseLabel)
+                XCTAssertEqual(boundedFields.count, 32, caseLabel)
+                XCTAssertTrue(boundedFields.values.allSatisfy { $0.count == 512 }, caseLabel)
+                XCTAssertNotNil(boundedFields["field_00"], caseLabel)
+                XCTAssertNil(boundedFields["field_39"], caseLabel)
             }
 
-            let payload = await manager.debugRunRoutingHistoryPayload(runID: runID, limit: 500)
-            let events = try XCTUnwrap(payload["events"] as? [[String: Any]])
-            XCTAssertEqual(payload["history_capacity"] as? Int, 1000)
-            XCTAssertEqual(payload["dropped_event_count"] as? Int, 5)
-            XCTAssertEqual(events.count, 500)
-            XCTAssertEqual(events.first?["event"] as? String, "event_505")
-            XCTAssertEqual(events.last?["event"] as? String, "event_1004")
+            do {
+                let caseLabel = "testRunRoutingHistoryIsBoundedAndReportsDroppedEvents"
+                let runID = UUID()
+                await manager.debugClearRunRoutingHistoryForTesting()
+
+                for index in 0 ..< 1005 {
+                    await manager.debugRecordRunRoutingEvent(
+                        runID: runID,
+                        event: "event_\(index)"
+                    )
+                }
+
+                let payload = await manager.debugRunRoutingHistoryPayload(runID: runID, limit: 500)
+                let events = try XCTUnwrap(payload["events"] as? [[String: Any]], caseLabel)
+                XCTAssertEqual(payload["history_capacity"] as? Int, 1000, caseLabel)
+                XCTAssertEqual(payload["dropped_event_count"] as? Int, 5, caseLabel)
+                XCTAssertEqual(events.count, 500, caseLabel)
+                XCTAssertEqual(events.first?["event"] as? String, "event_505", caseLabel)
+                XCTAssertEqual(events.last?["event"] as? String, "event_1004", caseLabel)
+            }
+
+            do {
+                let caseLabel = "testRunRoutingHistoryLimitReturnsNewestMatchingEventsInSequenceOrder"
+                let runID = UUID()
+                await manager.debugClearRunRoutingHistoryForTesting()
+
+                for event in ["routing_waiter_registered", "policy_installed", "pid_gate_wait_started", "expected_pid_registered", "policy_applied"] {
+                    await manager.debugRecordRunRoutingEvent(runID: runID, event: event)
+                }
+
+                let payload = await manager.debugRunRoutingHistoryPayload(runID: runID, limit: 3)
+                let events = try XCTUnwrap(payload["events"] as? [[String: Any]], caseLabel)
+                XCTAssertEqual(
+                    events.map { $0["event"] as? String },
+                    ["pid_gate_wait_started", "expected_pid_registered", "policy_applied"],
+                    caseLabel
+                )
+                let sequences = events.compactMap { $0["seq"] as? Int }
+                XCTAssertEqual(sequences, sequences.sorted(), caseLabel)
+            }
         #else
-            throw XCTSkip("Run routing history is DEBUG-only.")
+            throw XCTSkip("Run routing history is DEBUG-only: testRunRoutingHistoryBoundsFieldCountAndValueLength, testRunRoutingHistoryIsBoundedAndReportsDroppedEvents, testRunRoutingHistoryLimitReturnsNewestMatchingEventsInSequenceOrder")
         #endif
     }
 
@@ -228,28 +248,6 @@ final class MCPRunRoutingDiagnosticsTests: XCTestCase {
             let limitPayload = try diagnosticsPayload(invalidLimit)
             XCTAssertEqual(limitPayload["ok"] as? Bool, false)
             XCTAssertEqual(limitPayload["code"] as? String, "invalid_params")
-        #else
-            throw XCTSkip("Run routing history is DEBUG-only.")
-        #endif
-    }
-
-    func testRunRoutingHistoryLimitReturnsNewestMatchingEventsInSequenceOrder() async throws {
-        #if DEBUG
-            let runID = UUID()
-            await manager.debugClearRunRoutingHistoryForTesting()
-
-            for event in ["routing_waiter_registered", "policy_installed", "pid_gate_wait_started", "expected_pid_registered", "policy_applied"] {
-                await manager.debugRecordRunRoutingEvent(runID: runID, event: event)
-            }
-
-            let payload = await manager.debugRunRoutingHistoryPayload(runID: runID, limit: 3)
-            let events = try XCTUnwrap(payload["events"] as? [[String: Any]])
-            XCTAssertEqual(
-                events.map { $0["event"] as? String },
-                ["pid_gate_wait_started", "expected_pid_registered", "policy_applied"]
-            )
-            let sequences = events.compactMap { $0["seq"] as? Int }
-            XCTAssertEqual(sequences, sequences.sorted())
         #else
             throw XCTSkip("Run routing history is DEBUG-only.")
         #endif

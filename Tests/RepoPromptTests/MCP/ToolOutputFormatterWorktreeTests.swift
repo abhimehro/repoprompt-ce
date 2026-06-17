@@ -4,41 +4,45 @@ import XCTest
 
 @MainActor
 final class ToolOutputFormatterWorktreeTests: XCTestCase {
-    func testGitWorktreeWarningRecommendsMainSelectorsOnlyWhenMainRootIsKnown() {
-        let warning = MCPGitToolProvider.worktreeWarning(from: .init(
-            isWorktree: true,
-            worktreeName: "feature",
-            worktreeRoot: "/tmp/repo-feature",
-            commonGitDir: "/tmp/repo/.git",
-            mainWorktreeRoot: "/tmp/repo",
-            worktreeBranch: "feature/demo",
-            mainBranch: "main",
-            worktreeHead: "abcdef1",
-            mainHead: "1234567"
-        ))
+    func testGitWorktreeWarningsChooseMainSelectorsOrFullPathGuidance() {
+        do {
+            let caseLabel = "testGitWorktreeWarningRecommendsMainSelectorsOnlyWhenMainRootIsKnown"
+            let warning = MCPGitToolProvider.worktreeWarning(from: .init(
+                isWorktree: true,
+                worktreeName: "feature",
+                worktreeRoot: "/tmp/repo-feature",
+                commonGitDir: "/tmp/repo/.git",
+                mainWorktreeRoot: "/tmp/repo",
+                worktreeBranch: "feature/demo",
+                mainBranch: "main",
+                worktreeHead: "abcdef1",
+                mainHead: "1234567"
+            ))
 
-        XCTAssertTrue(warning?.contains("repo_root=\"@main\"") == true)
-        XCTAssertTrue(warning?.contains("repo_root=\"@main:<branch>\"") == true)
-        XCTAssertFalse(warning?.contains("could not be resolved") == true)
-    }
+            XCTAssertTrue(warning?.contains("repo_root=\"@main\"") == true, caseLabel)
+            XCTAssertTrue(warning?.contains("repo_root=\"@main:<branch>\"") == true, caseLabel)
+            XCTAssertFalse(warning?.contains("could not be resolved") == true, caseLabel)
+        }
 
-    func testGitWorktreeWarningUsesFullPathGuidanceWhenMainRootIsUnknown() {
-        let warning = MCPGitToolProvider.worktreeWarning(from: .init(
-            isWorktree: true,
-            worktreeName: "feature",
-            worktreeRoot: "/tmp/repo-feature",
-            commonGitDir: "/tmp/external-git-dir",
-            mainWorktreeRoot: nil,
-            worktreeBranch: "feature/demo",
-            mainBranch: nil,
-            worktreeHead: "abcdef1",
-            mainHead: nil
-        ))
+        do {
+            let caseLabel = "testGitWorktreeWarningUsesFullPathGuidanceWhenMainRootIsUnknown"
+            let warning = MCPGitToolProvider.worktreeWarning(from: .init(
+                isWorktree: true,
+                worktreeName: "feature",
+                worktreeRoot: "/tmp/repo-feature",
+                commonGitDir: "/tmp/external-git-dir",
+                mainWorktreeRoot: nil,
+                worktreeBranch: "feature/demo",
+                mainBranch: nil,
+                worktreeHead: "abcdef1",
+                mainHead: nil
+            ))
 
-        XCTAssertTrue(warning?.contains("primary checkout path could not be resolved") == true)
-        XCTAssertTrue(warning?.contains("full path as repo_root") == true)
-        XCTAssertFalse(warning?.contains("repo_root=\"@main\"") == true)
-        XCTAssertFalse(warning?.contains("repo_root=\"@main:<branch>\"") == true)
+            XCTAssertTrue(warning?.contains("primary checkout path could not be resolved") == true, caseLabel)
+            XCTAssertTrue(warning?.contains("full path as repo_root") == true, caseLabel)
+            XCTAssertFalse(warning?.contains("repo_root=\"@main\"") == true, caseLabel)
+            XCTAssertFalse(warning?.contains("repo_root=\"@main:<branch>\"") == true, caseLabel)
+        }
     }
 
     func testCreateOutputIncludesUsefulNextStepCommands() throws {
@@ -239,7 +243,30 @@ final class ToolOutputFormatterWorktreeTests: XCTestCase {
         }
     }
 
-    func testWorkspaceContextOutputShowsSingleWorktreeScopeBlock() throws {
+    func testCodeStructureOutputShowsPendingLogicalPathsAndWorktreeScope() throws {
+        let dto = ToolResultDTOs.SelectedCodeStructureDTO(
+            fileCount: 0,
+            content: "",
+            pendingPaths: ["Project/Sources/App.swift"],
+            worktreeScope: Self.scope()
+        )
+
+        let text = try Self.onlyText(ToolOutputFormatter.formatCodeStructure(value: Self.value(dto)))
+
+        XCTAssertTrue(text.contains("## Code Structure ⚠️"), text)
+        XCTAssertTrue(text.contains("Codemap generation pending**: 1"), text)
+        XCTAssertTrue(text.contains("- **Project**"), text)
+        XCTAssertTrue(text.contains("`Sources/App.swift`"), text)
+        XCTAssertTrue(text.contains("codemap scans use"), text)
+        XCTAssertTrue(text.contains("Displayed paths use logical/canonical roots"), text)
+        XCTAssertTrue(text.contains("/repo/project"), text)
+        XCTAssertFalse(text.contains("/tmp/worktrees/project-agent"), text)
+        XCTAssertTrue(text.contains("wt_123"), text)
+        XCTAssertTrue(text.contains("branch `feature/demo`"), text)
+        XCTAssertTrue(text.contains("label `Demo Worktree`"), text)
+    }
+
+    func testWorkspaceContextOutputHidesPhysicalRootInScopeBlocks() throws {
         let scope = Self.scope()
         let dto = ToolResultDTOs.PromptContextDTO(
             prompt: "",
@@ -262,8 +289,13 @@ final class ToolOutputFormatterWorktreeTests: XCTestCase {
 
         let text = try Self.onlyText(ToolOutputFormatter.formatPromptState(value: Self.value(dto)))
 
-        Self.assertScopeBlock(in: text)
-        XCTAssertEqual(Self.occurrences(of: "session-bound worktree", in: text), 1, text)
+        XCTAssertTrue(text.contains("Displayed paths use logical/canonical roots"), text)
+        XCTAssertTrue(text.contains("/repo/project"), text)
+        XCTAssertFalse(text.contains("/tmp/worktrees/project-agent"), text)
+        XCTAssertTrue(text.contains("wt_123"), text)
+        XCTAssertTrue(text.contains("branch `feature/demo`"), text)
+        XCTAssertTrue(text.contains("label `Demo Worktree`"), text)
+        XCTAssertEqual(Self.occurrences(of: "session-bound worktree", in: text), 2, text)
         XCTAssertTrue(text.contains("### Selected File Tree"), text)
     }
 
@@ -349,7 +381,7 @@ final class ToolOutputFormatterWorktreeTests: XCTestCase {
         XCTAssertTrue(text.contains("session-bound worktree"), text)
         XCTAssertTrue(text.contains("Displayed paths use logical/canonical roots"), text)
         XCTAssertTrue(text.contains("/repo/project"), text)
-        XCTAssertTrue(text.contains("/tmp/worktrees/project-agent"), text)
+        XCTAssertFalse(text.contains("/tmp/worktrees/project-agent"), text)
         XCTAssertTrue(text.contains("wt_123"), text)
         XCTAssertTrue(text.contains("branch `feature/demo`"), text)
         XCTAssertTrue(text.contains("label `Demo Worktree`"), text)

@@ -1,4 +1,4 @@
-.PHONY: doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status resolve build run test guardrails conductor-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production dev-status dev-build dev-swift-build dev-run dev-test dev-provider-test dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
+.PHONY: doctor setup install-format-tools format-tools-status format format-check lint install-debug-cli uninstall-debug-cli debug-cli-status resolve build run test guardrails conductor-selftest release-selftest release-sync-cli-version release-preflight release-artifact install-local-production dev-status dev-build dev-swift-build dev-run dev-test dev-test-list dev-provider-test dev-provider-test-list dev-smoke dev-smoke-launch dev-format dev-format-check dev-lint dev-format-tools-status dev-check-format-tools dev-install-format-tools dev-release-preflight dev-release-artifact dev-install-local-production dev-stop-app dev-daemon-stop clean
 
 PRODUCT ?= all
 
@@ -52,10 +52,12 @@ guardrails:
 	./Scripts/swiftpm_notice_guardrails.sh
 
 conductor-selftest:
+	python3 Scripts/test_debug_app_process.py
 	python3 Scripts/test_conductor_output.py
 	python3 Scripts/test_conductor_lifecycle.py
 	python3 Scripts/test_local_production_installer.py
 	python3 Scripts/test_security_inventory.py
+	python3 Scripts/test_test_suite_optimizer.py
 
 release-selftest:
 	python3 Scripts/test_release_promotion.py
@@ -88,8 +90,14 @@ dev-run:
 dev-test:
 	./conductor test$(if $(FILTER), --filter $(FILTER))
 
+dev-test-list:
+	./conductor test --list
+
 dev-provider-test:
 	./conductor provider-test$(if $(FILTER), --filter $(FILTER))
+
+dev-provider-test-list:
+	./conductor provider-test --list
 
 dev-smoke:
 	./conductor smoke

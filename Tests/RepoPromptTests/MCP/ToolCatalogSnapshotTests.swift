@@ -42,142 +42,157 @@ final class ToolCatalogSnapshotTests: XCTestCase {
         XCTAssertEqual(signatures, Self.expectedSignatures)
     }
 
-    func testAgentLifecycleSchemasAdvertiseTwoMinuteDefaultsWithoutMaximumClamp() async throws {
-        let window = Self.makeWindowWithoutAutoStart()
-        let tools = await window.mcpServer.windowMCPTools
-        let agentExplore = try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.agentExplore })
-        let agentRun = try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.agentRun })
+    func testLifecycleSchemasAdvertiseConfigurableDefaultsWithoutMaximumClamp() async throws {
+        do {
+            let caseLabel = "testAgentLifecycleSchemasAdvertiseTwoMinuteDefaultsWithoutMaximumClamp"
+            let window = Self.makeWindowWithoutAutoStart()
+            let tools = await window.mcpServer.windowMCPTools
+            let agentExplore = try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.agentExplore }, caseLabel)
+            let agentRun = try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.agentRun }, caseLabel)
 
-        let exploreTimeout = try XCTUnwrap(
-            Self.schemaProperties(for: agentExplore)["timeout"]?.objectValue?["description"]?.stringValue
-        )
-        let runProperties = try Self.schemaProperties(for: agentRun)
-        let runTimeout = try XCTUnwrap(runProperties["timeout"]?.objectValue?["description"]?.stringValue)
-        let steerTimeout = try XCTUnwrap(runProperties["timeout_seconds"]?.objectValue?["description"]?.stringValue)
+            let exploreTimeout = try XCTUnwrap(
+                Self.schemaProperties(for: agentExplore, label: caseLabel)["timeout"]?.objectValue?["description"]?.stringValue,
+                caseLabel
+            )
+            let runProperties = try Self.schemaProperties(for: agentRun, label: caseLabel)
+            let runTimeout = try XCTUnwrap(runProperties["timeout"]?.objectValue?["description"]?.stringValue, caseLabel)
+            let steerTimeout = try XCTUnwrap(runProperties["timeout_seconds"]?.objectValue?["description"]?.stringValue, caseLabel)
 
-        let defaultText = "Default \(Int(MCPTimeoutPolicy.agentLifecycleDefaultWaitSeconds))."
-        for description in [exploreTimeout, runTimeout, steerTimeout] {
-            XCTAssertTrue(description.contains(defaultText), description)
-            XCTAssertFalse(description.lowercased().contains("maximum"), description)
-        }
-    }
-
-    func testInteractiveLifecycleSchemasPreserveConfigurableWaitsWithoutMaximumClamp() async throws {
-        let window = Self.makeWindowWithoutAutoStart()
-        let tools = await window.mcpServer.windowMCPTools
-        let askUser = try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.askUser })
-        let waitForNextInstruction = try XCTUnwrap(
-            tools.first { $0.name == MCPWindowToolName.waitForNextInstruction }
-        )
-
-        let askUserTimeout = try XCTUnwrap(
-            Self.schemaProperties(for: askUser)["timeout_seconds"]?.objectValue?["description"]?.stringValue
-        )
-        let instructionTimeout = try XCTUnwrap(
-            Self.schemaProperties(for: waitForNextInstruction)["timeout_seconds"]?.objectValue?["description"]?.stringValue
-        )
-
-        XCTAssertTrue(askUserTimeout.contains("workspace question-timeout setting"), askUserTimeout)
-        XCTAssertTrue(
-            instructionTimeout.contains(
-                "Default \(Int(MCPTimeoutPolicy.nextUserInstructionDefaultWaitSeconds))."
-            ),
-            instructionTimeout
-        )
-        XCTAssertFalse(askUserTimeout.lowercased().contains("maximum"), askUserTimeout)
-        XCTAssertFalse(instructionTimeout.lowercased().contains("maximum"), instructionTimeout)
-    }
-
-    func testCanonicalReadOnlyAnnotationsRemainTruthfulOutsideCodexProjection() async {
-        let window = Self.makeWindowWithoutAutoStart()
-        let tools = await window.mcpServer.windowMCPTools
-        let canonicalReadOnlyTools = tools.filter { $0.annotations.readOnlyHint == true }
-
-        XCTAssertFalse(canonicalReadOnlyTools.isEmpty)
-        XCTAssertTrue(canonicalReadOnlyTools.allSatisfy { $0.annotations.readOnlyHint == true })
-        XCTAssertTrue(
-            canonicalReadOnlyTools.allSatisfy {
-                CodexMCPToolAnnotationProjection.project(
-                    $0.annotations,
-                    clientIdentifier: "generic-mcp-client"
-                ) == $0.annotations
+            let defaultText = "Default \(Int(MCPTimeoutPolicy.agentLifecycleDefaultWaitSeconds))."
+            for description in [exploreTimeout, runTimeout, steerTimeout] {
+                XCTAssertTrue(description.contains(defaultText), caseLabel + ": " + description)
+                XCTAssertFalse(description.lowercased().contains("maximum"), caseLabel + ": " + description)
             }
-        )
-    }
-
-    func testCodexProjectionClearsOnlyReadOnlyHintForPositiveCodexIdentity() {
-        let canonical = MCP.Tool.Annotations(
-            title: "Read workspace",
-            readOnlyHint: true,
-            destructiveHint: false,
-            idempotentHint: true,
-            openWorldHint: false
-        )
-        let codexIdentities: [String?] = [
-            "codex-mcp-client",
-            "Codex MCP Client",
-            "codex-mcp-client/1.2.3",
-            "codex-mcp-client-v2"
-        ]
-
-        for identity in codexIdentities {
-            let projected = CodexMCPToolAnnotationProjection.project(
-                canonical,
-                clientIdentifier: identity
-            )
-            XCTAssertNil(projected.readOnlyHint, identity ?? "nil")
-            XCTAssertEqual(projected.title, canonical.title, identity ?? "nil")
-            XCTAssertEqual(projected.destructiveHint, canonical.destructiveHint, identity ?? "nil")
-            XCTAssertEqual(projected.idempotentHint, canonical.idempotentHint, identity ?? "nil")
-            XCTAssertEqual(projected.openWorldHint, canonical.openWorldHint, identity ?? "nil")
         }
 
-        for readOnlyHint in [false, nil] as [Bool?] {
-            let annotations = MCP.Tool.Annotations(
-                title: canonical.title,
-                readOnlyHint: readOnlyHint,
-                destructiveHint: canonical.destructiveHint,
-                idempotentHint: canonical.idempotentHint,
-                openWorldHint: canonical.openWorldHint
+        do {
+            let caseLabel = "testInteractiveLifecycleSchemasPreserveConfigurableWaitsWithoutMaximumClamp"
+            let window = Self.makeWindowWithoutAutoStart()
+            let tools = await window.mcpServer.windowMCPTools
+            let askUser = try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.askUser }, caseLabel)
+            let waitForNextInstruction = try XCTUnwrap(
+                tools.first { $0.name == MCPWindowToolName.waitForNextInstruction },
+                caseLabel
             )
-            XCTAssertNil(
-                CodexMCPToolAnnotationProjection.project(
-                    annotations,
-                    clientIdentifier: "codex-mcp-client"
-                ).readOnlyHint
+
+            let askUserTimeout = try XCTUnwrap(
+                Self.schemaProperties(for: askUser, label: caseLabel)["timeout_seconds"]?.objectValue?["description"]?.stringValue,
+                caseLabel
+            )
+            let instructionTimeout = try XCTUnwrap(
+                Self.schemaProperties(for: waitForNextInstruction, label: caseLabel)["timeout_seconds"]?.objectValue?["description"]?.stringValue,
+                caseLabel
+            )
+
+            XCTAssertTrue(askUserTimeout.contains("workspace question-timeout setting"), caseLabel + ": " + askUserTimeout)
+            XCTAssertTrue(
+                instructionTimeout.contains(
+                    "Default \(Int(MCPTimeoutPolicy.nextUserInstructionDefaultWaitSeconds))."
+                ),
+                caseLabel + ": " + instructionTimeout
+            )
+            XCTAssertFalse(askUserTimeout.lowercased().contains("maximum"), caseLabel + ": " + askUserTimeout)
+            XCTAssertFalse(instructionTimeout.lowercased().contains("maximum"), caseLabel + ": " + instructionTimeout)
+        }
+    }
+
+    func testCodexAnnotationProjectionPreservesCanonicalMetadataAcrossIdentityMatrix() async {
+        do {
+            let caseLabel = "testCanonicalReadOnlyAnnotationsRemainTruthfulOutsideCodexProjection"
+            let window = Self.makeWindowWithoutAutoStart()
+            let tools = await window.mcpServer.windowMCPTools
+            let canonicalReadOnlyTools = tools.filter { $0.annotations.readOnlyHint == true }
+
+            XCTAssertFalse(canonicalReadOnlyTools.isEmpty, caseLabel)
+            XCTAssertTrue(canonicalReadOnlyTools.allSatisfy { $0.annotations.readOnlyHint == true }, caseLabel)
+            XCTAssertTrue(
+                canonicalReadOnlyTools.allSatisfy {
+                    CodexMCPToolAnnotationProjection.project(
+                        $0.annotations,
+                        clientIdentifier: "generic-mcp-client"
+                    ) == $0.annotations
+                },
+                caseLabel
             )
         }
 
-        XCTAssertEqual(canonical.readOnlyHint, true, "Projection must not mutate canonical catalog metadata.")
-    }
+        do {
+            let caseLabel = "testCodexProjectionClearsOnlyReadOnlyHintForPositiveCodexIdentity"
+            let canonical = MCP.Tool.Annotations(
+                title: "Read workspace",
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+            let codexIdentities: [String?] = [
+                "codex-mcp-client",
+                "Codex MCP Client",
+                "codex-mcp-client/1.2.3",
+                "codex-mcp-client-v2"
+            ]
 
-    func testCodexProjectionPreservesMetadataForMissingAmbiguousAndNonCodexIdentities() {
-        let canonical = MCP.Tool.Annotations(
-            title: "Read workspace",
-            readOnlyHint: true,
-            destructiveHint: false,
-            idempotentHint: true,
-            openWorldHint: false
-        )
-        let identities: [String?] = [
-            nil,
-            "",
-            "codex",
-            "codex-client",
-            "codex-wrapper-beta",
-            "claude-code",
-            "repoprompt-cli"
-        ]
-
-        for identity in identities {
-            XCTAssertEqual(
-                CodexMCPToolAnnotationProjection.project(
+            for identity in codexIdentities {
+                let projected = CodexMCPToolAnnotationProjection.project(
                     canonical,
                     clientIdentifier: identity
-                ),
-                canonical,
-                identity ?? "nil"
+                )
+                let identityLabel = caseLabel + ": " + (identity ?? "nil")
+                XCTAssertNil(projected.readOnlyHint, identityLabel)
+                XCTAssertEqual(projected.title, canonical.title, identityLabel)
+                XCTAssertEqual(projected.destructiveHint, canonical.destructiveHint, identityLabel)
+                XCTAssertEqual(projected.idempotentHint, canonical.idempotentHint, identityLabel)
+                XCTAssertEqual(projected.openWorldHint, canonical.openWorldHint, identityLabel)
+            }
+
+            for readOnlyHint in [false, nil] as [Bool?] {
+                XCTAssertNil(
+                    CodexMCPToolAnnotationProjection.project(
+                        MCP.Tool.Annotations(
+                            title: canonical.title,
+                            readOnlyHint: readOnlyHint,
+                            destructiveHint: canonical.destructiveHint,
+                            idempotentHint: canonical.idempotentHint,
+                            openWorldHint: canonical.openWorldHint
+                        ),
+                        clientIdentifier: "codex-mcp-client"
+                    ).readOnlyHint,
+                    caseLabel + ": \(String(describing: readOnlyHint))"
+                )
+            }
+
+            XCTAssertEqual(canonical.readOnlyHint, true, caseLabel + ": Projection must not mutate canonical catalog metadata.")
+        }
+
+        do {
+            let caseLabel = "testCodexProjectionPreservesMetadataForMissingAmbiguousAndNonCodexIdentities"
+            let canonical = MCP.Tool.Annotations(
+                title: "Read workspace",
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
             )
+            let identities: [String?] = [
+                nil,
+                "",
+                "codex",
+                "codex-client",
+                "codex-wrapper-beta",
+                "claude-code",
+                "repoprompt-cli"
+            ]
+
+            for identity in identities {
+                XCTAssertEqual(
+                    CodexMCPToolAnnotationProjection.project(
+                        canonical,
+                        clientIdentifier: identity
+                    ),
+                    canonical,
+                    caseLabel + ": " + (identity ?? "nil")
+                )
+            }
         }
     }
 
@@ -421,9 +436,14 @@ final class ToolCatalogSnapshotTests: XCTestCase {
         }
     #endif
 
-    private static func schemaProperties(for tool: RepoPrompt.Tool) throws -> [String: Value] {
-        let schema = try XCTUnwrap(Value(tool.inputSchema).objectValue)
-        return try XCTUnwrap(schema["properties"]?.objectValue)
+    private static func schemaProperties(
+        for tool: RepoPrompt.Tool,
+        label: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> [String: Value] {
+        let schema = try XCTUnwrap(Value(tool.inputSchema).objectValue, label, file: file, line: line)
+        return try XCTUnwrap(schema["properties"]?.objectValue, label, file: file, line: line)
     }
 
     private static let expectedSignatures: [String] = [

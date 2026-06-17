@@ -140,27 +140,30 @@ class OutputSummarizerTests(unittest.TestCase):
 
     def test_app_lifecycle_summary_and_progress_prioritize_confirmed_transition(self) -> None:
         lines = [
-            "==> Stopping existing RepoPrompt instance\n",
-            "==> Waiting for existing RepoPrompt process to exit\n",
-            "RepoPrompt stop confirmed.\n",
+            "==> Stopping existing RepoPrompt CE debug app instance\n",
+            "==> Waiting for existing RepoPrompt CE debug app process to exit\n",
+            "RepoPrompt CE debug app stop confirmed.\n",
             "==> Launching /tmp/RepoPrompt.app\n",
-            "==> Confirming launched RepoPrompt process\n",
-            "Observed launched RepoPrompt PID(s): 123\n",
+            "==> Confirming launched RepoPrompt CE debug app process\n",
+            "Observed launched RepoPrompt CE debug PID(s): 123\n",
         ]
 
         summary = summarize("run", "completed", 0, lines)
         lifecycle = section(summary, "App lifecycle")
         titles = [item["title"] for item in summary["sections"]]
-        progress = conductor.select_progress_lines("run", ["RepoPrompt stop confirmed.\n", "Observed launched RepoPrompt PID(s): 123\n"])
+        progress = conductor.select_progress_lines(
+            "run",
+            ["RepoPrompt CE debug app stop confirmed.\n", "Observed launched RepoPrompt CE debug PID(s): 123\n"],
+        )
 
-        self.assertIn("RepoPrompt stop confirmed.", lifecycle)
-        self.assertIn("Observed launched RepoPrompt PID(s): 123", lifecycle)
+        self.assertIn("RepoPrompt CE debug app stop confirmed.", lifecycle)
+        self.assertIn("Observed launched RepoPrompt CE debug PID(s): 123", lifecycle)
         self.assertTrue(summary["launchLifecycle"]["transitionStarted"])
         self.assertTrue(summary["launchLifecycle"]["launchRequested"])
         self.assertTrue(summary["launchLifecycle"]["launchConfirmed"])
         self.assertLess(titles.index("App lifecycle"), titles.index("Phases"))
-        self.assertIn("RepoPrompt stop confirmed.", progress)
-        self.assertIn("Observed launched RepoPrompt PID(s): 123", progress)
+        self.assertIn("RepoPrompt CE debug app stop confirmed.", progress)
+        self.assertIn("Observed launched RepoPrompt CE debug PID(s): 123", progress)
 
     def test_app_operation_display_name_is_precise(self) -> None:
         self.assertEqual(conductor.operation_display_name("app", {"subcommand": "stop"}), "app stop")
@@ -195,7 +198,7 @@ class OutputSummarizerTests(unittest.TestCase):
             1,
             [
                 "==> Packaging debug app\n",
-                "==> Stopping existing RepoPrompt instance\n",
+                "==> Stopping existing RepoPrompt CE debug app instance\n",
                 "ERROR: open failed\n",
             ],
         )
@@ -364,6 +367,51 @@ class OutputSummarizerTests(unittest.TestCase):
 
         self.assertIn("outputSummary", enriched)
         self.assertNotIn("logTail", enriched)
+
+    def test_job_payload_exposes_additive_process_timing_and_lifecycle_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            diagnostic = root / "stall.sample.txt"
+            job = conductor.Job(
+                ticket="ticket",
+                request_key=None,
+                fingerprint="fingerprint",
+                operation="test",
+                args={},
+                lanes=["build"],
+                timeout=None,
+                verbose=False,
+                env={},
+                created_at=10.0,
+                started_at=12.5,
+                finished_at=20.0,
+                process_started_at=13.0,
+                process_finished_at=19.25,
+                progress_transport="pty",
+                xctest_progress_sequence=17,
+                xctest_last_progress_test="RepoPromptTests.ExampleTests.testProgress",
+                xctest_last_progress_action="started",
+                xctest_last_progress_observed_at=18.75,
+                log_path=root / "ticket.log",
+                state="completed",
+                exit_code=0,
+                diagnostic_paths=[diagnostic],
+            )
+
+            payload = job.to_payload()
+
+        self.assertEqual(payload["queuedAt"], 10.0)
+        self.assertEqual(payload["processStartedAt"], 13.0)
+        self.assertEqual(payload["processFinishedAt"], 19.25)
+        self.assertEqual(payload["queueWaitSeconds"], 2.5)
+        self.assertEqual(payload["executionSeconds"], 6.25)
+        self.assertFalse(payload["measurementInvalid"])
+        self.assertEqual(payload["progressTransport"], "pty")
+        self.assertEqual(payload["progressSequence"], 17)
+        self.assertEqual(payload["lastProgressTest"], "RepoPromptTests.ExampleTests.testProgress")
+        self.assertEqual(payload["lastProgressAction"], "started")
+        self.assertEqual(payload["lastProgressObservedAt"], 18.75)
+        self.assertEqual(payload["diagnosticPaths"], [str(diagnostic)])
 
     def test_terminal_job_status_attaches_missing_output_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

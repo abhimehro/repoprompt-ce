@@ -129,7 +129,9 @@ make dev-swift-build PRODUCT=repoprompt-mcp         # focused product build (PRO
 make dev-run
 make dev-test                                       # full coordinated test suite
 make dev-test FILTER=WorkspaceFileContextStoreTests # focused coordinated test run
+make dev-test-list                                  # coordinated authoritative root XCTest method list
 make dev-provider-test                              # RepoPromptAgentProviders package tests (FILTER= also supported)
+make dev-provider-test-list                         # coordinated authoritative provider XCTest method list
 make dev-smoke          # non-disruptive: requires an already-running CE debug app and installed debug CLI
 make dev-smoke-launch   # builds/launches the debug app, then runs the smoke flow
 make dev-format-check   # non-mutating coordinated SwiftFormat check
@@ -157,7 +159,7 @@ Daemon output defaults are intentionally concise for agent use: synchronous `dev
 
 Behavior notes:
 
-- `make dev-run` (daemon `run`) still delegates to the debug launch flow and stops any existing `RepoPrompt`, same as `make run`; it remains FIFO and does not supersede older lifecycle work.
+- `make dev-run` (daemon `run`) still delegates to the debug launch flow and stops only the running process whose resolved executable matches the target CE debug app, same as `make run`; it remains FIFO and does not supersede older lifecycle work.
 - `./conductor app relaunch` is the overriding interactive relaunch used by the Finder launcher; like `app stop`, it can cancel older active or queued `liveApp` work. It builds/packages before replacing the visible app, so a failure before lifecycle work begins does not itself stop or reopen an already-running app.
 - Do not assume an in-flight `run`, `smoke`, or diagnostics job will complete if another operator issues `app stop` or interactive `app relaunch`.
 - `make dev-smoke` is the non-disruptive live-only check: it assumes the CE debug app is already running and the debug CLI is installed/resolvable.
@@ -166,7 +168,7 @@ Behavior notes:
 - Style checks (`make dev-format-check`, `make dev-lint`) are non-mutating and do not auto-install tools; `make dev-install-format-tools` is the explicit install path.
 - Do not run `make dev-format` unless formatting mutation is intended. If a format job is canceled after starting, inspect `git diff` and rerun format or restore files as needed.
 
-Direct / uncoordinated commands — use only when the daemon is unavailable (for example, no `python3`):
+Direct / uncoordinated commands — use only when the daemon is unavailable but required tooling, including `python3`, remains available:
 
 ```bash
 make build
@@ -174,7 +176,7 @@ make run
 make test
 ```
 
-These do not claim daemon lanes or lifecycle supersession, so when multiple agents are active they can build, launch, or run style tooling over each other; a direct launch may reopen the app after a coordinated stop. The Finder launcher also falls back to this direct behavior when `python3` is unavailable, with process-only status/stop controls. Prefer the `dev-*` aliases when the daemon is available. The manual `rpce-cli-debug` commands above remain valid for direct live MCP validation.
+These do not claim daemon lanes or lifecycle supersession, so when multiple agents are active they can build, launch, or run style tooling over each other; a direct launch may reopen the app after a coordinated stop. The Finder launcher requires `python3` and does not provide an uncoordinated no-Python fallback because safe lifecycle actions require exact debug-executable identity checks. Prefer the `dev-*` aliases when the daemon is available. The manual `rpce-cli-debug` commands above remain valid for direct live MCP validation.
 
 ## Source placement rules
 
@@ -255,6 +257,12 @@ Run the smallest relevant daemon build/test command above to validate a change. 
 Direct `swift test --filter <name>` and `swift build --product <name>` still work and produce the same result, but they are uncoordinated — use them only when the daemon is unavailable (for example, no `python3`), and avoid them when other agents may be building.
 
 Use `make dev-run` (or `make run`) only when it is safe to stop any existing RepoPrompt instance and launch the local debug app.
+
+### XCTest optimization inventory and timing
+
+See [`docs/testing.md`](docs/testing.md) for the contributor workflow, exact XCTest IDs, surgical contract-ledger maintenance, scenario accounting, and handoff checklist. Routine executable adds, renames, consolidations, and removals require the affected focused test, authoritative list, and `verify-ledger`; never regenerate or overwrite the curated ledger.
+
+Optimization/performance campaigns additionally require append-only inventory, baseline, focused, and full-root artifacts plus updates to `prompt-exports/optimize-test-suite-runs.md`. The primary metric is warm local root conductor execution time, provider timing remains separate, and diagnostic/wake-probe runs are invalid timing samples retained only as lifecycle evidence.
 
 ## Cleanup
 

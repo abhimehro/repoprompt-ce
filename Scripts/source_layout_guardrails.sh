@@ -293,7 +293,9 @@ allowed_tracked_docs=(
   "docs/architecture/source-layout.md"
   "docs/open-source-readiness.md"
   "docs/releasing.md"
+  "docs/testing.md"
   "docs/worktrees.md"
+  "docs/investigations/mcp-tool-throughput-wi3-baseline-2026-06-11.md"
   "docs/investigations/test-coverage-value-audit-ledger-2026-05-29.md"
   "docs/plans/test-coverage-value-audit-2026-05-29.md"
 )
