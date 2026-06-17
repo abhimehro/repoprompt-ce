@@ -42,9 +42,11 @@ private let debugLogURL: URL = {
     return url
 }()
 
+private let globalDebugLogFormatter = ISO8601DateFormatter()
+
 func debugLog(_ message: @autoclosure () -> String) {
     guard enableSocketDebugLog else { return }
-    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let timestamp = globalDebugLogFormatter.string(from: Date())
     let line = "[\(timestamp)] \(message())\n"
     if let data = line.data(using: .utf8),
        let handle = try? FileHandle(forWritingTo: debugLogURL)
