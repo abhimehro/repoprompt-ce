@@ -570,8 +570,11 @@
             grouping = snapshot
         }
 
+        // ⚡ Bolt: Cache expensive DateFormatter
+        private static let dateFormatter = ISO8601DateFormatter()
+
         func note(_ message: String) {
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = Self.dateFormatter.string(from: Date())
             recentEvents.append("[\(timestamp)] \(message)")
             if recentEvents.count > configuration.maxVisibleEventLogEntries {
                 recentEvents.removeFirst(recentEvents.count - configuration.maxVisibleEventLogEntries)

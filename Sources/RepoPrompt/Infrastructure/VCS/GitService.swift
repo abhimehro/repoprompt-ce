@@ -2188,9 +2188,7 @@ actor GitService {
                 // Unix timestamp
                 if let timestamp = Int(line.dropFirst("author-time ".count)) {
                     let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime]
-                    currentAuthorTime = formatter.string(from: date)
+                    currentAuthorTime = Self.authorTimeFormatter.string(from: date)
                 }
             } else if line.hasPrefix("\t") {
                 // Content line
@@ -2653,6 +2651,13 @@ actor GitService {
         let df = ISO8601DateFormatter()
         df.formatOptions = [.withInternetDateTime, .withSpaceBetweenDateAndTime]
         return df
+    }()
+
+    // ⚡ Bolt: Cache expensive DateFormatter for author-time parsing
+    private static let authorTimeFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
     }()
 
     private func parseGitDate(_ s: String) -> Date? {
