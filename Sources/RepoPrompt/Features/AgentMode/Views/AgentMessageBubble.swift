@@ -1574,11 +1574,15 @@ struct ToolResultContentView: View {
         self.previewLineCount = previewLineCount
     }
 
-    private var lines: [String] {
+    var body: some View {
         #if DEBUG
             let diagnosticsStartMS = AgentTextDerivationPerfDiagnostics.start()
         #endif
-        let derivedLines = content.components(separatedBy: "\n")
+        let lines = content.components(separatedBy: "\n")
+        let needsCollapse = lines.count > previewLineCount
+        let remainingLineCount = max(0, lines.count - previewLineCount)
+        let displayContent = (isExpanded || !needsCollapse) ? content : lines.prefix(previewLineCount).joined(separator: "\n")
+
         #if DEBUG
             let diagnosticsIsDiff = diagnosticsStartMS == nil ? nil : isDiffContent
             let diagnosticsIsJSON = diagnosticsStartMS == nil ? nil : isJSONContent
@@ -1586,11 +1590,11 @@ struct ToolResultContentView: View {
                 source: .toolResultPreview,
                 startMS: diagnosticsStartMS,
                 text: content,
-                lineCount: derivedLines.count,
+                lineCount: lines.count,
                 previewLineCount: previewLineCount,
-                displayedLineCount: isExpanded ? derivedLines.count : min(derivedLines.count, previewLineCount),
-                remainingLineCount: max(0, derivedLines.count - previewLineCount),
-                needsCollapse: derivedLines.count > previewLineCount,
+                displayedLineCount: isExpanded ? lines.count : min(lines.count, previewLineCount),
+                remainingLineCount: remainingLineCount,
+                needsCollapse: needsCollapse,
                 expanded: isExpanded,
                 toolName: toolName,
                 isDiff: diagnosticsIsDiff,
@@ -1598,26 +1602,8 @@ struct ToolResultContentView: View {
                 didSplitFullArray: true
             )
         #endif
-        return derivedLines
-    }
 
-    private var needsCollapse: Bool {
-        lines.count > previewLineCount
-    }
-
-    private var displayContent: String {
-        if isExpanded || !needsCollapse {
-            return content
-        }
-        return lines.prefix(previewLineCount).joined(separator: "\n")
-    }
-
-    private var remainingLineCount: Int {
-        max(0, lines.count - previewLineCount)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             // Render based on content type
             if isDiffContent {
                 // Render diffs with syntax highlighting
@@ -1634,7 +1620,7 @@ struct ToolResultContentView: View {
             }
 
             if needsCollapse, !isDiffContent, !isJSONContent {
-                expandCollapseButton
+                expandCollapseButton(remainingLineCount: remainingLineCount)
             }
         }
     }
@@ -1693,7 +1679,7 @@ struct ToolResultContentView: View {
             (trimmed.hasPrefix("[") && trimmed.hasSuffix("]"))
     }
 
-    private var expandCollapseButton: some View {
+    private func expandCollapseButton(remainingLineCount: Int) -> some View {
         Button(action: {
             withAnimation(.easeInOut(duration: 0.2)) {
                 isExpanded.toggle()
@@ -1728,46 +1714,32 @@ private struct DiffContentView: View {
 
     private let previewLineCount = 20
 
-    private var lines: [String] {
+    var body: some View {
         #if DEBUG
             let diagnosticsStartMS = AgentTextDerivationPerfDiagnostics.start()
         #endif
-        let derivedLines = content.components(separatedBy: "\n")
+        let lines = content.components(separatedBy: "\n")
+        let needsCollapse = lines.count > previewLineCount
+        let remainingLineCount = max(0, lines.count - previewLineCount)
+        let displayLines = (isExpanded || !needsCollapse) ? lines : Array(lines.prefix(previewLineCount))
+
         #if DEBUG
             AgentTextDerivationPerfDiagnostics.record(
                 source: .diffPreview,
                 startMS: diagnosticsStartMS,
                 text: content,
-                lineCount: derivedLines.count,
+                lineCount: lines.count,
                 previewLineCount: previewLineCount,
-                displayedLineCount: isExpanded ? derivedLines.count : min(derivedLines.count, previewLineCount),
-                remainingLineCount: max(0, derivedLines.count - previewLineCount),
-                needsCollapse: derivedLines.count > previewLineCount,
+                displayedLineCount: isExpanded ? lines.count : min(lines.count, previewLineCount),
+                remainingLineCount: remainingLineCount,
+                needsCollapse: needsCollapse,
                 expanded: isExpanded,
                 isDiff: true,
                 didSplitFullArray: true
             )
         #endif
-        return derivedLines
-    }
 
-    private var needsCollapse: Bool {
-        lines.count > previewLineCount
-    }
-
-    private var displayLines: [String] {
-        if isExpanded || !needsCollapse {
-            return lines
-        }
-        return Array(lines.prefix(previewLineCount))
-    }
-
-    private var remainingLineCount: Int {
-        max(0, lines.count - previewLineCount)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(displayLines.enumerated()), id: \.offset) { _, line in
