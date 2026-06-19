@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import shutil
 import time
 import unittest
 import zipfile
@@ -1292,6 +1293,7 @@ SIGNING_TEAM_ID=648A27MST5
             publish_staged.index("prepare_dist"),
         )
 
+    @unittest.skipIf(shutil.which("swift") is None, "Skipping because swift is not available")
     def test_modern_sparkle_key_seed_derives_public_key(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
         os.close(descriptor)
@@ -1308,6 +1310,7 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(base64.b64decode(result.stdout.strip())), 32)
 
+    @unittest.skipIf(shutil.which("swift") is None, "Skipping because swift is not available")
     def test_legacy_sparkle_key_export_is_rejected(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
         os.close(descriptor)
@@ -1324,6 +1327,7 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("modern 32-byte seed", result.stderr)
 
+    @unittest.skipIf(shutil.which("swift") is None or not sys.platform.startswith("darwin"), "Skipping because swift is not available or not on macOS")
     def test_sparkle_signature_verifier_rejects_modified_signature(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
