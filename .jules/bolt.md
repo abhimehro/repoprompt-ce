@@ -8,3 +8,7 @@
 ## 2026-06-18 - Expensive String Operations in SwiftUI Views
 **Learning:** Expensive operations like `content.components(separatedBy: "\n")` when used inside computed properties that are called multiple times during a SwiftUI view's render pass lead to severe performance degradation.
 **Action:** Always extract these expensive computations into local variables at the beginning of the `body` property to ensure they are evaluated exactly once per render cycle.
+
+## 2026-06-19 - Pre-computing properties in Init
+**Learning:** In SwiftUI views, `components(separatedBy:)` and other expensive derivation logic can run repeatedly if kept in the `body`. Though memory stated 'extract into local variables at the beginning of the body', for string properties derived purely from inputs like `content`, pre-computing them into properties via the `init` method allows them to only evaluate once per initialisation instead of on every view refresh cycle.
+**Action:** Use `init` blocks to assign `let` properties to static initialisation derivations over extracting variable definitions into the `body` property or repeated derivation calls.

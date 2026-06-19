@@ -1561,6 +1561,7 @@ struct ToolResultContentView: View {
     let content: String
     let toolName: String?
     let previewLineCount: Int
+    let lines: [String]
 
     @State private var isExpanded = false
     @ObservedObject private var fontScale = FontScaleManager.shared
@@ -1572,13 +1573,13 @@ struct ToolResultContentView: View {
         self.content = content
         self.toolName = toolName
         self.previewLineCount = previewLineCount
+        self.lines = content.components(separatedBy: "\n")
     }
 
     var body: some View {
         #if DEBUG
             let diagnosticsStartMS = AgentTextDerivationPerfDiagnostics.start()
         #endif
-        let lines = content.components(separatedBy: "\n")
         let needsCollapse = lines.count > previewLineCount
         let remainingLineCount = max(0, lines.count - previewLineCount)
         let displayContent = (isExpanded || !needsCollapse) ? content : lines.prefix(previewLineCount).joined(separator: "\n")
@@ -1705,6 +1706,7 @@ struct ToolResultContentView: View {
 /// Renders diff content with proper syntax highlighting for additions/deletions
 private struct DiffContentView: View {
     let content: String
+    let lines: [String]
     @State private var isExpanded = false
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var fontScale = FontScaleManager.shared
@@ -1714,11 +1716,15 @@ private struct DiffContentView: View {
 
     private let previewLineCount = 20
 
+    init(content: String) {
+        self.content = content
+        self.lines = content.components(separatedBy: "\n")
+    }
+
     var body: some View {
         #if DEBUG
             let diagnosticsStartMS = AgentTextDerivationPerfDiagnostics.start()
         #endif
-        let lines = content.components(separatedBy: "\n")
         let needsCollapse = lines.count > previewLineCount
         let remainingLineCount = max(0, lines.count - previewLineCount)
         let displayLines = (isExpanded || !needsCollapse) ? lines : Array(lines.prefix(previewLineCount))
