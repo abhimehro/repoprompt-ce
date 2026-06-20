@@ -673,6 +673,7 @@ struct AgentComposerView: View, Equatable {
                 .buttonStyle(.plain)
                 .disabled(!canAttachImages)
                 .hoverTooltip("Attach Images")
+                .accessibilityLabel("Attach Images")
                 .transaction { transaction in
                     transaction.animation = nil
                 }
