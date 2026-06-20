@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import shutil
 import time
 import unittest
 import zipfile
@@ -1292,7 +1293,7 @@ SIGNING_TEAM_ID=648A27MST5
             publish_staged.index("prepare_dist"),
         )
 
-    @unittest.skipIf(shutil.which("swift") is None or shutil.which("xcrun") is None, "Skipping because swift or xcrun is not available")
+    @unittest.skipIf(shutil.which("swift") is None, "Skipping because swift is not available")
     def test_modern_sparkle_key_seed_derives_public_key(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
         os.close(descriptor)
@@ -1309,7 +1310,7 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(base64.b64decode(result.stdout.strip())), 32)
 
-    @unittest.skipIf(shutil.which("swift") is None or shutil.which("xcrun") is None, "Skipping because swift or xcrun is not available")
+    @unittest.skipIf(shutil.which("swift") is None, "Skipping because swift is not available")
     def test_legacy_sparkle_key_export_is_rejected(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
         os.close(descriptor)
