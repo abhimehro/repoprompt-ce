@@ -1,0 +1,89 @@
+name: CodeScene PR Refactoring Agent
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  refactor:
+    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/cs-agent')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Debug raw comment
+        shell: bash
+        env:
+          RAW_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          echo "::group::Raw comment inspection"
+          printf 'RAW_COMMENT (literal): [%s]\n' "$RAW_COMMENT"
+          printf 'First 20 chars: [%s]\n' "${RAW_COMMENT:0:20}"
+          echo "Byte-level view (cat -A):"
+          printf '%s' "$RAW_COMMENT" | cat -A | head -5
+          echo "::endgroup::"
+
+      - name: Prepare command
+        id: prepare-command
+        env:
+          RAW_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          COMMAND="$RAW_COMMENT"
+          if [[ "$COMMAND" == "/cs-agent "* && "$COMMAND" != "/cs-agent skill:"* ]]; then
+            COMMAND="/cs-agent skill:${COMMAND#/cs-agent }"
+          fi
+          echo "Final command: $COMMAND"
+          echo "command=$COMMAND" >> $GITHUB_OUTPUT
+
+      - name: Configure OpenCode Google auth
+        env:
+          GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GOOGLE_KEY}" ]; then
+            echo "::error::Secret GOOGLE_API_KEY is empty in this workflow run."
+            echo "::error::Add it under Settings → Secrets and variables → Actions → Secrets (not Variables)."
+            exit 1
+          fi
+
+          GOOGLE_KEY="$(printf '%s' "${GOOGLE_KEY}" | tr -d '\n\r')"
+          mkdir -p "${HOME}/.local/share/opencode"
+          jq -n --arg key "${GOOGLE_KEY}" '{"google":{"type":"api","key":$key}}' \
+            > "${HOME}/.local/share/opencode/auth.json"
+          chmod 600 "${HOME}/.local/share/opencode/auth.json"
+
+          echo "GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_KEY}" >> "${GITHUB_ENV}"
+          echo "GOOGLE_API_KEY=${GOOGLE_KEY}" >> "${GITHUB_ENV}"
+          echo "GEMINI_API_KEY=${GOOGLE_KEY}" >> "${GITHUB_ENV}"
+
+      - name: Build OpenCode auth JSON for agent config
+        id: opencode-auth
+        env:
+          GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          GOOGLE_KEY="$(printf '%s' "${GOOGLE_KEY}" | tr -d '\n\r')"
+          AUTH_JSON="$(jq -nc --arg key "${GOOGLE_KEY}" '{"google":{"type":"api","key":$key}}')"
+          {
+            echo "json<<EOF"
+            echo "${AUTH_JSON}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      # Pin bc0d8b91: fixes spurious skill:github-pr-comment prepend (v1.0.0/v1.0.1 still broken).
+      - uses: codescene-oss/pr-refactoring-agent@841e34c7ddd7a8ec887d632ac51432d6c71e2fe1 # untagged-fix-commit
+        env:
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        with:
+          pr_number: ${{ github.event.issue.number }}
+          command: ${{ steps.prepare-command.outputs.command }}
+          model: google/gemini-3.5-flash
+          version: v1.0.3
+          codescene_token: ${{ secrets.CODESCENE_ACCESS_TOKEN }}
+          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
+          opencode_auth_json: ${{ steps.opencode-auth.outputs.json }}
