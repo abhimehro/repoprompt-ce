@@ -12,10 +12,10 @@ struct Version: Identifiable {
 }
 
 class Changelog {
-
-    // ⚡ Bolt: Caching ISO8601DateFormatter reduces expensive instantiations
-    // Expected impact: Faster parsing of the Changelog static list on initialization.
+    /// ⚡ Bolt: Caching ISO8601DateFormatter reduces expensive instantiations
+    /// Expected impact: Faster parsing of the Changelog static list on initialization.
     static let iso8601Formatter = ISO8601DateFormatter()
+
     static let current = Version(
         id: "2.1.24",
         buildNumber: 326,
