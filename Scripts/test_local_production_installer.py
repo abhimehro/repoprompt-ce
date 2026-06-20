@@ -654,6 +654,14 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.write_stub(bin_dir, "ditto", 'cp -R "$1" "$2"\n')
         self.write_stub(
             bin_dir,
+            "plutil",
+            """\
+            # Not a bash script anymore, we write a python script for plutil
+            exec "$FAKE_PYTHON_EXEC" -c 'import sys; import plistlib; p=plistlib.load(open(sys.argv[-1], "rb")); print(p[sys.argv[2]])' "$@"
+            """,
+        )
+        self.write_stub(
+            bin_dir,
             "cp",
             """\
             if [[ "${FAIL_REGISTRY_BACKUP_COPY:-0}" == "1" && "$#" == "3" && "$1" == "-p" && "$2" == "$FAKE_REGISTRY_PATH" ]]; then
@@ -694,6 +702,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
                 "FAKE_AFTER_MINT_FIXTURE": str(after_fixture),
                 "FAKE_IMPORTED_IDENTITY": str(import_log),
                 "FAKE_DESIGNATED_SHA1": expected_sha1,
+                "FAKE_PYTHON_EXEC": sys.executable,
                 "SECURITY_LOG": str(security_log),
                 "PACKAGE_CAPTURE": str(package_capture),
                 "OPENSSL_REJECTS_LEGACY": "1" if openssl_rejects_legacy else "0",
