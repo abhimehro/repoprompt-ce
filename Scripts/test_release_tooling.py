@@ -1293,7 +1293,7 @@ SIGNING_TEAM_ID=648A27MST5
             publish_staged.index("prepare_dist"),
         )
 
-    @unittest.skipIf(shutil.which("swift") is None, "Skipping because swift is not available")
+    @unittest.skipIf(shutil.which("swift") is None or shutil.which("xcrun") is None, "Skipping because swift or xcrun is not available")
     def test_modern_sparkle_key_seed_derives_public_key(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
         os.close(descriptor)
