@@ -69,6 +69,7 @@ struct CompactDualActionButton: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel(label)
             .padding(.horizontal, horizontalPadding)
             .background(backgroundForPart(isHovering: isHoveringMainPart, isPressed: isPressedMain))
             .onHover { hovering in
@@ -96,6 +97,7 @@ struct CompactDualActionButton: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel("\(label) options")
             .background(backgroundForPart(isHovering: isHoveringSecondaryPart, isPressed: isPressedSecondary))
             .onHover { hovering in
                 guard isHoveringSecondaryPart != hovering else { return }

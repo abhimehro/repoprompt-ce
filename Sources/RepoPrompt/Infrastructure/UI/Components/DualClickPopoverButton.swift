@@ -47,6 +47,7 @@ struct DualActionButton<Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel(label)
             // If mainShortcut is provided, apply it
             .applyKeyboardShortcut(mainShortcut)
             .frame(width: 105)
@@ -68,6 +69,7 @@ struct DualActionButton<Content: View>: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel("\(label) Settings")
             // If popoverShortcut is provided, apply it
             // .applyKeyboardShortcut(popoverShortcut)
             .frame(width: 24)

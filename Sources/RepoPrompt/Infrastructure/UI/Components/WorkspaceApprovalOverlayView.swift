@@ -349,6 +349,7 @@ struct WorkspaceApprovalOverlayView: View {
                 .frame(height: 40)
             }
             .buttonStyle(WorkspaceApprovalDenyButtonStyle())
+            .accessibilityLabel("Deny")
 
             // Allow button
             Button(action: { Task { await allow() } }) {
@@ -362,6 +363,7 @@ struct WorkspaceApprovalOverlayView: View {
                 .frame(height: 40)
             }
             .buttonStyle(WorkspaceApprovalAllowButtonStyle(riskLevel: request.operation.riskLevel))
+            .accessibilityLabel("Allow")
             .keyboardShortcut(.defaultAction)
         }
         .padding(20)
