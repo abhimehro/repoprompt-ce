@@ -69,6 +69,7 @@ struct CompactDualActionButton: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel(label)
             .padding(.horizontal, horizontalPadding)
             .background(backgroundForPart(isHovering: isHoveringMainPart, isPressed: isPressedMain))
             .onHover { hovering in
