@@ -363,7 +363,6 @@ struct WorkspaceApprovalOverlayView: View {
                 .frame(height: 40)
             }
             .buttonStyle(WorkspaceApprovalAllowButtonStyle(riskLevel: request.operation.riskLevel))
-            .accessibilityLabel("Allow")
             .keyboardShortcut(.defaultAction)
         }
         .padding(20)
