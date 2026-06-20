@@ -14,7 +14,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import shutil
 import time
 import unittest
 import zipfile
