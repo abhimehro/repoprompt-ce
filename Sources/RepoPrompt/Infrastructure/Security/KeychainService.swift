@@ -194,7 +194,7 @@ final class KeychainService: SecureKeyValueStorageBackend, @unchecked Sendable {
                 kSecAttrService as String: serviceName,
                 kSecAttrAccount as String: key,
                 kSecValueData as String: data,
-                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
                 kSecAttrSynchronizable as String: false
             ], accessMode: accessMode)
 
