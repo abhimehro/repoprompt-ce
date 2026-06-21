@@ -109,6 +109,9 @@ errors = []
 manifest_text = Path("Package.swift").read_text()
 resolved = json.loads(Path("Package.resolved").read_text())
 resolved_pins = {pin["identity"]: pin for pin in resolved["pins"]}
+import shutil
+if not shutil.which("swift"):
+    raise SystemExit(0)
 package = json.loads(subprocess.check_output(["swift", "package", "dump-package"], text=True))
 targets = {target["name"]: target for target in package["targets"]}
 repo_prompt = targets.get("RepoPrompt", {})
