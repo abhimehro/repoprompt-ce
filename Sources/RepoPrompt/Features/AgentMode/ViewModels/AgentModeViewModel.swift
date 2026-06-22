@@ -472,6 +472,15 @@ final class AgentModeViewModel: ObservableObject {
         }
     }
 
+    private struct AgentRunOracleReviewKey: Hashable {
+        let sessionID: UUID
+        let runID: UUID
+    }
+
+    /// Ephemeral launch snapshots. They are intentionally outside TabSession persistence.
+    private var pendingAgentRunOracleReviewContextsBySessionID: [UUID: PendingAgentRunOracleReviewContext] = [:]
+    private var delegatedAgentRunOracleReviewContextsByKey: [AgentRunOracleReviewKey: DelegatedAgentRunOracleReviewContext] = [:]
+
     @Published private(set) var sessionIndex: [UUID: AgentSessionIndexEntry] = [:] {
         didSet {
             syncSidebarUIState(refresh: true, reason: .sessionIndex)
@@ -2034,6 +2043,9 @@ final class AgentModeViewModel: ObservableObject {
             providerRuntimePermissionResolver: { [providerBindingService] agent, profile in
                 providerBindingService.runtimePermission(for: agent, profile: profile)
             },
+            bindPendingOracleReviewContext: { [weak self] tabID, runID in
+                self?.mcpBindPendingAgentRunOracleReviewContext(tabID: tabID, runID: runID)
+            },
             cancelMCPToolsForRun: { [weak self] runID, reason in
                 self?.cancelActiveToolsForRun(runID: runID, reason: reason)
             },
@@ -2161,11 +2173,18 @@ final class AgentModeViewModel: ObservableObject {
             },
             publishTerminalCommit: { [weak self] session, revision, successorKind in
                 guard let self else { return .rejected(reason: "view_model_deallocated") }
-                return await publishTerminalCommit(
+                let result = await publishTerminalCommit(
                     revision,
                     successorKind: successorKind,
                     for: session
                 )
+                if result.isResolved,
+                   let sessionID = session.activeAgentSessionID,
+                   let runID = revision.expectedRunID
+                {
+                    mcpRemoveAgentRunOracleReviewContext(sessionID: sessionID, runID: runID)
+                }
+                return result
             },
             startFollowUpRun: { [weak self] tabID, initialMessage in
                 Task { [weak self] in
@@ -6033,6 +6052,193 @@ final class AgentModeViewModel: ObservableObject {
         return true
     }
 
+    /// Stages a launching tab's immutable review snapshot for the exact current child activation.
+    /// Source/target provenance failures are retained on the context so non-review Agent work may
+    /// continue, but a later delegated review cannot silently package the child tab instead.
+    func mcpStageAgentRunOracleReviewSource(
+        _ source: AgentRunOracleReviewSource,
+        targetTabID: UUID,
+        targetSessionID: UUID,
+        expectedParentSessionID: UUID?
+    ) throws {
+        guard let session = sessions[targetTabID],
+              session.activeAgentSessionID == targetSessionID,
+              let controlContext = session.mcpControlContext,
+              controlContext.sessionID == targetSessionID
+        else {
+            throw AgentRunOracleReviewUnavailableReason.targetActivationMismatch
+        }
+        guard let targetWorkspaceID = workspaceManager?.activeWorkspace?.id else {
+            throw AgentRunOracleReviewUnavailableReason.targetWorkspaceMismatch
+        }
+
+        // Target conversation lineage is independent from packaging-source provenance. A
+        // top-level child may delegate a non-Agent compose tab (or an explicitly targeted Agent
+        // tab) without making that source session its conversation parent.
+        let validationFailure: AgentRunOracleReviewUnavailableReason? = if source.workspaceID != targetWorkspaceID {
+            .targetWorkspaceMismatch
+        } else if session.parentSessionID != expectedParentSessionID {
+            .parentSessionMismatch
+        } else {
+            nil
+        }
+
+        mcpRemoveAgentRunOracleReviewContexts(sessionID: targetSessionID)
+        pendingAgentRunOracleReviewContextsBySessionID[targetSessionID] = PendingAgentRunOracleReviewContext(
+            source: source,
+            target: AgentRunOracleReviewTargetSnapshot(
+                tabID: targetTabID,
+                workspaceID: targetWorkspaceID,
+                agentSessionID: targetSessionID,
+                activationID: controlContext.activationID,
+                expectedParentSessionID: expectedParentSessionID,
+                worktreeBindings: session.worktreeBindings,
+                validationFailure: validationFailure
+            )
+        )
+    }
+
+    /// Promotes a staged launch snapshot to the exact process run before its nested MCP lease is
+    /// installed. Repeated promotion for the same activation/run is idempotent.
+    @discardableResult
+    func mcpBindPendingAgentRunOracleReviewContext(
+        tabID: UUID,
+        runID: UUID
+    ) -> DelegatedAgentRunOracleReviewContext? {
+        guard let session = sessions[tabID],
+              let sessionID = session.activeAgentSessionID,
+              let controlContext = session.mcpControlContext,
+              controlContext.sessionID == sessionID
+        else { return nil }
+
+        let key = AgentRunOracleReviewKey(sessionID: sessionID, runID: runID)
+        if let existing = delegatedAgentRunOracleReviewContextsByKey[key],
+           existing.target.tabID == tabID,
+           existing.target.activationID == controlContext.activationID
+        {
+            return existing
+        }
+        guard let pending = pendingAgentRunOracleReviewContextsBySessionID[sessionID] else {
+            return nil
+        }
+
+        var validationFailure = pending.target.validationFailure
+        if pending.target.tabID != tabID
+            || pending.target.activationID != controlContext.activationID
+            || pending.target.agentSessionID != sessionID
+        {
+            validationFailure = .targetActivationMismatch
+        }
+        if delegatedAgentRunOracleReviewContextsByKey.contains(where: {
+            $0.key.sessionID == sessionID && $0.key.runID != runID
+        }) {
+            validationFailure = .pendingContextAlreadyConsumed
+        }
+
+        let target = AgentRunOracleReviewTargetSnapshot(
+            tabID: pending.target.tabID,
+            workspaceID: pending.target.workspaceID,
+            agentSessionID: pending.target.agentSessionID,
+            activationID: pending.target.activationID,
+            expectedParentSessionID: pending.target.expectedParentSessionID,
+            worktreeBindings: pending.target.worktreeBindings,
+            validationFailure: validationFailure
+        )
+        let delegated = DelegatedAgentRunOracleReviewContext(
+            source: pending.source,
+            target: target,
+            targetRunID: runID
+        )
+        pendingAgentRunOracleReviewContextsBySessionID.removeValue(forKey: sessionID)
+        delegatedAgentRunOracleReviewContextsByKey = delegatedAgentRunOracleReviewContextsByKey.filter {
+            $0.key.sessionID != sessionID
+        }
+        delegatedAgentRunOracleReviewContextsByKey[key] = delegated
+        return delegated
+    }
+
+    /// Resolves only an exact child tab/workspace/session/run delegation. A pending, stale, or
+    /// provenance-invalid delegation throws so callers cannot fall back to blank child packaging.
+    func mcpDelegatedAgentRunOracleReviewContext(
+        tabID: UUID,
+        workspaceID: UUID,
+        sessionID: UUID,
+        runID: UUID
+    ) throws -> DelegatedAgentRunOracleReviewContext? {
+        let key = AgentRunOracleReviewKey(sessionID: sessionID, runID: runID)
+        guard let delegated = delegatedAgentRunOracleReviewContextsByKey[key] else {
+            if pendingAgentRunOracleReviewContextsBySessionID[sessionID] != nil {
+                throw AgentRunOracleReviewUnavailableReason.targetActivationMismatch
+            }
+            if delegatedAgentRunOracleReviewContextsByKey.keys.contains(where: { $0.sessionID == sessionID }) {
+                throw AgentRunOracleReviewUnavailableReason.pendingContextAlreadyConsumed
+            }
+            return nil
+        }
+        guard delegated.target.tabID == tabID,
+              delegated.target.workspaceID == workspaceID,
+              delegated.target.agentSessionID == sessionID,
+              delegated.targetRunID == runID
+        else {
+            throw AgentRunOracleReviewUnavailableReason.targetActivationMismatch
+        }
+        guard let session = sessions[tabID],
+              session.activeAgentSessionID == sessionID,
+              session.parentSessionID == delegated.target.expectedParentSessionID,
+              session.mcpControlContext?.sessionID == sessionID,
+              session.mcpControlContext?.activationID == delegated.target.activationID
+        else {
+            throw AgentRunOracleReviewUnavailableReason.targetActivationMismatch
+        }
+        guard Self.agentRunOracleReviewBindingsMatch(
+            source: delegated.target.worktreeBindings,
+            target: session.worktreeBindings
+        ) else {
+            throw AgentRunOracleReviewUnavailableReason.targetBindingMismatch
+        }
+        if let reason = delegated.unavailableReason {
+            throw reason
+        }
+        return delegated
+    }
+
+    func mcpHasAgentRunOracleReviewContextExpectation(tabID: UUID) -> Bool {
+        guard let sessionID = sessions[tabID]?.activeAgentSessionID else { return false }
+        return pendingAgentRunOracleReviewContextsBySessionID[sessionID] != nil
+            || delegatedAgentRunOracleReviewContextsByKey.keys.contains { $0.sessionID == sessionID }
+    }
+
+    func mcpRemoveAgentRunOracleReviewContexts(sessionID: UUID) {
+        pendingAgentRunOracleReviewContextsBySessionID.removeValue(forKey: sessionID)
+        delegatedAgentRunOracleReviewContextsByKey = delegatedAgentRunOracleReviewContextsByKey.filter {
+            $0.key.sessionID != sessionID
+        }
+    }
+
+    func mcpRemoveAgentRunOracleReviewContext(sessionID: UUID, runID: UUID) {
+        delegatedAgentRunOracleReviewContextsByKey.removeValue(
+            forKey: AgentRunOracleReviewKey(sessionID: sessionID, runID: runID)
+        )
+    }
+
+    private static func agentRunOracleReviewBindingsMatch(
+        source: [AgentSessionWorktreeBinding],
+        target: [AgentSessionWorktreeBinding]
+    ) -> Bool {
+        func identities(_ bindings: [AgentSessionWorktreeBinding]) -> [String] {
+            bindings.map { binding in
+                [
+                    binding.repositoryID,
+                    binding.repoKey,
+                    StandardizedPath.absolute((binding.logicalRootPath as NSString).expandingTildeInPath),
+                    binding.worktreeID,
+                    StandardizedPath.absolute((binding.worktreeRootPath as NSString).expandingTildeInPath)
+                ].joined(separator: "\u{1F}")
+            }.sorted()
+        }
+        return identities(source) == identities(target)
+    }
+
     func mcpActivateControlContext(
         forTabID tabID: UUID,
         sessionID: UUID,
@@ -6047,6 +6253,9 @@ final class AgentModeViewModel: ObservableObject {
         else {
             throw MCPError.invalidParams("The requested agent session binding changed before MCP control activation.")
         }
+        // A new control activation owns a new launch lifecycle. Never retain review state from a
+        // prior activation, including direct/source-equals-target starts that do not stage anew.
+        mcpRemoveAgentRunOracleReviewContexts(sessionID: sessionID)
         let existingContext = session.mcpControlContext
         let activationID = UUID()
         if existingContext != nil {
@@ -6140,6 +6349,7 @@ final class AgentModeViewModel: ObservableObject {
             break
         }
         if let sessionID = target.sessionID {
+            mcpRemoveAgentRunOracleReviewContexts(sessionID: sessionID)
             await mcpDeactivateControlContext(
                 sessionID: sessionID,
                 cleanupSessionStore: true
@@ -6158,6 +6368,7 @@ final class AgentModeViewModel: ObservableObject {
         sessionID: UUID,
         cleanupSessionStore: Bool = false
     ) async {
+        mcpRemoveAgentRunOracleReviewContexts(sessionID: sessionID)
         guard let session = mcpControlledSession(sessionID: sessionID),
               let context = session.mcpControlContext,
               context.sessionID == sessionID

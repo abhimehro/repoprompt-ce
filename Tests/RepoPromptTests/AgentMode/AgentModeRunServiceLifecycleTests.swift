@@ -1451,6 +1451,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             providerRuntimePermissionResolver: { [bindingService = host.providerBindingService] agent, profile in
                 bindingService.runtimePermission(for: agent, profile: profile)
             },
+            bindPendingOracleReviewContext: { _, _ in },
             cancelMCPToolsForRun: cancelMCPTools,
             awaitNoActiveMCPTools: idleWaiter,
             activeAgentRunWaitQuery: { _ in false },
