@@ -651,6 +651,16 @@ class LocalProductionInstallerTests(unittest.TestCase):
             """,
         )
         self.write_stub(bin_dir, "pgrep", "exit 1\n")
+        self.write_stub(
+            bin_dir,
+            "plutil",
+            '''\
+            if [[ "$1" == "-extract" && "$3" == "raw" ]]; then
+                python3 -c "import plistlib, sys; p = plistlib.load(open(sys.argv[1], 'rb')); print(p.get(sys.argv[2], ''))" "$4" "$2"
+            fi
+            '''
+        )
+
         self.write_stub(bin_dir, "ditto", 'cp -R "$1" "$2"\n')
         self.write_stub(
             bin_dir,

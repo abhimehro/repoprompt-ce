@@ -312,6 +312,15 @@ class ReleasePromotionTests(unittest.TestCase):
         )
         self.write_stub(
             fake_bin,
+            "stat",
+            '''\
+            if [[ "$1" == "-f" && "$2" == "%z" ]]; then
+                wc -c < "$3" | tr -d " "
+            fi
+            '''
+        )
+        self.write_stub(
+            fake_bin,
             "plutil",
             """\
             case "$2" in
