@@ -2890,6 +2890,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         allowsAgentExternalControlTools: Bool = false
     ) -> MCPBootstrapLease? {
         guard shouldManageCodexTooling else { return nil }
+        viewModel?.mcpBindPendingAgentRunOracleReviewContext(tabID: tabID, runID: runID)
         let leaseSpec = MCPBootstrapLeaseSpec.agentMode(
             tabID: tabID,
             runID: runID,
