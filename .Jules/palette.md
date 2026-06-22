@@ -1,0 +1,3 @@
+## 2025-03-09 - Accessibility in Notification Bell
+**Learning:** Icon-only buttons with dynamic badges (like the Notifications button showing a pending items count) require both an `accessibilityLabel` for the button's core identity and an `accessibilityHint` that dynamically reads out the state of the badge to screen readers. Relying solely on visual badges leaves visually impaired users unaware of updates.
+**Action:** When creating or reviewing icon-only buttons that include dynamic badges or state indicators, always pair `.accessibilityLabel()` with a dynamic `.accessibilityHint()` that explicitly describes the state shown by the badge.
