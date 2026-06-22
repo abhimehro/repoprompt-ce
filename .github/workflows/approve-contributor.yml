@@ -14,7 +14,7 @@ jobs:
     steps:
       - name: Update contributor approval
         id: update
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
           script: |
             const APPROVED_FILE = '.github/APPROVED_CONTRIBUTORS';
@@ -182,7 +182,7 @@ jobs:
 
       - name: Comment on issue
         if: steps.update.outputs.status == 'added' || steps.update.outputs.status == 'updated' || steps.update.outputs.status == 'already'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
           script: |
             const issueAuthor = context.payload.issue.user.login;
