@@ -12,13 +12,11 @@ struct Version: Identifiable {
 }
 
 class Changelog {
-    // Bolt Optimization:
-    // Instantiating ISO8601DateFormatter is an expensive operation.
-    // By extracting it to a static shared property, we avoid creating ~200 separate
-    // formatter instances when the Changelog loads, significantly reducing initialization time.
-    static let sharedDateFormatter: ISO8601DateFormatter = {
-        return ISO8601DateFormatter()
-    }()
+    /// Bolt Optimization:
+    /// Instantiating ISO8601DateFormatter is an expensive operation.
+    /// By extracting it to a static shared property, we avoid creating ~200 separate
+    /// formatter instances when the Changelog loads, significantly reducing initialization time.
+    static let sharedDateFormatter = ISO8601DateFormatter()
 
     static let current = Version(
         id: "2.1.24",
