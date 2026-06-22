@@ -149,7 +149,7 @@ final class KeychainServiceTests: XCTestCase {
         XCTAssertEqual(addQuery.stringValue(for: kSecAttrAccount), "api-key")
         XCTAssertEqual(addQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUISkip as String)
         XCTAssertEqual(addQuery.dataValue(for: kSecValueData), Data("stored-value".utf8))
-        XCTAssertEqual(addQuery.stringValue(for: kSecAttrAccessible), kSecAttrAccessibleAfterFirstUnlock as String)
+        XCTAssertEqual(addQuery.stringValue(for: kSecAttrAccessible), kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
         XCTAssertEqual(addQuery.boolValue(for: kSecAttrSynchronizable), false)
     }
 
