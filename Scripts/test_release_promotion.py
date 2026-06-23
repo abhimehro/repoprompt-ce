@@ -323,7 +323,7 @@ class ReleasePromotionTests(unittest.TestCase):
                     SUPublicEDKey) printf 'fixture-public-key\\n' ; exit 0 ;;
                 esac
             done
-            exit 1
+            exit 0
             """,
         )
         self.write_stub(
