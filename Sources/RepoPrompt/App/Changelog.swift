@@ -12,7 +12,7 @@ struct Version: Identifiable {
 }
 
 class Changelog {
-    // ⚡ Bolt: Instantiating ISO8601DateFormatter is expensive. Using a shared static instance avoids re-creating it 200+ times during Changelog initialization, significantly reducing memory and CPU overhead.
+    /// ⚡ Bolt: Instantiating ISO8601DateFormatter is expensive. Using a shared static instance avoids re-creating it 200+ times during Changelog initialization, significantly reducing memory and CPU overhead.
     static let sharedFormatter = ISO8601DateFormatter()
 
     static let current = Version(
