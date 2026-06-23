@@ -1298,7 +1298,7 @@ SIGNING_TEAM_ID=648A27MST5
 
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn('gitleaks git --redact --log-opts="$range" .', workflow)
-        self.assertIn("gitleaks dir --redact .", workflow)
+        self.assertIn("gitleaks detect --no-git --redact .", workflow)
 
     def test_publish_staged_validates_before_creating_dist(self) -> None:
         release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")

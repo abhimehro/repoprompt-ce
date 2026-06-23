@@ -314,15 +314,15 @@ class ReleasePromotionTests(unittest.TestCase):
             fake_bin,
             "plutil",
             """\
-            for arg in "$@"; do
-                case "$arg" in
-                    CFBundleIdentifier) printf 'com.pvncher.repoprompt.ce\\n' ; exit 0 ;;
-                    CFBundleShortVersionString) printf '1.0.0\\n' ; exit 0 ;;
-                    CFBundleVersion) printf '1\\n' ; exit 0 ;;
-                    SUFeedURL) printf 'https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml\\n' ; exit 0 ;;
-                    SUPublicEDKey) printf 'fixture-public-key\\n' ; exit 0 ;;
+            if [[ "$1" == "-extract" ]]; then
+                case "$2" in
+                    CFBundleIdentifier) printf 'com.pvncher.repoprompt.ce\\n' ;;
+                    CFBundleShortVersionString) printf '1.0.0\\n' ;;
+                    CFBundleVersion) printf '1\\n' ;;
+                    SUFeedURL) printf 'https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml\\n' ;;
+                    SUPublicEDKey) printf 'fixture-public-key\\n' ;;
                 esac
-            done
+            fi
             exit 0
             """,
         )
