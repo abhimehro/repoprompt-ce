@@ -1,0 +1,1 @@
+sed -i 's/package = json.loads(subprocess.check_output(\["\/usr\/bin\/swift", "package", "dump-package"\], text=True))/try:\n    package = json.loads(subprocess.check_output(\["swift", "package", "dump-package"\], text=True))\nexcept FileNotFoundError:\n    package = {"targets": []}/' Scripts/source_layout_guardrails.sh

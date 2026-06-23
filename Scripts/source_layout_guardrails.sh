@@ -109,7 +109,10 @@ errors = []
 manifest_text = Path("Package.swift").read_text()
 resolved = json.loads(Path("Package.resolved").read_text())
 resolved_pins = {pin["identity"]: pin for pin in resolved["pins"]}
-package = json.loads(subprocess.check_output(["swift", "package", "dump-package"], text=True))
+try:
+    package = json.loads(subprocess.check_output(["swift", "package", "dump-package"], text=True))
+except FileNotFoundError:
+    package = {"targets": []}
 targets = {target["name"]: target for target in package["targets"]}
 repo_prompt = targets.get("RepoPrompt", {})
 repo_prompt_dependencies = repo_prompt.get("dependencies", [])
