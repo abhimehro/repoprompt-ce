@@ -626,6 +626,17 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.write_stub(bin_dir, "swift", 'printf "%s\\n" "$FAKE_BUILD_DIR"\n')
         self.write_stub(
             bin_dir,
+            "plutil",
+            """\
+            if [[ "$1" == "-extract" ]]; then
+                python3 -c 'import sys, plistlib; print(plistlib.loads(open(sys.argv[1], "rb").read())[sys.argv[2]])' "$4" "$2"
+            else
+                exit 0
+            fi
+            """,
+        )
+        self.write_stub(
+            bin_dir,
             "codesign",
             """\
             if [[ "$1" == "-d" && "$2" == "-r-" ]]; then
