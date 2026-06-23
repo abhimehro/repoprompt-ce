@@ -226,4 +226,4 @@ jobs:
           gitleaks git --redact --log-opts="$range" .
 
       - name: Scan checked-in source tree
-        run: gitleaks dir --redact .
+        run: gitleaks detect --no-git --redact .
