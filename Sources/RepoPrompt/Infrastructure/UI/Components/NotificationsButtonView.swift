@@ -177,6 +177,8 @@ struct NotificationsButtonView: View {
                 .foregroundColor(pendingItems.isEmpty ? .secondary : .primary)
                 .overlay(badge, alignment: .topTrailing)
         }
+        .accessibilityLabel("Notifications")
+        .hoverTooltip("Notifications")
         .popover(isPresented: $showPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
             NotificationsPopover(
                 activeItems: pendingItems,
@@ -291,6 +293,7 @@ private struct NotificationRow: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Unmute")
                     .hoverTooltip("Unmute")
                 } else if item.mute != nil {
                     Button(action: { item.mute?() }) {
@@ -298,6 +301,7 @@ private struct NotificationRow: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Mute")
                     .hoverTooltip("Mute")
                 }
 
@@ -306,6 +310,7 @@ private struct NotificationRow: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
                 .hoverTooltip("Dismiss")
             }
         }
