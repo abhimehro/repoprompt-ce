@@ -6,6 +6,12 @@ struct MetaInstruction {
 }
 
 enum PromptPackagingService {
+    private static let sharedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        return formatter
+    }()
+
     /// Returns the opening ``` fence, suffixed with the file extension (\"swift\", \"js\", …).
     @inline(__always)
     static func codeFenceStart(for fileName: String) -> String {
@@ -515,9 +521,7 @@ enum PromptPackagingService {
         if !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
-                let dateString = dateFormatter.string(from: Date())
+                let dateString = sharedDateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
                 \(userInstructions)
@@ -622,9 +626,7 @@ enum PromptPackagingService {
         if includeUserPrompt, !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
-                let dateString = dateFormatter.string(from: Date())
+                let dateString = sharedDateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
                 \(userInstructions)
@@ -723,9 +725,7 @@ enum PromptPackagingService {
         if includeUserPrompt, !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
-                let dateString = dateFormatter.string(from: Date())
+                let dateString = sharedDateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
                 \(userInstructions)
