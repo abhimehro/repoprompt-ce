@@ -733,7 +733,7 @@ enum PromptPackagingService {
         if includeUserPrompt, !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateString = sharedDateFormatter.string(from: Date())
+                let dateString = formatDate(Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
                 \(userInstructions)
