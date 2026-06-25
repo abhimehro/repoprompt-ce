@@ -1473,8 +1473,7 @@ extension MCPServerViewModel {
         from metadata: RequestMetadata,
         explicitHint: TabContextHint? = nil,
         toolName: String = "unknown",
-        policy: TabContextResolutionPolicy,
-        startMirroring: Bool = true
+        policy: TabContextResolutionPolicy
     ) throws -> TabContextResolution {
         try resolveTabContext(
             connectionID: metadata.connectionID,
@@ -1483,8 +1482,7 @@ extension MCPServerViewModel {
             explicitHint: explicitHint ?? metadata.tabContextHint,
             toolName: toolName,
             policy: policy,
-            runPurpose: metadata.runPurpose,
-            startMirroring: startMirroring
+            runPurpose: metadata.runPurpose
         )
     }
 
@@ -1589,15 +1587,13 @@ extension MCPServerViewModel {
         from metadata: RequestMetadata,
         explicitHint: TabContextHint? = nil,
         toolName: String,
-        policy: TabContextResolutionPolicy,
-        startMirroring: Bool = true
+        policy: TabContextResolutionPolicy
     ) throws -> ResolvedTabContextSnapshot {
         switch try resolveTabContext(
             from: metadata,
             explicitHint: explicitHint,
             toolName: toolName,
-            policy: policy,
-            startMirroring: startMirroring
+            policy: policy
         ) {
         case let .tabContextSnapshot(snapshot, source):
             ResolvedTabContextSnapshot(
@@ -2823,8 +2819,7 @@ extension MCPServerViewModel {
         explicitHint: TabContextHint? = nil,
         toolName: String = "unknown",
         policy: TabContextResolutionPolicy,
-        runPurpose: MCPRunPurpose? = nil,
-        startMirroring: Bool = true
+        runPurpose: MCPRunPurpose? = nil
     ) throws -> TabContextResolution {
         // Prefer network-provided window ID, but if it's missing and we've
         // already learned the mapping for this connection, use our mapping.
@@ -2860,9 +2855,7 @@ extension MCPServerViewModel {
                         windowIDByConnection[connectionID] = hinted
                     }
                 }
-                if startMirroring {
-                    beginMirroringForConnection(connectionID, context: bound)
-                }
+                beginMirroringForConnection(connectionID, context: bound)
                 tabContextLog("resolveTabContext using bound context connectionID=\(connectionID) runID=\(bound.runID?.uuidString ?? "nil") tab=\(bound.tabID)")
                 let source: TabContextSnapshotSource = {
                     if bound.runID != nil { return .runInstall }

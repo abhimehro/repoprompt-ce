@@ -608,8 +608,7 @@ final class MCPSocketDescriptorHardeningTests: XCTestCase {
                 await manager.stop()
                 let transferredSocketCountAfterStop = await manager.debugTransferredBootstrapSocketCountForShutdownTest()
                 XCTAssertEqual(transferredSocketCountAfterStop, 0)
-                // The descriptor number can be reused quickly by unrelated full-suite work
-                // after manager.stop() closes it, so peer EOF is the stable ownership proof.
+                XCTAssertTrue(Self.isClosed(descriptors[0]))
                 XCTAssertTrue(Self.peerObservedEOF(on: descriptors[1]))
 
                 await manager.start()

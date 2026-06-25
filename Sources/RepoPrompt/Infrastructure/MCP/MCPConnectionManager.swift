@@ -5315,7 +5315,7 @@ actor ServerNetworkManager {
                 markSessionKilled: true,
                 markClientUserKilled: true
             )
-        case .runCompleted, .runCancelled, .serverShutdown, .approvalDenied, .toolExecutionWatchdog:
+        case .runCompleted, .runCancelled, .serverShutdown, .approvalDenied:
             // Expected terminations - kill signal but no client cooldown
             TerminationSemantics(
                 writeKillSignal: true,

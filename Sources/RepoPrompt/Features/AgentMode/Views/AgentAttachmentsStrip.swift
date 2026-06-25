@@ -38,12 +38,10 @@ struct AgentAttachmentStripSnapshot: Equatable {
     private struct TaggedFileRenderKey: Equatable {
         let id: UUID
         let displayName: String
-        let relativePath: String
 
         init(_ attachment: AgentTaggedFileAttachment) {
             id = attachment.id
             displayName = attachment.displayName
-            relativePath = attachment.relativePath
         }
     }
 }
@@ -207,18 +205,16 @@ struct AgentAttachmentsStrip: View, Equatable {
     }
 
     private func fileAttachmentCard(_ attachment: AgentTaggedFileAttachment) -> some View {
-        let path = attachment.relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = path.isEmpty ? attachment.displayName : path
-        return HStack(spacing: 6) {
+        HStack(spacing: 6) {
             Image(systemName: "doc.fill")
                 .font(fontPreset.swiftUIFont(sizeAtNormal: 12, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            Text(title)
+            Text(attachment.displayName)
                 .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(.tail)
                 .frame(maxWidth: fontPreset.scaledMetric(170), alignment: .leading)
                 .accessibilityLabel(attachment.relativePath)
 

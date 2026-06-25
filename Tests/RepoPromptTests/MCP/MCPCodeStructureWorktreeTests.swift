@@ -270,7 +270,8 @@ final class MCPCodeStructureWorktreeTests: XCTestCase {
             await scanGate.release()
             let snapshot = try await waitForCodemapSnapshot(store: store, fileID: fileID)
             await store.setCodemapScanWillStartHandlerForTesting(nil)
-            XCTAssertNotNil(snapshot.fileAPI)
+            XCTAssertTrue(snapshot.fileAPI?.apiDescription.contains("OriginalActiveType") == true)
+            XCTAssertFalse(snapshot.fileAPI?.apiDescription.contains("ReplacementMustNotCancelActiveType") == true)
         }
     #endif
 

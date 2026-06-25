@@ -137,7 +137,6 @@ final class CodexSteerAckTrackerTests: XCTestCase {
         session.runState = .running
         session.beginRunAttempt(source: "test.mcpAckCancellation")
         session.codexController = controller
-        session.codexSteerAckTracker.test_setTerminalStateTimeoutSeconds(30)
         session.codexConversationID = "thread"
         session.codexAuthoritativeActiveTurn = try .init(
             threadID: "thread",
@@ -191,51 +190,28 @@ final class CodexSteerAckTrackerTests: XCTestCase {
             }
         }
         let attemptID = try XCTUnwrap(session.codexSteerAckTracker.test_latestAttemptID)
-        XCTAssertTrue(
-            session.codexSteerAckTracker.test_openAttemptIDs.contains(attemptID),
-            "Expected the MCP dispatch attempt to remain open before cancellation."
-        )
 
         dispatch.cancel()
-        let attemptCancelledByProductionPath = await waitUntil {
-            !session.codexSteerAckTracker.test_openAttemptIDs.contains(attemptID)
-        }
-        XCTAssertTrue(
-            attemptCancelledByProductionPath,
-            "Expected cancellation to tombstone the MCP dispatch attempt."
-        )
-        await gate.release()
         do {
             _ = try await dispatch.value
             XCTFail("Expected MCP dispatch cancellation")
         } catch is CancellationError {
             // Expected.
         } catch {
-            XCTAssertTrue(String(describing: error).contains("cancelled"), String(describing: error))
+            XCTFail("Expected CancellationError, got \(error)")
         }
         let cancelledState = await session.codexSteerAckTracker.awaitTerminalState(
             attemptID: attemptID
         )
         XCTAssertEqual(cancelledState, .cancelled)
 
+        await gate.release()
         let providerCompleted = await gate.waitUntilCompleted()
         XCTAssertTrue(providerCompleted)
         let lateState = await session.codexSteerAckTracker.awaitTerminalState(
             attemptID: attemptID
         )
         XCTAssertEqual(lateState, .cancelled)
-    }
-
-    private func waitUntil(
-        timeout: TimeInterval = 5,
-        _ condition: @escaping @MainActor () async -> Bool
-    ) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if await condition() { return true }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        return await condition()
     }
 
     func testSerialDispatchGatePreservesIssuedOrderAcrossSuspension() async {
@@ -339,8 +315,6 @@ private final class AckTrackerCodexController: CodexSessionControlling {
 }
 
 private actor AckTrackerSteerGate {
-    private static let waitPollLimit = 5000
-
     private var started = false
     private var completed = false
     private var releaseContinuation: CheckedContinuation<Void, Never>?
@@ -354,7 +328,7 @@ private actor AckTrackerSteerGate {
     }
 
     func waitUntilStarted() async -> Bool {
-        for _ in 0 ..< Self.waitPollLimit {
+        for _ in 0 ..< 500 {
             if started { return true }
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
@@ -367,7 +341,7 @@ private actor AckTrackerSteerGate {
     }
 
     func waitUntilCompleted() async -> Bool {
-        for _ in 0 ..< Self.waitPollLimit {
+        for _ in 0 ..< 500 {
             if completed { return true }
             try? await Task.sleep(nanoseconds: 1_000_000)
         }

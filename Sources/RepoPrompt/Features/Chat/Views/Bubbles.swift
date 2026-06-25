@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Markdown
 import SwiftUI
 
 // MARK: - Token Usage Indicator

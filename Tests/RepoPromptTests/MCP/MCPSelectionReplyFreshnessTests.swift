@@ -233,7 +233,6 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
             Set(selectedRecords.map(\.standardizedFullPath)),
             Set([fullFile.standardizedFileURL.path, slicedFile.standardizedFileURL.path])
         )
-        await drainMainQueue()
 
         let cachedContext = try XCTUnwrap(window.mcpServer.tabContextByConnectionID[connectionID])
         XCTAssertEqual(cachedContext.selection, staleSelection)
@@ -262,11 +261,6 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
             source: .mcpTabContext,
             mirrorToUIIfActive: true
         )
-        await drainMainQueue()
-
-        let cachedContextAfterLaterSelection = try XCTUnwrap(window.mcpServer.tabContextByConnectionID[connectionID])
-        XCTAssertEqual(cachedContextAfterLaterSelection.selection, staleSelection)
-        XCTAssertEqual(cachedContextAfterLaterSelection.selectionRevision, 0)
 
         let capturedCollections = await window.mcpServer.selectionCollections(
             for: captured.snapshot,
@@ -1359,14 +1353,6 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try content.write(to: url, atomically: true, encoding: .utf8)
-    }
-
-    private func drainMainQueue() async {
-        let drained = expectation(description: "main queue drained")
-        DispatchQueue.main.async {
-            drained.fulfill()
-        }
-        await fulfillment(of: [drained], timeout: 1.0)
     }
 }
 
