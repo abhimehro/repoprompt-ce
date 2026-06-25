@@ -49,7 +49,7 @@ scan_staged_index_blobs() {
   fi
   mkdir -p "$snapshot"
   git checkout-index --stdin -z --prefix="$snapshot/" < "$files"
-  gitleaks detect --no-git --no-banner --redact "$snapshot"
+  gitleaks detect --no-git --no-banner --redact --source "$snapshot"
 }
 
 require_clean_worktree() {
