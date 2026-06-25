@@ -293,7 +293,7 @@ private struct NotificationRow: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Unmute")
+                    .accessibilityLabel("Unmute \(item.title)")
                     .hoverTooltip("Unmute")
                 } else if item.mute != nil {
                     Button(action: { item.mute?() }) {
