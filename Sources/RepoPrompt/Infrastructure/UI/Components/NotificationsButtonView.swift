@@ -301,7 +301,7 @@ private struct NotificationRow: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Mute")
+                    .accessibilityLabel("Mute \(item.title)")
                     .hoverTooltip("Mute")
                 }
 
