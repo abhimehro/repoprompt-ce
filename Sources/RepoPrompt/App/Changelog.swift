@@ -12,10 +12,7 @@ struct Version: Identifiable {
 }
 
 class Changelog {
-    static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        return formatter
-    }()
+    static let isoFormatter = ISO8601DateFormatter()
 
     static let current = Version(
         id: "2.1.24",
