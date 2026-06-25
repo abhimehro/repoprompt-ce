@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import shutil
 import xml.etree.ElementTree as ET
 
 
@@ -27,6 +28,8 @@ def digest(path: Path) -> str:
 class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        if shutil.which("swift") is None:
+            raise unittest.SkipTest("swift is required to generate Xcode workspace")
         cls.manifest = generator.load_package_manifest(generator.REPO_ROOT)
         cls.outputs = generator.render_outputs(generator.REPO_ROOT, cls.manifest)
 
