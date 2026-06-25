@@ -6,11 +6,19 @@ struct MetaInstruction {
 }
 
 enum PromptPackagingService {
+    private static let formatterLock = NSLock()
     private static let sharedDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         return formatter
     }()
+
+    private static func formatDate(_ date: Date) -> String {
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        return sharedDateFormatter.string(from: date)
+    }
 
     /// Returns the opening ``` fence, suffixed with the file extension (\"swift\", \"js\", …).
     @inline(__always)
