@@ -6580,60 +6580,71 @@ final class AgentModeViewModel: ObservableObject {
             codexAttemptID = nil
             signalsDeliveryAfterDispatch = false
         }
-        defer {
-            if Task.isCancelled, let codexAttemptID {
-                session.codexSteerAckTracker.cancel(attemptID: codexAttemptID)
-            }
-        }
 
-        let submission: UserTurnSubmissionResult
-        session.isMCPInstructionDispatchInProgress = true
-        defer {
-            session.isMCPInstructionDispatchInProgress = false
+        let ackCancellationTarget = codexAttemptID.map {
+            (tracker: session.codexSteerAckTracker, attemptID: $0)
         }
-        submission = withMCPWorkflowOverride(session: session, workflow: workflow) {
-            if let nativePreparedTurn {
-                return submitPreparedUserTurn(
+        return try await withTaskCancellationHandler {
+            defer {
+                if Task.isCancelled, let codexAttemptID {
+                    session.codexSteerAckTracker.cancel(attemptID: codexAttemptID)
+                }
+            }
+
+            let submission: UserTurnSubmissionResult
+            session.isMCPInstructionDispatchInProgress = true
+            defer {
+                session.isMCPInstructionDispatchInProgress = false
+            }
+            submission = withMCPWorkflowOverride(session: session, workflow: workflow) {
+                if let nativePreparedTurn {
+                    return submitPreparedUserTurn(
+                        tabID: session.tabID,
+                        session: session,
+                        trimmedText: trimmedText,
+                        attachmentsToSend: [],
+                        taggedFilesToSend: [],
+                        activeWorkflow: nativePreparedTurn.bubbleWorkflow,
+                        nativePreparedTurn: nativePreparedTurn,
+                        codexAttemptID: codexAttemptID
+                    )
+                }
+                return submitUserTurn(
+                    text: trimmedText,
                     tabID: session.tabID,
-                    session: session,
-                    trimmedText: trimmedText,
-                    attachmentsToSend: [],
-                    taggedFilesToSend: [],
-                    activeWorkflow: nativePreparedTurn.bubbleWorkflow,
-                    nativePreparedTurn: nativePreparedTurn,
                     codexAttemptID: codexAttemptID
                 )
             }
-            return submitUserTurn(
-                text: trimmedText,
-                tabID: session.tabID,
-                codexAttemptID: codexAttemptID
-            )
-        }
-        switch submission {
-        case .submitted:
-            Self.steeringDebugLog("[AgentRunSteeringWake] mcpDispatch submitted sessionID=\(sessionID) delivery=\(delivery.rawValue) runState=\(session.runState.rawValue) isActiveDispatch=\(delivery.isActiveRunDispatch) runID=\(String(describing: session.runID))")
-            if delivery == .queuedClaudeInterrupt {
-                await wakeMCPWaitersForActiveDispatch(delivery: delivery, session: session, sessionID: sessionID)
+            switch submission {
+            case .submitted:
+                Self.steeringDebugLog("[AgentRunSteeringWake] mcpDispatch submitted sessionID=\(sessionID) delivery=\(delivery.rawValue) runState=\(session.runState.rawValue) isActiveDispatch=\(delivery.isActiveRunDispatch) runID=\(String(describing: session.runID))")
+                if delivery == .queuedClaudeInterrupt {
+                    await wakeMCPWaitersForActiveDispatch(delivery: delivery, session: session, sessionID: sessionID)
+                }
+                try await startQueuedProviderSteeringForMCPDispatch(delivery: delivery, session: session)
+                if delivery.isActiveRunDispatch, delivery != .queuedClaudeInterrupt {
+                    await wakeMCPWaitersForActiveDispatch(delivery: delivery, session: session, sessionID: sessionID)
+                }
+                if let codexAttemptID {
+                    session.codexSteerAckTracker.authorizeDispatch(attemptID: codexAttemptID)
+                    delivery = try await awaitCodexSteerAck(session: session, attemptID: codexAttemptID)
+                }
+                if signalsDeliveryAfterDispatch {
+                    await signalMCPInstructionDelivered(for: session)
+                }
+                handleObservedMCPStateChange(for: session)
+                return delivery
+            case let .blocked(message):
+                if let codexAttemptID {
+                    session.codexSteerAckTracker.cancel(attemptID: codexAttemptID)
+                }
+                throw MCPError.invalidParams(message.isEmpty ? "Unable to deliver the instruction." : message)
             }
-            try await startQueuedProviderSteeringForMCPDispatch(delivery: delivery, session: session)
-            if delivery.isActiveRunDispatch, delivery != .queuedClaudeInterrupt {
-                await wakeMCPWaitersForActiveDispatch(delivery: delivery, session: session, sessionID: sessionID)
+        } onCancel: {
+            guard let ackCancellationTarget else { return }
+            Task { @MainActor in
+                ackCancellationTarget.tracker.cancel(attemptID: ackCancellationTarget.attemptID)
             }
-            if let codexAttemptID {
-                session.codexSteerAckTracker.authorizeDispatch(attemptID: codexAttemptID)
-                delivery = try await awaitCodexSteerAck(session: session, attemptID: codexAttemptID)
-            }
-            if signalsDeliveryAfterDispatch {
-                await signalMCPInstructionDelivered(for: session)
-            }
-            handleObservedMCPStateChange(for: session)
-            return delivery
-        case let .blocked(message):
-            if let codexAttemptID {
-                session.codexSteerAckTracker.cancel(attemptID: codexAttemptID)
-            }
-            throw MCPError.invalidParams(message.isEmpty ? "Unable to deliver the instruction." : message)
         }
     }
 
@@ -9752,7 +9763,7 @@ final class AgentModeViewModel: ObservableObject {
     ) {
         guard !targets.isEmpty else { return }
         let cleanupID = UUID()
-        let task = Task(priority: .utility) { @MainActor [weak self] in
+        let task = Task { @MainActor [weak self] in
             #if DEBUG
                 defer {
                     self?.test_completeWorkspaceSwitchBackgroundCleanup(cleanupID)
@@ -12776,7 +12787,9 @@ final class AgentModeViewModel: ObservableObject {
         workspaceEntries.reserveCapacity(min(taggedPaths.count, maxFiles))
         var seenFileIDs = Set<UUID>()
         var seenExternalPaths = Set<String>()
-        let rootsByID = await Dictionary(uniqueKeysWithValues: store.rootRefs(scope: lookupContext.rootScope).map { ($0.id, $0) })
+        let scopedRootRefs = await store.rootRefs(scope: lookupContext.rootScope)
+        let rootsByID = Dictionary(uniqueKeysWithValues: scopedRootRefs.map { ($0.id, $0) })
+        let displayRootRefs = lookupContext.bindingProjection?.visibleLogicalRootRefs ?? scopedRootRefs
 
         for taggedPath in taggedPaths {
             guard orderedFiles.count < maxFiles else { break }
@@ -12814,9 +12827,22 @@ final class AgentModeViewModel: ObservableObject {
             filePathDisplay: .relative,
             codemapSnapshotBundle: .empty,
             displayPathResolver: { entry in
-                lookupContext.bindingProjection?.projectedLogicalDisplayPath(
-                    forPhysicalPath: entry.file.standardizedFullPath,
-                    display: .relative
+                if let projected = lookupContext.bindingProjection?.projectedLogicalPathComponents(
+                    forPhysicalPath: entry.file.standardizedFullPath
+                ) {
+                    return ClientPathFormatter.nonAbsoluteDisplayPath(
+                        root: projected.root,
+                        relativePath: projected.relativePath,
+                        visibleRoots: displayRootRefs
+                    )
+                }
+                guard let root = rootsByID[entry.file.rootID] else {
+                    return entry.file.standardizedRelativePath
+                }
+                return ClientPathFormatter.nonAbsoluteDisplayPath(
+                    root: root,
+                    relativePath: entry.file.standardizedRelativePath,
+                    visibleRoots: displayRootRefs
                 )
             }
         )
