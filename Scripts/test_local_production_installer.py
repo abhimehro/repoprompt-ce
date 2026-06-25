@@ -629,7 +629,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             "plutil",
             """\
             if [[ "$1" == "-extract" ]]; then
-                python3 -c 'import sys, plistlib; print(plistlib.loads(open(sys.argv[1], "rb").read())[sys.argv[2]])' "$4" "$2"
+                python3 -c 'import sys, plistlib; print(plistlib.load(open(sys.argv[1], "rb"))[sys.argv[2]])' "$4" "$2"
             else
                 exit 0
             fi
