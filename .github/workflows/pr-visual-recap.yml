@@ -218,7 +218,7 @@ jobs:
       VISUAL_RECAP_SKILL_SOURCE: ${{ vars.VISUAL_RECAP_SKILL_SOURCE || 'auto' }}
       VISUAL_RECAP_SECRET_SCAN: ${{ vars.VISUAL_RECAP_SECRET_SCAN || 'high-confidence' }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           # This job runs an agent over untrusted PR diff; don't leave the token
@@ -240,7 +240,7 @@ jobs:
             echo "local=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: steps.cli.outputs.local == 'true'
         with:
           ref: ${{ github.event.pull_request.base.sha }}
