@@ -112,6 +112,9 @@ manifest_text = Path("Package.swift").read_text()
 resolved = json.loads(Path("Package.resolved").read_text())
 resolved_pins = {pin["identity"]: pin for pin in resolved["pins"]}
 if shutil.which("swift") is None:
+    if os.environ.get("CI"):
+        print("ERROR: swift not found in CI environment, failing guardrails.", file=sys.stderr)
+        raise SystemExit(1)
     print("WARNING: swift not found, skipping dump-package guardrails.", file=sys.stderr)
     raise SystemExit(0)
 package = json.loads(subprocess.check_output(["swift", "package", "dump-package"], text=True))
