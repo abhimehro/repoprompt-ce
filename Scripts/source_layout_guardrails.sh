@@ -93,6 +93,7 @@ fi
 
 if ! tree_sitter_scanner_support_manifest_output="$(python3 <<'PY'
 import json
+import os
 import subprocess
 import shutil
 import sys
