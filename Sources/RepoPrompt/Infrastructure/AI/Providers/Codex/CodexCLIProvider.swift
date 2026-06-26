@@ -381,7 +381,6 @@ final class CodexCLIProvider: AIProvider {
         )
 
         var emittedOutput = false
-        var canonicalAssistantTextByScope: [CodexNativeSessionController.ItemScope: String] = [:]
         let timeoutMonitor = startTurnTimeoutMonitor(timeout: requestTimeout, controller: controller)
         defer {
             timeoutMonitor?.task.cancel()
@@ -417,38 +416,12 @@ final class CodexCLIProvider: AIProvider {
                         emittedOutput = true
                         continuation.yield(AIStreamResult(type: "content", text: delta))
 
-                    case let .canonicalAssistantDelta(text, scope):
-                        guard !text.isEmpty else { continue }
-                        canonicalAssistantTextByScope[scope, default: ""] += text
-                        emittedOutput = true
-                        continuation.yield(AIStreamResult(type: "content", text: text))
-
-                    case let .assistantCompleted(payload):
-                        let existing = canonicalAssistantTextByScope[payload.scope] ?? ""
-                        let existingUTF8 = existing.utf8
-                        let completedUTF8 = payload.text.utf8
-                        if existing.isEmpty {
-                            if !payload.text.isEmpty {
-                                emittedOutput = true
-                                continuation.yield(AIStreamResult(type: "content", text: payload.text))
-                            }
-                        } else if completedUTF8.starts(with: existingUTF8),
-                                  !completedUTF8.elementsEqual(existingUTF8)
-                        {
-                            let suffix = String(decoding: completedUTF8.dropFirst(existingUTF8.count), as: UTF8.self)
-                            if !suffix.isEmpty {
-                                emittedOutput = true
-                                continuation.yield(AIStreamResult(type: "content", text: suffix))
-                            }
-                        }
-                        canonicalAssistantTextByScope[payload.scope] = payload.text
-
                     case let .reasoningDelta(payload):
                         guard !payload.text.isEmpty else { continue }
                         emittedOutput = true
                         continuation.yield(AIStreamResult(type: "reasoning", text: nil, reasoning: payload.text))
 
-                    case .turnCompleted(turnID: _, status: let status, failure: let failure):
+                    case .turnCompleted(turnID: _, status: let status):
                         switch status {
                         case .completed:
                             sawCompletion = true
@@ -457,9 +430,7 @@ final class CodexCLIProvider: AIProvider {
                         case .interrupted:
                             throw CancellationError()
                         case .failed:
-                            throw AIProviderError.invalidResponse(
-                                detail: failure?.message ?? "Codex app-server turn failed."
-                            )
+                            throw AIProviderError.invalidResponse(detail: "Codex app-server turn failed.")
                         }
 
                     case .contextCompacted(turnID: _):
@@ -505,7 +476,7 @@ final class CodexCLIProvider: AIProvider {
                     case .toolCall, .toolResult, .commandExecutionRunning:
                         throw AIProviderError.invalidConfiguration(detail: "Codex app-server emitted tool events while interactive chat tools are disabled.")
 
-                    case .reasoningCompleted, .tokenUsage, .turnStarted(turnID: _), .system:
+                    case .tokenUsage, .turnStarted(turnID: _), .system:
                         continue
                     }
                 }
@@ -578,7 +549,6 @@ final class CodexCLIProvider: AIProvider {
                 )
 
                 var textParts: [String] = []
-                var canonicalPartIndexByScope: [CodexNativeSessionController.ItemScope: Int] = [:]
                 var sawCompletion = false
                 eventLoop: for await event in controller.events {
                     if Task.isCancelled {
@@ -591,24 +561,7 @@ final class CodexCLIProvider: AIProvider {
                             textParts.append(delta)
                         }
 
-                    case let .canonicalAssistantDelta(text, scope):
-                        guard !text.isEmpty else { continue }
-                        if let index = canonicalPartIndexByScope[scope] {
-                            textParts[index] += text
-                        } else {
-                            canonicalPartIndexByScope[scope] = textParts.count
-                            textParts.append(text)
-                        }
-
-                    case let .assistantCompleted(payload):
-                        if let index = canonicalPartIndexByScope[payload.scope] {
-                            textParts[index] = payload.text
-                        } else if !payload.text.isEmpty {
-                            canonicalPartIndexByScope[payload.scope] = textParts.count
-                            textParts.append(payload.text)
-                        }
-
-                    case .turnCompleted(turnID: _, status: let status, failure: let failure):
+                    case .turnCompleted(turnID: _, status: let status):
                         switch status {
                         case .completed:
                             sawCompletion = true
@@ -616,9 +569,7 @@ final class CodexCLIProvider: AIProvider {
                         case .interrupted:
                             throw CancellationError()
                         case .failed:
-                            throw AIProviderError.invalidResponse(
-                                detail: failure?.message ?? "Codex app-server turn failed."
-                            )
+                            throw AIProviderError.invalidResponse(detail: "Codex app-server turn failed.")
                         }
 
                     case .contextCompacted(turnID: _):
@@ -662,7 +613,7 @@ final class CodexCLIProvider: AIProvider {
                     case .toolCall, .toolResult, .commandExecutionRunning:
                         throw AIProviderError.invalidConfiguration(detail: "Codex app-server emitted tool events while interactive chat tools are disabled.")
 
-                    case .reasoningDelta, .reasoningCompleted, .tokenUsage, .turnStarted(turnID: _), .system:
+                    case .reasoningDelta, .tokenUsage, .turnStarted(turnID: _), .system:
                         continue
                     }
                 }
