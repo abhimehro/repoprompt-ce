@@ -126,7 +126,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(index == 0)
-                    .hoverTooltip("Move earlier", .top)
+                    .tooltipAndAccessibility("Move earlier", .top)
 
                     Button {
                         workflowStore.moveFeaturedWorkflow(withID: workflow.id, direction: 1)
@@ -137,6 +137,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(index == workflowStore.featuredWorkflows.count - 1)
+                    .accessibilityLabel("Move later")
                     .hoverTooltip("Move later", .top)
 
                     Button {
@@ -147,6 +148,7 @@ struct AgentWorkflowsConfigureSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Remove from first page")
                     .hoverTooltip("Remove from first page", .top)
                 }
                 .padding(.horizontal, 8)
@@ -229,6 +231,7 @@ struct AgentWorkflowsConfigureSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Show in Finder")
                     .hoverTooltip("Show in Finder", .top)
 
                     Button {
@@ -239,6 +242,7 @@ struct AgentWorkflowsConfigureSheet: View {
                             .foregroundStyle(.red.opacity(0.7))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Delete workflow")
                     .hoverTooltip("Delete workflow", .top)
                 }
                 .padding(.horizontal, 8)
