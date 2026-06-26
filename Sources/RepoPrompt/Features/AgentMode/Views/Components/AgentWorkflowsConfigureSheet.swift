@@ -126,8 +126,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(index == 0)
-                    .accessibilityLabel("Move earlier")
-                    .hoverTooltip("Move earlier", .top)
+                    .tooltipAndAccessibility("Move earlier", .top)
 
                     Button {
                         workflowStore.moveFeaturedWorkflow(withID: workflow.id, direction: 1)
