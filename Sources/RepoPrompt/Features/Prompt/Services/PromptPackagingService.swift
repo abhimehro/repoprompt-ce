@@ -136,6 +136,13 @@ enum PromptPackagingService {
     /// - meta prompts
     /// - file tree & blocks
     /// - an entire conversation array in chronological order
+
+    private static let sharedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        return formatter
+    }()
+
     static func buildAIMessage(
         systemPrompt: String,
         metaInstructions: [MetaInstruction],
@@ -515,9 +522,7 @@ enum PromptPackagingService {
         if !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
-                let dateString = dateFormatter.string(from: Date())
+                let dateString = sharedDateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
                 \(userInstructions)
@@ -622,9 +627,7 @@ enum PromptPackagingService {
         if includeUserPrompt, !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
-                let dateString = dateFormatter.string(from: Date())
+                let dateString = sharedDateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
                 \(userInstructions)
@@ -723,9 +726,7 @@ enum PromptPackagingService {
         if includeUserPrompt, !userInstructions.isEmpty {
             var snippet = ""
             if includeDatetimeInUserInstructions {
-                let dateFormatter = DateFormatter()
-                dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm"
-                let dateString = dateFormatter.string(from: Date())
+                let dateString = sharedDateFormatter.string(from: Date())
                 snippet += """
                 <user_instructions date="\(dateString)">
                 \(userInstructions)
