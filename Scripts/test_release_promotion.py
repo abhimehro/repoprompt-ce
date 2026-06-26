@@ -314,14 +314,16 @@ class ReleasePromotionTests(unittest.TestCase):
             fake_bin,
             "plutil",
             """\
-            case "$2" in
-                CFBundleIdentifier) printf 'com.pvncher.repoprompt.ce\\n' ;;
-                CFBundleShortVersionString) printf '1.0.0\\n' ;;
-                CFBundleVersion) printf '1\\n' ;;
-                SUFeedURL) printf 'https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml\\n' ;;
-                SUPublicEDKey) printf 'fixture-public-key\\n' ;;
-                *) exit 1 ;;
-            esac
+            if [[ "$1" == "-extract" ]]; then
+                case "$2" in
+                    CFBundleIdentifier) printf 'com.pvncher.repoprompt.ce\\n' ;;
+                    CFBundleShortVersionString) printf '1.0.0\\n' ;;
+                    CFBundleVersion) printf '1\\n' ;;
+                    SUFeedURL) printf 'https://github.com/repoprompt/repoprompt-ce-updates/releases/latest/download/appcast.xml\\n' ;;
+                    SUPublicEDKey) printf 'fixture-public-key\\n' ;;
+                esac
+            fi
+            exit 0
             """,
         )
         self.write_stub(
