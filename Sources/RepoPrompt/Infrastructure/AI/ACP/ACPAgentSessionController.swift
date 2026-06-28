@@ -3288,6 +3288,8 @@ actor ACPAgentSessionController {
         }
 
         private static let rawACPCaptureWriteLock = NSLock()
+        // ⚡ Bolt: Cached for performance to avoid expensive re-initialization
+        private static let isoFormatter = ISO8601DateFormatter()
 
         private static func writeRawACPEvent(
             to url: URL,
@@ -3300,7 +3302,7 @@ actor ACPAgentSessionController {
             sessionID: String?
         ) {
             var record: [String: Any] = [
-                "capturedAt": ISO8601DateFormatter().string(from: Date()),
+                "capturedAt": isoFormatter.string(from: Date()),
                 "kind": kind,
                 "payload": sanitizeRawCaptureDictionary(payload),
                 "providerID": providerID.rawValue,

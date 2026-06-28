@@ -401,6 +401,9 @@
         private static let persistedCodexReplayBashFixtureName = "codexlogs-live-bash-test-1-mirrored-deltas.jsonl"
         private static let persistedCodexReplayBashFixtureThreadID = "019c81fc-a7bd-7ce1-abe1-cfc05f6bb895"
 
+        // ⚡ Bolt: Cached for performance to avoid expensive re-initialization
+        private static let isoFormatter = ISO8601DateFormatter()
+
         let configuration: AgentChatStressLaunchConfiguration
         unowned let agentModeViewModel: AgentModeViewModel
         unowned let promptManager: PromptViewModel
@@ -571,7 +574,7 @@
         }
 
         func note(_ message: String) {
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = Self.isoFormatter.string(from: Date())
             recentEvents.append("[\(timestamp)] \(message)")
             if recentEvents.count > configuration.maxVisibleEventLogEntries {
                 recentEvents.removeFirst(recentEvents.count - configuration.maxVisibleEventLogEntries)
