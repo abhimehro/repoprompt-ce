@@ -737,6 +737,7 @@ private struct AgentSelectedFileRow: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Preview file content")
+                .accessibilityLabel(previewCoordinator.isLoadingPreview(for: row) ? "Loading preview" : "Preview file content")
 
                 Button(action: copyToClipboard) {
                     Image(systemName: isCopying ? "hourglass" : "doc.on.clipboard")
@@ -746,6 +747,7 @@ private struct AgentSelectedFileRow: View {
                 .buttonStyle(.plain)
                 .disabled(isCopying)
                 .hoverTooltip(row.kind == .codemap ? "Copy Codemap" : "Copy File Content")
+                .accessibilityLabel(row.kind == .codemap ? "Copy Codemap" : "Copy File Content")
 
                 if let disabledRemoveExplanation {
                     Image(systemName: "info.circle")
