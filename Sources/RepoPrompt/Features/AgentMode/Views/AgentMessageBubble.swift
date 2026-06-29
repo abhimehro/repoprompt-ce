@@ -117,7 +117,7 @@ private struct MessageFooterStrip: View {
             }
         }
         .hoverTooltip("Copy message")
-        .accessibilityLabel("Copy message")
+        .accessibilityLabel(showCopied ? "Copied" : "Copy message")
     }
 
     @ViewBuilder
