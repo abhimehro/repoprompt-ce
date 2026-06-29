@@ -737,7 +737,7 @@ private struct AgentSelectedFileRow: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Preview file content")
-                .accessibilityLabel("Preview file content")
+                .accessibilityLabel(previewCoordinator.isLoadingPreview(for: row) ? "Loading preview" : "Preview file content")
 
                 Button(action: copyToClipboard) {
                     Image(systemName: isCopying ? "hourglass" : "doc.on.clipboard")
