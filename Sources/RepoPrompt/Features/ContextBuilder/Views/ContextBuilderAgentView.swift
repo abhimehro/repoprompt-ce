@@ -1212,6 +1212,7 @@ private struct ContextBuilderHeaderBar: View {
                 .buttonStyle(PlainButtonStyle())
                 .disabled(contextBuilderInstructions.isEmpty)
                 .hoverTooltip("Clear")
+                .accessibilityLabel("Clear")
             }
 
             Spacer(minLength: 4)
