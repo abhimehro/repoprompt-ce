@@ -6,6 +6,8 @@ import MCP
 final class MCPWorktreeToolProvider: MCPWindowToolProviding {
     let group: MCPWindowToolGroup = .git
 
+    private static let isoFormatter = ISO8601DateFormatter()
+
     private let runtime: MCPWindowToolRuntime
     let dependencies: MCPWindowToolDependencies
     private let vcsService: VCSService
@@ -632,7 +634,7 @@ final class MCPWorktreeToolProvider: MCPWindowToolProviding {
             head: binding.head,
             visualLabel: binding.visualLabel,
             visualColorHex: binding.visualColorHex,
-            boundAt: ISO8601DateFormatter().string(from: binding.boundAt),
+            boundAt: Self.isoFormatter.string(from: binding.boundAt),
             source: binding.source
         )
     }
