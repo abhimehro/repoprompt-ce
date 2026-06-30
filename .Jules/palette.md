@@ -1,3 +1,3 @@
-## 2024-05-14 - Missing Accessibility Labels on Tooltip Buttons
-**Learning:** Icon-only buttons with `.hoverTooltip()` in SwiftUI don't automatically generate an `.accessibilityLabel()` for screen readers.
-**Action:** When adding `.hoverTooltip()` to icon-only buttons, always ensure a corresponding `.accessibilityLabel()` is applied, especially for non-obvious UI elements.
+## 2024-07-01 - Missing Accessibility Labels on Tooltips
+**Learning:** Found multiple instances where `.hoverTooltip()` was used without a corresponding `.accessibilityLabel()`. Tooltips provide visual guidance but don't automatically announce to screen readers.
+**Action:** When adding `.hoverTooltip()`, always pair it with an `.accessibilityLabel()` containing the same descriptive text to ensure keyboard/VoiceOver users have the same context.

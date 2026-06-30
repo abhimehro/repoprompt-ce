@@ -4,9 +4,11 @@ struct SettingsButton<Content: View>: View {
     @Binding var showPopover: Bool
     let icon: String
     let contentBuilder: () -> Content
+    let accessibilityLabel: String
     @State private var isHovered = false
 
-    init(showPopover: Binding<Bool>, icon: String, @ViewBuilder content: @escaping () -> Content) {
+    init(showPopover: Binding<Bool>, icon: String, accessibilityLabel: String = "Settings", @ViewBuilder content: @escaping () -> Content) {
+        self.accessibilityLabel = accessibilityLabel
         _showPopover = showPopover
         self.icon = icon
         contentBuilder = content
@@ -27,6 +29,7 @@ struct SettingsButton<Content: View>: View {
             .background(isHovered ? Color.primary.opacity(0.1) : Color.clear)
         }
         .buttonStyle(PlainButtonStyle())
+        .accessibilityLabel(accessibilityLabel)
         .onHover { hovering in
             isHovered = hovering
         }

@@ -543,6 +543,7 @@ struct ContextBuilderAgentView: View {
                 ))
                 .disabled(fullResponseText == nil)
                 .hoverTooltip("Copy plan to clipboard")
+                .accessibilityLabel("Copy plan to clipboard")
 
                 // Preview
                 Button(action: { showingPlanPreview.toggle() }) {
@@ -559,6 +560,7 @@ struct ContextBuilderAgentView: View {
                     height: 28
                 ))
                 .hoverTooltip("Preview the generated plan")
+                .accessibilityLabel("Preview the generated plan")
                 .popover(isPresented: $showingPlanPreview) {
                     planPreviewPopover(overrideText: text)
                 }
