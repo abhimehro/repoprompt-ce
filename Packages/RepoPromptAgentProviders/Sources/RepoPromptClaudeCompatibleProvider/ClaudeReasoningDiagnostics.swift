@@ -10,6 +10,7 @@ enum ClaudeReasoningExtractionFeature {
             .appendingPathComponent("RepoPrompt CE", isDirectory: true)
             .appendingPathComponent("claude-reasoning-debug.log", isDirectory: false)
         private static let lock = NSLock()
+        private static let isoFormatter = ISO8601DateFormatter()
 
         static func emit(_ line: String) {
             print(line)
@@ -19,7 +20,7 @@ enum ClaudeReasoningExtractionFeature {
         static func append(_ line: String) {
             lock.lock()
             defer { lock.unlock() }
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = Self.isoFormatter.string(from: Date())
             let payload = "\(timestamp) \(line)\n"
             guard let data = payload.data(using: .utf8) else { return }
             let fileManager = FileManager.default

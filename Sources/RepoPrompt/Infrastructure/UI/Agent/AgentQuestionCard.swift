@@ -331,6 +331,12 @@ struct AgentQuestionCard: View {
 }
 
 struct AgentRequestUserInputCard: View {
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
     private static let otherOptionDescription = "Optionally, add details below."
 
     let request: AgentRequestUserInputRequest
@@ -385,7 +391,7 @@ struct AgentRequestUserInputCard: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
-            Text(DateFormatter.localizedString(from: request.askedAt, dateStyle: .none, timeStyle: .short))
+            Text(Self.timeFormatter.string(from: request.askedAt))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
