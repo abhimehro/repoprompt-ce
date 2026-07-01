@@ -168,6 +168,13 @@ final class CodexNativeSessionController {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
 
     struct CommandExecutionRunningUpdate {
         let invocationID: UUID?
@@ -927,11 +934,7 @@ final class CodexNativeSessionController {
         } catch {
             return nil
         }
-        let timestampFormatter = DateFormatter()
-        timestampFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timestampFormatter.timeZone = TimeZone(secondsFromGMT: 0)
-        timestampFormatter.dateFormat = "yyyyMMdd-HHmmss"
-        let timestamp = timestampFormatter.string(from: Date())
+        let timestamp = Self.timestampFormatter.string(from: Date())
         let fileName = "codex-thread-\(threadID)-\(timestamp).jsonl"
         return baseDirectory.appendingPathComponent(fileName)
     }

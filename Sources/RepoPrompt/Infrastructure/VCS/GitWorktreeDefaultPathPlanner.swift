@@ -2,6 +2,14 @@ import CryptoKit
 import Foundation
 
 enum GitWorktreeDefaultPathPlanner {
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd"
+        return formatter
+    }()
     enum Purpose: Equatable {
         case standaloneCreate(now: Date)
         case agentStart(sessionID: String)
@@ -218,12 +226,7 @@ enum GitWorktreeDefaultPathPlanner {
     }
 
     private static func dateStamp(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyyMMdd"
-        return formatter.string(from: date)
+        return Self.dateFormatter.string(from: date)
     }
 
     private static func shortHash(_ text: String) -> String {
