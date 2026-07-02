@@ -122,14 +122,18 @@ public struct RepoPromptProgressParams: Codable, Sendable, Hashable {
     /// When this progress was emitted (ISO8601 string)
     public let emittedAt: String
 
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
+
     public init(tool: String, kind: RepoPromptProgressKind, stage: String, message: String, emittedAt: Date = Date()) {
         self.tool = tool
         self.kind = kind
         self.stage = stage
         self.message = message
         // Format date as ISO8601 string for cross-decoder compatibility
-        let formatter = ISO8601DateFormatter()
-        self.emittedAt = formatter.string(from: emittedAt)
+        self.emittedAt = Self.isoFormatter.string(from: emittedAt)
     }
 }
 

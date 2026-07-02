@@ -282,10 +282,14 @@ final class AppSettingsMCPService: Service {
         return .object(envelope)
     }
 
-    private static func iso8601Timestamp() -> String {
+    private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: Date())
+        return formatter
+    }()
+
+    private static func iso8601Timestamp() -> String {
+        return iso8601Formatter.string(from: Date())
     }
 
     private static func valuesEqual(_ lhs: Value, _ rhs: Value) -> Bool {
