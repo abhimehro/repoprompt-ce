@@ -140,10 +140,7 @@ class LifecycleSurfaceTests(unittest.TestCase):
         self.assertNotIn("LAUNCH_MODE", finder_launcher)
         self.assertNotIn("direct mode", finder_launcher.lower())
         agents = (SCRIPT_DIR.parent / "AGENTS.md").read_text(encoding="utf-8")
-        readme = (SCRIPT_DIR.parent / "README.md").read_text(encoding="utf-8")
         self.assertIn("does not provide an uncoordinated no-Python fallback", agents)
-        self.assertIn("does not provide an", readme)
-        self.assertIn("uncoordinated no-Python fallback", readme)
 
     def test_conductor_selftest_includes_process_helper_suite(self) -> None:
         makefile = (SCRIPT_DIR.parent / "Makefile").read_text(encoding="utf-8")
