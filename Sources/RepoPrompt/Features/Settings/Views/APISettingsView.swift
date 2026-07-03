@@ -383,6 +383,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .hoverTooltip("More Info")
+                .accessibilityLabel("More Info")
             }
             if let caption {
                 Text(caption)
@@ -627,6 +629,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .hoverTooltip("More Info")
+                .accessibilityLabel("More Info")
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -704,6 +708,8 @@ struct APISettingsView: View {
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .hoverTooltip("More Info")
+                    .accessibilityLabel("More Info")
                 }
                 Text("Ollama uses port 11434 | LM Studio uses port 1234")
                     .font(.caption)

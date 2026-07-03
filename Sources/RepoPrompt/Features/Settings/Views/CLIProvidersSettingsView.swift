@@ -229,6 +229,8 @@ struct CLIProvidersSettingsView: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .hoverTooltip("More Info")
+                .accessibilityLabel("More Info")
 
                 Spacer()
 
