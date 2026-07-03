@@ -4,3 +4,6 @@
 ## 2024-05-24 - Info Icons Tooltip Accessibility
 **Learning:** Found multiple bare `Image(systemName: "info.circle")` buttons missing accessibility labels and tooltips, which makes it hard for users to understand what the link opens and impossible for screen readers to navigate properly.
 **Action:** Always verify that icon-only buttons include both `.hoverTooltip(...)` for visual context and `.accessibilityLabel(...)` for screen readers. Added these to APISettingsView and CLIProvidersSettingsView.
+## 2025-03-05 - Accessibility Label for Hover Tooltips
+**Learning:** The custom `.hoverTooltip()` modifier does not automatically generate an accessibility label for screen readers. Both `.hoverTooltip()` and `.accessibilityLabel()` must be applied to icon-only buttons.
+**Action:** Ensure all icon-only buttons that use `.hoverTooltip()` also have a matching `.accessibilityLabel()`.

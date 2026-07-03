@@ -337,6 +337,7 @@ struct AgentWorkflowsPopoverView: View {
             }
             .buttonStyle(.plain)
             .hoverTooltip("Reload workflows from disk", .top)
+            .accessibilityLabel("Reload workflows from disk")
 
             if hasCustom {
                 Button {
