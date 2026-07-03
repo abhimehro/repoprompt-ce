@@ -34,7 +34,7 @@ final class AppcastParser: NSObject, XMLParserDelegate {
     private var inItem = false
 
     /// Date formatter for pubDate parsing (RFC 2822 format)
-    private let dateFormatter: DateFormatter = {
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
@@ -153,7 +153,7 @@ final class AppcastParser: NSObject, XMLParserDelegate {
 
         case "pubDate":
             if inItem, !trimmedText.isEmpty {
-                currentDate = dateFormatter.date(from: trimmedText)
+                currentDate = Self.dateFormatter.date(from: trimmedText)
             }
 
         case "sparkle:releaseNotesLink":
