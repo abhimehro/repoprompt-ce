@@ -1,0 +1,206 @@
+name: CodeScene PR Refactoring Agent
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: refactoring-agent-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  refactor:
+    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/cs-agent')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Debug raw comment
+        shell: bash
+        env:
+          RAW_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          echo "::group::Raw comment inspection"
+          printf 'RAW_COMMENT (literal): [%s]\n' "$RAW_COMMENT"
+          printf 'First 20 chars: [%s]\n' "${RAW_COMMENT:0:20}"
+          echo "Byte-level view (cat -A):"
+          printf '%s' "$RAW_COMMENT" | cat -A | head -5
+          echo "::endgroup::"
+
+      - name: Prepare command
+        id: prepare-command
+        env:
+          RAW_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          COMMAND=""
+          while IFS= read -r _line; do
+            if [[ "$_line" =~ ^[[:space:]]*\>?[[:space:]]*(/cs-agent([[:space:]]+.*[^[:space:]])?)[[:space:]]*$ ]]; then
+              COMMAND="${BASH_REMATCH[1]}"
+              break
+            fi
+          done <<< "$RAW_COMMENT"
+          if [[ -z "$COMMAND" ]]; then
+            echo "::error::No /cs-agent command found in comment body."
+            exit 1
+          fi
+          if [[ "$COMMAND" == "/cs-agent "* && "$COMMAND" != "/cs-agent skill:"* ]]; then
+            COMMAND="/cs-agent skill:${COMMAND#/cs-agent }"
+          fi
+          echo "Final command: $COMMAND"
+          {
+            echo "command<<EOF"
+            printf '%s\n' "$COMMAND"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve providers and model
+        id: providers
+        env:
+          ENABLE_GOOGLE_VAR: ${{ vars.ENABLE_GOOGLE }}
+          ENABLE_MISTRAL_VAR: ${{ vars.ENABLE_MISTRAL }}
+          MODEL_OVERRIDE: ${{ vars.CS_AGENT_MODEL }}
+        run: |
+          set -euo pipefail
+
+          # Default: Google on, Mistral off, unless overridden via repo/org Variables.
+          # (Currently flipped for isolated Mistral testing.)
+          ENABLE_GOOGLE="${ENABLE_GOOGLE_VAR:-false}"
+          ENABLE_MISTRAL="${ENABLE_MISTRAL_VAR:-true}"
+
+          if [[ "$ENABLE_GOOGLE" != "true" && "$ENABLE_MISTRAL" != "true" ]]; then
+            echo "::error::Both ENABLE_GOOGLE and ENABLE_MISTRAL are disabled. Enable at least one via repo Variables."
+            exit 1
+          fi
+
+          if [[ -n "${MODEL_OVERRIDE:-}" ]]; then
+            MODEL="$MODEL_OVERRIDE"
+          elif [[ "$ENABLE_GOOGLE" == "true" ]]; then
+            MODEL="google/gemini-3.5-flash"
+          else
+            MODEL="mistral/mistral-medium-latest"
+          fi
+
+          echo "enable_google=${ENABLE_GOOGLE}" >> "$GITHUB_OUTPUT"
+          echo "enable_mistral=${ENABLE_MISTRAL}" >> "$GITHUB_OUTPUT"
+          echo "model=${MODEL}" >> "$GITHUB_OUTPUT"
+
+          echo "Google enabled: ${ENABLE_GOOGLE}"
+          echo "Mistral enabled: ${ENABLE_MISTRAL}"
+          echo "Model: ${MODEL}"
+
+      - name: Configure OpenCode auth
+        env:
+          ENABLE_GOOGLE: ${{ steps.providers.outputs.enable_google }}
+          ENABLE_MISTRAL: ${{ steps.providers.outputs.enable_mistral }}
+          GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          MISTRAL_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${HOME}/.local/share/opencode"
+          AUTH_JSON='{}'
+
+          if [[ "$ENABLE_GOOGLE" == "true" ]]; then
+            if [ -z "${GOOGLE_KEY}" ]; then
+              echo "::error::ENABLE_GOOGLE is true but secret GOOGLE_API_KEY is empty."
+              exit 1
+            fi
+            GOOGLE_KEY="$(printf '%s' "${GOOGLE_KEY}" | tr -d '\n\r')"
+            AUTH_JSON="$(jq -c --arg key "${GOOGLE_KEY}" '. + {"google":{"type":"api","key":$key}}' <<< "$AUTH_JSON")"
+
+            echo "GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_KEY}" >> "$GITHUB_ENV"
+            echo "GOOGLE_API_KEY=${GOOGLE_KEY}" >> "$GITHUB_ENV"
+            echo "GEMINI_API_KEY=${GOOGLE_KEY}" >> "$GITHUB_ENV"
+          fi
+
+          if [[ "$ENABLE_MISTRAL" == "true" ]]; then
+            if [ -z "${MISTRAL_KEY}" ]; then
+              echo "::error::ENABLE_MISTRAL is true but secret MISTRAL_API_KEY is empty."
+              exit 1
+            fi
+            MISTRAL_KEY="$(printf '%s' "${MISTRAL_KEY}" | tr -d '\n\r')"
+            AUTH_JSON="$(jq -c --arg key "${MISTRAL_KEY}" '. + {"mistral":{"type":"api","key":$key}}' <<< "$AUTH_JSON")"
+
+            echo "MISTRAL_API_KEY=${MISTRAL_KEY}" >> "$GITHUB_ENV"
+          fi
+
+          printf '%s' "$AUTH_JSON" > "${HOME}/.local/share/opencode/auth.json"
+          chmod 600 "${HOME}/.local/share/opencode/auth.json"
+
+      - name: Build OpenCode auth JSON for agent config
+        id: opencode-auth
+        run: |
+          set -euo pipefail
+          AUTH_JSON="$(cat "${HOME}/.local/share/opencode/auth.json")"
+          {
+            echo "json<<EOF"
+            echo "${AUTH_JSON}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Pin bc0d8b91: fixes spurious skill:github-pr-comment prepend in earlier tags.
+      # trunk-ignore(pinact/parse-error)
+      - id: refactor-attempt-1
+        continue-on-error: true
+        uses: codescene-oss/pr-refactoring-agent@841e34c7ddd7a8ec887d632ac51432d6c71e2fe1 # untagged-fix-commit
+        env:
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          MISTRAL_API_KEY: ${{ steps.providers.outputs.enable_mistral == 'true' && secrets.MISTRAL_API_KEY || '' }}
+        with:
+          pr_number: ${{ github.event.issue.number }}
+          command: ${{ steps.prepare-command.outputs.command }}
+          model: ${{ steps.providers.outputs.model }}
+          version: v1.0.7
+          codescene_token: ${{ secrets.CODESCENE_ACCESS_TOKEN }}
+          google_api_key: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          opencode_auth_json: ${{ steps.opencode-auth.outputs.json }}
+
+      - name: Wait before retrying failed refactor
+        if: steps.refactor-attempt-1.outcome == 'failure'
+        shell: bash
+        env:
+          REFACTOR_RETRY_DELAY_SECONDS: 15
+        # Give other PR automation a short window to finish a competing push
+        # before the retry replays the refactor against the updated branch tip.
+        run: sleep "${REFACTOR_RETRY_DELAY_SECONDS}"
+
+      # A retry handles transient non-fast-forward push failures when another bot
+      # updates the PR branch while the first refactoring attempt is running.
+      # trunk-ignore(pinact/parse-error)
+      - id: refactor-attempt-2
+        if: steps.refactor-attempt-1.outcome == 'failure'
+        continue-on-error: true
+        uses: codescene-oss/pr-refactoring-agent@841e34c7ddd7a8ec887d632ac51432d6c71e2fe1 # untagged-fix-commit
+        env:
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          MISTRAL_API_KEY: ${{ steps.providers.outputs.enable_mistral == 'true' && secrets.MISTRAL_API_KEY || '' }}
+        with:
+          pr_number: ${{ github.event.issue.number }}
+          command: ${{ steps.prepare-command.outputs.command }}
+          model: ${{ steps.providers.outputs.model }}
+          version: v1.0.7
+          codescene_token: ${{ secrets.CODESCENE_ACCESS_TOKEN }}
+          google_api_key: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
+          opencode_auth_json: ${{ steps.opencode-auth.outputs.json }}
+
+      - name: Fail if both refactor attempts fail
+        if: always() && steps.refactor-attempt-1.outcome == 'failure' && steps.refactor-attempt-2.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::error::CodeScene refactoring failed twice. See the attempt logs above."
+          exit 1
+
+      - name: Dump OpenCode logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "::group::OpenCode logs"
+          find "${HOME}/.local/share/opencode/log" -type f -newermt "-15 minutes" -exec sh -c 'echo "--- {} ---"; cat "{}"' \; 2>/dev/null || echo "No log files found"
+          echo "::endgroup::"
