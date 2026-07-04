@@ -196,9 +196,11 @@ func insertionIndex<T: FileSystemItemViewModel>(of element: T, in sorted: [T], b
 }
 
 extension String {
+    // ⚡ Bolt: Use URL or native String methods to extract extension without allocating arrays
     var fileExtension: String? {
-        let components = components(separatedBy: ".")
-        return components.count > 1 ? components.last : nil
+        guard let lastIndex = lastIndex(of: ".") else { return nil }
+        let ext = suffix(from: index(after: lastIndex))
+        return ext.isEmpty ? nil : String(ext)
     }
 }
 
