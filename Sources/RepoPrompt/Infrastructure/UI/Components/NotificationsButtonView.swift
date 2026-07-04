@@ -288,6 +288,7 @@ private struct NotificationRow: View {
                 if item.isMuted {
                     Button(action: { item.unmute?() }) {
                         Image(systemName: "speaker.wave.2")
+                            .accessibilityLabel("Unmute")
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
@@ -295,6 +296,7 @@ private struct NotificationRow: View {
                 } else if item.mute != nil {
                     Button(action: { item.mute?() }) {
                         Image(systemName: "speaker.slash")
+                            .accessibilityLabel("Mute")
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
@@ -303,6 +305,7 @@ private struct NotificationRow: View {
 
                 Button(action: item.dismiss) {
                     Image(systemName: "xmark")
+                        .accessibilityLabel("Dismiss")
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)

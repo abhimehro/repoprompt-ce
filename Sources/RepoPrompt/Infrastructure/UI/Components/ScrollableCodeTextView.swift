@@ -148,6 +148,7 @@ struct ScrollableCodeBlock: View {
             NSPasteboard.general.setString(content, forType: .string)
         }) {
             Image(systemName: "doc.on.clipboard")
+                .accessibilityLabel("Copy to clipboard")
                 .foregroundColor(isCopyHovering ? BubbleColors.copyIconHover : BubbleColors.copyIconNormal)
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())

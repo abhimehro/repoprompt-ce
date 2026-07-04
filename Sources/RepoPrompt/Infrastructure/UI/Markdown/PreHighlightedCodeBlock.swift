@@ -32,6 +32,7 @@ struct PreHighlightedCodeBlock: View {
             // Copy-to-clipboard button
             Button(action: copyCode) {
                 Image(systemName: "doc.on.clipboard")
+                .accessibilityLabel("Copy to clipboard")
                     .foregroundColor(
                         isCopyHovering
                             ? BubbleColors.copyIconHover

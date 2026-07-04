@@ -588,6 +588,7 @@ struct EnhancedCodeBlock: View {
     private var copyButtonView: some View {
         Button(action: copyCode) {
             Image(systemName: "doc.on.clipboard")
+                .accessibilityLabel("Copy to clipboard")
                 .foregroundColor(
                     isCopyHovering ? BubbleColors.copyIconHover
                         : BubbleColors.copyIconNormal

@@ -16,6 +16,7 @@ struct CheckboxView: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: checkboxImageName)
+                .accessibilityLabel(isChecked == .checked ? "Checked" : isChecked == .unchecked ? "Unchecked" : "Mixed")
                 .foregroundColor(checkboxColor)
                 .frame(width: 20, height: 20)
                 .background(isHovering ? backgroundShape : nil)
