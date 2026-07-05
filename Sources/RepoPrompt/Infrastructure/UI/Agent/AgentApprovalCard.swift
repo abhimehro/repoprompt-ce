@@ -86,7 +86,8 @@ struct AgentApprovalCard: View {
             if request.supportsAlwaysAllow {
                 Button(action: alwaysAllowDecision) {
                     HStack(spacing: 6) {
-                        Image(systemName: "checkmark.seal").accessibilityLabel(alwaysAllowLabel)
+                        Image(systemName: "checkmark.seal")
+                            .accessibilityHidden(true)
                         Text(alwaysAllowLabel)
                     }
                 }
