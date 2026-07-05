@@ -96,7 +96,8 @@ struct AgentApprovalCard: View {
 
             Button(action: { onDecision(.accept) }) {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill").accessibilityLabel("Approve")
+                    Image(systemName: "checkmark.circle.fill")
+                        .accessibilityHidden(true)
                     Text("Approve")
                 }
             }
