@@ -74,7 +74,8 @@ struct AgentApprovalCard: View {
         HStack {
             Button(action: { onDecision(.decline) }) {
                 HStack(spacing: 4) {
-                    Image(systemName: "xmark").accessibilityLabel("Decline")
+                    Image(systemName: "xmark")
+                        .accessibilityHidden(true)
                     Text("Decline")
                 }
             }
