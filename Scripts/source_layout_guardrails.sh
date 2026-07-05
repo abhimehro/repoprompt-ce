@@ -94,6 +94,11 @@ fi
 if ! tree_sitter_scanner_support_manifest_output="$(python3 <<'PY'
 import json
 import subprocess
+import sys
+import shutil
+if not shutil.which("swift"):
+    sys.exit(0)
+
 from pathlib import Path
 
 expected_packages = {

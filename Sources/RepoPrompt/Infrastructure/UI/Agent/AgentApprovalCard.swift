@@ -74,8 +74,7 @@ struct AgentApprovalCard: View {
         HStack {
             Button(action: { onDecision(.decline) }) {
                 HStack(spacing: 4) {
-                    Image(systemName: "xmark")
-                        .accessibilityHidden(true)
+                    Image(systemName: "xmark").accessibilityLabel("Decline")
                     Text("Decline")
                 }
             }
@@ -86,8 +85,7 @@ struct AgentApprovalCard: View {
             if request.supportsAlwaysAllow {
                 Button(action: alwaysAllowDecision) {
                     HStack(spacing: 6) {
-                        Image(systemName: "checkmark.seal")
-                            .accessibilityHidden(true)
+                        Image(systemName: "checkmark.seal").accessibilityLabel(alwaysAllowLabel)
                         Text(alwaysAllowLabel)
                     }
                 }
@@ -96,8 +94,7 @@ struct AgentApprovalCard: View {
 
             Button(action: { onDecision(.accept) }) {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .accessibilityHidden(true)
+                    Image(systemName: "checkmark.circle.fill").accessibilityLabel("Approve")
                     Text("Approve")
                 }
             }
@@ -199,15 +196,18 @@ struct AgentMCPElicitationCard: View {
         HStack {
             Button(action: { onResponse(.init(action: .decline)) }) {
                 Label("Decline", systemImage: "xmark")
+                    .accessibilityLabel("Decline")
             }
             .buttonStyle(.bordered)
             Button(role: .destructive, action: { onResponse(.init(action: .cancel)) }) {
                 Label("Cancel Run", systemImage: "stop.circle")
+                    .accessibilityLabel("Cancel Run")
             }
             .buttonStyle(.bordered)
             Spacer()
             Button(action: { onResponse(.init(action: .accept)) }) {
                 Label("Accept", systemImage: "checkmark.circle.fill")
+                    .accessibilityLabel("Accept")
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: [])

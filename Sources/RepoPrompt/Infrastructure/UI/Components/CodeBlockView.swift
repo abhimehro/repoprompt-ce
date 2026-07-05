@@ -32,7 +32,7 @@ struct CodeBlock: View {
                 NSPasteboard.general.setString(content, forType: .string)
             }) {
                 Image(systemName: "doc.on.clipboard")
-                .accessibilityLabel("Copy to clipboard")
+                    .accessibilityLabel("Copy to clipboard")
                     .foregroundColor(.secondary)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
