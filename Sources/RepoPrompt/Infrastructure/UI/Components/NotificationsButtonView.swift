@@ -288,10 +288,10 @@ private struct NotificationRow: View {
                 if item.isMuted {
                     Button(action: { item.unmute?() }) {
                         Image(systemName: "speaker.wave.2")
-                            .accessibilityLabel("Unmute")
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Unmute")
                     .hoverTooltip("Unmute")
                 } else if item.mute != nil {
                     Button(action: { item.mute?() }) {
