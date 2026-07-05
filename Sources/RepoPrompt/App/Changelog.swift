@@ -12,7 +12,11 @@ struct Version: Identifiable {
 }
 
 class Changelog {
-    // Thread-safe helper to parse ISO8601 dates using the modern, Sendable FormatStyle API\n    static func parseDate(_ string: String) -> Date {\n        return (try? Date(string, strategy: .iso8601)) ?? Date()\n    }
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
     static let current = Version(
         id: "2.1.24",
         buildNumber: 326,
