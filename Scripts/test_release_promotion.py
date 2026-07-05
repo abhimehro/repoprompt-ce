@@ -292,6 +292,11 @@ class ReleasePromotionTests(unittest.TestCase):
         )
         self.write_stub(
             fake_bin,
+            "stat",
+            'if [ "$1" = "-f" ] && [ "$2" = "%z" ]; then wc -c < "$3" | tr -d " "; else /usr/bin/stat "$@"; fi',
+        )
+        self.write_stub(
+            fake_bin,
             "hdiutil",
             """\
             printf 'hdiutil\\n' >> "$FAKE_TOOL_CAPTURE"
