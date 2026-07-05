@@ -871,10 +871,9 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         composeTab.selection = storedSelection
         composeTab.activeAgentSessionID = parentSessionID
         window.workspaceManager.updateComposeTab(composeTab, markDirty: false)
-        // The fixture's asynchronous Git-data maintenance may publish one final canonical
-        // selection revision after workspace setup. Freeze only after that launch boundary has
-        // settled; production capture must continue to reject any later revision change.
-        try await Task.sleep(for: .seconds(2))
+        // Wait for post-switch git-data root load to complete so any selection revision
+        // published by the async git-data load settles before we diverge the UI selection.
+        await window.workspaceManager.waitUntilPostSwitchGitDataLoadComplete()
         await window.workspaceFilesViewModel.applyStoredSelection(StoredSelection())
         let divergentUISelection = window.workspaceFilesViewModel.snapshotSelection()
         XCTAssertTrue(divergentUISelection.selectedPaths.isEmpty)
@@ -1758,7 +1757,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         let validSecondaryRoot = try makeTemporaryDirectory(named: "transition-valid-secondary-root")
         let missingSecondaryWorktree = missingSecondaryRoot.appendingPathComponent("missing-worktree")
         let validSecondaryWorktree = try makeTemporaryDirectory(named: "transition-valid-secondary-worktree")
-        try "struct SecondaryWorktreeType {}\n".write(
+        try SwiftFixtureSource.emptyStruct("SecondaryWorktreeType").write(
             to: validSecondaryWorktree.appendingPathComponent("Secondary.swift"),
             atomically: true,
             encoding: .utf8
@@ -3260,20 +3259,27 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
                 guard trackedSession != nil else {
                     throw FixtureError.trackedSessionMissing
                 }
-                let deadline = ContinuousClock.now + .seconds(5)
-                while ContinuousClock.now < deadline {
-                    observeFirstAgentTaskIfNeeded()
-                    if FileManager.default.fileExists(atPath: socketURL.path) {
-                        let attributes = try FileManager.default.attributesOfItem(atPath: socketURL.path)
+                do {
+                    try await AsyncTestWait.waitUntilThrowing(
+                        "acceptedSubmitAndAwaitOwnedSocket",
+                        timeout: 5.0,
+                        initialDelayNanoseconds: 10_000_000,
+                        maximumDelayNanoseconds: 100_000_000
+                    ) {
+                        self.observeFirstAgentTaskIfNeeded()
+                        guard FileManager.default.fileExists(atPath: self.socketURL.path) else {
+                            return false
+                        }
+                        let attributes = try FileManager.default.attributesOfItem(atPath: self.socketURL.path)
                         guard attributes[.type] as? FileAttributeType == .typeSocket else {
                             throw FixtureError.ownedPathWasNotSocket
                         }
-                        ownedSocketObserved = true
-                        return
+                        return true
                     }
-                    try await Task.sleep(for: .milliseconds(10))
+                    ownedSocketObserved = true
+                } catch is AsyncTestConditionTimeout {
+                    throw FixtureError.ownedSocketDidNotAppear
                 }
-                throw FixtureError.ownedSocketDidNotAppear
             }
 
             func cleanup(window: WindowState) async throws {
