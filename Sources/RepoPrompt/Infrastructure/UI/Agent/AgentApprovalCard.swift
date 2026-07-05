@@ -199,7 +199,6 @@ struct AgentMCPElicitationCard: View {
         HStack {
             Button(action: { onResponse(.init(action: .decline)) }) {
                 Label("Decline", systemImage: "xmark")
-                    .accessibilityLabel("Decline")
             }
             .buttonStyle(.bordered)
             Button(role: .destructive, action: { onResponse(.init(action: .cancel)) }) {
