@@ -283,7 +283,7 @@ verify_source_release() {
         fail "Reviewed source release tag mismatch"
     [[ "$(jq -r .isPrerelease <<< "$source_release_json")" == "false" ]] ||
         fail "Source release must not be a prerelease"
-    grep -Fq "Release-Commit: \`$RELEASE_COMMIT\`" <<< "$(jq -r .body <<< "$source_release_json")" ||
+    grep -Fq "Release-Commit: \`$RELEASE_COMMIT\`" <<< "$(jq -r .body <<< "$source_release_json" | tr -d '\r')" ||
         fail "Source release is missing its approved release-commit attestation"
     SOURCE_RELEASE_WAS_DRAFT="$(jq -r .isDraft <<< "$source_release_json")"
     [[ "$SOURCE_RELEASE_WAS_DRAFT" == "true" || "$SOURCE_RELEASE_WAS_DRAFT" == "false" ]] ||
