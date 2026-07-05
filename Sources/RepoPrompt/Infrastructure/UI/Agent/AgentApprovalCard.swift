@@ -203,7 +203,6 @@ struct AgentMCPElicitationCard: View {
             .buttonStyle(.bordered)
             Button(role: .destructive, action: { onResponse(.init(action: .cancel)) }) {
                 Label("Cancel Run", systemImage: "stop.circle")
-                    .accessibilityLabel("Cancel Run")
             }
             .buttonStyle(.bordered)
             Spacer()
