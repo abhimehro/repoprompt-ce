@@ -208,7 +208,6 @@ struct AgentMCPElicitationCard: View {
             Spacer()
             Button(action: { onResponse(.init(action: .accept)) }) {
                 Label("Accept", systemImage: "checkmark.circle.fill")
-                    .accessibilityLabel("Accept")
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: [])
