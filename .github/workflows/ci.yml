@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Restore SwiftPM build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .build
@@ -93,7 +93,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Restore SwiftPM build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .build
