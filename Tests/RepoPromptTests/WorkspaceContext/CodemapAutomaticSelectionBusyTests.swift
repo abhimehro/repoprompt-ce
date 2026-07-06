@@ -506,7 +506,7 @@ final class CodemapAutomaticSelectionBusyTests: WorkspaceFileContextStoreCodemap
                 sourceDemandInvocations.increment()
                 if invocation <= 2 {
                     busyOutcomes.increment()
-                    return .busy(retryAfterMilliseconds: 1)
+                    return .busy(retryAfterMilliseconds: 100)
                 }
                 return result
             }
@@ -672,7 +672,7 @@ final class CodemapAutomaticSelectionBusyTests: WorkspaceFileContextStoreCodemap
             else { return result }
             _ = await sequence.recordDemand(ticket)
             sourceDemandInvocations.increment()
-            return .busy(retryAfterMilliseconds: 1)
+            return .busy(retryAfterMilliseconds: 100)
         })
         let loaded = try await store.loadRoot(path: root.path)
         let files = await store.files(inRoot: loaded.id)
@@ -818,7 +818,7 @@ final class CodemapAutomaticSelectionBusyTests: WorkspaceFileContextStoreCodemap
             else { return result }
             sourceDemandInvocations.increment()
             selectionTickets.append(ticket)
-            return .busy(retryAfterMilliseconds: 1)
+            return .busy(retryAfterMilliseconds: 100)
         })
         let loaded = try await store.loadRoot(path: root.path)
         let files = await store.files(inRoot: loaded.id)
