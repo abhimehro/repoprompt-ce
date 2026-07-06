@@ -12,6 +12,7 @@ struct Version: Identifiable {
 }
 
 class Changelog {
+
     /// ⚡ Bolt: Extracted DateFormatter to a static shared instance.
     /// Instantiating DateFormatters in Swift is very expensive. Reusing a single
     /// formatter for all static changelog entries significantly improves initialization time.
