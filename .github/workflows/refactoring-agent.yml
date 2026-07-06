@@ -145,7 +145,7 @@ jobs:
       # trunk-ignore(pinact/parse-error)
       - id: refactor-attempt-1
         continue-on-error: true
-        uses: codescene-oss/pr-refactoring-agent@841e34c7ddd7a8ec887d632ac51432d6c71e2fe1 # untagged-fix-commit
+        uses: codescene-oss/pr-refactoring-agent@bbc72fbfb8e514ed2dd0a1ba2dda2e0083abac73 # untagged-fix-commit
         env:
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
@@ -175,7 +175,7 @@ jobs:
       - id: refactor-attempt-2
         if: steps.refactor-attempt-1.outcome == 'failure'
         continue-on-error: true
-        uses: codescene-oss/pr-refactoring-agent@841e34c7ddd7a8ec887d632ac51432d6c71e2fe1 # untagged-fix-commit
+        uses: codescene-oss/pr-refactoring-agent@bbc72fbfb8e514ed2dd0a1ba2dda2e0083abac73 # untagged-fix-commit
         env:
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
