@@ -12,10 +12,17 @@ struct Version: Identifiable {
 }
 
 class Changelog {
+    // ⚡ Bolt: Extracted DateFormatter to a static shared instance.
+    // Instantiating DateFormatters in Swift is very expensive. Reusing a single
+    // formatter for all static changelog entries significantly improves initialization time.
+    private static let sharedFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
     static let current = Version(
         id: "2.1.24",
         buildNumber: 326,
-        date: ISO8601DateFormatter().date(from: "2026-05-09T00:00:00Z") ?? Date(),
+        date: sharedFormatter.date(from: "2026-05-09T00:00:00Z") ?? Date(),
         changes: """
         ## [2.1.24] - 2026-05-09
 
@@ -41,7 +48,7 @@ class Changelog {
     static let _210 = Version(
         id: "2.1.0",
         buildNumber: 302,
-        date: ISO8601DateFormatter().date(from: "2026-04-02T00:00:00Z") ?? Date(),
+        date: sharedFormatter.date(from: "2026-04-02T00:00:00Z") ?? Date(),
         changes: """
         ## [2.1.0] - 2026-04-02
 
@@ -67,7 +74,7 @@ class Changelog {
         Version(
             id: "2.1.24",
             buildNumber: 326,
-            date: ISO8601DateFormatter().date(from: "2026-05-09T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-05-09T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.24] - 2026-05-09
 
@@ -92,7 +99,7 @@ class Changelog {
         Version(
             id: "2.1.23",
             buildNumber: 325,
-            date: ISO8601DateFormatter().date(from: "2026-05-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-05-08T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.23] - 2026-05-08
 
@@ -114,7 +121,7 @@ class Changelog {
         Version(
             id: "2.1.22",
             buildNumber: 324,
-            date: ISO8601DateFormatter().date(from: "2026-05-07T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-05-07T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.22] - 2026-05-07
 
@@ -136,7 +143,7 @@ class Changelog {
         Version(
             id: "2.1.21",
             buildNumber: 323,
-            date: ISO8601DateFormatter().date(from: "2026-05-06T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-05-06T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.21] - 2026-05-06
 
@@ -166,7 +173,7 @@ class Changelog {
         Version(
             id: "2.1.20",
             buildNumber: 322,
-            date: ISO8601DateFormatter().date(from: "2026-04-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-24T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.20] - 2026-04-24
 
@@ -188,7 +195,7 @@ class Changelog {
         Version(
             id: "2.1.19",
             buildNumber: 321,
-            date: ISO8601DateFormatter().date(from: "2026-04-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-24T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.19] - 2026-04-24
 
@@ -211,7 +218,7 @@ class Changelog {
         Version(
             id: "2.1.18",
             buildNumber: 320,
-            date: ISO8601DateFormatter().date(from: "2026-04-23T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-23T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.18] - 2026-04-23
 
@@ -237,7 +244,7 @@ class Changelog {
         Version(
             id: "2.1.17",
             buildNumber: 319,
-            date: ISO8601DateFormatter().date(from: "2026-04-22T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-22T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.17] - 2026-04-22
 
@@ -260,7 +267,7 @@ class Changelog {
         Version(
             id: "2.1.16",
             buildNumber: 318,
-            date: ISO8601DateFormatter().date(from: "2026-04-21T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-21T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.16] - 2026-04-21
 
@@ -282,7 +289,7 @@ class Changelog {
         Version(
             id: "2.1.15",
             buildNumber: 317,
-            date: ISO8601DateFormatter().date(from: "2026-04-21T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-21T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.15] - 2026-04-21
 
@@ -303,7 +310,7 @@ class Changelog {
         Version(
             id: "2.1.14",
             buildNumber: 316,
-            date: ISO8601DateFormatter().date(from: "2026-04-20T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-20T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.14] - 2026-04-20
 
@@ -337,7 +344,7 @@ class Changelog {
         Version(
             id: "2.1.13",
             buildNumber: 315,
-            date: ISO8601DateFormatter().date(from: "2026-04-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-17T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.13] - 2026-04-17
 
@@ -361,7 +368,7 @@ class Changelog {
         Version(
             id: "2.1.11",
             buildNumber: 313,
-            date: ISO8601DateFormatter().date(from: "2026-04-16T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-16T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.11] - 2026-04-16
 
@@ -387,7 +394,7 @@ class Changelog {
         Version(
             id: "2.1.10",
             buildNumber: 312,
-            date: ISO8601DateFormatter().date(from: "2026-04-15T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-15T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.10] - 2026-04-15
 
@@ -413,7 +420,7 @@ class Changelog {
         Version(
             id: "2.1.9",
             buildNumber: 311,
-            date: ISO8601DateFormatter().date(from: "2026-04-14T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-14T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.9] - 2026-04-14
 
@@ -424,7 +431,7 @@ class Changelog {
         Version(
             id: "2.1.8",
             buildNumber: 310,
-            date: ISO8601DateFormatter().date(from: "2026-04-14T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-14T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.8] - 2026-04-14
 
@@ -458,7 +465,7 @@ class Changelog {
         Version(
             id: "2.1.7",
             buildNumber: 309,
-            date: ISO8601DateFormatter().date(from: "2026-04-13T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-13T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.7] - 2026-04-13
 
@@ -493,7 +500,7 @@ class Changelog {
         Version(
             id: "2.1.6",
             buildNumber: 308,
-            date: ISO8601DateFormatter().date(from: "2026-04-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-10T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.6] - 2026-04-10
 
@@ -518,7 +525,7 @@ class Changelog {
         Version(
             id: "2.1.5",
             buildNumber: 307,
-            date: ISO8601DateFormatter().date(from: "2026-04-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-08T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.5] - 2026-04-08
 
@@ -542,7 +549,7 @@ class Changelog {
         Version(
             id: "2.1.4",
             buildNumber: 306,
-            date: ISO8601DateFormatter().date(from: "2026-04-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-08T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.4] - 2026-04-08
 
@@ -572,7 +579,7 @@ class Changelog {
         Version(
             id: "2.1.3",
             buildNumber: 305,
-            date: ISO8601DateFormatter().date(from: "2026-04-04T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-04T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.3] - 2026-04-04
 
@@ -590,7 +597,7 @@ class Changelog {
         Version(
             id: "2.1.2",
             buildNumber: 304,
-            date: ISO8601DateFormatter().date(from: "2026-04-03T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-03T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.2] - 2026-04-03
 
@@ -610,7 +617,7 @@ class Changelog {
         Version(
             id: "2.1.1",
             buildNumber: 303,
-            date: ISO8601DateFormatter().date(from: "2026-04-02T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-02T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.1] - 2026-04-02
 
@@ -621,7 +628,7 @@ class Changelog {
         Version(
             id: "2.1.0",
             buildNumber: 302,
-            date: ISO8601DateFormatter().date(from: "2026-04-02T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-04-02T00:00:00Z") ?? Date(),
             changes: """
             ## [2.1.0] - 2026-04-02
 
@@ -645,7 +652,7 @@ class Changelog {
         Version(
             id: "2.0.31",
             buildNumber: 301,
-            date: ISO8601DateFormatter().date(from: "2026-03-30T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-30T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.31] - 2026-03-30
 
@@ -660,7 +667,7 @@ class Changelog {
         Version(
             id: "2.0.30",
             buildNumber: 300,
-            date: ISO8601DateFormatter().date(from: "2026-03-30T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-30T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.30] - 2026-03-30
 
@@ -677,7 +684,7 @@ class Changelog {
         Version(
             id: "2.0.29",
             buildNumber: 299,
-            date: ISO8601DateFormatter().date(from: "2026-03-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-27T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.29] - 2026-03-27
 
@@ -696,7 +703,7 @@ class Changelog {
         Version(
             id: "2.0.28",
             buildNumber: 298,
-            date: ISO8601DateFormatter().date(from: "2026-03-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-27T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.28] - 2026-03-27
 
@@ -721,7 +728,7 @@ class Changelog {
         Version(
             id: "2.0.27",
             buildNumber: 297,
-            date: ISO8601DateFormatter().date(from: "2026-03-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-27T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.27] - 2026-03-27
 
@@ -733,7 +740,7 @@ class Changelog {
         Version(
             id: "2.0.26",
             buildNumber: 296,
-            date: ISO8601DateFormatter().date(from: "2026-03-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-26T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.26] - 2026-03-26
 
@@ -754,7 +761,7 @@ class Changelog {
         Version(
             id: "2.0.25",
             buildNumber: 295,
-            date: ISO8601DateFormatter().date(from: "2026-03-23T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-23T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.25] - 2026-03-23
 
@@ -771,7 +778,7 @@ class Changelog {
         Version(
             id: "2.0.24",
             buildNumber: 294,
-            date: ISO8601DateFormatter().date(from: "2026-03-20T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-20T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.24] - 2026-03-20
 
@@ -791,7 +798,7 @@ class Changelog {
         Version(
             id: "2.0.23",
             buildNumber: 293,
-            date: ISO8601DateFormatter().date(from: "2026-03-19T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-19T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.23] - 2026-03-19
 
@@ -808,7 +815,7 @@ class Changelog {
         Version(
             id: "2.0.22",
             buildNumber: 292,
-            date: ISO8601DateFormatter().date(from: "2026-03-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-18T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.22] - 2026-03-18
 
@@ -823,7 +830,7 @@ class Changelog {
         Version(
             id: "2.0.21",
             buildNumber: 291,
-            date: ISO8601DateFormatter().date(from: "2026-03-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-17T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.21] - 2026-03-17
 
@@ -847,7 +854,7 @@ class Changelog {
         Version(
             id: "2.0.20",
             buildNumber: 290,
-            date: ISO8601DateFormatter().date(from: "2026-03-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-12T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.20] - 2026-03-12
 
@@ -858,7 +865,7 @@ class Changelog {
         Version(
             id: "2.0.19",
             buildNumber: 289,
-            date: ISO8601DateFormatter().date(from: "2026-03-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-12T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.19] - 2026-03-12
 
@@ -880,7 +887,7 @@ class Changelog {
         Version(
             id: "2.0.18",
             buildNumber: 288,
-            date: ISO8601DateFormatter().date(from: "2026-03-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-10T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.18] - 2026-03-10
 
@@ -893,7 +900,7 @@ class Changelog {
         Version(
             id: "2.0.17",
             buildNumber: 287,
-            date: ISO8601DateFormatter().date(from: "2026-03-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-10T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.17] - 2026-03-10
 
@@ -915,7 +922,7 @@ class Changelog {
         Version(
             id: "2.0.16",
             buildNumber: 286,
-            date: ISO8601DateFormatter().date(from: "2026-03-05T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-05T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.16] - 2026-03-05
 
@@ -927,7 +934,7 @@ class Changelog {
         Version(
             id: "2.0.15",
             buildNumber: 285,
-            date: ISO8601DateFormatter().date(from: "2026-03-05T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-05T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.15] - 2026-03-05
 
@@ -952,7 +959,7 @@ class Changelog {
         Version(
             id: "2.0.14",
             buildNumber: 284,
-            date: ISO8601DateFormatter().date(from: "2026-03-04T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-04T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.14] - 2026-03-04
 
@@ -973,7 +980,7 @@ class Changelog {
         Version(
             id: "2.0.13",
             buildNumber: 283,
-            date: ISO8601DateFormatter().date(from: "2026-03-02T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-02T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.13] - 2026-03-02
 
@@ -994,7 +1001,7 @@ class Changelog {
         Version(
             id: "2.0.12",
             buildNumber: 282,
-            date: ISO8601DateFormatter().date(from: "2026-03-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-03-01T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.12] - 2026-03-01
 
@@ -1013,7 +1020,7 @@ class Changelog {
         Version(
             id: "2.0.11",
             buildNumber: 281,
-            date: ISO8601DateFormatter().date(from: "2026-02-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-27T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.11] - 2026-02-27
 
@@ -1037,7 +1044,7 @@ class Changelog {
         Version(
             id: "2.0.10",
             buildNumber: 280,
-            date: ISO8601DateFormatter().date(from: "2026-02-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-25T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.10] - 2026-02-25
 
@@ -1059,7 +1066,7 @@ class Changelog {
         Version(
             id: "2.0.9",
             buildNumber: 279,
-            date: ISO8601DateFormatter().date(from: "2026-02-23T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-23T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.9] - 2026-02-23
 
@@ -1081,7 +1088,7 @@ class Changelog {
         Version(
             id: "2.0.8",
             buildNumber: 278,
-            date: ISO8601DateFormatter().date(from: "2026-02-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-18T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.8] - 2026-02-18
 
@@ -1093,7 +1100,7 @@ class Changelog {
         Version(
             id: "2.0.6",
             buildNumber: 276,
-            date: ISO8601DateFormatter().date(from: "2026-02-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-18T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.6] - 2026-02-18
 
@@ -1104,7 +1111,7 @@ class Changelog {
         Version(
             id: "2.0.5",
             buildNumber: 275,
-            date: ISO8601DateFormatter().date(from: "2026-02-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-18T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.5] - 2026-02-18
 
@@ -1128,7 +1135,7 @@ class Changelog {
         Version(
             id: "2.0.4",
             buildNumber: 274,
-            date: ISO8601DateFormatter().date(from: "2026-02-14T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-14T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.4] - 2026-02-14
 
@@ -1139,7 +1146,7 @@ class Changelog {
         Version(
             id: "2.0.3",
             buildNumber: 273,
-            date: ISO8601DateFormatter().date(from: "2026-02-14T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-14T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.3] - 2026-02-14
 
@@ -1152,7 +1159,7 @@ class Changelog {
         Version(
             id: "2.0.2",
             buildNumber: 272,
-            date: ISO8601DateFormatter().date(from: "2026-02-13T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-13T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.2] - 2026-02-13
 
@@ -1174,7 +1181,7 @@ class Changelog {
         Version(
             id: "2.0.1",
             buildNumber: 271,
-            date: ISO8601DateFormatter().date(from: "2026-02-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-11T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0.1] - 2026-02-11
 
@@ -1197,7 +1204,7 @@ class Changelog {
         Version(
             id: "2.0",
             buildNumber: 270,
-            date: ISO8601DateFormatter().date(from: "2026-02-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-11T00:00:00Z") ?? Date(),
             changes: """
             ## [2.0] - 2026-02-11
 
@@ -1220,7 +1227,7 @@ class Changelog {
         Version(
             id: "1.6.14",
             buildNumber: 269,
-            date: ISO8601DateFormatter().date(from: "2026-02-06T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-06T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.14] - 2026-02-06
 
@@ -1240,7 +1247,7 @@ class Changelog {
         Version(
             id: "1.6.13",
             buildNumber: 268,
-            date: ISO8601DateFormatter().date(from: "2026-02-05T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-05T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.13] - 2026-02-05
 
@@ -1257,7 +1264,7 @@ class Changelog {
         Version(
             id: "1.6.12",
             buildNumber: 266,
-            date: ISO8601DateFormatter().date(from: "2026-02-04T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-04T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.12] - 2026-02-04
 
@@ -1283,7 +1290,7 @@ class Changelog {
         Version(
             id: "1.6.11",
             buildNumber: 265,
-            date: ISO8601DateFormatter().date(from: "2026-02-02T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-02T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.11] - 2026-02-02
 
@@ -1301,7 +1308,7 @@ class Changelog {
         Version(
             id: "1.6.10",
             buildNumber: 264,
-            date: ISO8601DateFormatter().date(from: "2026-02-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-02-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.10] - 2026-02-01
 
@@ -1319,7 +1326,7 @@ class Changelog {
         Version(
             id: "1.6.9",
             buildNumber: 263,
-            date: ISO8601DateFormatter().date(from: "2026-01-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.9] - 2026-01-31
 
@@ -1341,7 +1348,7 @@ class Changelog {
         Version(
             id: "1.6.8",
             buildNumber: 262,
-            date: ISO8601DateFormatter().date(from: "2026-01-28T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-28T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.8] - 2026-01-28
 
@@ -1352,7 +1359,7 @@ class Changelog {
         Version(
             id: "1.6.7",
             buildNumber: 261,
-            date: ISO8601DateFormatter().date(from: "2026-01-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-27T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.7] - 2026-01-27
 
@@ -1363,7 +1370,7 @@ class Changelog {
         Version(
             id: "1.6.6",
             buildNumber: 260,
-            date: ISO8601DateFormatter().date(from: "2026-01-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-27T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.6] - 2026-01-27
 
@@ -1376,7 +1383,7 @@ class Changelog {
         Version(
             id: "1.6.5",
             buildNumber: 259,
-            date: ISO8601DateFormatter().date(from: "2026-01-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.5] - 2026-01-26
 
@@ -1394,7 +1401,7 @@ class Changelog {
         Version(
             id: "1.6.4",
             buildNumber: 258,
-            date: ISO8601DateFormatter().date(from: "2026-01-23T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-23T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.4] - 2026-01-23
 
@@ -1418,7 +1425,7 @@ class Changelog {
         Version(
             id: "1.6.3",
             buildNumber: 257,
-            date: ISO8601DateFormatter().date(from: "2026-01-23T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-23T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.3] - 2026-01-23
 
@@ -1438,7 +1445,7 @@ class Changelog {
         Version(
             id: "1.6.1",
             buildNumber: 255,
-            date: ISO8601DateFormatter().date(from: "2026-01-22T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-22T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.1] - 2026-01-22
 
@@ -1460,7 +1467,7 @@ class Changelog {
         Version(
             id: "1.6.0",
             buildNumber: 254,
-            date: ISO8601DateFormatter().date(from: "2026-01-20T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-20T00:00:00Z") ?? Date(),
             changes: """
             ## [1.6.0] - 2026-01-20
 
@@ -1481,7 +1488,7 @@ class Changelog {
         Version(
             id: "1.5.68",
             buildNumber: 253,
-            date: ISO8601DateFormatter().date(from: "2026-01-16T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-16T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.68] - 2026-01-16
 
@@ -1503,7 +1510,7 @@ class Changelog {
         Version(
             id: "1.5.67",
             buildNumber: 251,
-            date: ISO8601DateFormatter().date(from: "2026-01-13T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-13T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.67] - 2026-01-13
 
@@ -1515,7 +1522,7 @@ class Changelog {
         Version(
             id: "1.5.66",
             buildNumber: 250,
-            date: ISO8601DateFormatter().date(from: "2026-01-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-12T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.66] - 2026-01-12
 
@@ -1542,7 +1549,7 @@ class Changelog {
         Version(
             id: "1.5.65",
             buildNumber: 249,
-            date: ISO8601DateFormatter().date(from: "2026-01-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-08T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.65] - 2026-01-08
 
@@ -1553,7 +1560,7 @@ class Changelog {
         Version(
             id: "1.5.64",
             buildNumber: 248,
-            date: ISO8601DateFormatter().date(from: "2026-01-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-08T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.64] - 2026-01-08
 
@@ -1574,7 +1581,7 @@ class Changelog {
         Version(
             id: "1.5.63",
             buildNumber: 247,
-            date: ISO8601DateFormatter().date(from: "2026-01-07T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-07T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.63] - 2026-01-07
 
@@ -1592,7 +1599,7 @@ class Changelog {
         Version(
             id: "1.5.62",
             buildNumber: 246,
-            date: ISO8601DateFormatter().date(from: "2026-01-05T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-05T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.62] - 2026-01-05
 
@@ -1610,7 +1617,7 @@ class Changelog {
         Version(
             id: "1.5.61",
             buildNumber: 243,
-            date: ISO8601DateFormatter().date(from: "2026-01-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2026-01-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.61] - 2026-01-01
 
@@ -1628,7 +1635,7 @@ class Changelog {
         Version(
             id: "1.5.60",
             buildNumber: 242,
-            date: ISO8601DateFormatter().date(from: "2025-12-22T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-22T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.60] - 2025-12-22
 
@@ -1654,7 +1661,7 @@ class Changelog {
         Version(
             id: "1.5.59",
             buildNumber: 241,
-            date: ISO8601DateFormatter().date(from: "2025-12-19T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-19T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.59] - 2025-12-19
 
@@ -1667,7 +1674,7 @@ class Changelog {
         Version(
             id: "1.5.58",
             buildNumber: 240,
-            date: ISO8601DateFormatter().date(from: "2025-12-19T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-19T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.58] - 2025-12-19
 
@@ -1682,7 +1689,7 @@ class Changelog {
         Version(
             id: "1.5.57",
             buildNumber: 239,
-            date: ISO8601DateFormatter().date(from: "2025-12-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-18T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.57] - 2025-12-18
 
@@ -1709,7 +1716,7 @@ class Changelog {
         Version(
             id: "1.5.56",
             buildNumber: 238,
-            date: ISO8601DateFormatter().date(from: "2025-12-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-11T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.56] - 2025-12-11
 
@@ -1725,7 +1732,7 @@ class Changelog {
         Version(
             id: "1.5.55",
             buildNumber: 237,
-            date: ISO8601DateFormatter().date(from: "2025-12-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-11T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.55] - 2025-12-11
 
@@ -1744,7 +1751,7 @@ class Changelog {
         Version(
             id: "1.5.54",
             buildNumber: 236,
-            date: ISO8601DateFormatter().date(from: "2025-12-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-10T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.54] - 2025-12-10
 
@@ -1767,7 +1774,7 @@ class Changelog {
         Version(
             id: "1.5.53",
             buildNumber: 235,
-            date: ISO8601DateFormatter().date(from: "2025-12-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-08T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.53] - 2025-12-08
 
@@ -1781,7 +1788,7 @@ class Changelog {
         Version(
             id: "1.5.52",
             buildNumber: 234,
-            date: ISO8601DateFormatter().date(from: "2025-12-07T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-07T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.52] - 2025-12-07
 
@@ -1798,7 +1805,7 @@ class Changelog {
         Version(
             id: "1.5.51",
             buildNumber: 233,
-            date: ISO8601DateFormatter().date(from: "2025-12-06T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-06T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.51] - 2025-12-06
 
@@ -1809,7 +1816,7 @@ class Changelog {
         Version(
             id: "1.5.50",
             buildNumber: 232,
-            date: ISO8601DateFormatter().date(from: "2025-12-06T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-06T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.50] - 2025-12-06
 
@@ -1831,7 +1838,7 @@ class Changelog {
         Version(
             id: "1.5.49",
             buildNumber: 231,
-            date: ISO8601DateFormatter().date(from: "2025-12-06T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-06T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.49] - 2025-12-06 (unreleased)
 
@@ -1852,7 +1859,7 @@ class Changelog {
         Version(
             id: "1.5.48",
             buildNumber: 211,
-            date: ISO8601DateFormatter().date(from: "2025-12-05T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-05T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.48] - 2025-12-05
 
@@ -1867,7 +1874,7 @@ class Changelog {
         Version(
             id: "1.5.47",
             buildNumber: 210,
-            date: ISO8601DateFormatter().date(from: "2025-12-05T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-05T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.47] - 2025-12-05
 
@@ -1880,7 +1887,7 @@ class Changelog {
         Version(
             id: "1.5.46",
             buildNumber: 209,
-            date: ISO8601DateFormatter().date(from: "2025-12-03T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-03T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.46] - 2025-12-03
 
@@ -1899,7 +1906,7 @@ class Changelog {
         Version(
             id: "1.5.45",
             buildNumber: 208,
-            date: ISO8601DateFormatter().date(from: "2025-12-03T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-12-03T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.45] - 2025-12-03
 
@@ -1922,7 +1929,7 @@ class Changelog {
         Version(
             id: "1.5.44",
             buildNumber: 207,
-            date: ISO8601DateFormatter().date(from: "2025-11-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.44] - 2025-11-29
 
@@ -1935,7 +1942,7 @@ class Changelog {
         Version(
             id: "1.5.43",
             buildNumber: 206,
-            date: ISO8601DateFormatter().date(from: "2025-11-28T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-28T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.43] - 2025-11-28
 
@@ -1947,7 +1954,7 @@ class Changelog {
         Version(
             id: "1.5.42",
             buildNumber: 205,
-            date: ISO8601DateFormatter().date(from: "2025-11-28T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-28T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.42] - 2025-11-28
 
@@ -1963,7 +1970,7 @@ class Changelog {
         Version(
             id: "1.5.41",
             buildNumber: 204,
-            date: ISO8601DateFormatter().date(from: "2025-11-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.41] - 2025-11-26
 
@@ -1980,7 +1987,7 @@ class Changelog {
         Version(
             id: "1.5.40",
             buildNumber: 203,
-            date: ISO8601DateFormatter().date(from: "2025-11-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-24T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.40] - 2025-11-24
 
@@ -1996,7 +2003,7 @@ class Changelog {
         Version(
             id: "1.5.39",
             buildNumber: 202,
-            date: ISO8601DateFormatter().date(from: "2025-11-19T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-19T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.39] - 2025-11-19
 
@@ -2014,7 +2021,7 @@ class Changelog {
         Version(
             id: "1.5.38",
             buildNumber: 201,
-            date: ISO8601DateFormatter().date(from: "2025-11-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-18T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.38] - 2025-11-18
 
@@ -2028,7 +2035,7 @@ class Changelog {
         Version(
             id: "1.5.37",
             buildNumber: 200,
-            date: ISO8601DateFormatter().date(from: "2025-11-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-17T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.37] - 2025-11-17
 
@@ -2041,7 +2048,7 @@ class Changelog {
         Version(
             id: "1.5.36",
             buildNumber: 199,
-            date: ISO8601DateFormatter().date(from: "2025-11-14T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-14T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.36] - 2025-11-14
 
@@ -2052,7 +2059,7 @@ class Changelog {
         Version(
             id: "1.5.35",
             buildNumber: 198,
-            date: ISO8601DateFormatter().date(from: "2025-11-14T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-14T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.35] - 2025-11-14
 
@@ -2066,7 +2073,7 @@ class Changelog {
         Version(
             id: "1.5.34",
             buildNumber: 197,
-            date: ISO8601DateFormatter().date(from: "2025-11-13T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-13T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.34] - 2025-11-13
 
@@ -2084,7 +2091,7 @@ class Changelog {
         Version(
             id: "1.5.33",
             buildNumber: 196,
-            date: ISO8601DateFormatter().date(from: "2025-11-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-12T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.33] - 2025-11-12
 
@@ -2101,7 +2108,7 @@ class Changelog {
         Version(
             id: "1.5.32",
             buildNumber: 195,
-            date: ISO8601DateFormatter().date(from: "2025-11-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-11T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.32] - 2025-11-11
 
@@ -2114,7 +2121,7 @@ class Changelog {
         Version(
             id: "1.5.31",
             buildNumber: 194,
-            date: ISO8601DateFormatter().date(from: "2025-11-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-10T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.31] - 2025-11-10
 
@@ -2126,7 +2133,7 @@ class Changelog {
         Version(
             id: "1.5.30",
             buildNumber: 193,
-            date: ISO8601DateFormatter().date(from: "2025-11-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-10T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.30] - 2025-11-10
 
@@ -2137,7 +2144,7 @@ class Changelog {
         Version(
             id: "1.5.29",
             buildNumber: 192,
-            date: ISO8601DateFormatter().date(from: "2025-11-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-10T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.29] - 2025-11-10
 
@@ -2148,7 +2155,7 @@ class Changelog {
         Version(
             id: "1.5.28",
             buildNumber: 191,
-            date: ISO8601DateFormatter().date(from: "2025-11-10T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-10T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.28] - 2025-11-10
 
@@ -2165,7 +2172,7 @@ class Changelog {
         Version(
             id: "1.5.27",
             buildNumber: 190,
-            date: ISO8601DateFormatter().date(from: "2025-11-09T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-09T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.27] - 2025-11-09
 
@@ -2176,7 +2183,7 @@ class Changelog {
         Version(
             id: "1.5.26",
             buildNumber: 189,
-            date: ISO8601DateFormatter().date(from: "2025-11-09T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-09T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.26] - 2025-11-09
 
@@ -2187,7 +2194,7 @@ class Changelog {
         Version(
             id: "1.5.25",
             buildNumber: 188,
-            date: ISO8601DateFormatter().date(from: "2025-11-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-08T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.25] - 2025-11-08
 
@@ -2199,7 +2206,7 @@ class Changelog {
         Version(
             id: "1.5.24",
             buildNumber: 187,
-            date: ISO8601DateFormatter().date(from: "2025-11-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-08T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.24] - 2025-11-08
 
@@ -2212,7 +2219,7 @@ class Changelog {
         Version(
             id: "1.5.23",
             buildNumber: 186,
-            date: ISO8601DateFormatter().date(from: "2025-11-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-08T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.23] - 2025-11-08
 
@@ -2226,7 +2233,7 @@ class Changelog {
         Version(
             id: "1.5.22",
             buildNumber: 185,
-            date: ISO8601DateFormatter().date(from: "2025-11-07T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-07T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.22] - 2025-11-07
 
@@ -2241,7 +2248,7 @@ class Changelog {
         Version(
             id: "1.5.21",
             buildNumber: 184,
-            date: ISO8601DateFormatter().date(from: "2025-11-04T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-04T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.21] - 2025-11-04
 
@@ -2264,7 +2271,7 @@ class Changelog {
         Version(
             id: "1.5.20",
             buildNumber: 183,
-            date: ISO8601DateFormatter().date(from: "2025-11-02T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-11-02T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.20] - 2025-11-02
 
@@ -2276,7 +2283,7 @@ class Changelog {
         Version(
             id: "1.5.19",
             buildNumber: 182,
-            date: ISO8601DateFormatter().date(from: "2025-10-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.19] - 2025-10-31
 
@@ -2289,7 +2296,7 @@ class Changelog {
         Version(
             id: "1.5.18",
             buildNumber: 181,
-            date: ISO8601DateFormatter().date(from: "2025-10-30T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-30T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.18] - 2025-10-30
 
@@ -2300,7 +2307,7 @@ class Changelog {
         Version(
             id: "1.5.17",
             buildNumber: 180,
-            date: ISO8601DateFormatter().date(from: "2025-10-30T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-30T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.17] - 2025-10-30
 
@@ -2314,7 +2321,7 @@ class Changelog {
         Version(
             id: "1.5.16",
             buildNumber: 179,
-            date: ISO8601DateFormatter().date(from: "2025-10-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.16] - 2025-10-29
 
@@ -2326,7 +2333,7 @@ class Changelog {
         Version(
             id: "1.5.15",
             buildNumber: 178,
-            date: ISO8601DateFormatter().date(from: "2025-10-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.15] - 2025-10-29
 
@@ -2343,7 +2350,7 @@ class Changelog {
         Version(
             id: "1.5.14",
             buildNumber: 177,
-            date: ISO8601DateFormatter().date(from: "2025-10-28T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-28T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.14] - 2025-10-28
 
@@ -2360,7 +2367,7 @@ class Changelog {
         Version(
             id: "1.5.13",
             buildNumber: 176,
-            date: ISO8601DateFormatter().date(from: "2025-10-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.13] - 2025-10-26
 
@@ -2373,7 +2380,7 @@ class Changelog {
         Version(
             id: "1.5.12",
             buildNumber: 175,
-            date: ISO8601DateFormatter().date(from: "2025-10-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.12] - 2025-10-26
 
@@ -2385,7 +2392,7 @@ class Changelog {
         Version(
             id: "1.5.11",
             buildNumber: 174,
-            date: ISO8601DateFormatter().date(from: "2025-10-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.11] - 2025-10-26
 
@@ -2399,7 +2406,7 @@ class Changelog {
         Version(
             id: "1.5.10",
             buildNumber: 173,
-            date: ISO8601DateFormatter().date(from: "2025-10-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-25T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.10] - 2025-10-25
 
@@ -2410,7 +2417,7 @@ class Changelog {
         Version(
             id: "1.5.9",
             buildNumber: 172,
-            date: ISO8601DateFormatter().date(from: "2025-10-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-25T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.9] - 2025-10-25
 
@@ -2421,7 +2428,7 @@ class Changelog {
         Version(
             id: "1.5.8",
             buildNumber: 171,
-            date: ISO8601DateFormatter().date(from: "2025-10-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-25T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.8] - 2025-10-25
 
@@ -2433,7 +2440,7 @@ class Changelog {
         Version(
             id: "1.5.7",
             buildNumber: 170,
-            date: ISO8601DateFormatter().date(from: "2025-10-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-25T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.7] - 2025-10-25
 
@@ -2446,7 +2453,7 @@ class Changelog {
         Version(
             id: "1.5.6",
             buildNumber: 169,
-            date: ISO8601DateFormatter().date(from: "2025-10-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-24T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.6] - 2025-10-24
 
@@ -2458,7 +2465,7 @@ class Changelog {
         Version(
             id: "1.5.5",
             buildNumber: 168,
-            date: ISO8601DateFormatter().date(from: "2025-10-21T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-21T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.5] - 2025-10-21
 
@@ -2481,7 +2488,7 @@ class Changelog {
         Version(
             id: "1.5.4",
             buildNumber: 167,
-            date: ISO8601DateFormatter().date(from: "2025-10-20T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-20T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.4] - 2025-10-20
 
@@ -2492,7 +2499,7 @@ class Changelog {
         Version(
             id: "1.5.3",
             buildNumber: 166,
-            date: ISO8601DateFormatter().date(from: "2025-10-20T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-20T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.3] - 2025-10-20
 
@@ -2511,7 +2518,7 @@ class Changelog {
         Version(
             id: "1.5.2",
             buildNumber: 165,
-            date: ISO8601DateFormatter().date(from: "2025-10-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-17T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.2] - 2025-10-17
 
@@ -2529,7 +2536,7 @@ class Changelog {
         Version(
             id: "1.5.1",
             buildNumber: 164,
-            date: ISO8601DateFormatter().date(from: "2025-10-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-17T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5.1] - 2025-10-17
 
@@ -2542,7 +2549,7 @@ class Changelog {
         Version(
             id: "1.5",
             buildNumber: 163,
-            date: ISO8601DateFormatter().date(from: "2025-10-16T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-16T00:00:00Z") ?? Date(),
             changes: """
             ## [1.5] - 2025-10-16
 
@@ -2565,7 +2572,7 @@ class Changelog {
         Version(
             id: "1.4.27",
             buildNumber: 162,
-            date: ISO8601DateFormatter().date(from: "2025-10-07T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-10-07T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.27] - 2025-10-07
 
@@ -2580,7 +2587,7 @@ class Changelog {
         Version(
             id: "1.4.26",
             buildNumber: 161,
-            date: ISO8601DateFormatter().date(from: "2025-09-30T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-30T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.26] - 2025-09-30
 
@@ -2593,7 +2600,7 @@ class Changelog {
         Version(
             id: "1.4.25",
             buildNumber: 160,
-            date: ISO8601DateFormatter().date(from: "2025-09-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.25] - 2025-09-29
 
@@ -2610,7 +2617,7 @@ class Changelog {
         Version(
             id: "1.4.24",
             buildNumber: 159,
-            date: ISO8601DateFormatter().date(from: "2025-09-28T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-28T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.24] - 2025-09-28
 
@@ -2625,7 +2632,7 @@ class Changelog {
         Version(
             id: "1.4.23",
             buildNumber: 158,
-            date: ISO8601DateFormatter().date(from: "2025-09-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-27T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.23] - 2025-09-27
 
@@ -2640,7 +2647,7 @@ class Changelog {
         Version(
             id: "1.4.22",
             buildNumber: 157,
-            date: ISO8601DateFormatter().date(from: "2025-09-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-25T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.22] - 2025-09-25
 
@@ -2658,7 +2665,7 @@ class Changelog {
         Version(
             id: "1.4.21",
             buildNumber: 156,
-            date: ISO8601DateFormatter().date(from: "2025-09-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-24T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.21] - 2025-09-24
 
@@ -2679,7 +2686,7 @@ class Changelog {
         Version(
             id: "1.4.20",
             buildNumber: 155,
-            date: ISO8601DateFormatter().date(from: "2025-09-22T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-22T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.20] - 2025-09-22
 
@@ -2696,7 +2703,7 @@ class Changelog {
         Version(
             id: "1.4.19",
             buildNumber: 154,
-            date: ISO8601DateFormatter().date(from: "2025-09-19T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-19T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.19] - 2025-09-19
 
@@ -2715,7 +2722,7 @@ class Changelog {
         Version(
             id: "1.4.18",
             buildNumber: 153,
-            date: ISO8601DateFormatter().date(from: "2025-09-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-18T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.18] - 2025-09-18
 
@@ -2727,7 +2734,7 @@ class Changelog {
         Version(
             id: "1.4.17",
             buildNumber: 152,
-            date: ISO8601DateFormatter().date(from: "2025-09-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.17] - 2025-09-26
 
@@ -2745,7 +2752,7 @@ class Changelog {
         Version(
             id: "1.4.16",
             buildNumber: 151,
-            date: ISO8601DateFormatter().date(from: "2025-09-16T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-16T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.16] - 2025-09-16
 
@@ -2763,7 +2770,7 @@ class Changelog {
         Version(
             id: "1.4.15",
             buildNumber: 150,
-            date: ISO8601DateFormatter().date(from: "2025-09-13T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-13T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.15] - 2025-09-13
 
@@ -2778,7 +2785,7 @@ class Changelog {
         Version(
             id: "1.4.14",
             buildNumber: 149,
-            date: ISO8601DateFormatter().date(from: "2025-09-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-12T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.14] - 2025-09-12
 
@@ -2792,7 +2799,7 @@ class Changelog {
         Version(
             id: "1.4.13",
             buildNumber: 148,
-            date: ISO8601DateFormatter().date(from: "2025-09-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-11T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.13] - 2025-09-11
 
@@ -2806,7 +2813,7 @@ class Changelog {
         Version(
             id: "1.4.12",
             buildNumber: 147,
-            date: ISO8601DateFormatter().date(from: "2025-09-09T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-09T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.12] - 2025-09-09
 
@@ -2821,7 +2828,7 @@ class Changelog {
         Version(
             id: "1.4.11",
             buildNumber: 146,
-            date: ISO8601DateFormatter().date(from: "2025-09-08T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-08T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.11] - 2025-09-08
 
@@ -2854,7 +2861,7 @@ class Changelog {
         Version(
             id: "1.4.10",
             buildNumber: 145,
-            date: ISO8601DateFormatter().date(from: "2025-09-04T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-04T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.10] - 2025-09-04
 
@@ -2871,7 +2878,7 @@ class Changelog {
         Version(
             id: "1.4.9",
             buildNumber: 144,
-            date: ISO8601DateFormatter().date(from: "2025-09-03T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-03T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.9] - 2025-09-03
 
@@ -2890,7 +2897,7 @@ class Changelog {
         Version(
             id: "1.4.8",
             buildNumber: 143,
-            date: ISO8601DateFormatter().date(from: "2025-09-15T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-15T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.8] - 2025-09
 
@@ -2907,7 +2914,7 @@ class Changelog {
         Version(
             id: "1.4.7",
             buildNumber: 142,
-            date: ISO8601DateFormatter().date(from: "2025-09-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-09-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.7] - 2025-09-01
 
@@ -2920,7 +2927,7 @@ class Changelog {
         Version(
             id: "1.4.6",
             buildNumber: 141,
-            date: ISO8601DateFormatter().date(from: "2025-08-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.6] - 2025-08-29
 
@@ -2935,7 +2942,7 @@ class Changelog {
         Version(
             id: "1.4.5",
             buildNumber: 140,
-            date: ISO8601DateFormatter().date(from: "2025-08-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.5] - 2025-08-29
 
@@ -2949,7 +2956,7 @@ class Changelog {
         Version(
             id: "1.4.4",
             buildNumber: 139,
-            date: ISO8601DateFormatter().date(from: "2025-08-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.4] - 2025-08-29
 
@@ -2960,7 +2967,7 @@ class Changelog {
         Version(
             id: "1.4.3",
             buildNumber: 138,
-            date: ISO8601DateFormatter().date(from: "2025-08-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.3] - 2025-08-29
 
@@ -2974,7 +2981,7 @@ class Changelog {
         Version(
             id: "1.4.2",
             buildNumber: 137,
-            date: ISO8601DateFormatter().date(from: "2025-08-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-27T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.2] - 2025-08-27
 
@@ -2987,7 +2994,7 @@ class Changelog {
         Version(
             id: "1.4.1",
             buildNumber: 136,
-            date: ISO8601DateFormatter().date(from: "2025-08-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-27T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.1] - 2025-08-27
 
@@ -3004,7 +3011,7 @@ class Changelog {
         Version(
             id: "1.4.0",
             buildNumber: 135,
-            date: ISO8601DateFormatter().date(from: "2025-08-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-25T00:00:00Z") ?? Date(),
             changes: """
             ## [1.4.0] - 2025-08-25 - "Presets"
 
@@ -3022,7 +3029,7 @@ class Changelog {
         Version(
             id: "1.3.50",
             buildNumber: 134,
-            date: ISO8601DateFormatter().date(from: "2025-08-19T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-19T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.50] - 2025-08-19
 
@@ -3039,7 +3046,7 @@ class Changelog {
         Version(
             id: "1.3.49",
             buildNumber: 133,
-            date: ISO8601DateFormatter().date(from: "2025-08-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-18T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.49] - 2025-08-18
 
@@ -3050,7 +3057,7 @@ class Changelog {
         Version(
             id: "1.3.48",
             buildNumber: 132,
-            date: ISO8601DateFormatter().date(from: "2025-08-18T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-18T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.48] - 2025-08-18
 
@@ -3066,7 +3073,7 @@ class Changelog {
         Version(
             id: "1.3.47",
             buildNumber: 131,
-            date: ISO8601DateFormatter().date(from: "2025-08-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-17T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.47] - 2025-08-17
 
@@ -3081,7 +3088,7 @@ class Changelog {
         Version(
             id: "1.3.46",
             buildNumber: 130,
-            date: ISO8601DateFormatter().date(from: "2025-08-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-17T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.46] - 2025-08-17
 
@@ -3093,7 +3100,7 @@ class Changelog {
         Version(
             id: "1.3.45",
             buildNumber: 129,
-            date: ISO8601DateFormatter().date(from: "2025-08-16T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-16T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.45] - 2025-08-16
 
@@ -3104,7 +3111,7 @@ class Changelog {
         Version(
             id: "1.3.44",
             buildNumber: 128,
-            date: ISO8601DateFormatter().date(from: "2025-08-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-12T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.44] - 2025-08-12
 
@@ -3121,7 +3128,7 @@ class Changelog {
         Version(
             id: "1.3.43",
             buildNumber: 127,
-            date: ISO8601DateFormatter().date(from: "2025-08-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-12T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.43] - 2025-08-12
 
@@ -3132,7 +3139,7 @@ class Changelog {
         Version(
             id: "1.3.42",
             buildNumber: 126,
-            date: ISO8601DateFormatter().date(from: "2025-08-12T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-12T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.42] - 2025-08-12
 
@@ -3147,7 +3154,7 @@ class Changelog {
         Version(
             id: "1.3.41",
             buildNumber: 125,
-            date: ISO8601DateFormatter().date(from: "2025-08-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-11T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.41] - 2025-08-11
 
@@ -3167,7 +3174,7 @@ class Changelog {
         Version(
             id: "1.3.39",
             buildNumber: 123,
-            date: ISO8601DateFormatter().date(from: "2025-08-06T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-06T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.39] - 2025-08-06
 
@@ -3188,7 +3195,7 @@ class Changelog {
         Version(
             id: "1.3.38",
             buildNumber: 122,
-            date: ISO8601DateFormatter().date(from: "2025-08-04T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-04T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.38] - 2025-08-04
 
@@ -3207,7 +3214,7 @@ class Changelog {
         Version(
             id: "1.3.37",
             buildNumber: 121,
-            date: ISO8601DateFormatter().date(from: "2025-08-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.37] - 2025-08-01
 
@@ -3218,7 +3225,7 @@ class Changelog {
         Version(
             id: "1.3.36",
             buildNumber: 120,
-            date: ISO8601DateFormatter().date(from: "2025-08-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.36] - 2025-08-01
 
@@ -3230,7 +3237,7 @@ class Changelog {
         Version(
             id: "1.3.35",
             buildNumber: 119,
-            date: ISO8601DateFormatter().date(from: "2025-08-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.35] - 2025-08-01
 
@@ -3241,7 +3248,7 @@ class Changelog {
         Version(
             id: "1.3.34",
             buildNumber: 118,
-            date: ISO8601DateFormatter().date(from: "2025-08-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-08-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.34] - 2025-08-01
 
@@ -3257,7 +3264,7 @@ class Changelog {
         Version(
             id: "1.3.33",
             buildNumber: 117,
-            date: ISO8601DateFormatter().date(from: "2025-07-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.33] - 2025-07-31
 
@@ -3271,7 +3278,7 @@ class Changelog {
         Version(
             id: "1.3.32",
             buildNumber: 116,
-            date: ISO8601DateFormatter().date(from: "2025-07-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.32] - 2025-07-31
 
@@ -3283,7 +3290,7 @@ class Changelog {
         Version(
             id: "1.3.31",
             buildNumber: 115,
-            date: ISO8601DateFormatter().date(from: "2025-07-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.31] - 2025-07-31
 
@@ -3294,7 +3301,7 @@ class Changelog {
         Version(
             id: "1.3.30",
             buildNumber: 114,
-            date: ISO8601DateFormatter().date(from: "2025-07-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.30] - 2025-07-31
 
@@ -3305,7 +3312,7 @@ class Changelog {
         Version(
             id: "1.3.29",
             buildNumber: 113,
-            date: ISO8601DateFormatter().date(from: "2025-07-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.29] - 2025-07-31
 
@@ -3320,7 +3327,7 @@ class Changelog {
         Version(
             id: "1.3.28",
             buildNumber: 112,
-            date: ISO8601DateFormatter().date(from: "2025-07-31T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-31T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.28] - 2025-07-31
 
@@ -3339,7 +3346,7 @@ class Changelog {
         Version(
             id: "1.3.27",
             buildNumber: 111,
-            date: ISO8601DateFormatter().date(from: "2025-07-30T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-30T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.27] - 2025-07-30
 
@@ -3359,7 +3366,7 @@ class Changelog {
         Version(
             id: "1.3.26",
             buildNumber: 110,
-            date: ISO8601DateFormatter().date(from: "2025-07-29T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-29T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.26] - 2025-07-29
 
@@ -3372,7 +3379,7 @@ class Changelog {
         Version(
             id: "1.3.25",
             buildNumber: 109,
-            date: ISO8601DateFormatter().date(from: "2025-07-28T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-28T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.25] - 2025-07-28
 
@@ -3383,7 +3390,7 @@ class Changelog {
         Version(
             id: "1.3.24",
             buildNumber: 108,
-            date: ISO8601DateFormatter().date(from: "2024-07-28T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-28T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.24] - 2024-07-28
 
@@ -3403,7 +3410,7 @@ class Changelog {
         Version(
             id: "1.3.23",
             buildNumber: 107,
-            date: ISO8601DateFormatter().date(from: "2024-07-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-24T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.23] - 2024-07-24
 
@@ -3428,7 +3435,7 @@ class Changelog {
         Version(
             id: "1.3.21",
             buildNumber: 105,
-            date: ISO8601DateFormatter().date(from: "2024-07-22T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-22T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.21] - 2024-07-22
 
@@ -3439,7 +3446,7 @@ class Changelog {
         Version(
             id: "1.3.20",
             buildNumber: 104,
-            date: ISO8601DateFormatter().date(from: "2024-07-21T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-21T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.20] - 2024-07-21
 
@@ -3458,7 +3465,7 @@ class Changelog {
         Version(
             id: "1.3.19",
             buildNumber: 103,
-            date: ISO8601DateFormatter().date(from: "2024-07-17T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-17T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.19] - 2024-07-17
 
@@ -3487,7 +3494,7 @@ class Changelog {
         Version(
             id: "1.3.18",
             buildNumber: 102,
-            date: ISO8601DateFormatter().date(from: "2025-07-16T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-16T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.18] - 2025-07-16
 
@@ -3498,7 +3505,7 @@ class Changelog {
         Version(
             id: "1.3.17",
             buildNumber: 101,
-            date: ISO8601DateFormatter().date(from: "2025-07-16T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-16T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.17] - 2025-07-16
 
@@ -3520,7 +3527,7 @@ class Changelog {
         Version(
             id: "1.3.16",
             buildNumber: 100,
-            date: ISO8601DateFormatter().date(from: "2025-07-14T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-14T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.16] - 2025-07-14
 
@@ -3539,7 +3546,7 @@ class Changelog {
         Version(
             id: "1.3.15",
             buildNumber: 99,
-            date: ISO8601DateFormatter().date(from: "2025-07-11T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-11T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.15] - 2025-07-11
 
@@ -3558,7 +3565,7 @@ class Changelog {
         Version(
             id: "1.3.14",
             buildNumber: 98,
-            date: ISO8601DateFormatter().date(from: "2025-07-07T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2025-07-07T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.14] - 2025-07-07
 
@@ -3573,7 +3580,7 @@ class Changelog {
         Version(
             id: "1.3.13",
             buildNumber: 97,
-            date: ISO8601DateFormatter().date(from: "2024-07-04T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-04T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.13] - 2024-07-04
 
@@ -3588,7 +3595,7 @@ class Changelog {
         Version(
             id: "1.3.12",
             buildNumber: 96,
-            date: ISO8601DateFormatter().date(from: "2024-07-02T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-02T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.12] - 2024-07-02
 
@@ -3608,7 +3615,7 @@ class Changelog {
         Version(
             id: "1.3.11",
             buildNumber: 95,
-            date: ISO8601DateFormatter().date(from: "2024-07-01T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-07-01T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.11] - 2024-07-01
 
@@ -3620,7 +3627,7 @@ class Changelog {
         Version(
             id: "1.3.10",
             buildNumber: 94,
-            date: ISO8601DateFormatter().date(from: "2024-06-30T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-30T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.10] - 2024-06-30
 
@@ -3642,7 +3649,7 @@ class Changelog {
         Version(
             id: "1.3.9",
             buildNumber: 93,
-            date: ISO8601DateFormatter().date(from: "2024-06-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-27T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.9] - 2024-06-27
 
@@ -3656,7 +3663,7 @@ class Changelog {
         Version(
             id: "1.3.8",
             buildNumber: 92,
-            date: ISO8601DateFormatter().date(from: "2024-06-27T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-27T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.8] - 2024-06-27
 
@@ -3669,7 +3676,7 @@ class Changelog {
         Version(
             id: "1.3.7",
             buildNumber: 91,
-            date: ISO8601DateFormatter().date(from: "2024-06-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.7] - 2024-06-26
 
@@ -3682,7 +3689,7 @@ class Changelog {
         Version(
             id: "1.3.6",
             buildNumber: 90,
-            date: ISO8601DateFormatter().date(from: "2024-06-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.6] - 2024-06-26
 
@@ -3695,7 +3702,7 @@ class Changelog {
         Version(
             id: "1.3.5",
             buildNumber: 89,
-            date: ISO8601DateFormatter().date(from: "2024-06-26T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-26T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.5] - 2024-06-26
 
@@ -3709,7 +3716,7 @@ class Changelog {
         Version(
             id: "1.3.4",
             buildNumber: 88,
-            date: ISO8601DateFormatter().date(from: "2024-06-25T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-25T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.4] - 2024-06-25
 
@@ -3722,7 +3729,7 @@ class Changelog {
         Version(
             id: "1.3.3",
             buildNumber: 87,
-            date: ISO8601DateFormatter().date(from: "2024-06-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-24T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.3] - 2024-06-24
 
@@ -3733,7 +3740,7 @@ class Changelog {
         Version(
             id: "1.3.1",
             buildNumber: 85,
-            date: ISO8601DateFormatter().date(from: "2024-06-24T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-24T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3.1] - 2024-06-24
 
@@ -3749,7 +3756,7 @@ class Changelog {
         Version(
             id: "1.3",
             buildNumber: 84,
-            date: ISO8601DateFormatter().date(from: "2024-06-23T00:00:00Z") ?? Date(),
+            date: sharedFormatter.date(from: "2024-06-23T00:00:00Z") ?? Date(),
             changes: """
             ## [1.3] - Major Release
 
