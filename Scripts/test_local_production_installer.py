@@ -190,6 +190,7 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
             self.assertEqual(list(path.parent.glob(f".{path.name}.*")), [])
 
 
+@unittest.skipIf(sys.platform != "darwin", "macOS only")
 class LocalProductionInstallerTests(unittest.TestCase):
     def test_finder_launcher_routes_confirmed_install_through_conductor(self) -> None:
         launcher = ROOT_DIR / "Install RepoPrompt CE Local Production.command"

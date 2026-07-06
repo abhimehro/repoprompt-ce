@@ -7,6 +7,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -15,6 +16,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+@unittest.skipIf(sys.platform != "darwin", "macOS only")
 class ReleasePromotionTests(unittest.TestCase):
     def test_verify_accepts_reviewed_draft_with_matching_key_and_assets(self) -> None:
         result, _capture, _tools = self.run_promotion("verify")

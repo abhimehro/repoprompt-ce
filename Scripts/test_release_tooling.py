@@ -22,6 +22,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+@unittest.skipIf(sys.platform != "darwin", "macOS only")
 class ReleaseToolingTests(unittest.TestCase):
     def test_runtime_signing_policy_matches_release_metadata_and_entitlement_templates(self) -> None:
         root = SCRIPT_DIR.parent
