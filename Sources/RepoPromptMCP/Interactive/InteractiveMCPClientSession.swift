@@ -1090,7 +1090,7 @@ actor InteractiveMCPClientSession {
         guard result.isError == true else { return false }
         let needle = "Tool not found: \(toolName)"
         return result.content.contains { block in
-            if case let .text(t, _, _) = block { return t.contains(needle) }
+            if case let .text(t, _, _, _) = block { return t.contains(needle) }
             return false
         }
     }
@@ -1115,7 +1115,7 @@ actor InteractiveMCPClientSession {
     func listWindows() async throws -> CallTool.Result {
         if toolListFetched, !hasTool(named: "bind_context") {
             return CallTool.Result(
-                content: [.text(text: singleWindowInfoMessage())],
+                content: [.text(text: singleWindowInfoMessage(), annotations: nil, _meta: nil)],
                 isError: false
             )
         }
@@ -1125,7 +1125,7 @@ actor InteractiveMCPClientSession {
         ], timeout: .seconds(20))
         if isToolNotFoundResult(result, toolName: "bind_context") {
             return CallTool.Result(
-                content: [.text(text: singleWindowInfoMessage())],
+                content: [.text(text: singleWindowInfoMessage(), annotations: nil, _meta: nil)],
                 isError: false
             )
         }
@@ -1136,7 +1136,7 @@ actor InteractiveMCPClientSession {
     func selectWindow(windowID: Int) async throws -> CallTool.Result {
         if toolListFetched, !hasTool(named: "bind_context") {
             return CallTool.Result(
-                content: [.text(text: singleWindowInfoMessage())],
+                content: [.text(text: singleWindowInfoMessage(), annotations: nil, _meta: nil)],
                 isError: false
             )
         }
@@ -1150,7 +1150,7 @@ actor InteractiveMCPClientSession {
             selectedWindowID = windowID
             selectedContextID = nil
             return CallTool.Result(
-                content: [.text(text: "Selected window \(windowID) locally; subsequent tool calls will include _windowID=\(windowID).")],
+                content: [.text(text: "Selected window \(windowID) locally; subsequent tool calls will include _windowID=\(windowID).", annotations: nil, _meta: nil)],
                 isError: false
             )
         }
@@ -1170,7 +1170,7 @@ actor InteractiveMCPClientSession {
         selectedContextID = nil
         // Return a synthetic success result — unbind was removed server-side
         // because the routing system always re-establishes affinity on the next call.
-        return CallTool.Result(content: [.text(text: "Local window/context selection cleared.")], isError: false)
+        return CallTool.Result(content: [.text(text: "Local window/context selection cleared.", annotations: nil, _meta: nil)], isError: false)
     }
 
     func bindContextID(_ contextID: String, windowID: Int? = nil) async throws -> CallTool.Result {
@@ -1279,7 +1279,7 @@ actor InteractiveMCPClientSession {
 
     private func decodeBindContextResponse(from result: CallTool.Result) throws -> BindContextResponse {
         guard let text = result.content.compactMap({
-            if case let .text(text, _, _) = $0 { return text }
+            if case let .text(text, _, _, _) = $0 { return text }
             return nil
         }).first else {
             throw InteractiveSessionError.handshakeFailed(reason: "bind_context returned no text payload")
