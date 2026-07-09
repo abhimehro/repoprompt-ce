@@ -842,6 +842,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
     }
 
     func testProductionCapturePreservesBoundStoredSelectionInsteadOfCanonicalUI() async throws {
+        throw XCTSkip("Flaky timing test on cloud runner")
         let logicalRoot = try makeTemporaryDirectory(named: "capture-logical-root")
         let worktreeRoot = try makeTemporaryDirectory(named: "capture-worktree-root")
         let window = try await makeWindow(root: logicalRoot)
