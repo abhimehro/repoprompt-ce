@@ -395,6 +395,8 @@ class ReleasePromotionTests(unittest.TestCase):
             {
                 "PATH": f"{fake_bin}:{env.get('PATH', '')}",
                 "RELEASE_TAG": release_tag,
+                "SOURCE_GITHUB_REPOSITORY": "repoprompt/repoprompt-ce",
+                "PUBLIC_UPDATE_REPOSITORY": "repoprompt/repoprompt-ce-updates",
                 "RELEASE_COMMIT": "fixture-release-commit",
                 "SOURCE_GH_TOKEN": "source-token",
                 "PUBLIC_UPDATE_GH_TOKEN": "update-token",
