@@ -1,0 +1,4 @@
+## 2025-02-27 - [Ephemeral URLSession Configuration for AI Prompts and API Keys]
+**Vulnerability:** [Default URLSession configurations in Swift HTTP clients dealing with AI prompts and API credentials log session data like cookies or credentials to disk, creating an insecure data leakage mechanism on user machines]
+**Learning:** [Swift's `.default` `URLSessionConfiguration` writes session information, including caches, cookies, and credentials, to a local disk storage database. When dealing with prompts, secrets, and other sensitive information transmitted via `URLSession`, these can end up persisted locally.]
+**Prevention:** [Always prefer `URLSessionConfiguration.ephemeral` over `.default` when instantiating custom HTTP clients in Swift applications, specifically those handling high-sensitivity network transmissions to AI providers.]

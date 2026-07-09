@@ -28,7 +28,7 @@ class OpenRouterProvider: AIProvider {
             }
         }
 
-        let configuration = URLSessionConfiguration.default
+        let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 21600 // 6 hours
         configuration.timeoutIntervalForResource = 21600 // 6 hours
 
