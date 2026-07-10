@@ -4749,43 +4749,54 @@ extension ToolOutputFormatter {
         return out.joined(separator: "\n")
     }
 
+    // MARK: Shared Formatters
+
+    private static let iso8601WithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let iso8601Standard: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let displayDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private static let shortDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
     // MARK: Git Date Helpers
 
     private static func formatGitDate(_ isoDate: String) -> String {
         // Try to parse ISO8601 and format nicely, fallback to raw string
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateStyle = .medium
-            display.timeStyle = .short
-            return display.string(from: date)
+        if let date = iso8601WithFractionalSeconds.date(from: isoDate) {
+            return displayDateFormatter.string(from: date)
         }
         // Try without fractional seconds
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateStyle = .medium
-            display.timeStyle = .short
-            return display.string(from: date)
+        if let date = iso8601Standard.date(from: isoDate) {
+            return displayDateFormatter.string(from: date)
         }
         return isoDate
     }
 
     private static func formatGitDateShort(_ isoDate: String) -> String {
         // Short date only (for blame)
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateFormat = "yyyy-MM-dd"
-            return display.string(from: date)
+        if let date = iso8601WithFractionalSeconds.date(from: isoDate) {
+            return shortDateFormatter.string(from: date)
         }
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateFormat = "yyyy-MM-dd"
-            return display.string(from: date)
+        if let date = iso8601Standard.date(from: isoDate) {
+            return shortDateFormatter.string(from: date)
         }
         // Fallback: try to extract just the date part
         if isoDate.count >= 10 {
