@@ -92,10 +92,7 @@ final class BenchmarkSettingsViewModel: ObservableObject {
         return formatter
     }()
 
-    private static let csvTimestampFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        return formatter
-    }()
+    private static let csvTimestampFormatter = ISO8601DateFormatter()
 
     init(
         promptViewModel: PromptViewModel,
