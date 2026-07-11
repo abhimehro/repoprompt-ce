@@ -92,6 +92,11 @@ final class BenchmarkSettingsViewModel: ObservableObject {
         return formatter
     }()
 
+    private static let csvTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
+
     init(
         promptViewModel: PromptViewModel,
         apiSettingsViewModel: APISettingsViewModel,
@@ -723,7 +728,7 @@ final class BenchmarkSettingsViewModel: ObservableObject {
         // CSV Rows - One row per run
         for run in history {
             let runID = run.id.uuidString
-            let timestamp = ISO8601DateFormatter().string(from: run.timestamp)
+            let timestamp = Self.csvTimestampFormatter.string(from: run.timestamp)
             let modelName = csvEscape(run.modelDisplayShort)
             let modelRaw = csvEscape(run.modelRawValue)
             let provider = csvEscape(run.providerName)
