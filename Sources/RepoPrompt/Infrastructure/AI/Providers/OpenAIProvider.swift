@@ -33,7 +33,7 @@ class OpenAIProvider: AIProvider {
         let apiKey = cachedApiKey ?? ""
 
         if let baseURL = cachedBaseURL {
-            let configuration = URLSessionConfiguration.default
+            let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = 21600 // 6 hours
             configuration.timeoutIntervalForResource = 21600 // 6 hours
 
@@ -47,7 +47,7 @@ class OpenAIProvider: AIProvider {
             )
         }
 
-        let configuration = URLSessionConfiguration.default
+        let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 21600 // 6 hours
         configuration.timeoutIntervalForResource = 21600 // 6 hours
 
