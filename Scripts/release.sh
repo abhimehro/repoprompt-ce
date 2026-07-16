@@ -20,6 +20,10 @@ DMG="$DIST_DIR/$ARCHIVE_BASENAME.dmg"
 APPCAST="$DIST_DIR/appcast.xml"
 CHECKSUMS="$DIST_DIR/SHA256SUMS"
 BUILD_ARTIFACT_MANIFEST="$ROOT_DIR/.build/release/$APP_NAME-artifact-manifest.json"
+SENTRY_SYMBOLS_DIR="$ROOT_DIR/.build/sentry-symbols/release"
+SENTRY_RELEASE_NAME="$BUNDLE_ID@$MARKETING_VERSION+$BUILD_NUMBER"
+SENTRY_API_BASE_URL="${REPOPROMPT_SENTRY_API_BASE_URL:-https://sentry.io/api/0}"
+SENTRY_CURL_CONFIG=""
 FINAL_ARTIFACT_MANIFEST="$DIST_DIR/$ARCHIVE_BASENAME-artifact-manifest.json"
 STAGE_ARCHIVE="$DIST_DIR/$ARCHIVE_BASENAME-stage.zip"
 STAGE_ARCHIVE_CHECKSUM="$STAGE_ARCHIVE.sha256"
@@ -47,6 +51,10 @@ require_file() {
 
 require_env() {
     [[ -n "${!1:-}" ]] || fail "Missing required environment variable: $1"
+}
+
+sentry_linking_enabled() {
+    [[ "${REPOPROMPT_ENABLE_SENTRY:-}" == "1" ]]
 }
 
 require_release_tag_matches_metadata() {
@@ -77,6 +85,7 @@ run_preflight() {
     require_file "$ROOT_DIR/Vendor/Sparkle/PROVENANCE.md"
     require_file "$ROOT_DIR/Vendor/Sparkle/SHA256SUMS"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/sign_staged_release.sh"
+    require_file "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/build_swiftpm_release_products.sh"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/compare_swiftpm_release_resources.py"
     require_file "$CONTROL_PLANE_SCRIPTS_DIR/smoke_embedded_mcp_helper.sh"
@@ -169,6 +178,206 @@ write_final_artifact_manifest() {
         --expected-architectures "arm64,x86_64"
 }
 
+require_staged_sentry_symbols_when_enabled() {
+    if sentry_linking_enabled && [[ ! -d "$SENTRY_SYMBOLS_DIR" ]]; then
+        fail "Sentry-enabled release staging did not produce debug symbols at $SENTRY_SYMBOLS_DIR"
+    fi
+}
+
+require_sentry_publish_configuration() {
+    sentry_linking_enabled || return 0
+    [[ -n "${SENTRY_AUTH_TOKEN:-}" || -n "${REPOPROMPT_SENTRY_AUTH_TOKEN_FILE:-${SENTRY_AUTH_TOKEN_FILE:-}}" ]] || fail "Official Sentry-enabled release publishing requires SENTRY_AUTH_TOKEN or REPOPROMPT_SENTRY_AUTH_TOKEN_FILE for Sentry release metadata and debug symbol upload."
+    require_env REPOPROMPT_SENTRY_ORG
+    require_env REPOPROMPT_SENTRY_PROJECT
+    require_command curl
+    require_command jq
+    require_command sentry-cli
+}
+
+prepare_sentry_api_access() {
+    sentry_linking_enabled || return 0
+    [[ -n "$SENTRY_CURL_CONFIG" && -f "$SENTRY_CURL_CONFIG" ]] && return 0
+    [[ -n "$TMP_DIR" ]] || fail "Sentry API access requires an initialized release workspace"
+    local token="${SENTRY_AUTH_TOKEN:-}"
+    if [[ -z "$token" ]]; then
+        local configured_token_file="${REPOPROMPT_SENTRY_AUTH_TOKEN_FILE:-${SENTRY_AUTH_TOKEN_FILE:-}}"
+        [[ -n "$configured_token_file" ]] || fail "Missing Sentry auth token file"
+        [[ -f "$configured_token_file" ]] || fail "Sentry auth token file does not exist: $configured_token_file"
+        token="$(tr -d '\r\n' < "$configured_token_file")"
+    fi
+    [[ -n "$token" ]] || fail "Sentry auth token file was empty"
+
+    SENTRY_CURL_CONFIG="$TMP_DIR/sentry-curl.conf"
+    local normalized_token_file="$TMP_DIR/sentry-auth-token"
+    (
+        umask 077
+        printf '%s' "$token" > "$normalized_token_file"
+        printf 'header = "Authorization: Bearer %s"\n' "$token" > "$SENTRY_CURL_CONFIG"
+    )
+    chmod 600 "$normalized_token_file" "$SENTRY_CURL_CONFIG"
+    REPOPROMPT_SENTRY_AUTH_TOKEN_FILE="$normalized_token_file"
+    export REPOPROMPT_SENTRY_AUTH_TOKEN_FILE
+    unset SENTRY_AUTH_TOKEN
+}
+
+sentry_releases_endpoint() {
+    local encoded_org
+    encoded_org="$(jq -rn --arg value "$REPOPROMPT_SENTRY_ORG" '$value | @uri')"
+    printf '%s/organizations/%s/releases/' "${SENTRY_API_BASE_URL%/}" "$encoded_org"
+}
+
+sentry_release_endpoint() {
+    local encoded_release
+    encoded_release="$(jq -rn --arg value "$SENTRY_RELEASE_NAME" '$value | @uri')"
+    printf '%s%s/' "$(sentry_releases_endpoint)" "$encoded_release"
+}
+
+sentry_release_preflight_endpoint() {
+    local encoded_project
+    encoded_project="$(jq -rn --arg value "$REPOPROMPT_SENTRY_PROJECT" '$value | @uri')"
+    printf '%s?project=%s&per_page=1' "$(sentry_releases_endpoint)" "$encoded_project"
+}
+
+sentry_api_request() {
+    local method="$1"
+    local endpoint="$2"
+    local output_file="$3"
+    local body_file="${4:-}"
+    local args=(
+        --silent
+        --show-error
+        --output "$output_file"
+        --write-out '%{http_code}'
+        --request "$method"
+        --config "$SENTRY_CURL_CONFIG"
+        --header 'Accept: application/json'
+    )
+    if [[ -n "$body_file" ]]; then
+        args+=(--header 'Content-Type: application/json' --data-binary "@$body_file")
+    fi
+
+    local status
+    status="$(curl "${args[@]}" "$endpoint")" ||
+        fail "Unable to call the Sentry release API"
+    [[ "$status" =~ ^[0-9]{3}$ ]] || fail "Sentry release API returned an invalid HTTP status"
+    printf '%s' "$status"
+}
+
+fail_sentry_release_api_status() {
+    local action="$1"
+    local status="$2"
+    case "$status" in
+        401)
+            fail "Sentry release API rejected the organization token (HTTP 401); verify that SENTRY_AUTH_TOKEN is current"
+            ;;
+        403)
+            fail "Sentry release API rejected the organization token (HTTP 403); verify org:ci access to $REPOPROMPT_SENTRY_ORG/$REPOPROMPT_SENTRY_PROJECT"
+            ;;
+        *)
+            fail "Sentry release API could not $action (HTTP $status)"
+            ;;
+    esac
+}
+
+validate_sentry_release_response() {
+    local response_file="$1"
+    local label="$2"
+    jq -e \
+        --arg version "$SENTRY_RELEASE_NAME" \
+        --arg project "$REPOPROMPT_SENTRY_PROJECT" \
+        '.version == $version and
+            (.projects | type == "array") and
+            any(.projects[]?; .slug == $project)' \
+        "$response_file" >/dev/null ||
+        fail "Sentry release API returned malformed or mismatched JSON for $label"
+}
+
+preflight_sentry_release_access() {
+    sentry_linking_enabled || return 0
+    prepare_sentry_api_access
+    local response_file="$TMP_DIR/sentry-release-preflight.json"
+    local status
+    status="$(sentry_api_request GET "$(sentry_release_preflight_endpoint)" "$response_file")"
+    [[ "$status" =~ ^2[0-9][0-9]$ ]] ||
+        fail_sentry_release_api_status "verify release access" "$status"
+    jq -e 'type == "array" and all(.[]; .version | type == "string")' "$response_file" >/dev/null ||
+        fail "Sentry release API returned malformed JSON during access preflight"
+    printf 'OK: Sentry org:ci release access verified for %s/%s.\n' \
+        "$REPOPROMPT_SENTRY_ORG" "$REPOPROMPT_SENTRY_PROJECT"
+}
+
+prepare_sentry_release() {
+    sentry_linking_enabled || return 0
+    prepare_sentry_api_access
+    local source_repository="${SOURCE_GITHUB_REPOSITORY:-$GITHUB_REPOSITORY}"
+    [[ -n "$source_repository" ]] || fail "Missing SOURCE_GITHUB_REPOSITORY for Sentry commit association"
+    printf 'Preparing Sentry release %s for %s/%s.\n' "$SENTRY_RELEASE_NAME" "$REPOPROMPT_SENTRY_ORG" "$REPOPROMPT_SENTRY_PROJECT"
+    local release_response="$TMP_DIR/sentry-release.json"
+    local status
+    status="$(sentry_api_request GET "$(sentry_release_endpoint)" "$release_response")"
+    if [[ "$status" == "404" ]]; then
+        local create_body="$TMP_DIR/sentry-release-create.json"
+        jq -n \
+            --arg version "$SENTRY_RELEASE_NAME" \
+            --arg project "$REPOPROMPT_SENTRY_PROJECT" \
+            --arg repository "$source_repository" \
+            --arg commit "$RELEASE_COMMIT" \
+            '{version: $version, projects: [$project], refs: [{repository: $repository, commit: $commit}]}' \
+            > "$create_body"
+        chmod 600 "$create_body"
+        status="$(sentry_api_request POST "$(sentry_releases_endpoint)" "$release_response" "$create_body")"
+        [[ "$status" =~ ^2[0-9][0-9]$ ]] ||
+            fail_sentry_release_api_status "create release $SENTRY_RELEASE_NAME" "$status"
+    elif [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+        fail_sentry_release_api_status "look up release $SENTRY_RELEASE_NAME" "$status"
+    fi
+    validate_sentry_release_response "$release_response" "release preparation"
+
+    local refs_body="$TMP_DIR/sentry-release-refs.json"
+    jq -n \
+        --arg repository "$source_repository" \
+        --arg commit "$RELEASE_COMMIT" \
+        '{refs: [{repository: $repository, commit: $commit}]}' > "$refs_body"
+    chmod 600 "$refs_body"
+    status="$(sentry_api_request PUT "$(sentry_release_endpoint)" "$release_response" "$refs_body")"
+    [[ "$status" =~ ^2[0-9][0-9]$ ]] ||
+        fail_sentry_release_api_status "associate release commits" "$status"
+    validate_sentry_release_response "$release_response" "commit association"
+}
+
+finalize_sentry_release() {
+    sentry_linking_enabled || return 0
+    prepare_sentry_api_access
+    local release_response="$TMP_DIR/sentry-release-finalize.json"
+    local status
+    status="$(sentry_api_request GET "$(sentry_release_endpoint)" "$release_response")"
+    [[ "$status" =~ ^2[0-9][0-9]$ ]] ||
+        fail_sentry_release_api_status "look up release $SENTRY_RELEASE_NAME before finalization" "$status"
+    validate_sentry_release_response "$release_response" "release finalization"
+    if jq -e '.dateReleased | type == "string"' "$release_response" >/dev/null; then
+        printf 'OK: Sentry release %s is already finalized.\n' "$SENTRY_RELEASE_NAME"
+        return
+    fi
+    jq -e '.dateReleased == null' "$release_response" >/dev/null ||
+        fail "Sentry release API returned malformed finalization state"
+
+    local finalize_body="$TMP_DIR/sentry-release-finalize-body.json"
+    jq -n --arg date_released "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        '{dateReleased: $date_released}' > "$finalize_body"
+    chmod 600 "$finalize_body"
+    status="$(sentry_api_request PUT "$(sentry_release_endpoint)" "$release_response" "$finalize_body")"
+    [[ "$status" =~ ^2[0-9][0-9]$ ]] ||
+        fail_sentry_release_api_status "finalize release $SENTRY_RELEASE_NAME" "$status"
+    validate_sentry_release_response "$release_response" "release finalization"
+    jq -e '.dateReleased | type == "string"' "$release_response" >/dev/null ||
+        fail "Sentry release API did not confirm finalization"
+}
+
+upload_required_sentry_symbols() {
+    require_sentry_publish_configuration
+    "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh" "$SENTRY_SYMBOLS_DIR"
+}
+
 package_release_candidate() {
     resolve_without_lockfile_drift
     run_preflight
@@ -178,6 +387,7 @@ package_release_candidate() {
     "$RUN_WITHOUT_GITHUB_TOKENS" env -u SIGN_IDENTITY \
         REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR="$CONTROL_PLANE_SCRIPTS_DIR" \
+        REPOPROMPT_ENABLE_SENTRY=1 \
         RELEASE_ALLOW_ADHOC_SIGNING=1 \
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     run_preflight
@@ -213,6 +423,7 @@ verify_publish_inputs() {
     require_release_tag_matches_metadata
     require_file "$REPOPROMPT_PROVISIONING_PROFILE"
     require_file "$NOTARYTOOL_PRIVATE_KEY"
+    require_sentry_publish_configuration
 
     "$CONTROL_PLANE_SCRIPTS_DIR/verify_remote_release_commit.sh" "$RELEASE_TAG" "$RELEASE_COMMIT"
 }
@@ -239,16 +450,22 @@ stage_publish_release() {
     "$RUN_WITHOUT_GITHUB_TOKENS" env -u SIGN_IDENTITY \
         REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
         REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR="$CONTROL_PLANE_SCRIPTS_DIR" \
+        REPOPROMPT_ENABLE_SENTRY=1 \
         RELEASE_ALLOW_ADHOC_SIGNING=1 \
         "$CONTROL_PLANE_SCRIPTS_DIR/package_app.sh" release
     run_preflight
     validate_packaged_legal "$APP_BUNDLE"
     validate_public_app "$APP_BUNDLE" "$BUILD_ARTIFACT_MANIFEST" "Release staging"
+    require_staged_sentry_symbols_when_enabled
     TMP_DIR="$(mktemp -d)"
     local stage_root="$TMP_DIR/release-stage"
     mkdir -p "$stage_root/.build/release"
     ditto "$APP_BUNDLE" "$stage_root/.build/release/$APP_NAME.app"
     cp "$BUILD_ARTIFACT_MANIFEST" "$stage_root/.build/release/$APP_NAME-artifact-manifest.json"
+    if [[ -d "$SENTRY_SYMBOLS_DIR" ]]; then
+        mkdir -p "$stage_root/.build/sentry-symbols"
+        ditto "$SENTRY_SYMBOLS_DIR" "$stage_root/.build/sentry-symbols/release"
+    fi
     cp "$ROOT_DIR/version.env" "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage_root/"
     cp -R "$ROOT_DIR/ThirdPartyLicenses" "$stage_root/"
     printf '%s\n' "$RELEASE_COMMIT" > "$stage_root/RELEASE_COMMIT"
@@ -269,6 +486,7 @@ publish_staged_release() {
     verify_publish_inputs
     require_env REPOPROMPT_APPROVED_SOURCE_ROOT
     TMP_DIR="$(mktemp -d)"
+    preflight_sentry_release_access
 
     [[ -d "$APP_BUNDLE" ]] || fail "Missing secret-free staged app bundle: $APP_BUNDLE"
     REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
@@ -285,6 +503,8 @@ publish_staged_release() {
     xcrun stapler validate "$APP_BUNDLE"
     write_final_artifact_manifest
     validate_public_app "$APP_BUNDLE" "$FINAL_ARTIFACT_MANIFEST" "Final Developer ID app"
+    prepare_sentry_release
+    upload_required_sentry_symbols
 
     local distribution_dir="$TMP_DIR/distribution"
     mkdir -p "$distribution_dir"
@@ -333,15 +553,25 @@ publish_staged_release() {
         --draft
         --target "$RELEASE_COMMIT"
     )
+    local existing_release_state=""
+    if existing_release_state="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)"; then
+        fail "GitHub release $RELEASE_TAG already exists (isDraft=$existing_release_state). Refusing to repeat Sentry finalization; inspect the existing draft and Sentry release before manual recovery."
+    fi
     gh release create "${release_args[@]}"
     printf 'Created draft GitHub release assets for %s.\n' "$RELEASE_TAG"
+
+    # Finalization marks release metadata, commits, and uploaded debug symbols ready.
+    # Stable promotion records production availability only after public verification.
+    finalize_sentry_release
 }
 
-case "$MODE" in
-    sync-cli-version) sync_mcp_cli_version ;;
-    preflight) run_preflight ;;
-    artifact) package_release_candidate ;;
-    stage-publish) stage_publish_release ;;
-    publish-staged) publish_staged_release ;;
-    *) fail "Usage: $0 sync-cli-version|preflight|artifact|stage-publish|publish-staged" ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    case "$MODE" in
+        sync-cli-version) sync_mcp_cli_version ;;
+        preflight) run_preflight ;;
+        artifact) package_release_candidate ;;
+        stage-publish) stage_publish_release ;;
+        publish-staged) publish_staged_release ;;
+        *) fail "Usage: $0 sync-cli-version|preflight|artifact|stage-publish|publish-staged" ;;
+    esac
+fi

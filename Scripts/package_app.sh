@@ -29,6 +29,20 @@ run(){
     "$@"
 }
 fail(){ echo "ERROR: $*" >&2; exit 1; }
+truthy(){
+    case "${1:-}" in
+        1|true|TRUE|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+sentry_linking_enabled(){
+    [[ "${REPOPROMPT_ENABLE_SENTRY:-}" == "1" ]]
+}
+require_sentry_upload_credentials(){
+    if [[ -z "${SENTRY_AUTH_TOKEN:-}" && -z "${REPOPROMPT_SENTRY_AUTH_TOKEN_FILE:-}" && -z "${SENTRY_AUTH_TOKEN_FILE:-}" ]]; then
+        fail "REPOPROMPT_UPLOAD_SENTRY_SYMBOLS requires SENTRY_AUTH_TOKEN or REPOPROMPT_SENTRY_AUTH_TOKEN_FILE."
+    fi
+}
 remove_stale_artifact_manifests(){
     local manifests=()
     shopt -s nullglob
@@ -68,13 +82,20 @@ finish(){
 trap 'finish $?' EXIT
 
 BUNDLE_ID_OVERRIDE="${BUNDLE_ID:-}"
+RELEASE_BUILD_NUMBER_OVERRIDE="${REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE:-}"
 # Invalidate public-release manifests before metadata parsing, checks, or builds
 # so failed non-public packaging cannot leave stale release metadata behind.
 remove_stale_artifact_manifests
 source "$CONTROL_PLANE_SCRIPTS_DIR/load_release_metadata.sh"
 load_release_metadata "$ROOT_DIR"
+if [[ -n "$RELEASE_BUILD_NUMBER_OVERRIDE" ]]; then
+    [[ "$RELEASE_BUILD_NUMBER_OVERRIDE" =~ ^[0-9]{1,4}(\.[0-9]{1,2}){0,2}$ ]] ||
+        fail "REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE must be a valid numeric build version"
+    BUILD_NUMBER="$RELEASE_BUILD_NUMBER_OVERRIDE"
+fi
 APP_NAME="${APP_NAME:-RepoPrompt}"; DISPLAY_NAME="${DISPLAY_NAME:-RepoPrompt CE}"; BASE_BUNDLE_ID="${BUNDLE_ID:-com.pvncher.repoprompt.ce}"; MARKETING_VERSION="${MARKETING_VERSION:-0.1.0}"; BUILD_NUMBER="${BUILD_NUMBER:-1}"; SIGNING_TEAM_ID="${SIGNING_TEAM_ID:-648A27MST5}"
 ARTIFACT_MANIFEST="$ROOT_DIR/.build/release/$APP_NAME-artifact-manifest.json"
+SENTRY_SYMBOLS_DIR="$ROOT_DIR/.build/sentry-symbols/$CONF"
 
 IS_RELEASE=0
 [[ "$CONF" == "release" ]] && IS_RELEASE=1
@@ -188,6 +209,9 @@ printf 'Debug secure storage backend marker: %s\n' "$DEBUG_STORAGE_BACKEND_MARKE
 printf 'Signing mode marker: %s\n' "$SIGNING_MODE_MARKER"
 
 SWIFT_BUILD_ARGS=(-c "$CONF")
+if sentry_linking_enabled; then
+    SWIFT_BUILD_ARGS+=(-debug-info-format dwarf)
+fi
 PUBLIC_UNIVERSAL_RELEASE=0
 ARCHITECTURE_POLICY="matching"
 if (( IS_RELEASE )) && (( ! USE_LOCAL_SELF_SIGNED_RELEASE )); then
@@ -229,6 +253,20 @@ fi
 COMPAT_APP_BUNDLE="$ROOT_DIR/.build/$CONF/$APP_NAME.app"
 CLI_PATH="$BUILD_DIR/repoprompt-mcp"
 printf 'BUILD_DIR=%s\nAPP_BUNDLE=%s\nCOMPAT_APP_BUNDLE=%s\nCLI_PATH=%s\nAD_HOC_SIGNING=%s\nARCHITECTURE_POLICY=%s\n' "$BUILD_DIR" "$APP_BUNDLE" "$COMPAT_APP_BUNDLE" "$CLI_PATH" "$USE_ADHOC_SIGNING" "$ARCHITECTURE_POLICY"
+
+generate_sentry_debug_symbols(){
+    sentry_linking_enabled || return 0
+    phase "Generating Sentry debug symbols"
+    command -v xcrun >/dev/null 2>&1 || fail "xcrun is required to generate dSYMs."
+    run rm -rf "$SENTRY_SYMBOLS_DIR"
+    run mkdir -p "$SENTRY_SYMBOLS_DIR"
+    for exe in "$APP_NAME" repoprompt-mcp; do
+        [[ -f "$BUILD_DIR/$exe" ]] || fail "Missing built executable for dSYM generation: $BUILD_DIR/$exe"
+        run xcrun dsymutil "$BUILD_DIR/$exe" -o "$SENTRY_SYMBOLS_DIR/$exe.dSYM"
+    done
+    printf 'Sentry debug symbols: %s\n' "$SENTRY_SYMBOLS_DIR"
+}
+generate_sentry_debug_symbols
 
 phase "Creating app bundle layout"
 run rm -rf "$APP_BUNDLE"
@@ -302,6 +340,52 @@ REPOPROMPT_RELEASE_SOURCE_ROOT="$ROOT_DIR" \
 run cp -R "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/"
 run install_name_tool -add_rpath @executable_path/../Frameworks "$APP_BUNDLE/Contents/MacOS/$APP_NAME" 2>/dev/null || true
 run "$CONTROL_PLANE_SCRIPTS_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "$ARCHITECTURE_POLICY" "Pre-sign packaged app"
+
+if (( ! IS_RELEASE )); then
+    phase "Writing debug bundle provenance"
+    ROOT_DIR_FOR_PROVENANCE="$ROOT_DIR" APP_BUNDLE_FOR_PROVENANCE="$APP_BUNDLE" python3 - <<'PY'
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+import json
+import os
+import subprocess
+import time
+
+root = Path(os.environ["ROOT_DIR_FOR_PROVENANCE"]).resolve()
+bundle = Path(os.environ["APP_BUNDLE_FOR_PROVENANCE"])
+
+def git(args: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(["git", "-C", str(root), *args], text=True, capture_output=True, timeout=5)
+    except Exception:
+        return None
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip()
+    return value or None
+
+status = git(["status", "--porcelain"])
+now = time.time()
+payload = {
+    "version": 1,
+    "repoRoot": str(root),
+    "worktreePath": str(root),
+    "worktreeName": root.name,
+    "branch": git(["rev-parse", "--abbrev-ref", "HEAD"]),
+    "commit": git(["rev-parse", "HEAD"]),
+    "dirty": bool(status),
+    "buildTimeEpoch": now,
+    "buildTimeISO": datetime.fromtimestamp(now, timezone.utc).astimezone().isoformat(timespec="seconds"),
+}
+path = bundle / "Contents" / "Resources" / "RepoPromptDebugProvenance.json"
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(f"Debug bundle provenance: {path}")
+PY
+    run python3 "$CONTROL_PLANE_SCRIPTS_DIR/validate_json.py" \
+        "$APP_BUNDLE/Contents/Resources/RepoPromptDebugProvenance.json"
+fi
 
 phase "Signing app bundle"
 sign_path(){
@@ -397,6 +481,11 @@ if (( PUBLIC_UNIVERSAL_RELEASE )); then
 fi
 run "$CONTROL_PLANE_SCRIPTS_DIR/validate_embedded_mcp_helper_layout.sh" "$APP_BUNDLE" "Packaged app MCP helper layout"
 run "$RUN_WITHOUT_GITHUB_TOKENS" "$CONTROL_PLANE_SCRIPTS_DIR/smoke_embedded_mcp_helper.sh" "$APP_BUNDLE" "Packaged app MCP helper"
+if truthy "${REPOPROMPT_UPLOAD_SENTRY_SYMBOLS:-}"; then
+    sentry_linking_enabled || fail "REPOPROMPT_UPLOAD_SENTRY_SYMBOLS requires REPOPROMPT_ENABLE_SENTRY=1."
+    require_sentry_upload_credentials
+    run "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh" "$SENTRY_SYMBOLS_DIR"
+fi
 if [[ "$APP_BUNDLE_MATCHES_COMPAT" != "1" ]]; then
     phase "Updating compatibility app bundle link"
     run mkdir -p "$(dirname "$COMPAT_APP_BUNDLE")"

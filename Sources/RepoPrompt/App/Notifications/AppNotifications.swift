@@ -78,6 +78,9 @@ extension Notification.Name {
     /// Posted when a compose tab's persisted display name changes.
     /// userInfo: ["tabID": UUID, "windowID": Int, "name": String]
     static let composeTabNameChanged = Notification.Name("composeTabNameChanged")
+    /// Posted when a compose tab is linked to or unlinked from a persistent Agent session.
+    /// userInfo: ["tabID": UUID, "windowID": Int, "previousSessionID": UUID?, "sessionID": UUID?]
+    static let agentSessionBindingDidChange = Notification.Name("agentSessionBindingDidChange")
 
     /// Toggle the Agent session sidebar for the focused window.
     /// `userInfo["windowID"]` should be the target window ID.
@@ -86,4 +89,10 @@ extension Notification.Name {
     /// Show the Agent navigation HUD for the target window.
     /// userInfo: ["windowID": Int, "mode": AgentNavigationHUDMode.rawValue]
     static let showAgentNavigationHUD = Notification.Name("showAgentNavigationHUD")
+
+    /// Select a numbered result in the Agent navigation HUD for the target window.
+    /// `handledRequest` is a synchronous mutable acknowledgement used by global
+    /// ⌘1–⌘9 handlers before they fall through to regular compose-tab switching.
+    /// userInfo: ["windowID": Int, "resultIndex": Int, "handledRequest": AgentNavigationHUDHandledRequest]
+    static let selectAgentNavigationHUDResult = Notification.Name("selectAgentNavigationHUDResult")
 }

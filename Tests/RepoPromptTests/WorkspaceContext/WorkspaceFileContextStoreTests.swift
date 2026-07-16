@@ -1,7 +1,7 @@
 import Combine
 import CoreServices
 import CryptoKit
-@testable import RepoPrompt
+@testable import RepoPromptApp
 import XCTest
 
 private enum CodemapInitializationResetBoundary: String, CaseIterable {
@@ -24,6 +24,13 @@ private actor UUIDRecorder {
 
 final class WorkspaceFileContextStoreTests: XCTestCase {
     private var cancellables = Set<AnyCancellable>()
+
+    override func tearDown() {
+        EditFlowPerf.resetDebugCaptureForTesting()
+        MCPToolWorkCountDiagnostics.resetForTesting()
+        cancellables.removeAll()
+        super.tearDown()
+    }
 
     func testRootLoadIndexesFilesFoldersReadsContentAndLooksUpPaths() async throws {
         let rootA = try makeTemporaryRoot(name: "RootA")
@@ -60,6 +67,41 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(scopedA?.file?.rootID, recordA.id)
         XCTAssertEqual(scopedA?.location.absolutePath, rootA.appendingPathComponent("shared/file.txt").path)
     }
+
+    #if DEBUG
+        func testAppliedIndexRecordLookupReturnsOnlyRequestedCanonicalMembersWithBoundedWork() async throws {
+            let rootURL = try makeTemporaryRoot(name: "AppliedIndexRecordLookup")
+            try write("let first = true", to: rootURL.appendingPathComponent("Sources/First.swift"))
+            try write("let second = true", to: rootURL.appendingPathComponent("Sources/Second.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let files = await store.files(inRoot: root.id)
+            let folders = await store.folders(inRoot: root.id)
+            let first = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/First.swift" })
+            let sources = try XCTUnwrap(folders.first { $0.standardizedRelativePath == "Sources" })
+            let absentFileID = UUID()
+
+            await store.resetFilesInRootRequestCountForTesting()
+            await store.resetAppliedIndexRecordLookupDiagnosticsForTesting()
+            let lookup = await store.appliedIndexRecordLookup(
+                rootID: root.id,
+                fileIDs: [first.id, absentFileID],
+                folderIDs: [sources.id]
+            )
+
+            XCTAssertEqual(lookup?.root, root)
+            XCTAssertEqual(lookup?.generation, 0)
+            XCTAssertEqual(lookup?.filesByID, [first.id: first])
+            XCTAssertEqual(lookup?.foldersByID, [sources.id: sources])
+            let diagnostics = await store.appliedIndexRecordLookupDiagnosticsForTesting()
+            XCTAssertEqual(diagnostics.lookupRequests, 1)
+            XCTAssertEqual(diagnostics.requestedRecords, 3)
+            XCTAssertEqual(diagnostics.rootSnapshots, 0)
+            let enumerationCount = await store.fileEnumerationRequestCountForTesting()
+            XCTAssertEqual(enumerationCount, 0)
+        }
+    #endif
 
     func testStaticPathAndSearchSnapshotCachesReuseScopesAndBoundLRU() async throws {
         do {
@@ -3188,6 +3230,81 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             await store.stopWatchingRoot(id: rootID)
         }
 
+        func testReadFreshnessTimeoutThrowsBeforeCanonicalFlightCompletes() async throws {
+            let root = try makeTemporaryRoot(name: "ReadFreshnessTimeout")
+            let fileURL = root.appendingPathComponent("Seed.swift")
+            try write("seed", to: fileURL)
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: root.path)
+            let rootRef = WorkspaceRootRef(id: record.id, name: record.name, fullPath: record.standardizedFullPath)
+            await resetScopedIngressBarrierAfterSeededLoad(store, rootID: record.id)
+            let flushGate = AsyncGate()
+            await store.setScopedIngressBarrierWillFlushHandler { observedRootID in
+                guard observedRootID == record.id else { return }
+                await flushGate.markStartedAndWaitForRelease()
+            }
+
+            let completed = AsyncSignal()
+            let request = Task { () -> WorkspaceAppliedIngressWaitError? in
+                let observedError: WorkspaceAppliedIngressWaitError?
+                do {
+                    let service = WorkspaceReadableFileService(store: store)
+                    try await service.awaitFreshnessForExplicitRequest(
+                        fileURL.path,
+                        rootRefs: [rootRef],
+                        timeout: .milliseconds(25)
+                    )
+                    observedError = nil
+                } catch let error as WorkspaceAppliedIngressWaitError {
+                    observedError = error
+                } catch {
+                    observedError = nil
+                }
+                await completed.mark()
+                return observedError
+            }
+            let flushStarted = await waitForAsyncCondition {
+                await flushGate.startCount() == 1
+            }
+            XCTAssertTrue(flushStarted)
+            let timedOutPromptly = await waitForAsyncCondition {
+                await completed.isMarked()
+            }
+            XCTAssertTrue(timedOutPromptly)
+
+            await flushGate.release()
+            let error = await request.value
+            XCTAssertEqual(error, WorkspaceAppliedIngressWaitError.timedOut)
+            let settled = await waitForAsyncCondition {
+                let roots = await store.readSearchRootDiagnosticsSnapshot()
+                return roots.first { $0.rootID == record.id }?.barrier.active == nil
+            }
+            XCTAssertTrue(settled)
+            await store.setScopedIngressBarrierWillFlushHandler(nil)
+        }
+
+        func testTimedExplicitFreshnessReturnsSamplesWhenBarrierCompletes() async throws {
+            let root = try makeTemporaryRoot(name: "ReadFreshnessTimeoutSuccess")
+            let fileURL = root.appendingPathComponent("Seed.swift")
+            try write("seed", to: fileURL)
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: root.path)
+            let rootRef = WorkspaceRootRef(id: record.id, name: record.name, fullPath: record.standardizedFullPath)
+            await resetScopedIngressBarrierAfterSeededLoad(store, rootID: record.id)
+            let service = WorkspaceReadableFileService(store: store)
+
+            try await service.awaitFreshnessForExplicitRequest(
+                fileURL.path,
+                rootRefs: [rootRef],
+                timeout: .seconds(1)
+            )
+            let stats = await store.scopedIngressBarrierStatsForTesting(rootID: record.id)
+            let roots = await store.readSearchRootDiagnosticsSnapshot()
+            let settledRoot = try XCTUnwrap(roots.first { $0.rootID == record.id })
+            XCTAssertEqual(stats.launchCount, 1)
+            XCTAssertNotNil(settledRoot.barrier.lastCompleted)
+        }
+
         func testCancelledReadFreshnessJoinThrowsBeforeCanonicalFlightCompletes() async throws {
             let root = try makeTemporaryRoot(name: "ReadFreshnessCancellation")
             let fileURL = root.appendingPathComponent("Seed.swift")
@@ -4332,6 +4449,78 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertNotEqual(initialRecord.id, replacement.id)
             XCTAssertNotEqual(initial.generation, unloaded.generation)
             XCTAssertNotEqual(unloaded.generation, reloaded.generation)
+        }
+
+        func testValidatedSessionSelectorDedupesNameOnlyReferences() async throws {
+            let rootURL = try makeTemporaryRoot(name: "ValidatedSelectorNameDedupe")
+            try write("let value = true", to: rootURL.appendingPathComponent("Target.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let scope = WorkspaceLookupRootScope.validatedSessionBoundWorkspace(
+                canonicalRoots: [
+                    WorkspaceRootRef(id: root.id, name: "First", fullPath: root.standardizedFullPath),
+                    WorkspaceRootRef(id: root.id, name: "Second", fullPath: root.standardizedFullPath)
+                ],
+                physicalRoots: []
+            )
+
+            let availability = await store.rootScopeAvailability(scope)
+            let scopedRoots = await store.rootRefs(scope: scope)
+            let codemapRootEpochs = await store.codemapRootEpochs(scope: scope)
+
+            XCTAssertEqual(availability, .available)
+            XCTAssertEqual(scopedRoots.map(\.id), [root.id])
+            XCTAssertEqual(Set(codemapRootEpochs.keys), [root.id])
+        }
+
+        func testValidatedSessionSelectorConflictsExposeNoRootsOrCodemapEpochs() async throws {
+            let firstURL = try makeTemporaryRoot(name: "ValidatedSelectorFirst")
+            let secondURL = try makeTemporaryRoot(name: "ValidatedSelectorSecond")
+            try write("let first = true", to: firstURL.appendingPathComponent("First.swift"))
+            try write("let second = true", to: secondURL.appendingPathComponent("Second.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let first = try await store.loadRoot(path: firstURL.path)
+            let second = try await store.loadRoot(path: secondURL.path)
+            let firstRef = WorkspaceRootRef(
+                id: first.id,
+                name: first.name,
+                fullPath: first.standardizedFullPath
+            )
+            let conflictingPathRef = WorkspaceRootRef(
+                id: first.id,
+                name: second.name,
+                fullPath: second.standardizedFullPath
+            )
+            let conflictingScopes: [WorkspaceLookupRootScope] = [
+                .validatedSessionBoundWorkspace(
+                    canonicalRoots: [firstRef, conflictingPathRef],
+                    physicalRoots: []
+                ),
+                .validatedSessionBoundWorkspace(
+                    canonicalRoots: [firstRef],
+                    physicalRoots: [firstRef]
+                )
+            ]
+
+            for scope in conflictingScopes {
+                let availability = await store.rootScopeAvailability(scope)
+                let scopedRoots = await store.rootRefs(scope: scope)
+                let codemapRootEpochs = await store.codemapRootEpochs(scope: scope)
+                let catalogAccess = await store.searchCatalogAccess(rootScope: scope)
+
+                XCTAssertEqual(
+                    availability,
+                    .sessionWorktreeUnavailable(missingPhysicalRootPaths: [])
+                )
+                XCTAssertTrue(scopedRoots.isEmpty)
+                XCTAssertTrue(codemapRootEpochs.isEmpty)
+                XCTAssertEqual(
+                    catalogAccess,
+                    .unavailable(.sessionWorktreeUnavailable(missingPhysicalRootPaths: []))
+                )
+            }
         }
 
         func testValidatedSessionScopeRejectsSamePathRootReplacement() async throws {

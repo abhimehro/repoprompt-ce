@@ -1,5 +1,5 @@
 import Foundation
-@testable import RepoPrompt
+@testable import RepoPromptApp
 import XCTest
 
 @MainActor
@@ -417,6 +417,8 @@ final class AgentOraclePillRoutingTests: XCTestCase {
             composition.workspaceManager.workspaces[index] = workspace
         }
         composition.workspaceManager.activeWorkspace = workspace
+        composition.promptManager.loadComposeTabsFromWorkspace(workspace)
+        await composition.oracleViewModel.loadSessionsFromWorkspace()
         composition.oracleViewModel.sessions = []
 
         return Fixture(

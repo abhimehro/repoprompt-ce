@@ -35,6 +35,7 @@ enum ContextBuilderRunWaiterResolution {
 enum ContextBuilderResponseDeliveryDrainOutcome: Equatable {
     case drained
     case peerEOFDetached
+    case detachedAfterResponseDeliveryDrained
     case failed
 
     var succeeded: Bool {
@@ -42,7 +43,7 @@ enum ContextBuilderResponseDeliveryDrainOutcome: Equatable {
     }
 
     var transportAlreadyClosed: Bool {
-        self == .peerEOFDetached
+        self == .peerEOFDetached || self == .detachedAfterResponseDeliveryDrained
     }
 }
 
@@ -51,18 +52,18 @@ enum ContextBuilderResponseDeliveryDrainResolver {
     static func resolve(
         initiallyDetached: Bool,
         awaitDrain: @MainActor () async -> Bool,
-        isAuthoritativePeerEOFDetached: @MainActor () -> Bool,
+        isAuthoritativeDetached: @MainActor () -> Bool,
         awaitTeardownPublication: @MainActor () async -> MCPServerViewModel.ContextBuilderTeardownPublicationOutcome
     ) async -> ContextBuilderResponseDeliveryDrainOutcome {
-        if initiallyDetached { return .peerEOFDetached }
-        if await awaitDrain() { return .drained }
-        if isAuthoritativePeerEOFDetached() { return .peerEOFDetached }
+        if !initiallyDetached, await awaitDrain() { return .drained }
 
         let publication = await awaitTeardownPublication()
-        guard publication == .peerEOFDetached,
-              isAuthoritativePeerEOFDetached()
+        guard publication.completedDiscoveryCanCommit,
+              isAuthoritativeDetached()
         else { return .failed }
-        return .peerEOFDetached
+        return publication == .peerEOFDetached
+            ? .peerEOFDetached
+            : .detachedAfterResponseDeliveryDrained
     }
 }
 
@@ -106,6 +107,37 @@ enum ContextBuilderChildConnectionFinalizer {
     }
 }
 
+struct ContextBuilderResolvedRunAuthority {
+    let configuration: ContextBuilderMCPRunConfiguration
+    let agentKind: AgentProviderKind
+    let modelRaw: String
+}
+
+struct ContextBuilderMCPRunConfiguration {
+    let identity: WorkspaceSelectionIdentity
+    let nestedTabContext: MCPServerViewModel.TabContextSnapshot
+    let providerWorkspacePath: String
+    let discoveryTokenBudget: Int
+    let planTokenBudget: Int
+    let enhancementMode: PromptEnhancementMode
+    let allowClarifyingQuestions: Bool
+    let questionTimeoutSeconds: TimeInterval
+    let responseType: String?
+    let planningModelRaw: String?
+    let isSystemWorkspace: Bool
+
+    var effectiveTokenBudget: Int {
+        let wantsResponse = responseType.flatMap {
+            ContextBuilderResponseType(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }?.wantsResponse ?? false
+        return ContextBuilderBudgetResolver.resolveBudget(
+            wantsResponse: wantsResponse,
+            discoveryTokenBudget: discoveryTokenBudget,
+            planTokenBudget: planTokenBudget
+        )
+    }
+}
+
 @MainActor
 final class ContextBuilderRunRecord {
     struct TeardownPayload {
@@ -122,6 +154,7 @@ final class ContextBuilderRunRecord {
     let modelRaw: String
     let progressReporter: ContextBuilderMCPProgressReporter?
     let workspaceContext: ContextBuilderWorkspaceContext?
+    let mcpConfiguration: ContextBuilderMCPRunConfiguration?
 
     var output = ContextBuilderAssistantOutputAccumulator()
     var executionTask: Task<Void, Never>?
@@ -149,6 +182,7 @@ final class ContextBuilderRunRecord {
         agentKind: AgentProviderKind,
         modelRaw: String,
         workspaceContext: ContextBuilderWorkspaceContext? = nil,
+        mcpConfiguration: ContextBuilderMCPRunConfiguration? = nil,
         continuation: CheckedContinuation<ContextBuilderAgentViewModel.MCPContextBuilderRunCompletion, Error>? = nil,
         restoreConfiguration: (() -> Void)? = nil,
         progressReporter: ContextBuilderMCPProgressReporter? = nil
@@ -161,6 +195,7 @@ final class ContextBuilderRunRecord {
         self.agentKind = agentKind
         self.modelRaw = modelRaw
         self.workspaceContext = workspaceContext
+        self.mcpConfiguration = mcpConfiguration
         self.continuation = continuation
         self.restoreConfiguration = restoreConfiguration
         self.progressReporter = progressReporter
@@ -274,6 +309,10 @@ final class ContextBuilderRunRegistry {
     func activeRecord(tabID: UUID) -> ContextBuilderRunRecord? {
         guard let runID = activeRunIDByTabID[tabID] else { return nil }
         return recordsByRunID[runID]
+    }
+
+    func records(tabID: UUID) -> [ContextBuilderRunRecord] {
+        recordsByRunID.values.filter { $0.tabID == tabID }
     }
 
     func acceptsEvents(from record: ContextBuilderRunRecord, currentSession: ContextBuilderAgentViewModel.TabSession?) -> Bool {

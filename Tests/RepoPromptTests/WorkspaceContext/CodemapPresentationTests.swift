@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-@testable import RepoPrompt
+@testable import RepoPromptApp
 import XCTest
 
 final class CodemapPresentationTests: WorkspaceFileContextStoreCodemapSeamTestSupport {
@@ -681,7 +681,7 @@ final class CodemapPresentationTests: WorkspaceFileContextStoreCodemapSeamTestSu
         )
         let rootScope = WorkspaceLookupRootScope.validatedSessionBoundWorkspace(
             canonicalRoots: [allowedRootRef],
-            physicalRoots: [allowedRootRef]
+            physicalRoots: []
         )
         let coordinator = WorkspaceCodemapPresentationCoordinator(
             store: store,

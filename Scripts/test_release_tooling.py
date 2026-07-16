@@ -17,12 +17,47 @@ import tempfile
 import time
 import unittest
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 class ReleaseToolingTests(unittest.TestCase):
+    def test_debug_provenance_uses_json_validation_and_rejects_truncated_output(self) -> None:
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        validator = SCRIPT_DIR / "validate_json.py"
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        provenance = temp_dir / "RepoPromptDebugProvenance.json"
+
+        self.assertIn(
+            'run python3 "$CONTROL_PLANE_SCRIPTS_DIR/validate_json.py" \\\n        "$APP_BUNDLE/Contents/Resources/RepoPromptDebugProvenance.json"',
+            package_script,
+        )
+        self.assertNotIn(
+            'plutil -lint "$APP_BUNDLE/Contents/Resources/RepoPromptDebugProvenance.json"',
+            package_script,
+        )
+
+        provenance.write_text('{"version": 1}\n', encoding="utf-8")
+        valid = subprocess.run(
+            [sys.executable, str(validator), str(provenance)],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertEqual(valid.stdout.strip(), f"Valid JSON: {provenance}")
+
+        provenance.write_text('{"version":', encoding="utf-8")
+        truncated = subprocess.run(
+            [sys.executable, str(validator), str(provenance)],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(truncated.returncode, 1)
+        self.assertIn(f"error: invalid JSON file {provenance}:", truncated.stderr)
+
     def test_runtime_signing_policy_matches_release_metadata_and_entitlement_templates(self) -> None:
         root = SCRIPT_DIR.parent
         metadata = {}
@@ -31,11 +66,16 @@ class ReleaseToolingTests(unittest.TestCase):
                 key, value = line.split("=", 1)
                 metadata[key] = value.strip('"')
 
+        package_manifest = (root / "Package.swift").read_text(encoding="utf-8")
         policy = (
             root / "Sources" / "RepoPrompt" / "Infrastructure" / "Security" / "RuntimeCodeSigningPolicy.swift"
         ).read_text(encoding="utf-8")
         entitlements = (root / "AppBundle" / "RepoPrompt.entitlements.template").read_text(encoding="utf-8")
         info_plist = plistlib.loads((root / "AppBundle" / "Info.plist.template").read_bytes())
+
+        self.assertIn('environment["REPOPROMPT_ENABLE_SENTRY"] == "1"', package_manifest)
+        self.assertIn('repoPromptAppSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))', package_manifest)
+        self.assertNotIn("let sentryEnabled = true", package_manifest)
 
         self.assertIn(
             f'static let developerIDBundleIdentifier = "{metadata["BUNDLE_ID"]}"',
@@ -58,6 +98,8 @@ class ReleaseToolingTests(unittest.TestCase):
         self.assertIn("RepoPromptDebugSecureStorageBackend", info_plist)
         self.assertIn("RepoPromptLocalSigningCertificateSHA256", info_plist)
         self.assertIn("RepoPromptLocalSecureStorageGeneration", info_plist)
+        self.assertIn("RepoPromptSentryDSN", info_plist)
+        self.assertEqual(info_plist["RepoPromptSentryDSN"], "")
         self.assertIn(
             'static let localSelfSignedCertificateName = "RepoPrompt CE Local Self-Signed Code Signing"',
             policy,
@@ -501,6 +543,38 @@ esac
         self.assertIsNone(manifest_content["bundle_signing"]["leaf_certificate_sha256"])
         for executable in manifest_content["executables"]:
             self.assertIsNone(executable["signing"]["leaf_certificate_sha256"])
+        # The RC fixture has no DSN, so telemetry is disabled.
+        self.assertFalse(manifest_content["bundle"]["telemetry_enabled"])
+
+        # With a DSN present, the manifest records telemetry_enabled=True but never the DSN value.
+        dsn_value = "https://examplepublickey@o9999.ingest.sentry.io/424242"
+        info_with_dsn = dict(info)
+        info_with_dsn["RepoPromptSentryDSN"] = dsn_value
+        (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info_with_dsn))
+        dsn_manifest = app.parent / "telemetry-manifest.json"
+        dsn_written = subprocess.run(
+            [
+                str(writer),
+                "write",
+                "--app",
+                str(app),
+                "--output",
+                str(dsn_manifest),
+                "--expected-architectures",
+                "arm64,x86_64",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(dsn_written.returncode, 0, dsn_written.stderr)
+        dsn_manifest_text = dsn_manifest.read_text(encoding="utf-8")
+        self.assertNotIn(dsn_value, dsn_manifest_text)
+        self.assertNotIn("examplepublickey", dsn_manifest_text)
+        self.assertTrue(json.loads(dsn_manifest_text)["bundle"]["telemetry_enabled"])
+        # Restore the no-DSN RC Info.plist so the remainder of the test is unaffected.
+        (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
+
         accepted = subprocess.run(
             [
                 str(writer),
@@ -927,6 +1001,13 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn('CFFIXED_USER_HOME="$ISOLATED_HOME"', source)
         self.assertIn('"$MCP_HELPER"', source)
         self.assertIn('[helper, "-e", "windows"]', source)
+        self.assertIn('HELPER_REQUEST_TIMEOUT="${REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT:-30}"', source)
+        self.assertIn('timeout=int(helper_timeout)', source)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT must be a positive integer', source)
+        self.assertIn('log_phase() {', source)
+        self.assertIn('windows-attempt-${attempt}.out', source)
+        self.assertIn('windows-attempt-${attempt}.err', source)
+        self.assertIn('CLI windows attempt ${attempt}', source)
         self.assertIn('APP_PID=$!', source)
         self.assertIn('launched-process.json', source)
         self.assertIn('verify_packaged_mcp_socket_owner.py', source)
@@ -1070,9 +1151,16 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn("smoke_packaged_mcp_roundtrip.sh", signed_smoke)
         self.assertIn('"extracted/RepoPrompt CE.app"', signed_smoke)
         self.assertIn("env -i", signed_smoke)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"', signed_smoke)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"', signed_smoke)
         self.assertIn("PATH=/usr/bin:/bin:/usr/sbin:/sbin", signed_smoke)
         self.assertIn('HOME="$HOME"', signed_smoke)
         self.assertIn('TMPDIR="$RUNNER_TEMP"', signed_smoke)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_TIMEOUT"', signed_smoke)
+        self.assertIn(
+            'REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT"',
+            signed_smoke,
+        )
 
         reviewed_smoke = promote_workflow.split("\n  smoke-reviewed-helper:", 1)[1].split("\n  promote:", 1)[0]
         self.assertNotIn("environment: release", reviewed_smoke)
@@ -1085,6 +1173,16 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn("smoke_packaged_mcp_roundtrip.sh", reviewed_smoke)
         self.assertIn('"extracted/RepoPrompt CE.app"', reviewed_smoke)
         self.assertIn("env -i", reviewed_smoke)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"', reviewed_smoke)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"', reviewed_smoke)
+        self.assertIn(
+            'REPOPROMPT_PACKAGED_SMOKE_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_TIMEOUT"',
+            reviewed_smoke,
+        )
+        self.assertIn(
+            'REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT"',
+            reviewed_smoke,
+        )
         promote_job = promote_workflow.split("\n  promote:", 1)[1]
         self.assertIn("- smoke-reviewed-helper", promote_job)
         self.assertIn("environment: release", promote_job)
@@ -1105,6 +1203,364 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn('CERTIFICATE_PATH="$RUNNER_TEMP/repoprompt-release.p12"', final_cleanup)
         self.assertIn('rm -f "$CERTIFICATE_PATH"', final_cleanup)
         self.assertIn('rm -rf "$RUNNER_TEMP/repoprompt-release-secrets"', final_cleanup)
+
+    def test_sentry_symbol_upload_helper_uses_token_file_without_logging_secret(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        symbols = temp_dir / "symbols"
+        symbols.mkdir()
+        (symbols / "RepoPrompt.dSYM").mkdir()
+        ambient_token = "sntrys_wrong_ambient_secret_token"
+        token = "sntrys_fixture_secret_token"
+        token_file = temp_dir / "sentry-token"
+        token_file.write_text(token + "\n", encoding="utf-8")
+        argv_capture = temp_dir / "argv.txt"
+        token_capture = temp_dir / "token.txt"
+        fake_cli = temp_dir / "sentry-cli"
+        fake_cli.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$ARGV_CAPTURE"
+printf '%s' "${SENTRY_AUTH_TOKEN:-}" > "$TOKEN_CAPTURE"
+""",
+            encoding="utf-8",
+        )
+        fake_cli.chmod(0o755)
+        env = os.environ.copy()
+        env["SENTRY_AUTH_TOKEN"] = ambient_token
+        env.update(
+            {
+                "PATH": f"{temp_dir}:{env.get('PATH', '')}",
+                "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE": str(token_file),
+                "REPOPROMPT_SENTRY_ORG": "fixture-org",
+                "REPOPROMPT_SENTRY_PROJECT": "fixture-project",
+                "ARGV_CAPTURE": str(argv_capture),
+                "TOKEN_CAPTURE": str(token_capture),
+            }
+        )
+
+        result = subprocess.run(
+            [str(SCRIPT_DIR / "upload_sentry_debug_symbols.sh"), str(symbols)],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(token, result.stdout)
+        self.assertNotIn(token, result.stderr)
+        argv = argv_capture.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            argv,
+            [
+                "debug-files",
+                "upload",
+                "--org",
+                "fixture-org",
+                "--project",
+                "fixture-project",
+                str(symbols),
+            ],
+        )
+        self.assertNotIn("--include-sources", argv)
+        self.assertNotIn(token, "\n".join(argv))
+        self.assertEqual(token_capture.read_text(encoding="utf-8"), token)
+
+    def run_sentry_prepare_fixture(
+        self,
+        lookup_mode: str,
+        attempts: int = 1,
+    ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        call_log = temp_dir / "sentry-api-calls.jsonl"
+        release_state = temp_dir / "sentry-release.json"
+        api_tmp = temp_dir / "api-tmp"
+        api_tmp.mkdir()
+        fake_curl = temp_dir / "curl"
+        fake_curl.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+args = sys.argv[1:]
+
+def option(name):
+    return args[args.index(name) + 1]
+
+config = Path(option("--config"))
+if stat.S_IMODE(config.stat().st_mode) != 0o600:
+    raise SystemExit(90)
+if config.read_text(encoding="utf-8") != 'header = "Authorization: Bearer fixture-token"\\n':
+    raise SystemExit(91)
+token_file = Path(os.environ["REPOPROMPT_SENTRY_AUTH_TOKEN_FILE"])
+if stat.S_IMODE(token_file.stat().st_mode) != 0o600:
+    raise SystemExit(92)
+if token_file.read_text(encoding="utf-8") != "fixture-token":
+    raise SystemExit(93)
+if "SENTRY_AUTH_TOKEN" in os.environ:
+    raise SystemExit(94)
+
+scenario = os.environ["SENTRY_LOOKUP_MODE"]
+if scenario == "transport":
+    raise SystemExit(7)
+
+method = option("--request")
+output = Path(option("--output"))
+url = args[-1]
+body = None
+if "--data-binary" in args:
+    body_arg = option("--data-binary")
+    if not body_arg.startswith("@"):
+        raise SystemExit(95)
+    body = json.loads(Path(body_arg[1:]).read_text(encoding="utf-8"))
+
+with Path(os.environ["SENTRY_CALL_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"method": method, "url": url, "body": body}) + "\\n")
+
+state_path = Path(os.environ["SENTRY_RELEASE_STATE"])
+parsed = urlparse(url)
+is_preflight = parsed.query != ""
+is_collection = parsed.path.endswith("/releases/")
+version = unquote(parsed.path.rstrip("/").split("/")[-1])
+
+def release_payload():
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    return {
+        "version": state["version"],
+        "projects": [{"slug": "fixture-project"}],
+        "dateReleased": state.get("dateReleased"),
+    }
+
+if is_preflight:
+    if scenario == "unauthorized":
+        status, response = 401, {"detail": "SECRET_BODY_MARKER"}
+    elif scenario == "denied":
+        status, response = 403, {"detail": "SECRET_BODY_MARKER"}
+    elif scenario == "malformed":
+        status, response = 200, {}
+    else:
+        status, response = 200, []
+elif method == "GET" and not is_collection:
+    if state_path.exists():
+        status, response = 200, release_payload()
+    else:
+        status, response = 404, {"detail": "SECRET_BODY_MARKER"}
+elif method == "POST" and is_collection:
+    state_path.write_text(
+        json.dumps({"version": body["version"], "dateReleased": None}),
+        encoding="utf-8",
+    )
+    status, response = 201, release_payload()
+elif method == "PUT" and not is_collection and state_path.exists():
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if "dateReleased" in body:
+        state["dateReleased"] = body["dateReleased"]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    status, response = 200, release_payload()
+else:
+    status, response = 500, {"detail": "unexpected fixture request", "version": version}
+
+output.write_text(json.dumps(response), encoding="utf-8")
+sys.stdout.write(str(status))
+""",
+            encoding="utf-8",
+        )
+        fake_curl.chmod(0o755)
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{temp_dir}:{env.get('PATH', '')}",
+                "REPOPROMPT_ENABLE_SENTRY": "1",
+                "SENTRY_AUTH_TOKEN": "fixture-token",
+                "REPOPROMPT_SENTRY_ORG": "fixture-org",
+                "REPOPROMPT_SENTRY_PROJECT": "fixture-project",
+                "REPOPROMPT_SENTRY_API_BASE_URL": "https://sentry.example/api/0",
+                "SOURCE_GITHUB_REPOSITORY": "fixture/repository",
+                "RELEASE_COMMIT": "0123456789abcdef",
+                "SENTRY_LOOKUP_MODE": lookup_mode,
+                "SENTRY_CALL_LOG": str(call_log),
+                "SENTRY_RELEASE_STATE": str(release_state),
+                "FIXTURE_TMP_DIR": str(api_tmp),
+                "ATTEMPTS": str(attempts),
+            }
+        )
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; TMP_DIR="$FIXTURE_TMP_DIR"; '
+                "preflight_sentry_release_access; "
+                "for ((attempt = 0; attempt < ATTEMPTS; attempt++)); do prepare_sentry_release; done; "
+                "finalize_sentry_release; finalize_sentry_release",
+                "sentry-release-test",
+                str(SCRIPT_DIR / "release.sh"),
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        calls = (
+            [json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()]
+            if call_log.exists()
+            else []
+        )
+        return result, calls
+
+    def test_sentry_release_prepare_creates_only_for_not_found_and_is_retry_safe(self) -> None:
+        result, calls = self.run_sentry_prepare_fixture("not-found-once", attempts=2)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        collection_posts = [call for call in calls if call["method"] == "POST"]
+        refs_updates = [
+            call
+            for call in calls
+            if call["method"] == "PUT" and "refs" in (call["body"] or {})
+        ]
+        finalizations = [
+            call
+            for call in calls
+            if call["method"] == "PUT" and "dateReleased" in (call["body"] or {})
+        ]
+        self.assertEqual(len(collection_posts), 1)
+        self.assertEqual(len(refs_updates), 2)
+        self.assertEqual(len(finalizations), 1)
+        self.assertEqual(
+            collection_posts[0]["body"]["refs"],
+            [{"repository": "fixture/repository", "commit": "0123456789abcdef"}],
+        )
+        self.assertTrue(all("%40" in call["url"] and "%2B" in call["url"] for call in refs_updates))
+        self.assertIn("already finalized", result.stdout)
+        self.assertNotIn("fixture-token", result.stdout + result.stderr + json.dumps(calls))
+        self.assertNotIn("SECRET_BODY_MARKER", result.stdout + result.stderr)
+
+    def test_sentry_release_prepare_does_not_create_after_lookup_failure(self) -> None:
+        result, calls = self.run_sentry_prepare_fixture("denied")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["method"], "GET")
+        self.assertFalse(any(call["method"] in {"POST", "PUT"} for call in calls))
+        self.assertIn("org:ci access", result.stderr)
+        self.assertNotIn("fixture-token", result.stdout + result.stderr)
+        self.assertNotIn("SECRET_BODY_MARKER", result.stdout + result.stderr)
+
+    def test_sentry_release_preflight_distinguishes_invalid_token_without_mutation(self) -> None:
+        result, calls = self.run_sentry_prepare_fixture("unauthorized")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(any(call["method"] in {"POST", "PUT"} for call in calls))
+        self.assertIn("HTTP 401", result.stderr)
+        self.assertIn("SENTRY_AUTH_TOKEN is current", result.stderr)
+        self.assertNotIn("fixture-token", result.stdout + result.stderr)
+        self.assertNotIn("SECRET_BODY_MARKER", result.stdout + result.stderr)
+
+    def test_sentry_release_preflight_rejects_malformed_json_before_mutation(self) -> None:
+        result, calls = self.run_sentry_prepare_fixture("malformed")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(any(call["method"] in {"POST", "PUT"} for call in calls))
+        self.assertIn("malformed JSON during access preflight", result.stderr)
+
+    def test_sentry_symbol_flow_is_explicit_secret_safe_and_release_only_by_default(self) -> None:
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+        universal_builder = (SCRIPT_DIR / "build_swiftpm_release_products.sh").read_text(encoding="utf-8")
+        release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")
+        promote_script = (SCRIPT_DIR / "promote_release.sh").read_text(encoding="utf-8")
+        release_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        promote_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "release-promote.yml").read_text(encoding="utf-8")
+        conductor = (SCRIPT_DIR / "conductor.py").read_text(encoding="utf-8")
+
+        self.assertIn('SENTRY_SYMBOLS_DIR="$ROOT_DIR/.build/sentry-symbols/$CONF"', package_script)
+        self.assertNotIn("REPOPROMPT_SENTRY_SYMBOLS_DIR", package_script)
+        self.assertIn("SWIFT_BUILD_ARGS+=(-debug-info-format dwarf)", package_script)
+        self.assertIn('run xcrun dsymutil "$BUILD_DIR/$exe" -o "$SENTRY_SYMBOLS_DIR/$exe.dSYM"', package_script)
+        self.assertIn('if truthy "${REPOPROMPT_UPLOAD_SENTRY_SYMBOLS:-}"; then', package_script)
+        self.assertIn("REPOPROMPT_UPLOAD_SENTRY_SYMBOLS requires REPOPROMPT_ENABLE_SENTRY=1", package_script)
+        self.assertIn("REPOPROMPT_UPLOAD_SENTRY_SYMBOLS requires SENTRY_AUTH_TOKEN or REPOPROMPT_SENTRY_AUTH_TOKEN_FILE", package_script)
+        self.assertIn("SWIFT_BUILD_ARGS+=(-debug-info-format dwarf)", universal_builder)
+
+        self.assertIn('require_file "$CONTROL_PLANE_SCRIPTS_DIR/upload_sentry_debug_symbols.sh"', release_script)
+        self.assertIn('SENTRY_SYMBOLS_DIR="$ROOT_DIR/.build/sentry-symbols/release"', release_script)
+        self.assertIn('ditto "$SENTRY_SYMBOLS_DIR" "$stage_root/.build/sentry-symbols/release"', release_script)
+        self.assertIn('upload_required_sentry_symbols', release_script)
+        self.assertIn('SENTRY_RELEASE_NAME="$BUNDLE_ID@$MARKETING_VERSION+$BUILD_NUMBER"', release_script)
+        self.assertIn('require_sentry_publish_configuration() {', release_script)
+        self.assertIn('require_command sentry-cli', release_script)
+        self.assertIn('preflight_sentry_release_access', release_script)
+        self.assertIn('prepare_sentry_release', release_script)
+        self.assertIn('sentry_api_request POST', release_script)
+        self.assertIn('sentry_api_request PUT', release_script)
+        self.assertIn("'{refs: [{repository: $repository, commit: $commit}]}'", release_script)
+        self.assertIn('finalize_sentry_release', release_script)
+        self.assertIn("'{dateReleased: $date_released}'", release_script)
+        self.assertNotIn('sentry-cli --org', release_script)
+        self.assertNotIn('record_sentry_production_deploy', release_script)
+        self.assertNotIn('releases deploys "$SENTRY_RELEASE_NAME" new', release_script)
+        self.assertIn('token="$(tr -d', release_script)
+        self.assertIn('REPOPROMPT_SENTRY_AUTH_TOKEN_FILE="$normalized_token_file"', release_script)
+        self.assertIn('unset SENTRY_AUTH_TOKEN', release_script)
+
+        self.assertIn('preflight_sentry_deploy_access', promote_script)
+        self.assertIn('record_verified_sentry_deploy_if_needed', promote_script)
+        self.assertIn("'$value | @uri'", promote_script)
+        self.assertIn('sentry_api_request POST', promote_script)
+        self.assertNotIn('sentry-cli', promote_script)
+        sentry_request = promote_script.split("sentry_api_request() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertNotIn("--retry", sentry_request)
+
+        publish_staged = release_script.split("publish_staged_release() {", 1)[1].split("\n}\n\ncase", 1)[0]
+        self.assertLess(
+            publish_staged.index("preflight_sentry_release_access"),
+            publish_staged.index("sign_staged_release.sh"),
+        )
+        self.assertLess(publish_staged.index("prepare_sentry_release"), publish_staged.index("upload_required_sentry_symbols"))
+        self.assertLess(publish_staged.index("upload_required_sentry_symbols"), publish_staged.index("gh release view"))
+        self.assertLess(publish_staged.index("gh release view"), publish_staged.index("gh release create"))
+        self.assertLess(publish_staged.index("gh release create"), publish_staged.index("finalize_sentry_release"))
+
+        promote_case = promote_script.split('    promote)\n', 1)[1].split('        ;;', 1)[0]
+        self.assertLess(promote_case.index("preflight_sentry_deploy_access"), promote_case.index("publish_reviewed_release"))
+        self.assertLess(promote_case.index("publish_reviewed_release"), promote_case.index("verify_anonymous_publish"))
+        self.assertLess(promote_case.index("verify_anonymous_publish"), promote_case.index("record_verified_sentry_deploy_if_needed"))
+
+        stage_job = release_workflow.split("\n  stage:", 1)[1].split("\n  publish:", 1)[0]
+        publish_job = release_workflow.split("\n  publish:", 1)[1].split("\n  smoke-signed-helper:", 1)[0]
+        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', stage_job)
+        self.assertNotIn("SENTRY_AUTH_TOKEN", stage_job)
+        self.assertIn("Install Sentry CLI when symbol upload is configured", publish_job)
+        self.assertIn("brew install getsentry/tools/sentry-cli", publish_job)
+        self.assertIn("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}", publish_job)
+        self.assertLess(
+            publish_job.index("Install Sentry CLI when symbol upload is configured"),
+            publish_job.index("Sign, notarize, and create draft release"),
+        )
+        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', publish_job)
+        self.assertIn("REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}", publish_job)
+        self.assertIn("REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}", publish_job)
+
+        promote_job = promote_workflow.split("\n  promote:", 1)[1]
+        self.assertIn("Prepare Sentry promotion token file", promote_job)
+        self.assertIn("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}", promote_job)
+        self.assertIn("chmod 600", promote_job)
+        self.assertIn("REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}", promote_job)
+        self.assertIn("REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}", promote_job)
+        self.assertIn("REPOPROMPT_SENTRY_DEPLOY_ENVIRONMENT: production", promote_job)
+        self.assertIn("Remove Sentry promotion token file", promote_job)
+        self.assertNotIn("sentry-cli", promote_job)
+
+        self.assertIn('"REPOPROMPT_ENABLE_SENTRY"', conductor)
+        self.assertIn('"REPOPROMPT_UPLOAD_SENTRY_SYMBOLS"', conductor)
+        self.assertIn('"REPOPROMPT_SENTRY_AUTH_TOKEN_FILE"', conductor)
+        self.assertIn('"REPOPROMPT_SENTRY_ORG"', conductor)
+        self.assertIn('"REPOPROMPT_SENTRY_PROJECT"', conductor)
+        self.assertNotIn('"SENTRY_AUTH_TOKEN"', conductor)
 
     def test_staged_release_extractor_rejects_alternate_in_app_cli_target(self) -> None:
         for relative, alternate_target in (
@@ -1302,7 +1758,10 @@ SIGNING_TEAM_ID=648A27MST5
         )[0]
         self.assertNotIn("updaterController.startUpdater()", manager_init)
         self.assertIn("guard sparkleConfigurationValid, !updaterStarted else { return }", sparkle_manager)
-        self.assertIn("guard updaterStarted, sparkleConfigurationValid else { return false }", sparkle_manager)
+        self.assertIn(
+            "guard updaterStarted, sparkleConfigurationValid, activeUserInitiatedChannel == nil else {",
+            sparkle_manager,
+        )
 
     def test_ci_secret_scan_covers_introduced_commit_range_and_checked_out_tree(self) -> None:
         workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -1310,6 +1769,51 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn('gitleaks git --redact --log-opts="$range" .', workflow)
         self.assertIn("gitleaks dir --redact .", workflow)
+
+    def test_swift_style_lint_uses_config_discovery_without_script_input_overhead(self) -> None:
+        root = SCRIPT_DIR.parent
+        style_script = (SCRIPT_DIR / "swift_style.sh").read_text(encoding="utf-8")
+        swiftlint_config = (root / ".swiftlint.yml").read_text(encoding="utf-8")
+        lint_body = style_script.split("run_swiftlint(){", 1)[1].split("\n}", 1)[0]
+
+        self.assertIn('local args=(lint --strict --config "$ROOT_DIR/.swiftlint.yml" --quiet --force-exclude)', lint_body)
+        self.assertNotIn("SCRIPT_INPUT_FILE", lint_body)
+        self.assertNotIn("--use-script-input-files", lint_body)
+
+        style_paths_body = style_script.split("STYLE_PATHS=(", 1)[1].split("\n)", 1)[0]
+        style_paths = [
+            line.strip().strip('"')
+            for line in style_paths_body.splitlines()
+            if line.strip().startswith('"')
+        ]
+        for style_path in style_paths:
+            self.assertIn(f"  - {style_path}", swiftlint_config)
+
+        for excluded_path in (
+            ".build",
+            ".swiftpm",
+            "build",
+            "Carthage",
+            "DerivedData",
+            "Generated",
+            "Pods",
+            "Vendor",
+            "Packages/RepoPromptAgentProviders/.build",
+            "Sources/CSwiftPCRE2",
+            "Sources/RepoPromptC",
+            "Sources/RepoPrompt/ThirdParty/SwiftPCRE2",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPromptSharedFragments.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+Build.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+DeepPlan.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+Investigate.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+Optimize.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+OracleExport.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+Orchestrate.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+Refactor.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+Reminder.swift",
+            "Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt+Review.swift",
+        ):
+            self.assertIn(f"  - {excluded_path}", swiftlint_config)
 
     def test_publish_staged_validates_before_creating_dist(self) -> None:
         release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")
@@ -1323,6 +1827,467 @@ SIGNING_TEAM_ID=648A27MST5
             publish_staged.index('"$CONTROL_PLANE_SCRIPTS_DIR/sign_staged_release.sh"'),
             publish_staged.index("prepare_dist"),
         )
+
+
+    def test_main_tip_workflow_keeps_tip_separate_and_uses_hardened_smoke(self) -> None:
+        tip_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-tip.yml").read_text(encoding="utf-8")
+        tip_script = (SCRIPT_DIR / "main_tip_release.sh").read_text(encoding="utf-8")
+        package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
+
+        self.assertIn("name: Publish Tip", tip_workflow)
+        self.assertIn("group: main-tip-channel", tip_workflow)
+        self.assertIn("should-publish", tip_workflow)
+        self.assertIn("stable-appcast.xml", tip_workflow)
+        self.assertIn('build_number="$stable_build_number.$((build_sequence / 100)).$((build_sequence % 100))"', tip_workflow)
+        self.assertIn("environment: tip-release", tip_workflow)
+        self.assertIn("TIP_UPDATE_REPOSITORY_TOKEN", tip_workflow)
+        self.assertIn("repoprompt-ce-tip-updates", tip_workflow)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT: "240"', tip_workflow)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT: "60"', tip_workflow)
+        self.assertIn('REPOPROMPT_PACKAGED_SMOKE_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_TIMEOUT"', tip_workflow)
+        self.assertIn(
+            'REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT="$REPOPROMPT_PACKAGED_SMOKE_HELPER_TIMEOUT"',
+            tip_workflow,
+        )
+        self.assertIn("Check out approved tip source as data", tip_workflow)
+        self.assertIn("extract_staged_release.py", tip_workflow)
+        self.assertIn("RELEASE_COMMIT: ${{ needs.setup.outputs.commit }}", tip_workflow)
+        self.assertIn("REPOPROMPT_APPROVED_SOURCE_ROOT: ${{ github.workspace }}/approved-source", tip_workflow)
+        self.assertIn("REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE: ${{ needs.setup.outputs.build-number }}", tip_workflow)
+        self.assertIn("tip-source/dist/*-metadata.json", tip_workflow)
+        self.assertNotIn("stable-release-channel", tip_workflow)
+        self.assertNotIn("release-draft-creation", tip_workflow)
+        self.assertNotIn("PUBLIC_UPDATE_REPOSITORY_TOKEN", tip_workflow)
+
+        self.assertIn('TIP_BUILD_NUMBER="$BUILD_NUMBER.$((TIP_BUILD_SEQUENCE / 100)).$((TIP_BUILD_SEQUENCE % 100))"', tip_script)
+        self.assertLess(
+            tip_script.index('if [[ -z "${TIP_BUILD_NUMBER:-}" ]]'),
+            tip_script.index('git rev-list --count "$TIP_COMMIT"'),
+        )
+        self.assertIn('TIP_TAG="${TIP_TAG:-tip-$TIP_SHORT_SHA}"', tip_script)
+        self.assertIn('TIP_UPDATE_REPOSITORY="${TIP_UPDATE_REPOSITORY:-repoprompt/repoprompt-ce-tip-updates}"', tip_script)
+        self.assertNotIn("--prerelease", tip_script)
+        self.assertIn("--latest", tip_script)
+        self.assertIn("--target main", tip_script)
+        self.assertIn('fail "TIP_UPDATE_REPOSITORY must not target the source or stable update repository"', tip_script)
+        self.assertIn('REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER"', tip_script)
+        self.assertEqual(tip_script.count('REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER"'), 3)
+        self.assertNotIn('BUILD_NUMBER="$TIP_BUILD_NUMBER"', tip_script)
+        self.assertIn("stage|sign|publish-tip", tip_script)
+
+        sign_tip = tip_script.split("sign_tip() {", 1)[1].split("\n}", 1)[0]
+        generate_appcast = sign_tip.index('"$TRUSTED_ROOT/Vendor/Sparkle/bin/generate_appcast"')
+        validate_appcast = sign_tip.index("validate_generated_tip_appcast")
+        write_checksums = sign_tip.index('shasum -a 256', validate_appcast)
+        self.assertLess(generate_appcast, validate_appcast)
+        self.assertLess(validate_appcast, write_checksums)
+        self.assertIn('fail "Tip appcast enclosure is missing an EdDSA signature"', tip_script)
+        self.assertIn('fail "Tip Sparkle private key does not match the app bundle SUPublicEDKey"', tip_script)
+        self.assertIn('fail "Tip Sparkle private key does not reproduce the generated appcast signature"', tip_script)
+        self.assertIn('"$CONTROL_PLANE_SCRIPTS_DIR/verify_sparkle_signature.swift"', tip_script)
+
+        capture_override = package_script.index(
+            'RELEASE_BUILD_NUMBER_OVERRIDE="${REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE:-}"'
+        )
+        load_metadata = package_script.index('load_release_metadata "$ROOT_DIR"')
+        apply_override = package_script.index('BUILD_NUMBER="$RELEASE_BUILD_NUMBER_OVERRIDE"')
+        self.assertLess(capture_override, load_metadata)
+        self.assertLess(load_metadata, apply_override)
+        self.assertIn(
+            'fail "REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE must be a valid numeric build version"',
+            package_script,
+        )
+
+    def test_main_tip_setup_uses_anonymous_release_lookup_helper(self) -> None:
+        tip_workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-tip.yml").read_text(encoding="utf-8")
+        setup_job = tip_workflow.split("\n  setup:", 1)[1].split("\n  stage:", 1)[0]
+        before_publish, publish_job = tip_workflow.split("\n  publish:", 1)
+
+        self.assertIn("permissions:\n  contents: read", tip_workflow)
+        self.assertIn("./Scripts/lookup_public_tip_release.sh", setup_job)
+        self.assertNotIn("GITHUB_TOKEN", setup_job)
+        self.assertNotIn("Authorization:", setup_job)
+        self.assertNotIn("api.github.com", setup_job)
+        self.assertNotIn("TIP_UPDATE_REPOSITORY_TOKEN", before_publish)
+        self.assertIn("TIP_GH_TOKEN: ${{ secrets.TIP_UPDATE_REPOSITORY_TOKEN }}", publish_job)
+        self.assertEqual(tip_workflow.count("TIP_UPDATE_REPOSITORY_TOKEN"), 1)
+
+    def test_public_tip_release_lookup_helper_handles_github_outcomes_safely(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        tools = root / "tools"
+        tools.mkdir()
+        calls = root / "curl-calls"
+        archive_basename = "RepoPrompt-tip-fixture-1.2.3"
+        fake_curl = tools / "curl"
+        fake_curl.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+
+def option(name):
+    return args[args.index(name) + 1]
+
+request_headers = [args[index + 1] for index, value in enumerate(args) if value == "--header"]
+if any(header.lower().startswith("authorization:") for header in request_headers):
+    raise SystemExit(90)
+if any(option_name in args for option_name in ("--user", "--netrc", "--netrc-file", "-u")):
+    raise SystemExit(91)
+if "Accept: application/vnd.github+json" not in request_headers:
+    raise SystemExit(92)
+if "X-GitHub-Api-Version: 2022-11-28" not in request_headers:
+    raise SystemExit(93)
+if option("--connect-timeout") != "10" or option("--max-time") != "30":
+    raise SystemExit(94)
+
+calls = Path(os.environ["FAKE_CURL_CALLS"])
+with calls.open("a", encoding="utf-8") as handle:
+    handle.write("call\\n")
+
+scenario = os.environ["FAKE_GITHUB_SCENARIO"]
+if scenario == "transport":
+    raise SystemExit(7)
+
+status = {
+    "found": 200,
+    "absent": 404,
+    "rate-403-primary": 403,
+    "rate-403-secondary": 403,
+    "rate-429": 429,
+    "server": 503,
+    "unexpected-403": 403,
+    "redirect-final-unexpected-403": 403,
+    "malformed": 200,
+    "malformed-flags": 200,
+}[scenario]
+remaining = "0" if scenario in {"rate-403-primary", "rate-429"} else "42"
+headers = [
+    f"HTTP/1.1 {status} Fixture",
+    "X-GitHub-Request-Id: fixture-request",
+    f"X-RateLimit-Remaining: {remaining}",
+    "X-RateLimit-Reset: 1234567890",
+]
+if scenario in {"rate-403-primary", "rate-429"}:
+    headers.append("Retry-After: 0")
+if scenario == "redirect-final-unexpected-403":
+    headers = [
+        "HTTP/1.1 302 Fixture",
+        "X-GitHub-Request-Id: intermediate-request",
+        "X-RateLimit-Remaining: 0",
+        "X-RateLimit-Reset: 1111111111",
+        "Retry-After: 30",
+        "",
+        "HTTP/2 403 Fixture",
+        "X-GitHub-Request-Id: final-request",
+    ]
+Path(option("--dump-header")).write_text("\\r\\n".join(headers) + "\\r\\n\\r\\n", encoding="utf-8")
+
+archive = os.environ["FAKE_ARCHIVE_BASENAME"]
+expected = [
+    f"{archive}.zip",
+    f"{archive}.dmg",
+    "appcast.xml",
+    "SHA256SUMS",
+    f"{archive}-artifact-manifest.json",
+    f"{archive}-metadata.json",
+]
+if scenario == "found":
+    body = {"draft": False, "prerelease": False, "assets": [{"name": name} for name in expected]}
+elif scenario == "rate-403-secondary":
+    body = {"message": "You have exceeded a secondary rate limit. SECRET_BODY_MARKER"}
+elif scenario in {"unexpected-403", "redirect-final-unexpected-403"}:
+    body = {"message": "Resource not accessible by integration. SECRET_BODY_MARKER"}
+elif scenario == "malformed":
+    body = []
+elif scenario == "malformed-flags":
+    body = {"assets": [{"name": name} for name in expected]}
+else:
+    body = {"message": "SECRET_BODY_MARKER"}
+Path(option("--output")).write_text(json.dumps(body), encoding="utf-8")
+sys.stdout.write(str(status))
+""",
+            encoding="utf-8",
+        )
+        fake_curl.chmod(0o755)
+        fake_sleep = tools / "sleep"
+        fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_sleep.chmod(0o755)
+
+        scenarios = (
+            ("found", 0, "found", 1, "found"),
+            ("absent", 0, "not-found", 1, "not-found"),
+            ("rate-403-primary", 1, "", 3, "rate-limited"),
+            ("rate-403-secondary", 1, "", 3, "rate-limited"),
+            ("rate-429", 1, "", 3, "rate-limited"),
+            ("server", 1, "", 3, "server-failure"),
+            ("transport", 1, "", 3, "transport-failure"),
+            ("unexpected-403", 1, "", 1, "unexpected-failure"),
+            ("redirect-final-unexpected-403", 1, "", 1, "unexpected-failure"),
+            ("malformed", 1, "", 1, "malformed"),
+            ("malformed-flags", 1, "", 1, "malformed"),
+        )
+        helper = SCRIPT_DIR / "lookup_public_tip_release.sh"
+        for scenario, returncode, stdout, attempt_count, classification in scenarios:
+            with self.subTest(scenario=scenario):
+                calls.unlink(missing_ok=True)
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "PATH": f"{tools}:{env['PATH']}",
+                        "TMPDIR": str(root),
+                        "FAKE_CURL_CALLS": str(calls),
+                        "FAKE_GITHUB_SCENARIO": scenario,
+                        "FAKE_ARCHIVE_BASENAME": archive_basename,
+                    }
+                )
+                result = subprocess.run(
+                    [str(helper), "example/public-tip", "tip-fixture", archive_basename],
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                )
+
+                self.assertEqual(result.returncode, returncode, result.stderr)
+                self.assertEqual(result.stdout.strip(), stdout)
+                self.assertEqual(len(calls.read_text(encoding="utf-8").splitlines()), attempt_count)
+                self.assertIn(f"classification={classification}", result.stderr)
+                self.assertNotIn("SECRET_BODY_MARKER", result.stdout + result.stderr)
+                if scenario == "redirect-final-unexpected-403":
+                    self.assertNotIn("classification=rate-limited", result.stderr)
+                    self.assertIn(
+                        "request_id=final-request rate_limit_remaining=unavailable "
+                        "rate_limit_reset=unavailable retry_after=unavailable",
+                        result.stderr,
+                    )
+                for diagnostic in result.stderr.splitlines():
+                    self.assertRegex(
+                        diagnostic,
+                        r"^GitHub public tip lookup classification=[a-z-]+ status=[0-9]{3} "
+                        r"request_id=[^ ]+ rate_limit_remaining=[^ ]+ rate_limit_reset=[^ ]+ "
+                        r"retry_after=[^ ]+$",
+                    )
+
+    def test_generated_tip_appcast_validation_executes_crypto_and_rejects_missing_signature(self) -> None:
+        root = SCRIPT_DIR.parent
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        app_bundle = temp_dir / "RepoPrompt.app"
+        info_plist = app_bundle / "Contents" / "Info.plist"
+        archive = temp_dir / "RepoPrompt-tip-fixture.zip"
+        appcast = temp_dir / "appcast.xml"
+        private_key_file = temp_dir / "private-key"
+        validator_tmp_dir = temp_dir / "validator-tmp"
+        info_plist.parent.mkdir(parents=True)
+        archive.write_text("signed tip archive\n", encoding="utf-8")
+        private_key = base64.b64encode(bytes(range(32))).decode("ascii")
+        private_key_file.write_text(private_key, encoding="utf-8")
+        public_key = self.run_checked(
+            ["xcrun", "swift", str(SCRIPT_DIR / "derive_sparkle_public_key.swift"), str(private_key_file)]
+        ).stdout.strip()
+        info_plist.write_bytes(plistlib.dumps({"SUPublicEDKey": public_key}))
+        signature = self.run_checked(
+            [
+                str(root / "Vendor" / "Sparkle" / "bin" / "sign_update"),
+                "--ed-key-file",
+                str(private_key_file),
+                "-p",
+                str(archive),
+            ]
+        ).stdout.strip()
+
+        def write_appcast(
+            enclosure_signature: str,
+            *,
+            title: str = "Tip build v9.8.7",
+            display_version: str = "Tip build v9.8.7",
+        ) -> None:
+            appcast.write_text(
+                f"""<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <item>
+      <title>{title}</title>
+      <sparkle:version>1.2.3</sparkle:version>
+      <sparkle:shortVersionString>{display_version}</sparkle:shortVersionString>
+      <enclosure url="https://example.invalid/tip/{archive.name}"
+                 length="{archive.stat().st_size}"
+                 sparkle:edSignature="{enclosure_signature}" />
+    </item>
+  </channel>
+</rss>
+""",
+                encoding="utf-8",
+            )
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "REPOPROMPT_RELEASE_SOURCE_ROOT": str(root),
+                "REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR": str(SCRIPT_DIR),
+                "TIP_COMMIT": "0" * 40,
+                "TIP_BUILD_NUMBER": "1.2.3",
+                "TIP_DOWNLOAD_URL_PREFIX": "https://example.invalid/tip/",
+                "SPARKLE_PRIVATE_KEY": private_key,
+                "VALIDATOR_APP_BUNDLE": str(app_bundle),
+                "VALIDATOR_UPDATE_ZIP": str(archive),
+                "VALIDATOR_APPCAST": str(appcast),
+                "VALIDATOR_TMP_DIR": str(validator_tmp_dir),
+            }
+        )
+        command = [
+            "bash",
+            "-c",
+            """source "$1"
+APP_BUNDLE="$VALIDATOR_APP_BUNDLE"
+UPDATE_ZIP="$VALIDATOR_UPDATE_ZIP"
+APPCAST="$VALIDATOR_APPCAST"
+TMP_DIR="$VALIDATOR_TMP_DIR"
+mkdir -p "$TMP_DIR"
+MARKETING_VERSION="9.8.7"
+validate_generated_tip_appcast""",
+            "tip-appcast-validation",
+            str(SCRIPT_DIR / "main_tip_release.sh"),
+        ]
+
+        write_appcast(signature)
+        accepted = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+        duplicate_version_tree = ET.parse(appcast)
+        duplicate_version_item = duplicate_version_tree.getroot().find("./channel/item")
+        self.assertIsNotNone(duplicate_version_item)
+        assert duplicate_version_item is not None
+        ET.SubElement(
+            duplicate_version_item,
+            "{http://www.andymatuschak.org/xml-namespaces/sparkle}version",
+        ).text = "999"
+        duplicate_version_tree.write(appcast, encoding="utf-8", xml_declaration=True)
+        rejected_duplicate_version = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertNotEqual(rejected_duplicate_version.returncode, 0)
+        self.assertIn(
+            "tip appcast item must contain exactly one sparkle:version",
+            rejected_duplicate_version.stderr,
+        )
+
+        write_appcast(signature, title="Version 9.8.7")
+        rejected_title = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertNotEqual(rejected_title.returncode, 0)
+        self.assertIn("Tip appcast title mismatch", rejected_title.stderr)
+
+        write_appcast(signature, display_version="9.8.7")
+        rejected_display_version = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertNotEqual(rejected_display_version.returncode, 0)
+        self.assertIn("Tip appcast display version mismatch", rejected_display_version.stderr)
+
+        write_appcast("")
+        rejected_signature = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertNotEqual(rejected_signature.returncode, 0)
+        self.assertIn("Tip appcast enclosure is missing an EdDSA signature", rejected_signature.stderr)
+
+    def test_tip_appcast_label_changes_display_metadata_without_changing_comparison_version(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        appcast = temp_dir / "appcast.xml"
+        appcast.write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel><item><title>Version 9.8.7</title>
+    <sparkle:version>29.8.52</sparkle:version>
+    <sparkle:shortVersionString>9.8.7</sparkle:shortVersionString>
+  </item></channel>
+</rss>
+""",
+            encoding="utf-8",
+        )
+        command = [
+            "bash",
+            "-c",
+            """source "$1"
+APPCAST="$2"
+MARKETING_VERSION="9.8.7"
+label_generated_tip_appcast""",
+            "tip-appcast-label",
+            str(SCRIPT_DIR / "main_tip_release.sh"),
+            str(appcast),
+        ]
+
+        labeled = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(labeled.returncode, 0, labeled.stderr)
+        item = ET.parse(appcast).getroot().find("./channel/item")
+        self.assertIsNotNone(item)
+        assert item is not None
+        sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+        self.assertEqual(item.findtext(f"{{{sparkle}}}version"), "29.8.52")
+        self.assertEqual(item.findtext(f"{{{sparkle}}}shortVersionString"), "Tip build v9.8.7")
+        self.assertEqual(item.findtext("title"), "Tip build v9.8.7")
+
+    def test_release_sentry_runtime_wiring_uses_protected_dsn_and_stable_resolution(self) -> None:
+        root = SCRIPT_DIR.parent
+        package_manifest = (root / "Package.swift").read_text(encoding="utf-8")
+        package_resolved = json.loads((root / "Package.resolved").read_text(encoding="utf-8"))
+        notice_inventory = (root / "ThirdPartyLicenses" / "swiftpm" / "inventory.tsv").read_text(encoding="utf-8")
+        release_workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        ci_workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        release_candidate_workflow = (root / ".github" / "workflows" / "release-candidate.yml").read_text(encoding="utf-8")
+        release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")
+        promote_script = (SCRIPT_DIR / "promote_release.sh").read_text(encoding="utf-8")
+        staged_signing_script = (SCRIPT_DIR / "sign_staged_release.sh").read_text(encoding="utf-8")
+        bootstrap_source = (
+            root
+            / "Sources"
+            / "RepoPrompt"
+            / "Infrastructure"
+            / "Telemetry"
+            / "SentryTelemetryBootstrap.swift"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('.package(url: "https://github.com/getsentry/sentry-cocoa", exact: "9.17.1")', package_manifest)
+        self.assertIn('let sentryDependency = Target.Dependency.product(name: "Sentry", package: "sentry-cocoa")', package_manifest)
+        self.assertIn('repoPromptAppDependencies.append(sentryDependency)', package_manifest)
+        self.assertIn('repoPromptAppSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))', package_manifest)
+        self.assertIn('repoPromptTestDependencies.append(sentryDependency)', package_manifest)
+        self.assertIn('repoPromptTestSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))', package_manifest)
+        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', release_workflow)
+        self.assertIn('name: Sentry-enabled Build', ci_workflow)
+        self.assertIn('REPOPROMPT_ENABLE_SENTRY: "1"', ci_workflow)
+        self.assertIn('swift build --product RepoPrompt', ci_workflow)
+        self.assertIn('swift test --filter SentryTelemetryPrivacyTests', ci_workflow)
+        self.assertIn('smoke_packaged_mcp_roundtrip.sh', release_candidate_workflow)
+        self.assertIn('".build/release/RepoPrompt.app"', release_candidate_workflow)
+        self.assertIn("SENTRY_DSN: ${{ secrets.SENTRY_DSN }}", release_workflow)
+        self.assertIn("REPOPROMPT_ENABLE_SENTRY=1", release_script)
+        self.assertIn('if [[ -n "${SENTRY_DSN:-}" ]]; then', staged_signing_script)
+        self.assertIn('plutil -replace RepoPromptSentryDSN -string "$SENTRY_DSN"', staged_signing_script)
+        self.assertIn('Bundle.main.object(forInfoDictionaryKey: "RepoPromptSentryDSN")', bootstrap_source)
+        self.assertIn('REPOPROMPT_TELEMETRY_DISABLED', bootstrap_source)
+        self.assertIn('GlobalSettingsStore.shared.telemetryEnabled()', bootstrap_source)
+        self.assertIn('options.beforeSend', bootstrap_source)
+        self.assertIn('options.enableCaptureFailedRequests = false', bootstrap_source)
+        self.assertIn('options.enableAutoSessionTracking = false', bootstrap_source)
+        self.assertIn('event.request = nil', bootstrap_source)
+        self.assertIn('event.user = nil', bootstrap_source)
+        self.assertIn('event.serverName = nil', bootstrap_source)
+        self.assertIn('deviceIdentifierKeys', bootstrap_source)
+        self.assertIn('geoPayloadKeys', bootstrap_source)
+        self.assertIn('event.dist = nil', bootstrap_source)
+        self.assertIn('scrub(stacktrace: event.stacktrace)', bootstrap_source)
+        self.assertIn('event.debugMeta?.forEach', bootstrap_source)
+        self.assertIn('options.tracesSampleRate = performanceTracingEnabled ? 0.05 : 0', bootstrap_source)
+        self.assertIn('#if DEBUG\n                if let value = ProcessInfo.processInfo.environment["REPOPROMPT_SENTRY_DSN"]', bootstrap_source)
+        self.assertIn('Official Sentry-enabled release publishing requires SENTRY_AUTH_TOKEN', release_script)
+        self.assertIn('SENTRY_RELEASE_NAME="$BUNDLE_ID@$MARKETING_VERSION+$BUILD_NUMBER"', release_script)
+        self.assertIn('prepare_sentry_release', release_script)
+        self.assertIn('finalize_sentry_release', release_script)
+        self.assertNotIn('record_sentry_production_deploy', release_script)
+        self.assertIn('record_verified_sentry_deploy_if_needed', promote_script)
+
+        pins = {pin["identity"]: pin for pin in package_resolved["pins"]}
+        self.assertEqual(pins["sentry-cocoa"]["state"]["version"], "9.17.1")
+        self.assertIn("sentry-cocoa\t9.17.1\thttps://github.com/getsentry/sentry-cocoa", notice_inventory)
 
     def test_modern_sparkle_key_seed_derives_public_key(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
@@ -1557,6 +2522,28 @@ SIGNING_TEAM_ID=648A27MST5
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "RepoPrompt|1.0.0|1\n")
+
+    def test_release_metadata_parser_accepts_three_component_tip_build(self) -> None:
+        root = self.make_metadata_root()
+        metadata_path = root / "version.env"
+        metadata_path.write_text(
+            metadata_path.read_text(encoding="utf-8").replace("BUILD_NUMBER=1", "BUILD_NUMBER=28.7.95"),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'source "{SCRIPT_DIR / "load_release_metadata.sh"}"; '
+                f'load_release_metadata "{root}"; printf "%s\n" "$BUILD_NUMBER"',
+            ],
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "28.7.95\n")
 
     def test_release_metadata_parser_rejects_shell_execution(self) -> None:
         root = self.make_metadata_root()

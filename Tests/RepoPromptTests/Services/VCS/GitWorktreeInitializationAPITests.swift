@@ -1,5 +1,5 @@
 import Darwin
-@testable import RepoPrompt
+@testable import RepoPromptApp
 import XCTest
 
 final class GitWorktreeInitializationAPITests: XCTestCase {
@@ -855,6 +855,27 @@ final class GitWorktreeInitializationAPITests: XCTestCase {
             XCTAssertEqual(
                 GitService.targetEvidenceCollectionError(error) as? GitTargetEvidenceCollectionError,
                 expected
+            )
+        }
+        let launcherCases: [(ProcessLauncherError, Int32)] = [
+            (.pipeCreationFailed(label: "stdout", errno: EMFILE), EMFILE),
+            (
+                .descriptorConfigurationFailed(
+                    label: "stderr",
+                    fd: 9,
+                    underlying: .getDescriptorFlagsFailed(fd: 9, errno: EBADF)
+                ),
+                EBADF
+            ),
+            (.spawnFileActionsFailed(operation: "init", errno: ENOMEM), ENOMEM),
+            (.changeDirectoryFailed(path: "/private/missing", errno: ENOENT), ENOENT),
+            (.spawnAttributesFailed(operation: "setflags", errno: EINVAL), EINVAL),
+            (.spawnFailed(errno: ENOEXEC), ENOEXEC)
+        ]
+        for (launcherError, expectedCode) in launcherCases {
+            XCTAssertEqual(
+                GitService.targetEvidenceCollectionError(launcherError) as? GitTargetEvidenceCollectionError,
+                .processLaunch(domain: NSPOSIXErrorDomain, code: Int(expectedCode))
             )
         }
         let launch = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOEXEC))

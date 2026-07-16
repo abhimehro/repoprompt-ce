@@ -150,6 +150,16 @@ private actor MCPConnectionStopRace {
     }
 }
 
+struct MCPResponseDeliverySnapshot: Equatable {
+    let pendingRequestCount: Int
+    let waiterCount: Int
+    let isTerminal: Bool
+
+    var acceptedRequestsFullyResponded: Bool {
+        pendingRequestCount == 0
+    }
+}
+
 protocol MCPServerConnection: Actor {
     func start(approvalHandler: @escaping (MCP.Client.Info) async -> Bool) async throws
     func stop() async
@@ -161,6 +171,7 @@ protocol MCPServerConnection: Actor {
     func isViableForRetention() -> Bool
     func secondsSinceLastActivity() async -> TimeInterval
     func transportIngressSnapshot() async -> MCPTransportIngressSnapshot?
+    func responseDeliverySnapshot() async -> MCPResponseDeliverySnapshot?
     func waitUntilResponseDeliveryDrained() async -> Bool
     /// Whether this is a legacy filesystem-backed connection (deprecated)
     nonisolated var isFilesystemBacked: Bool { get }
@@ -185,6 +196,10 @@ protocol MCPServerConnection: Actor {
 }
 
 extension MCPServerConnection {
+    func responseDeliverySnapshot() async -> MCPResponseDeliverySnapshot? {
+        nil
+    }
+
     func waitUntilResponseDeliveryDrained() async -> Bool {
         true
     }
@@ -2071,6 +2086,7 @@ actor ServerNetworkManager {
     }
 
     // ------------------------------------------------------------------
+
     // MARK: Tool ownership tracking helpers
 
     /// ------------------------------------------------------------------
@@ -2358,6 +2374,7 @@ actor ServerNetworkManager {
     }
 
     // ------------------------------------------------------------------
+
     // MARK: Window-selection helpers (called from WindowRoutingService)
 
     /// ------------------------------------------------------------------
@@ -3346,6 +3363,36 @@ actor ServerNetworkManager {
         toolEventObservers[runID, default: [:]][token] = observer
         connectionLog("Registered tool event observer for runID: \(runID) token: \(token)")
         return token
+    }
+
+    /// Unregister one tool event observer for a specific run.
+    ///
+    /// Owner-scoped teardown should use this token-specific path so another
+    /// observer registered for the same run remains active. If the observer was
+    /// already captured by a run-wide unregister, wait for that cleanup barrier
+    /// instead of returning before its in-flight delivery drains.
+    func unregisterToolEventObserver(for runID: UUID, token: UUID) async {
+        let removedObserver: ToolEventObserver?
+        if var observers = toolEventObservers[runID] {
+            removedObserver = observers.removeValue(forKey: token)
+            if observers.isEmpty {
+                toolEventObservers.removeValue(forKey: runID)
+            } else {
+                toolEventObservers[runID] = observers
+            }
+        } else {
+            removedObserver = nil
+        }
+
+        if let removedObserver {
+            await removedObserver.deliveryBarrier.waitUntilIdle()
+            connectionLog("Unregistered tool event observer for runID: \(runID) token: \(token)")
+            return
+        }
+
+        if let unregistration = toolObserverUnregistrationsByRunID[runID] {
+            await unregistration.task.value
+        }
     }
 
     /// Unregister all tool event observers for a specific run
@@ -5840,7 +5887,8 @@ actor ServerNetworkManager {
         assignedWindowID: Int?,
         contextBuilderRunID: UUID?,
         detachContextBuilderRunID: UUID?,
-        closeContext: MCPConnectionCloseContext
+        closeContext: MCPConnectionCloseContext,
+        responseDeliverySnapshot: MCPResponseDeliverySnapshot?
     ) async -> Bool {
         let windows = WindowStatesManager.shared.allWindows
         let targets: [WindowState]
@@ -5863,7 +5911,7 @@ actor ServerNetworkManager {
         var didDetachContextBuilderContext = false
         if let detachContextBuilderRunID {
             for state in targets {
-                didDetachContextBuilderContext = state.mcpServer.detachContextBuilderTabContextForPeerEOF(
+                didDetachContextBuilderContext = state.mcpServer.detachContextBuilderTabContextForDiscoveryTeardown(
                     connectionID: connectionID,
                     runID: detachContextBuilderRunID
                 ) || didDetachContextBuilderContext
@@ -5878,15 +5926,26 @@ actor ServerNetworkManager {
             )
         }
         if let contextBuilderRunID {
+            let isOrderlyPeerEOF = closeContext.reason == MCPTransportTerminalCause.peerEOF.rawValue
+                && closeContext.initiator == .peer
             for state in targets {
                 let wasDetached = state.mcpServer.isDetachedContextBuilderConnection(
                     connectionID: connectionID,
                     runID: contextBuilderRunID
                 )
+                let outcome: MCPServerViewModel.ContextBuilderTeardownPublicationOutcome = if wasDetached {
+                    if isOrderlyPeerEOF {
+                        .peerEOFDetached
+                    } else if responseDeliverySnapshot?.acceptedRequestsFullyResponded == true {
+                        .detachedAfterResponseDeliveryDrained(reason: closeContext.reason)
+                    } else {
+                        .detachedWithoutOrderlyPeerEOF(reason: closeContext.reason)
+                    }
+                } else {
+                    .resolvedWithoutPeerEOFDetachment(reason: closeContext.reason)
+                }
                 state.mcpServer.contextBuilderTeardownPublicationCoordinator.publish(
-                    wasDetached
-                        ? .peerEOFDetached
-                        : .resolvedWithoutPeerEOFDetachment(reason: closeContext.reason),
+                    outcome,
                     runID: contextBuilderRunID,
                     connectionID: connectionID
                 )
@@ -5953,17 +6012,15 @@ actor ServerNetworkManager {
         persistAcceptedSocketTerminalRecord(connectionID: id, context: context)
 
         // Capture run ownership before any suspension or connection-dictionary cleanup.
-        // Only orderly peer EOF from a discover-run child may transfer final context ownership.
+        // A discovery child can finish successfully and then disappear through several
+        // transport shapes (server terminate, write hangup/stall, read error, TTL, etc.).
+        // Preserve its final tab context for commit whenever the connection still has
+        // authoritative discover-run ownership; cancellation/staleness is enforced later
+        // by the commit path's isStillCurrent checks.
         let cleanupRunPurpose = runPurposeByConnection[id] ?? .unknown
         let cleanupRunID = runIDByConnectionID[id]
-        let detachContextBuilderRunID: UUID? = if context.reason == MCPTransportTerminalCause.peerEOF.rawValue,
-                                                  context.initiator == .peer,
-                                                  cleanupRunPurpose == .discoverRun
-        {
-            cleanupRunID
-        } else {
-            nil
-        }
+        let detachContextBuilderRunID: UUID? = cleanupRunPurpose == .discoverRun ? cleanupRunID : nil
+        let responseDeliverySnapshot = await connections[id]?.responseDeliverySnapshot()
 
         // Always drop any lingering bootstrap reservation (commit/rollback should handle it,
         // but this is a leak safety-net for edge cases)
@@ -6024,7 +6081,8 @@ actor ServerNetworkManager {
             assignedWindowID: assignedWindowID,
             contextBuilderRunID: cleanupRunPurpose == .discoverRun ? cleanupRunID : nil,
             detachContextBuilderRunID: detachContextBuilderRunID,
-            closeContext: context
+            closeContext: context,
+            responseDeliverySnapshot: responseDeliverySnapshot
         )
         #if DEBUG
             if cleanupRunPurpose == .discoverRun, let cleanupRunID {
@@ -6099,10 +6157,11 @@ actor ServerNetworkManager {
         return true
     }
 
-    /// Reads the cached TCP client name from all CLI instance cache files.
-    /// (Legacy TCP transport has been removed; this helper now returns nil.)
-    /// - Parameter remotePort: The remote port from the incoming connection for precise matching
-    /// - Returns: Always nil now that TCP transport and cache files are deprecated
+    // Reads the cached TCP client name from all CLI instance cache files.
+    // (Legacy TCP transport has been removed; this helper now returns nil.)
+    // - Parameter remotePort: The remote port from the incoming connection for precise matching
+    // - Returns: Always nil now that TCP transport and cache files are deprecated
+
     // MARK: - Identity Failure Recording & Escalation
 
     /// Transport type for identity failure tracking
@@ -10474,8 +10533,8 @@ actor ServerNetworkManager {
             // Do not repeat it on each tools/call; it can re-enter routing notifications
             // while the call is waiting for a response.
 
-            var dispatchTabContextHint: MCPServerViewModel.TabContextHint? = nil
-            var preResolvedWindowID: Int? = nil
+            var dispatchTabContextHint: MCPServerViewModel.TabContextHint?
+            var preResolvedWindowID: Int?
             do {
                 let logicalContextState = EditFlowPerf.begin(
                     EditFlowPerf.Stage.MCPToolCall.logicalContextResolution,
@@ -10859,7 +10918,10 @@ actor ServerNetworkManager {
                                     } else {
                                         connectedDuringSingleWindow = windowCount == 1
                                     }
-                                    if !bypassWindowRouting && chosenID == nil && (!multiWindowModeEffective || connectedDuringSingleWindow) {
+                                    let shouldAutoRouteToActiveWindow = !bypassWindowRouting
+                                        && chosenID == nil
+                                        && (!multiWindowModeEffective || connectedDuringSingleWindow)
+                                    if shouldAutoRouteToActiveWindow {
                                         // Find the window with active MCP tools
                                         let activeWindowID = await WindowStatesManager.shared.firstMCPEnabledWindow()?.windowID
                                         if let activeID = activeWindowID {
@@ -11960,7 +12022,7 @@ actor ServerNetworkManager {
             let pendingName = pendingConnections[id]
             let clientName = admittedName ?? pendingName ?? "Connecting..."
 
-            if admittedName == nil && pendingName == nil {
+            if admittedName == nil, pendingName == nil {
                 log.warning("Dashboard: Connection \(id) has no client name (admitted=nil, pending=nil)")
             }
 
