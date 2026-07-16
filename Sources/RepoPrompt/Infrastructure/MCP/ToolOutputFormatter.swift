@@ -946,9 +946,197 @@ extension ToolOutputFormatter {
             return formatAgentRun(args: args, value: result)
         case "agent_manage":
             return formatAgentManage(args: args, value: result)
+        case "history":
+            return formatHistory(args: args, value: result)
         default:
             return formatGeneric(value: result)
         }
+    }
+
+    // MARK: - History
+
+    static func formatHistory(args: [String: Value], value: Value) -> [MCP.Tool.Content] {
+        guard let object = value.objectValue else { return formatGeneric(value: value) }
+        if let error = nonEmpty(object["error"]?.stringValue) {
+            return [.text("## History ❌\n- **Error**: \(error)")]
+        }
+
+        let op = args["op"]?.stringValue ?? "history"
+        var lines: [String] = []
+        switch op {
+        case "list_sessions":
+            let total = object["total_sessions"]?.intValue ?? 0
+            let sessions = object["sessions"]?.arrayValue ?? []
+            lines.append("## History Sessions \(statusIcon(success: true))")
+            lines.append("- **Total sessions**: \(total) • **Returned**: \(sessions.count)")
+            if total == 0 { lines.append("- **Status**: No matching sessions found") }
+            if object["truncated"]?.boolValue == true { lines.append("- **More sessions available**: increase `limit` to return more") }
+            if total == 0, nonEmpty(args["touched_file"]?.stringValue) != nil {
+                lines.append("- **Hint**: `touched_file` matches basenames, suffixes, repo-relative paths, and absolute/worktree paths.")
+            }
+            appendHistoryScanMetadata(object, to: &lines)
+            for sessionValue in sessions {
+                guard let session = sessionValue.objectValue else { continue }
+                let name = nonEmpty(session["session_name"]?.stringValue) ?? "(untitled)"
+                let workspace = nonEmpty(session["workspace_name"]?.stringValue) ?? "unknown workspace"
+                let duration = session["active_duration_seconds"]?.intValue ?? 0
+                let turns = session["turn_count"]?.intValue ?? 0
+                let files = session["files_touched"]?.arrayValue?.compactMap(\.stringValue) ?? []
+                let filesTouchedCount = session["files_touched_count"]?.intValue ?? files.count
+                var suffix = "\(duration)s, \(turns) turn\(turns == 1 ? "" : "s")"
+                if !files.isEmpty {
+                    suffix += ", files: \(files.prefix(3).joined(separator: ", "))"
+                    let omittedFiles = max(0, filesTouchedCount - files.count)
+                    if omittedFiles > 0 { suffix += " (+\(omittedFiles) more)" }
+                }
+                lines.append("- `\(session["session_id"]?.stringValue ?? "")` **\(name)** (\(workspace)) — \(suffix)")
+            }
+        case "search":
+            let total = object["total_matches"]?.intValue ?? 0
+            let results = object["results"]?.arrayValue ?? []
+            lines.append("## History Search \(statusIcon(success: true))")
+            lines.append("- **Total matches**: \(total) • **Returned**: \(results.count)")
+            if total == 0 { lines.append("- **Status**: No matching turns found") }
+            if object["truncated"]?.boolValue == true { lines.append("- **More matches available**: increase `limit` to return more") }
+            appendHistoryScanMetadata(object, to: &lines)
+            for resultValue in results {
+                guard let result = resultValue.objectValue else { continue }
+                let sessionID = nonEmpty(result["session_id"]?.stringValue) ?? ""
+                let session = nonEmpty(result["session_name"]?.stringValue) ?? "(untitled)"
+                let source = nonEmpty(result["source"]?.stringValue) ?? "match"
+                let snippet = nonEmpty(result["snippet"]?.stringValue) ?? ""
+                var line = "- `\(sessionID)` **\(session)** turn \(result["turn_index"]?.intValue ?? 0) [\(source)]"
+                if let role = nonEmpty(result["role"]?.stringValue) { line += " \(role)" }
+                if let timestamp = nonEmpty(result["timestamp"]?.stringValue) { line += " @ \(timestamp)" }
+                line += " — \(snippet)"
+                if let turnRequestText = nonEmpty(result["turn_request_text"]?.stringValue) {
+                    line += "\n  - request: \(turnRequestText)"
+                }
+                lines.append(line)
+            }
+        case "time":
+            let totalSessions = object["total_sessions"]?.intValue ?? 0
+            let totalDuration = object["total_active_duration_seconds"]?.intValue ?? 0
+            let groups = object["groups"]?.arrayValue ?? []
+            lines.append("## History Time \(statusIcon(success: true))")
+            lines.append("- **Total sessions**: \(totalSessions) • **Active duration**: \(totalDuration)s • **Groups**: \(groups.count)")
+            if totalSessions == 0 { lines.append("- **Status**: No matching sessions found") }
+            if object["truncated"]?.boolValue == true { lines.append("- **More groups available**: increase `limit` to return more") }
+            appendHistoryScanMetadata(object, to: &lines)
+            for groupValue in groups {
+                guard let group = groupValue.objectValue else { continue }
+                let key = group["key"]?.stringValue ?? ""
+                let sessions = group["sessions"]?.intValue ?? 0
+                let duration = group["active_duration_seconds"]?.intValue ?? 0
+                let turns = group["turn_count"]?.intValue ?? 0
+                lines.append("- `\(key)` — \(duration)s, \(sessions) session\(sessions == 1 ? "" : "s"), \(turns) turn\(turns == 1 ? "" : "s")")
+                let details = group["details"]?.arrayValue ?? []
+                for detailValue in details.prefix(3) {
+                    guard let detail = detailValue.objectValue else { continue }
+                    let detailSessionID = nonEmpty(detail["session_id"]?.stringValue) ?? ""
+                    let detailSession = nonEmpty(detail["session_name"]?.stringValue) ?? "(untitled)"
+                    let detailDuration = detail["active_duration_seconds"]?.intValue ?? 0
+                    let detailTurns = detail["turn_count"]?.intValue ?? 0
+                    lines.append("  - `\(detailSessionID)` \(detailSession) — \(detailDuration)s, \(detailTurns) turn\(detailTurns == 1 ? "" : "s")")
+                }
+                if details.count > 3 {
+                    lines.append("  - … +\(details.count - 3) more")
+                }
+            }
+        case "get_session":
+            let sessionID = nonEmpty(object["session_id"]?.stringValue) ?? ""
+            let sessionName = nonEmpty(object["session_name"]?.stringValue) ?? "(untitled)"
+            let workspaceName = nonEmpty(object["workspace_name"]?.stringValue) ?? "unknown workspace"
+            let totalTurns = object["total_turns"]?.intValue ?? 0
+            let start = object["returned_turn_start"]?.intValue ?? 0
+            let end = object["returned_turn_end"]?.intValue ?? start
+            let turns = object["turns"]?.arrayValue ?? []
+            let targetTurn = args["around_turn"]?.intValue ?? args["turn_start"]?.intValue
+            let maxChars = clampedHistoryFormatterMaxChars(args["max_chars"]?.intValue)
+            lines.append("## History Session \(statusIcon(success: true))")
+            lines.append("- `\(sessionID)` **\(sessionName)** (\(workspaceName))")
+            lines.append("- **Turns**: \(start)–\(end) of \(totalTurns)")
+            if let targetTurn { lines.append("- **Target turn**: \(targetTurn)") }
+            if object["truncated"]?.boolValue == true { lines.append("- **Truncated**: yes") }
+
+            let orderedTurns = turns.sorted { lhs, rhs in
+                let leftIndex = lhs.objectValue?["turn_index"]?.intValue ?? Int.max
+                let rightIndex = rhs.objectValue?["turn_index"]?.intValue ?? Int.max
+                if leftIndex == targetTurn { return true }
+                if rightIndex == targetTurn { return false }
+                return leftIndex < rightIndex
+            }
+            for turnValue in orderedTurns {
+                guard let turn = turnValue.objectValue else { continue }
+                let turnIndex = turn["turn_index"]?.intValue ?? 0
+                let isTarget = targetTurn == turnIndex
+                lines.append("")
+                lines.append(isTarget ? "### Target Turn \(turnIndex)" : "### Context Turn \(turnIndex)")
+                if let startedAt = nonEmpty(turn["started_at"]?.stringValue) {
+                    lines.append("- **Started**: \(startedAt)")
+                }
+                if let request = nonEmpty(turn["request_text"]?.stringValue) {
+                    lines.append("- **Request**: \(request)")
+                }
+                if let toolSummary = nonEmpty(turn["tool_call_summary"]?.stringValue) {
+                    lines.append("- **Tools**: \(toolSummary)")
+                }
+                let entries = turn["entries"]?.arrayValue ?? []
+                for entryValue in entries {
+                    guard let entry = entryValue.objectValue else { continue }
+                    let role = nonEmpty(entry["role"]?.stringValue) ?? "entry"
+                    let text = nonEmpty(entry["text"]?.stringValue) ?? ""
+                    var prefix = "  - **\(role)**"
+                    if let timestamp = nonEmpty(entry["timestamp"]?.stringValue) {
+                        prefix += " @ \(timestamp)"
+                    }
+                    let suffix = entry["truncated"]?.boolValue == true ? " …" : ""
+                    lines.append("\(prefix): \(text)\(suffix)")
+                }
+                if turn["truncated"]?.boolValue == true {
+                    lines.append("  - … turn truncated; retry: `history get_session session_id=\(sessionID) around_turn=\(turnIndex) context_turns=0 max_chars=\(maxChars)`")
+                }
+                if let omitted = turn["entries_omitted"]?.intValue, omitted > 0 {
+                    lines.append("  - … +\(omitted) omitted entr\(omitted == 1 ? "y" : "ies")")
+                }
+            }
+        default:
+            return formatGeneric(value: value)
+        }
+        var formatted = lines.joined(separator: "\n")
+        if op == "get_session" {
+            let maxChars = clampedHistoryFormatterMaxChars(args["max_chars"]?.intValue)
+            if formatted.count > maxChars {
+                let hint = "\n\n… output clipped to max_chars=\(maxChars); retry `get_session` with `context_turns: 0` or a larger `max_chars`."
+                let contentBudget = max(1, maxChars - hint.count)
+                formatted = String(formatted.prefix(contentBudget)) + hint
+            }
+        }
+        return [.text(formatted)]
+    }
+
+    private static func clampedHistoryFormatterMaxChars(_ value: Int?) -> Int {
+        guard let value else { return 6000 }
+        return max(1, min(value, 20000))
+    }
+
+    private static func appendHistoryScanMetadata(_ object: [String: Value], to lines: inout [String]) {
+        if let scanned = object["sessions_scanned"]?.intValue { lines.append("- **Sessions scanned**: \(scanned)\(object["scan_truncated"]?.boolValue == true ? " (scan truncated)" : "")") }
+        let skipped = object["skipped_workspaces"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        if !skipped.isEmpty {
+            lines.append(historySkippedWorkspacesSummary(skipped))
+        }
+    }
+
+    private static func historySkippedWorkspacesSummary(_ skipped: [String]) -> String {
+        if skipped.allSatisfy({ $0.localizedCaseInsensitiveContains("stale index schema") }) {
+            let compact = skipped.map { item in
+                item.replacingOccurrences(of: "stale index schema ", with: "")
+            }.joined(separator: "; ")
+            return "- **Skipped stale session indexes**: \(compact)"
+        }
+        let label = "Skipped workspaces"
+        return "- **\(label)**: \(skipped.joined(separator: "; "))"
     }
 
     // MARK: - App Settings
@@ -1724,6 +1912,16 @@ extension ToolOutputFormatter {
         // Preferred DTO decoding
         if let dto = value.decode(ToolResultDTOs.ReadFileReply.self) {
             let displayPath = dto.displayPath ?? path
+            if let errorCode = dto.errorCode, dto.retryable == true {
+                let text = readFileRetryableFailure(
+                    path: displayPath,
+                    error: dto.errorMessage ?? dto.message ?? "Read failed with a retryable workspace error.",
+                    errorCode: errorCode,
+                    retryAfterMilliseconds: dto.retryAfterMilliseconds,
+                    worktreeScope: dto.worktreeScope
+                )
+                return [.text(text)]
+            }
             let text = readFile(
                 path: displayPath,
                 first: dto.firstLine,
@@ -1776,6 +1974,33 @@ extension ToolOutputFormatter {
         }
         // Final fallback: present JSON
         return formatGeneric(value: value)
+    }
+
+    private static func readFileRetryableFailure(
+        path: String,
+        error: String,
+        errorCode: String,
+        retryAfterMilliseconds: Int?,
+        worktreeScope: ToolResultDTOs.WorktreeScopeDTO?
+    ) -> String {
+        let status = switch errorCode {
+        case "workspace_freshness_timeout":
+            "Workspace freshness timed out"
+        default:
+            "Retryable read failure"
+        }
+        var out: [String] = []
+        out.append("## File Read ⚠️")
+        out.append("- **Path**: `\(path)`")
+        out.append("- **Status**: \(status)")
+        out.append("- **Code**: \(errorCode)")
+        out.append("- **Retryable**: yes")
+        if let retryAfterMilliseconds {
+            out.append("- **Retry after**: \(retryAfterMilliseconds) ms")
+        }
+        out.append("- **Message**: \(error)")
+        out.append(contentsOf: worktreeScopeLines(worktreeScope, operation: .readFile))
+        return out.joined(separator: "\n")
     }
 
     static func formatChatLog(value: Value, emitResources: Bool) -> [MCP.Tool.Content] {
@@ -1979,6 +2204,42 @@ extension ToolOutputFormatter {
                 }
                 reviewLines.append("- User approval was required.")
                 outBlocks.append(reviewLines.joined(separator: "\n"))
+            }
+            if let operationID = dto.operationID {
+                var acknowledgement = ["### Mutation acknowledgement"]
+                acknowledgement.append("- Operation ID: `\(operationID)`")
+                if let mutationState = dto.mutationState {
+                    acknowledgement.append("- Mutation: \(mutationState)")
+                }
+                if let freshness = dto.freshness {
+                    acknowledgement.append("- Freshness: \(freshness)")
+                    if freshness == "pending" {
+                        acknowledgement.append("- Reconcile with read_file or file_search; do not blindly replay this mutation.")
+                    }
+                }
+                outBlocks.append(acknowledgement.joined(separator: "\n"))
+            }
+            if dto.status.lowercased() == "failed" || dto.errorMessage != nil || dto.errorCode != nil {
+                var errorLines: [String] = []
+                errorLines.append("### Error")
+                if let message = dto.errorMessage, !message.isEmpty {
+                    errorLines.append("- \(message)")
+                }
+                if let code = dto.errorCode, !code.isEmpty {
+                    errorLines.append("- **Code**: \(code)")
+                }
+                if dto.retryable == true {
+                    errorLines.append("- Retryable: yes")
+                }
+                if let retryAfter = dto.retryAfterMilliseconds {
+                    errorLines.append("- Retry after: \(retryAfter) ms")
+                }
+                if let suggestion = dto.suggestion, !suggestion.isEmpty {
+                    errorLines.append("- Suggestion: \(suggestion)")
+                }
+                if errorLines.count > 1 {
+                    outBlocks.append(errorLines.joined(separator: "\n"))
+                }
             }
             var blocks: [MCP.Tool.Content] = [.text(outBlocks.joined(separator: "\n\n"))]
             // Optionally emit an extra diff block as a separate text content (safe textual "resource")
@@ -3755,8 +4016,16 @@ extension ToolOutputFormatter {
             out.append("- Action: \(dto.action)")
             out.append("- Path: `\(dto.path)`")
             if let np = dto.newPath { out.append("- New path: `\(np)`") }
-            if dto.action.lowercased() == "delete" { out.append("- Result: Moved to macOS Trash") }
+            if dto.action.lowercased() == "delete", ok { out.append("- Result: Moved to macOS Trash") }
             if let warning = dto.warning, !warning.isEmpty { out.append("- Warning: \(warning)") }
+            if let operationID = dto.operationID { out.append("- Operation ID: `\(operationID)`") }
+            if let mutationState = dto.mutationState { out.append("- Mutation: \(mutationState)") }
+            if let freshness = dto.freshness { out.append("- Freshness: \(freshness)") }
+            if let message = dto.errorMessage, !message.isEmpty { out.append("- Error: \(message)") }
+            if let code = dto.errorCode, !code.isEmpty { out.append("- **Code**: \(code)") }
+            if dto.retryable == true { out.append("- Retryable: yes") }
+            if let retryAfter = dto.retryAfterMilliseconds { out.append("- Retry after: \(retryAfter) ms") }
+            if let suggestion = dto.suggestion, !suggestion.isEmpty { out.append("- Suggestion: \(suggestion)") }
             return [.text(out.joined(separator: "\n"))]
         }
         if case let .object(obj) = value {
@@ -5264,6 +5533,96 @@ extension ToolOutputFormatter {
         return [.text(lines.joined(separator: "\n"))]
     }
 
+    private static func agentListGroupingEffort(modelID: String, reasoningEffort: String?) -> String? {
+        if let normalizedEffort = normalizedAgentListReasoningEffort(reasoningEffort) {
+            return normalizedEffort
+        }
+        return CodexModelSpecifier(raw: modelID).reasoningEffort?.rawValue
+    }
+
+    private static func normalizedAgentListReasoningEffort(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return CodexReasoningEffort.parse(trimmed)?.rawValue ?? trimmed.lowercased()
+    }
+
+    private static func agentListFamilyBase(modelID: String, groupingEffort: String?) -> String {
+        guard let groupingEffort,
+              let stripped = stripAgentListEffortSuffix(from: modelID, groupingEffort: groupingEffort)
+        else {
+            return modelID
+        }
+        return stripped
+    }
+
+    private static func stripAgentListEffortSuffix(from value: String, groupingEffort: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let lowered = trimmed.lowercased()
+        for suffix in agentListEffortIDMarkers(for: groupingEffort) where lowered.hasSuffix(suffix) {
+            let stripped = String(trimmed.dropLast(suffix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stripped.isEmpty ? nil : stripped
+        }
+        return nil
+    }
+
+    private static func agentListEffortIDMarkers(for groupingEffort: String) -> [String] {
+        let normalized = groupingEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return [] }
+        var markers = ["-\(normalized)"]
+        let hyphenated = normalized
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+        if hyphenated != normalized {
+            markers.append("-\(hyphenated)")
+        }
+        switch CodexReasoningEffort.parse(normalized) {
+        case .some(.xhigh):
+            markers.append("-x-high")
+        case .some(.max):
+            markers.append("-maximum")
+        case .some(.medium):
+            markers.append("-med")
+        default:
+            break
+        }
+        return Array(Set(markers))
+    }
+
+    private static func agentListFamilyDisplayName(
+        _ modelName: String,
+        modelID: String,
+        groupingEffort: String
+    ) -> String {
+        let fallback = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = trimmed.isEmpty ? fallback : trimmed
+        guard !candidate.isEmpty else { return modelName }
+        let lowered = candidate.lowercased()
+        for suffix in agentListEffortDisplayMarkers(for: groupingEffort) where lowered.hasSuffix(suffix) {
+            let stripped = String(candidate.dropLast(suffix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stripped.isEmpty ? candidate : stripped
+        }
+        return candidate
+    }
+
+    private static func agentListEffortDisplayMarkers(for groupingEffort: String) -> [String] {
+        let normalized = groupingEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return [] }
+        let readableFallback = normalized
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        var labels = [normalized, readableFallback]
+        if let parsed = CodexReasoningEffort.parse(normalized) {
+            labels.append(parsed.displayName)
+            if parsed == .xhigh {
+                labels.append("X-High")
+            }
+        }
+        return Array(Set(labels.map { " \($0.lowercased())" }))
+    }
+
     static func formatAgentManage(args: [String: Value], value: Value) -> [MCP.Tool.Content] {
         guard let object = value.objectValue else {
             return formatGeneric(value: value)
@@ -5368,32 +5727,29 @@ extension ToolOutputFormatter {
                     let modelName = m["name"]?.stringValue ?? ""
                     let effort = m["reasoning_effort"]?.stringValue
 
-                    // Extract base: everything after "agentRaw:" minus the effort suffix
+                    // Extract base: everything after "agentRaw:" minus an explicit or supported effort suffix.
                     let afterColon = modelID.contains(":") ? String(modelID[modelID.index(after: modelID.firstIndex(of: ":")!)...]) : modelID
-                    let effortSuffixes = ["-low", "-medium", "-high", "-xhigh", "-none", "-minimal"]
-                    var base = afterColon
-                    for suffix in effortSuffixes where base.lowercased().hasSuffix(suffix) {
-                        base = String(base.dropLast(suffix.count))
-                        break
-                    }
                     let agentPrefix = modelID.contains(":") ? String(modelID[...modelID.firstIndex(of: ":")!]) : ""
+                    let groupingEffort = agentListGroupingEffort(modelID: afterColon, reasoningEffort: effort)
+                    let base = agentListFamilyBase(modelID: afterColon, groupingEffort: groupingEffort)
                     let familyKey = agentPrefix + base
 
-                    if let effort, seen.contains(familyKey) {
+                    if let groupingEffort, seen.contains(familyKey) {
                         // Add effort to existing family
-                        if let idx = families.firstIndex(where: { familyKey == "\(agentPrefix)\($0.base)" }) {
-                            families[idx].efforts.append(effort)
+                        if let idx = families.firstIndex(where: { familyKey == "\(agentPrefix)\($0.base)" }),
+                           !families[idx].efforts.contains(groupingEffort)
+                        {
+                            families[idx].efforts.append(groupingEffort)
                         }
-                    } else if effort != nil, !seen.contains(familyKey) {
+                    } else if let groupingEffort, !seen.contains(familyKey) {
                         // New family with efforts
                         seen.insert(familyKey)
-                        let baseName = modelName
-                            .replacingOccurrences(of: " Low", with: "")
-                            .replacingOccurrences(of: " Medium", with: "")
-                            .replacingOccurrences(of: " High", with: "")
-                            .replacingOccurrences(of: " XHigh", with: "")
-                            .trimmingCharacters(in: .whitespaces)
-                        families.append((base: base, name: baseName, efforts: [effort!]))
+                        let baseName = agentListFamilyDisplayName(
+                            modelName,
+                            modelID: afterColon,
+                            groupingEffort: groupingEffort
+                        )
+                        families.append((base: base, name: baseName, efforts: [groupingEffort]))
                     } else {
                         // Simple model (no effort variants)
                         families.append((base: base, name: modelName, efforts: []))

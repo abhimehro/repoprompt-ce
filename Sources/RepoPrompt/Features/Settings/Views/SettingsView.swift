@@ -254,7 +254,7 @@ struct SettingsView: View {
         case .workspaces:
             [.manageWorkspaces, .managePresets]
         case .general:
-            [.appearance, .licenseUpdates, .keyboardShortcuts, .advanced]
+            [.appearance, .licenseUpdates, .keyboardShortcuts, .advanced, .telemetry]
         case .copyChat:
             // `.copyPresets` and `.chatPresets` are intentionally omitted from the
             // sidebar – they now resolve to the unified Workflow Presets surface.
@@ -301,6 +301,9 @@ struct SettingsView: View {
                 windowState: windowState
             )
             .transition(.opacity.animation(.easeInOut(duration: 0.15)))
+        case .telemetry:
+            TelemetrySettingsView()
+                .transition(.opacity.animation(.easeInOut(duration: 0.15)))
         case .chatSettings:
             ChatSettingsView(promptViewModel: promptViewModel, windowID: windowState.windowID, closeAction: closeAction)
                 .transition(.opacity.animation(.easeInOut(duration: 0.15)))
@@ -401,10 +404,11 @@ struct SettingsView: View {
         case .agentModels:
             AgentModelsSettingsView(
                 promptVM: promptViewModel,
-                contextBuilderVM: windowState.contextBuilderAgentViewModel,
                 apiSettingsVM: apiSettingsViewModel,
                 windowID: windowState.windowID,
+                workspaceID: windowState.workspaceManager.activeWorkspace?.id,
                 workspaceName: windowState.workspaceManager.activeWorkspace?.name,
+                settingsManager: windowState.settingsManager,
                 onNavigate: { tab in selectedTab = tab }
             )
             .transition(.opacity.animation(.easeInOut(duration: 0.15)))
@@ -516,6 +520,7 @@ enum SettingsTab: String, CaseIterable {
     case permissions // Workspace approvals (RepoPrompt-mutating operations)
     case keyboardShortcuts
     case advanced
+    case telemetry
     case chatSettings
     case benchmark
     case apiGeneral
@@ -545,6 +550,7 @@ enum SettingsTab: String, CaseIterable {
         case .permissions: "Workspace Approvals"
         case .keyboardShortcuts: "Keyboard Shortcuts"
         case .advanced: "Advanced"
+        case .telemetry: "Telemetry"
         case .chatSettings: "Chat Settings"
         case .benchmark: "Benchmark"
         case .apiGeneral: "API Providers"
@@ -576,6 +582,7 @@ enum SettingsTab: String, CaseIterable {
         case .permissions: "shield.checkered"
         case .keyboardShortcuts: "keyboard"
         case .advanced: "gearshape.2"
+        case .telemetry: "lock.shield"
         case .chatSettings: "message"
         case .benchmark: "gauge"
         case .apiGeneral: "key"
@@ -623,7 +630,7 @@ enum SettingsTab: String, CaseIterable {
             .workspaces
 
         // General
-        case .appearance, .licenseUpdates, .keyboardShortcuts, .advanced:
+        case .appearance, .licenseUpdates, .keyboardShortcuts, .advanced, .telemetry:
             .general
 
         // Copy & Chat workflows
@@ -726,6 +733,8 @@ enum SettingsTab: String, CaseIterable {
                 "global codemap",
                 "get_code_structure"
             ]
+        case .telemetry:
+            ["telemetry", "privacy", "crash", "diagnostics", "sentry"]
         case .chatSettings:
             [
                 "chat",

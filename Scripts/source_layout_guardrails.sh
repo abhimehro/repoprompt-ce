@@ -23,17 +23,42 @@ print_matches() {
 
 # 0. Required layout roots/files should exist before negative scans run.
 required_dirs=(
+  "Sources/RepoPromptExecutable"
   "Sources/RepoPrompt/Features"
   "Sources/RepoPrompt/Infrastructure"
   "Sources/RepoPrompt/Infrastructure/SyntaxParsing"
   "Sources/RepoPromptShared/MCP"
+  "Sources/RepoPromptWorkspaceCore"
   "Tests/RepoPromptTests"
+  "Tests/RepoPromptWorkspaceCoreTests"
 )
 for dir in "${required_dirs[@]}"; do
   if [[ ! -d "$dir" ]]; then
     fail "required source layout directory missing: $dir"
   fi
 done
+
+repo_prompt_entry="Sources/RepoPromptExecutable/RepoPromptExecutable.swift"
+if [[ ! -f "$repo_prompt_entry" ]]; then
+  fail "required thin RepoPrompt executable entry missing: $repo_prompt_entry"
+fi
+unexpected_repo_prompt_executable_files=""
+if [[ -d "Sources/RepoPromptExecutable" ]]; then
+  unexpected_repo_prompt_executable_files="$(find Sources/RepoPromptExecutable -type f ! -path "$repo_prompt_entry" -print)"
+fi
+if [[ -n "$unexpected_repo_prompt_executable_files" ]]; then
+  fail "thin RepoPrompt executable target contains implementation files"
+  printf '%s\n' "$unexpected_repo_prompt_executable_files" >&2
+fi
+repo_prompt_app_main_declarations="$(grep -R -n -E '^[[:space:]]*@main([[:space:]]|$)' Sources/RepoPrompt --include='*.swift' || true)"
+if [[ -n "$repo_prompt_app_main_declarations" ]]; then
+  fail "RepoPromptApp implementation target must not declare @main"
+  printf '%s\n' "$repo_prompt_app_main_declarations" >&2
+fi
+repo_prompt_entry_main_count="$(grep -c -E '^[[:space:]]*@main([[:space:]]|$)' "$repo_prompt_entry" || true)"
+if [[ "$repo_prompt_entry_main_count" -ne 1 ]]; then
+  fail "thin RepoPrompt executable entry must declare exactly one @main"
+fi
 
 shared_mcp_required_files=(
   "Sources/RepoPromptShared/MCP/MCPControlMessages.swift"
@@ -112,12 +137,80 @@ resolved_pins = {pin["identity"]: pin for pin in resolved["pins"]}
 package = json.loads(subprocess.check_output(["swift", "package", "dump-package"], text=True))
 targets = {target["name"]: target for target in package["targets"]}
 repo_prompt = targets.get("RepoPrompt", {})
+repo_prompt_app = targets.get("RepoPromptApp", {})
 repo_prompt_dependencies = repo_prompt.get("dependencies", [])
-repo_prompt_products = {
+repo_prompt_app_dependencies = repo_prompt_app.get("dependencies", [])
+repo_prompt_app_products = {
     (dependency["product"][0], dependency["product"][1])
-    for dependency in repo_prompt_dependencies
+    for dependency in repo_prompt_app_dependencies
     if "product" in dependency
 }
+
+if repo_prompt.get("type") != "executable":
+    errors.append("RepoPrompt target must remain executable")
+if repo_prompt.get("path") != "Sources/RepoPromptExecutable":
+    errors.append("RepoPrompt target must remain the thin Sources/RepoPromptExecutable entry target")
+repo_prompt_by_name_dependencies = [
+    dependency["byName"][0]
+    for dependency in repo_prompt_dependencies
+    if dependency.get("byName")
+]
+if len(repo_prompt_dependencies) != 1 or repo_prompt_by_name_dependencies != ["RepoPromptApp"]:
+    errors.append("RepoPrompt executable target must depend only on RepoPromptApp")
+if repo_prompt_app.get("type") != "regular":
+    errors.append("RepoPromptApp target must remain an internal library target")
+if repo_prompt_app.get("path") != "Sources/RepoPrompt":
+    errors.append("RepoPromptApp target must retain the Sources/RepoPrompt implementation path")
+
+workspace_core = targets.get("RepoPromptWorkspaceCore")
+if workspace_core is None:
+    errors.append("RepoPromptWorkspaceCore target missing")
+else:
+    if workspace_core.get("type") != "regular":
+        errors.append("RepoPromptWorkspaceCore must remain an internal regular target")
+    if workspace_core.get("path") != "Sources/RepoPromptWorkspaceCore":
+        errors.append("RepoPromptWorkspaceCore target path drifted")
+    if workspace_core.get("dependencies", []):
+        errors.append("RepoPromptWorkspaceCore must not declare target or package dependencies")
+    if workspace_core.get("settings", []):
+        errors.append("RepoPromptWorkspaceCore must not declare compiler settings")
+
+workspace_core_tests = targets.get("RepoPromptWorkspaceCoreTests")
+if workspace_core_tests is None:
+    errors.append("RepoPromptWorkspaceCoreTests target missing")
+else:
+    test_dependencies = [
+        dependency["byName"][0]
+        for dependency in workspace_core_tests.get("dependencies", [])
+        if dependency.get("byName")
+    ]
+    if workspace_core_tests.get("type") != "test":
+        errors.append("RepoPromptWorkspaceCoreTests must remain a test target")
+    if workspace_core_tests.get("path") != "Tests/RepoPromptWorkspaceCoreTests":
+        errors.append("RepoPromptWorkspaceCoreTests target path drifted")
+    if test_dependencies != ["RepoPromptWorkspaceCore"] or len(workspace_core_tests.get("dependencies", [])) != 1:
+        errors.append("RepoPromptWorkspaceCoreTests must depend only on RepoPromptWorkspaceCore")
+
+app_by_name_dependencies = [
+    dependency["byName"][0]
+    for dependency in repo_prompt_app_dependencies
+    if dependency.get("byName")
+]
+if app_by_name_dependencies.count("RepoPromptWorkspaceCore") != 1:
+    errors.append("RepoPromptApp must depend exactly once on RepoPromptWorkspaceCore")
+
+for forbidden_consumer in ("RepoPrompt", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
+    dependencies = [
+        dependency["byName"][0]
+        for dependency in targets.get(forbidden_consumer, {}).get("dependencies", [])
+        if dependency.get("byName")
+    ]
+    if "RepoPromptWorkspaceCore" in dependencies:
+        errors.append(f"{forbidden_consumer} must not directly depend on RepoPromptWorkspaceCore")
+
+for product in package.get("products", []):
+    if "RepoPromptWorkspaceCore" in product.get("targets", []):
+        errors.append("RepoPromptWorkspaceCore must not be exposed as a package product")
 
 for identity, (url, revision, product) in expected_packages.items():
     manifest_pin = f'.package(url: "{url}", revision: "{revision}")'
@@ -128,8 +221,8 @@ for identity, (url, revision, product) in expected_packages.items():
         errors.append(f"Package.resolved missing pin: {identity}")
     elif pin.get("location") != url or pin.get("state", {}).get("revision") != revision:
         errors.append(f"Package.resolved pin drift: {identity}")
-    if (product, identity) not in repo_prompt_products:
-        errors.append(f"RepoPrompt missing upstream grammar product dependency: {product} ({identity})")
+    if (product, identity) not in repo_prompt_app_products:
+        errors.append(f"RepoPromptApp missing upstream grammar product dependency: {product} ({identity})")
 
 support = targets.get("TreeSitterScannerSupport")
 if support is None:
@@ -140,8 +233,8 @@ else:
     expected_sources = ["src/javascript/scanner.c", "src/python/scanner.c"]
     if sorted(support.get("sources", [])) != expected_sources:
         errors.append("TreeSitterScannerSupport sources must remain exactly JavaScript/Python scanner.c")
-if not any(dependency.get("byName", [None])[0] == "TreeSitterScannerSupport" for dependency in repo_prompt_dependencies):
-    errors.append("RepoPrompt must directly depend on TreeSitterScannerSupport")
+if not any(dependency.get("byName", [None])[0] == "TreeSitterScannerSupport" for dependency in repo_prompt_app_dependencies):
+    errors.append("RepoPromptApp must directly depend on TreeSitterScannerSupport")
 
 if errors:
     raise SystemExit("\n".join(errors))
@@ -165,6 +258,24 @@ for dir in "${retired_tree_sitter_grammar_dirs[@]}"; do
     fail "retired local Tree-sitter grammar directory exists: $dir"
   fi
 done
+
+# RepoPromptWorkspaceCore is a Foundation-only path-policy boundary.
+workspace_core_source_dir="Sources/RepoPromptWorkspaceCore"
+if [[ -d "$workspace_core_source_dir" ]]; then
+  unexpected_workspace_core_files="$(find "$workspace_core_source_dir" -type f ! -name '*.swift' -print)"
+  if [[ -n "$unexpected_workspace_core_files" ]]; then
+    fail "RepoPromptWorkspaceCore contains non-Swift source files"
+    printf '%s\n' "$unexpected_workspace_core_files" >&2
+  fi
+
+  if ! workspace_core_imports="$(xcrun swiftc -frontend -emit-imported-modules "$workspace_core_source_dir"/*.swift 2>&1 | sort -u)"; then
+    fail "Swift compiler could not inspect RepoPromptWorkspaceCore imports"
+    printf '%s\n' "$workspace_core_imports" >&2
+  elif [[ "$workspace_core_imports" != "Foundation" ]]; then
+    fail "RepoPromptWorkspaceCore compiler import allowlist is Foundation only"
+    printf '%s\n' "$workspace_core_imports" >&2
+  fi
+fi
 
 # 1. Old top-level layer buckets should not receive files again.
 old_buckets=(
@@ -290,6 +401,7 @@ print_matches \
 # promoted into the contributor-facing documentation set.
 allowed_tracked_docs=(
   "docs/architecture/provider-plugins.md"
+  "docs/architecture/settings-persistence.md"
   "docs/architecture/source-layout.md"
   "docs/architecture/xcode-workspace.md"
   "docs/designs/cross-restart-durability-root-search-cas-2026-06-25.md"
@@ -297,6 +409,7 @@ allowed_tracked_docs=(
   "docs/privacy/telemetry.md"
   "docs/releasing.md"
   "docs/testing.md"
+  "docs/spec/history-query-tools.md"
   "docs/worktrees.md"
   "docs/investigations/mcp-tool-throughput-wi3-baseline-2026-06-11.md"
   "docs/investigations/test-coverage-value-audit-ledger-2026-05-29.md"

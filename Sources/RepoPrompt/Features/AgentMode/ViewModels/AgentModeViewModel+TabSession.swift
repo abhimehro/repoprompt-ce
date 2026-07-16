@@ -30,6 +30,7 @@ extension AgentModeViewModel {
         var turnProjectionCaches: [UUID: AgentTranscriptTurnProjectionCache] = [:]
         var archivedTranscriptSnapshot: AgentArchivedTranscriptSnapshot = .empty
         var isCompressedHistoryRevealed: Bool = false
+        var isTranscriptWindowExpanded: Bool = false
         var transcriptProjectionProtection: AgentTranscriptProjectionProtection = .none
         var transcriptCanonicalVisibleRowCount: Int = 0
         var transcriptProjectionCounts: AgentTranscriptProjectionCounts = .zero
@@ -40,7 +41,7 @@ extension AgentModeViewModel {
         private(set) var liveItemIDs: Set<UUID> = []
         private var toolCorrelationIndexes = ToolCorrelationIndexes()
         private var nextEphemeralToolResultPayloadRevision: Int = 1
-        var rawToolResultPayloadRenderRevision: Int = 0
+        var rawToolResultPayloadRenderRevisionByItemID: [UUID: Int] = [:]
         var onSourceItemsChanged: ((TabSession, SourceItemsMutation) -> Void)?
         var onRunStateChanged: ((TabSession) -> Void)?
         #if DEBUG
@@ -1524,7 +1525,7 @@ extension AgentModeViewModel {
             transcriptProjectionCounts = .zero
             transcriptAnalyticsSnapshot = .init()
             transcriptPerformanceSnapshot = .empty
-            rawToolResultPayloadRenderRevision = 0
+            rawToolResultPayloadRenderRevisionByItemID = [:]
             derivedTranscriptSyncState = nil
         }
 

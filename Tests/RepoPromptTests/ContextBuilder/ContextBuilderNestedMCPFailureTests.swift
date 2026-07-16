@@ -1,6 +1,6 @@
 import Foundation
 import MCP
-@testable import RepoPrompt
+@testable import RepoPromptApp
 import RepoPromptShared
 import XCTest
 
@@ -172,6 +172,10 @@ import XCTest
                 to: workspace,
                 saveState: false,
                 reason: "ContextBuilderNestedMCPFailureTests"
+            )
+            ContextBuilderTestReadinessSupport.seedCanonicalProviderReadiness(
+                apiSettingsViewModel: context.window.apiSettingsViewModel,
+                workspaceID: context.workspaceID
             )
         }
 
