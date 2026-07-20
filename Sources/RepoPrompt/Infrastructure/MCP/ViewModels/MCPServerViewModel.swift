@@ -6198,6 +6198,7 @@ final class MCPServerViewModel: ObservableObject {
         return slug
     }
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let oracleExportTimestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

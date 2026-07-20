@@ -111,7 +111,7 @@ let dartQuery = """
 (escape_sequence) @string.escape
 
 [
- "@" 
+ "@"
  "=>"
  ".."
  "??"

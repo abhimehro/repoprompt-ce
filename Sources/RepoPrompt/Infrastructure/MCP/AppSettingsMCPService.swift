@@ -7,6 +7,13 @@ import MCP
 /// This service intentionally does not expose the raw global settings document. Only
 /// keys present in `AppSettingsMCPRegistry.definitions` are visible to MCP clients.
 final class AppSettingsMCPService: Service {
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+    private static let iso8601TimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     static let toolName = MCPGlobalToolName.appSettings
 
     private let store: GlobalSettingsStore
@@ -294,9 +301,7 @@ final class AppSettingsMCPService: Service {
     }
 
     private static func iso8601Timestamp() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: Date())
+        iso8601TimestampFormatter.string(from: Date())
     }
 
     private static func valuesEqual(_ lhs: Value, _ rhs: Value) -> Bool {

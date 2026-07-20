@@ -38,7 +38,7 @@ public struct Tool: Sendable {
             let result = try await implementation(input)
 
             let encoder = JSONEncoder()
-            encoder.userInfo[Ontology.DateTime.timeZoneOverrideKey] = TimeZone.current
+            encoder.userInfo[Ontology.DateTime.timeZoneOverrideKey] = TimeZone.autoupdatingCurrent
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes, .prettyPrinted]
 
             let data = try encoder.encode(result)

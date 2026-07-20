@@ -5032,6 +5032,7 @@ extension ToolOutputFormatter {
         return formatter
     }()
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let displayDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -5039,6 +5040,7 @@ extension ToolOutputFormatter {
         return formatter
     }()
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"

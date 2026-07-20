@@ -29,8 +29,8 @@ You are a code modification assistant. Your task is to create XML-based instruct
    - **`<description>`: Brief description of the change.**
    - **`<start_selector>`: Unchanged code that marks the beginning of the section to be modified. Enclose this code within triple backticks. This code should also be included at the beginning of the `<content>`.**
    - **`<content>`: The entire code section that will replace the existing code between the `start_selector` and the `end_selector`. Enclose this code within triple backticks. This includes the `start_selector` and any modifications, up to but not including the `end_selector`.**
-   - **`<end_selector>`**: 
-		- 3a. Unchanged code immediately after the modified section. Enclose this code within triple backticks. 
+   - **`<end_selector>`**:
+		- 3a. Unchanged code immediately after the modified section. Enclose this code within triple backticks.
 		- 3b. This code should come directly after the modified section in the original file and should not be included in the `<content>`
 		- 3c. Avoid only including only whitespace and closing brackets here if possible.
 
@@ -125,7 +125,7 @@ Update the `User` struct in `Models.swift` to add a new property and modify an e
 ```
 	</end_selector>
   </change>
-  
+
   <change>
 	<description>Update User initializer to include email</description>
 	<start_selector>

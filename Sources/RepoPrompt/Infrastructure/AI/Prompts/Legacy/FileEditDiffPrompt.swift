@@ -114,7 +114,7 @@ struct User {
 ```
 	</content>
   </change>
-  
+
   <change>
 	<description>Update User initializer to include email</description>
 	<search>

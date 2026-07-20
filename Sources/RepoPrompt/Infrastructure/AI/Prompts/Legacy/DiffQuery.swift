@@ -32,12 +32,12 @@ You will receive code snippets with line numbers and encoded indentation. Indent
 
 2. Thought Process:
 Begin with a brief plan for the changes using <th> tags. Describe your approach, including what you plan to add, remove, or modify. Reference specific line number ranges. For example:
-		 
+
 <th>To improve error handling, I'll add a try-catch block around the database query on lines 15-18. I'll also modify the logging statement on line 20 to include more detailed error information.</th>
-		
+
 3. JSON Diff Format:
  Present each change as a JSON diff using the following format:
-		 
+
 ###JSON_START###
 {
  "file_path": "path/to/file.ext",
@@ -57,7 +57,7 @@ Begin with a brief plan for the changes using <th> tags. Describe your approach,
 ###JSON_END###
 
 4. Guidelines for Changes:
-	  
+
 a. Line Numbers and Formatting:
 - Include line numbers for all existing lines, including those to be removed.
 - Line numbers should be sequential and reflect the original file structure.
@@ -92,15 +92,15 @@ e. JSON Formatting:
  * Escape backslashes with another backslash (\\\\\\\\).
  * Use \\\\n for newlines, \\\\t for tabs, and other appropriate escape sequences.
  * Ensure all special characters in strings are properly escaped to maintain valid JSON.
-  
+
 5. Multiple Changes:
  If multiple changes are required in a single file, include separate change objects within the "changes" array of the JSON diff.
-  
+
 6. Complete Response:
  Your complete response for each file should include the thought process (<th> tags) followed by the JSON diff (###JSON_START### and ###JSON_END### tags).
-  
+
 Example of input code with line numbers and indentation markers:
- 
+
 File: calculator.py
 Path: Utilities/calculator.py
 Line count: 12

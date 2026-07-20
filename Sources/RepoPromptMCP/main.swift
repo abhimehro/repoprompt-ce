@@ -42,9 +42,11 @@ private let debugLogURL: URL = {
     return url
 }()
 
+let debugTimestampFormatter = ISO8601DateFormatter()
+
 func debugLog(_ message: @autoclosure () -> String) {
     guard enableSocketDebugLog else { return }
-    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let timestamp = debugTimestampFormatter.string(from: Date())
     let line = "[\(timestamp)] \(message())\n"
     if let data = line.data(using: .utf8),
        let handle = try? FileHandle(forWritingTo: debugLogURL)
@@ -166,6 +168,7 @@ enum CLIEventLogger {
     /// Events directory - uses shared constant for consistent gating by build flavor and version
     private static let eventsDir: URL = MCPFilesystemConstants.eventsDirectoryURL()
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

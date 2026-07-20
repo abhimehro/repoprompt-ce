@@ -1952,7 +1952,7 @@ class PromptViewModel: ObservableObject {
         	- Start a new chat with properly curated context
         	- Begin with a plan message to outline the implementation approach
         	- Maintain a single long chat session to preserve context throughout the task
-        	
+
         	**Chat Limitations to Remember**:
         	- Chat cannot execute commands, run tests, or access terminal
         	- Chat only sees selected files and conversation history
@@ -2043,7 +2043,7 @@ class PromptViewModel: ObservableObject {
         	- Adding/updating individual functions or methods
         	- Fixing specific bugs with known locations
         	- Renaming variables or refactoring within one file
-        	
+
         	Complex tasks (use chat tools):
         	- Multi-file feature implementations
         	- Architectural changes affecting multiple components
@@ -2063,7 +2063,7 @@ class PromptViewModel: ObservableObject {
         	- Keep total selected files under 100k tokens
         	- Maintain one chat session for the entire feature/task
         	- Use Agent Mode editing tools directly after the plan is clear; Oracle modes are chat, plan, and review only
-        	
+
         	**Remember Chat Limitations**:
         	- Cannot run tests, execute commands, or access build output
         	- Only sees selected files (latest versions) and chat history

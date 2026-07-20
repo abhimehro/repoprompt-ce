@@ -4,6 +4,9 @@ import MCP
 
 @MainActor
 final class MCPWorktreeToolProvider: MCPWindowToolProviding {
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     let group: MCPWindowToolGroup = .git
 
     private let runtime: MCPWindowToolRuntime
@@ -648,7 +651,7 @@ final class MCPWorktreeToolProvider: MCPWindowToolProviding {
             head: binding.head,
             visualLabel: binding.visualLabel,
             visualColorHex: binding.visualColorHex,
-            boundAt: ISO8601DateFormatter().string(from: binding.boundAt),
+            boundAt: Self.iso8601Formatter.string(from: binding.boundAt),
             source: binding.source
         )
     }

@@ -163,6 +163,7 @@ final class CodexNativeSessionController {
     ]
     private static let rawEventLogFilePathKey = "codexRawEventLogFilePath"
     private static let lastRawEventLogFilePathKey = "codexLastRawEventLogFilePath"
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let rawEventTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
