@@ -197,15 +197,17 @@ import XCTest
 
         private var arrival: Arrival?
         private var arrivalWaiters: [CheckedContinuation<Arrival, Never>] = []
-        private var releaseContinuation: CheckedContinuation<Void, Never>?
+        private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+        private var isReleased = false
 
         func arriveAndWait(workspaceID: UUID, fileURL: URL) async {
             let value = Arrival(workspaceID: workspaceID, fileURL: fileURL)
             arrival = value
             arrivalWaiters.forEach { $0.resume(returning: value) }
             arrivalWaiters.removeAll()
+            if isReleased { return }
             await withCheckedContinuation { continuation in
-                releaseContinuation = continuation
+                releaseContinuations.append(continuation)
             }
         }
 
@@ -217,8 +219,9 @@ import XCTest
         }
 
         func release() {
-            releaseContinuation?.resume()
-            releaseContinuation = nil
+            isReleased = true
+            releaseContinuations.forEach { $0.resume() }
+            releaseContinuations.removeAll()
         }
     }
 

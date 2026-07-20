@@ -42,10 +42,7 @@ private let debugLogURL: URL = {
     return url
 }()
 
-let debugTimestampFormatter: ISO8601DateFormatter = {
-    let formatter = ISO8601DateFormatter()
-    return formatter
-}()
+let debugTimestampFormatter = ISO8601DateFormatter()
 
 func debugLog(_ message: @autoclosure () -> String) {
     guard enableSocketDebugLog else { return }

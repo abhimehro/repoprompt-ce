@@ -294,10 +294,7 @@
     @MainActor
     final class AgentChatStressHarness: ObservableObject {
         // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
-        private static let iso8601Formatter: ISO8601DateFormatter = {
-            let formatter = ISO8601DateFormatter()
-            return formatter
-        }()
+        private static let iso8601Formatter = ISO8601DateFormatter()
 
         static let forceDetachRequestedNotification = Notification.Name("AgentChatStressHarness.forceDetachRequested")
         enum Status: Equatable {

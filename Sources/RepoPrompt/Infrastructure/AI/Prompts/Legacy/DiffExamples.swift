@@ -1,11 +1,11 @@
 let diffExamples = """
 More Examples illustrating how to apply the guidelines to this input:
-  
+
   -- EXAMPLE 1: Adding new lines
   <th>
   Add input validation to ensure arguments are numbers. Will insert two new lines after the function definition.
   </th>
-  
+
   [INCORRECT]
   ###JSON_START###
   {
@@ -25,9 +25,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example is incorrect because it assigns line numbers to new lines instead of using the '+' prefix.
-  
+
   [CORRECT]
   ###JSON_START###
   {
@@ -47,14 +47,14 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example correctly adds new lines with the '+' prefix and maintains proper line numbers for existing lines.
-  
+
   -- EXAMPLE 2: Modifying existing lines
   <th>
   Modify the print statement to include input values. Will replace line 9 with a more detailed print statement.
   </th>
-  
+
   [INCORRECT]
   ###JSON_START###
   {
@@ -72,9 +72,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example is incorrect because it doesn't use the '-' prefix for the line being deleted, and a '+' for the line that replaces it.
-  
+
   [CORRECT]
   ###JSON_START###
   {
@@ -93,14 +93,14 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example correctly uses the '-' prefix for the line being modified and the '+' prefix for the new line that replaces the old one.
-  
+
   -- EXAMPLE 3: Correct indentation
   <th>
   Add error handling to the main function. Will wrap existing code in a try-except block and add two new lines for exception handling.
   </th>
-  
+
   [INCORRECT]
   ###JSON_START###
   {
@@ -124,9 +124,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example is incorrect because it doesn't use the indentation tags (<s0>, <s4>, <s8>) to represent the indentation levels.
-  
+
   [CORRECT]
   ###JSON_START###
   {
@@ -150,14 +150,14 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example correctly uses the indentation tags (<s0>, <s4>, <s8>) to represent the indentation levels and uses the '+' prefix for new lines.
-  
+
   -- EXAMPLE 4: Deleting multiple lines
   <th>
   Remove unnecessary variable assignments. Will delete lines 6 and 7, replacing them with user input.
   </th>
-  
+
   [INCORRECT]
   ###JSON_START###
   {
@@ -176,9 +176,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example is incorrect because it doesn't use the '-' prefix for lines being removed.
-  
+
   [CORRECT]
   ###JSON_START###
   {
@@ -200,14 +200,14 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example correctly uses the '-' prefix for lines being removed and the '+' prefix for new lines being added.
-  
+
   -- EXAMPLE 5: Complex changes with additions, modifications, and deletions
   <th>
   Refactor main function with error handling and user input. Will wrap existing code in try-except block, replace hardcoded values with user input, and modify the print statement.
   </th>
-  
+
   [INCORRECT]
   ###JSON_START###
   {
@@ -234,9 +234,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example is incorrect because it doesn't use the '-' prefix for the modified line 9.
-  
+
   [CORRECT]
   ###JSON_START###
   {
@@ -264,14 +264,14 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example correctly handles complex changes by using '+' for new lines, '-' for removed or modified lines, and maintains proper indentation tags and line numbers throughout.
-  
+
   -- EXAMPLE 6: Context lines
   <th>
   Modify calculate_sum function to use multiplication instead of addition. Will replace the addition operation with multiplication.
   </th>
-  
+
   [INCORRECT]
   ###JSON_START###
   {
@@ -294,9 +294,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example is incorrect because it includes too many context lines after the change.
-  
+
   [CORRECT]
   ###JSON_START###
   {
@@ -315,9 +315,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example correctly includes only 1-3 lines of context before and after the change.
-  
+
   -- EXAMPLE 7: Adding comment lines
   <th>
   Add comments to explain the calculate_sum function. Will insert two new comment lines after the function definition.
@@ -341,9 +341,9 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example is incorrect because it assigns line numbers to the new comment lines instead of using the '+' prefix.
-  
+
   [CORRECT]
   ###JSON_START###
   {
@@ -363,7 +363,7 @@ More Examples illustrating how to apply the guidelines to this input:
   ]
   }
   ###JSON_END###
-  
+
   Explanation: This example correctly adds new comment lines using the '+' prefix and maintains proper line numbers for existing lines.
 """
 
@@ -486,7 +486,7 @@ Modify the existing function to include error handling and logging. Will wrap th
 ###JSON_END###
 
 Explanation: This example is incorrect because it doesn't use the '+' prefix for new lines and '-' prefix for modified lines.
-																					
+
 																					[CORRECT]
 																					###JSON_START###
 {
@@ -513,13 +513,13 @@ Explanation: This example is incorrect because it doesn't use the '+' prefix for
 ###JSON_END###
 
 Explanation: This example correctly uses '+' for new lines, '-' for removed lines, and maintains proper indentation using the <s0>, <s4>, and <s8> tags.
-													
+
 													-- EXAMPLE 3: JavaScript with complex nested structures
-													
+
 													File: api_client.js
 													Path: src/api_client.js
 													Line count: 14
-													
+
 													Content:
 														1:<s0>function fetchUserData(userId) {
 	2:<s4>return new Promise((resolve, reject) => {
@@ -568,7 +568,7 @@ Refactor the existing nested callbacks into async/await syntax. Will replace the
 ###JSON_END###
 
 Explanation: This example is incorrect because it doesn't use the '-' prefix for removed lines, '+' prefix for new lines, and doesn't encode indentation properly.
-																					
+
 																					[CORRECT]
 																					###JSON_START###
 {
@@ -609,7 +609,7 @@ Explanation: This example is incorrect because it doesn't use the '-' prefix for
 ###JSON_END###
 
 Explanation: This example correctly uses '-' for removed lines, '+' for new lines, preserves the original function signature and closing brace, and encodes indentation properly using <s0>, <s4>, <s8>, <s12>, <s16>, and <s20> tags.
-													
+
 """
 
 let diffExamplesCSharp = """

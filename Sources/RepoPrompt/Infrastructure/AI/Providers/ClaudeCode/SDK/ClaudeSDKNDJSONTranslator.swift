@@ -7,10 +7,7 @@ enum ClaudeReasoningExtractionFeature {
 #if DEBUG
     enum ClaudeReasoningDebugLog {
         // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
-        private static let iso8601Formatter: ISO8601DateFormatter = {
-            let formatter = ISO8601DateFormatter()
-            return formatter
-        }()
+        private static let iso8601Formatter = ISO8601DateFormatter()
 
         static let fileURL = MCPFilesystemConstants.identity.temporaryRootURL()
             .appendingPathComponent("claude-reasoning-debug.log", isDirectory: false)

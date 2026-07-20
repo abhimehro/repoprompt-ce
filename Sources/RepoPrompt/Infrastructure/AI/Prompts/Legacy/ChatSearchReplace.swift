@@ -134,7 +134,7 @@ Update the `User` struct in `Models.swift` to add a new property and modify an e
 ```
 	</content>
   </change>
-  
+
   <change>
 	<description>Update User initializer to include email</description>
 	<search>
