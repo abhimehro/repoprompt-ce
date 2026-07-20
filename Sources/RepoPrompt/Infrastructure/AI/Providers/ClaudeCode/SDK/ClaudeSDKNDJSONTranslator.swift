@@ -6,6 +6,12 @@ enum ClaudeReasoningExtractionFeature {
 
 #if DEBUG
     enum ClaudeReasoningDebugLog {
+        // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+        private static let iso8601Formatter: ISO8601DateFormatter = {
+            let formatter = ISO8601DateFormatter()
+            return formatter
+        }()
+
         static let fileURL = MCPFilesystemConstants.identity.temporaryRootURL()
             .appendingPathComponent("claude-reasoning-debug.log", isDirectory: false)
         private static let lock = NSLock()
@@ -13,7 +19,7 @@ enum ClaudeReasoningExtractionFeature {
         static func append(_ line: String) {
             lock.lock()
             defer { lock.unlock() }
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = Self.iso8601Formatter.string(from: Date())
             let payload = "\(timestamp) \(line)\n"
             guard let data = payload.data(using: .utf8) else { return }
             let fileManager = FileManager.default

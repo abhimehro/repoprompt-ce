@@ -12667,7 +12667,7 @@ actor ServerNetworkManager {
     private static func prettyJSON(_ value: Value) -> String {
         do {
             let encoder = JSONEncoder()
-            encoder.userInfo[Ontology.DateTime.timeZoneOverrideKey] = TimeZone.current
+            encoder.userInfo[Ontology.DateTime.timeZoneOverrideKey] = TimeZone.autoupdatingCurrent
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes, .prettyPrinted]
             let data = try encoder.encode(value)
             return String(data: data, encoding: .utf8) ?? "{}"

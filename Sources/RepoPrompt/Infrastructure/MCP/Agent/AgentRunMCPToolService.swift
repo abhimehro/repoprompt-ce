@@ -2578,6 +2578,7 @@ struct AgentRunMCPToolService {
         }
     }
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

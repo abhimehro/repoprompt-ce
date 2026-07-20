@@ -11,12 +11,14 @@ final class CLIProcessLogCollector {
         let message: String
     }
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let filenameFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"

@@ -79,6 +79,7 @@ final class BenchmarkSettingsViewModel: ObservableObject {
 
     private static let selectedModelDefaultsKey = "BenchmarkSettingsView.selectedModel"
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let logTimestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -86,6 +87,7 @@ final class BenchmarkSettingsViewModel: ObservableObject {
         return formatter
     }()
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let logFileNameFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"

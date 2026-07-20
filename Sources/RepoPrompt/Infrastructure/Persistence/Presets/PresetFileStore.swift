@@ -6,6 +6,13 @@ import Foundation
 /// `~/Library/Application Support/RepoPrompt CE/Presets/workflowPresets.json`
 /// `~/Library/Application Support/RepoPrompt CE/Presets/modelPresets.json`
 final class PresetFileStore {
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+    private static let backupTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     static let shared = PresetFileStore()
 
     static let appSupportDirectoryName = "RepoPrompt CE"
@@ -233,9 +240,7 @@ final class PresetFileStore {
     }
 
     private static func backupTimestamp(for date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        return backupTimestampFormatter.string(from: date)
             .replacingOccurrences(of: ":", with: "-")
     }
 

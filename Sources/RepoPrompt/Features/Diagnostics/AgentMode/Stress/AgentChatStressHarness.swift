@@ -293,6 +293,12 @@
 
     @MainActor
     final class AgentChatStressHarness: ObservableObject {
+        // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+        private static let iso8601Formatter: ISO8601DateFormatter = {
+            let formatter = ISO8601DateFormatter()
+            return formatter
+        }()
+
         static let forceDetachRequestedNotification = Notification.Name("AgentChatStressHarness.forceDetachRequested")
         enum Status: Equatable {
             case idle
@@ -571,7 +577,7 @@
         }
 
         func note(_ message: String) {
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = Self.iso8601Formatter.string(from: Date())
             recentEvents.append("[\(timestamp)] \(message)")
             if recentEvents.count > configuration.maxVisibleEventLogEntries {
                 recentEvents.removeFirst(recentEvents.count - configuration.maxVisibleEventLogEntries)
