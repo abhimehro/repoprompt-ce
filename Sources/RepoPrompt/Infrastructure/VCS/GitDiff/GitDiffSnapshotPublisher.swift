@@ -3,6 +3,24 @@ import Foundation
 actor GitDiffSnapshotPublisher {
     static let shared = GitDiffSnapshotPublisher()
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.autoupdatingCurrent
+        formatter.dateFormat = "HHmm"
+        return formatter
+    }()
+
     private let engine: GitDiffEngine
     private let store: GitDiffSnapshotStore
     private let vcsService: VCSService
@@ -128,16 +146,8 @@ actor GitDiffSnapshotPublisher {
             return override
         }
         let now = Date()
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dateFormatter.timeZone = TimeZone.current
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        let timeFormatter = DateFormatter()
-        timeFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timeFormatter.timeZone = TimeZone.current
-        timeFormatter.dateFormat = "HHmm"
-        let datePart = dateFormatter.string(from: now)
-        let timePart = timeFormatter.string(from: now)
+        let datePart = Self.dateFormatter.string(from: now)
+        let timePart = Self.timeFormatter.string(from: now)
         let baseID = "\(datePart)/\(timePart)"
         if !store.snapshotExists(workspaceDirectory: workspaceDirectory, repoKey: repoKey, snapshotID: baseID) {
             return baseID

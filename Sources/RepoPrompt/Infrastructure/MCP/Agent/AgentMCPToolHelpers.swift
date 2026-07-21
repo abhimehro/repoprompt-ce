@@ -95,6 +95,7 @@ enum AgentMCPToolHelpers {
     // MARK: - Timestamps
 
     /// Shared ISO 8601 formatter with fractional seconds, used across all agent MCP surfaces.
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

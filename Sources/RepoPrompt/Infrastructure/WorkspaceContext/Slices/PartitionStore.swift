@@ -35,6 +35,9 @@ public struct PartitionScope: Sendable, Equatable {
 }
 
 actor PartitionStore {
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
+    private static let sharedDateFormatter = ISO8601DateFormatter()
+
     /// Posted **after** a successful save so other windows/tabs reload in-memory slices.
     static let didSaveNotification = Notification.Name("RepoPrompt.PartitionStoreDidSave")
     static let notifRootPathKey = "rootPath"
@@ -142,7 +145,6 @@ actor PartitionStore {
     private let baseURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private let dateFormatter = ISO8601DateFormatter()
 
     #if DEBUG
         private var didPersistHandlerForTesting: (@Sendable () -> Void)?
@@ -199,7 +201,7 @@ actor PartitionStore {
         try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true, attributes: nil)
 
         var dataToPersist = data
-        dataToPersist.updatedAt = dateFormatter.string(from: Date())
+        dataToPersist.updatedAt = Self.sharedDateFormatter.string(from: Date())
 
         let encoded = try encoder.encode(dataToPersist)
         try Task.checkCancellation()

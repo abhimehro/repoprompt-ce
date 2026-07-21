@@ -1138,6 +1138,7 @@ enum GitDiffMapBuilder {
         }
     }
 
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let dateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]

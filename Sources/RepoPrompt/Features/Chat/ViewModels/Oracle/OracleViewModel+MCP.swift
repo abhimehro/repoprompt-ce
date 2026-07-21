@@ -4,6 +4,7 @@ import MCP // <- required for `Value`
 // MARK: - MCP Tool helpers (moved from MCPServerViewModel)
 
 extension OracleViewModel {
+    // BOLT: Shared static instance to prevent expensive repeated DateFormatter allocations
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
