@@ -634,6 +634,8 @@ final class MCPWorktreeToolProvider: MCPWindowToolProviding {
         )
     }
 
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     private func bindingDTO(_ binding: AgentSessionWorktreeBinding) -> ToolResultDTOs.ManageWorktreeReplyDTO.BindingDTO {
         ToolResultDTOs.ManageWorktreeReplyDTO.BindingDTO(
             id: binding.id,
@@ -648,7 +650,7 @@ final class MCPWorktreeToolProvider: MCPWindowToolProviding {
             head: binding.head,
             visualLabel: binding.visualLabel,
             visualColorHex: binding.visualColorHex,
-            boundAt: ISO8601DateFormatter().string(from: binding.boundAt),
+            boundAt: Self.iso8601Formatter.string(from: binding.boundAt),
             source: binding.source
         )
     }

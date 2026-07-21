@@ -570,8 +570,10 @@
             grouping = snapshot
         }
 
+        private static let timestampFormatter = ISO8601DateFormatter()
+
         func note(_ message: String) {
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = Self.timestampFormatter.string(from: Date())
             recentEvents.append("[\(timestamp)] \(message)")
             if recentEvents.count > configuration.maxVisibleEventLogEntries {
                 recentEvents.removeFirst(recentEvents.count - configuration.maxVisibleEventLogEntries)
