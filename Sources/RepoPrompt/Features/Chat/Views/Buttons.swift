@@ -36,6 +36,7 @@ struct TrashButton: View {
             }
         }
         .accessibilityLabel("Clear Chat")
+        .hoverTooltip("Clear Chat")
         .popover(isPresented: $showingConfirmation, arrowEdge: .leading) {
             VStack(spacing: 8) {
                 Text("Clear the entire chat?")
@@ -124,6 +125,7 @@ struct SendOrResendButton: View {
             }
         }
         .hoverTooltip(inputText.isEmpty && hasMessages ? "Resend Last Message" : sendTooltip)
+        .accessibilityLabel(inputText.isEmpty && hasMessages ? "Resend Last Message" : sendTooltip)
     }
 
     private var isEnabled: Bool {
@@ -171,6 +173,7 @@ struct CancelButton: View {
             }
         }
         .hoverTooltip("Cancel AI Response")
+        .accessibilityLabel("Cancel AI Response")
     }
 
     private func recordAppear() {
