@@ -20,7 +20,6 @@ from urllib.parse import quote, urlparse
 
 import codex_runtime_artifact as artifact
 
-
 API_ROOT = "https://api.github.com/repos/openai/codex/releases"
 CHECKSUM_ASSET = "codex-package_SHA256SUMS"
 MAX_ASSET_SIZE = 2 * 1024 * 1024 * 1024
@@ -50,7 +49,9 @@ def stable_version(value: str, *, label: str) -> str:
 def version_from_tag(value: str, *, label: str) -> str:
     match = STABLE_TAG_PATTERN.fullmatch(value)
     if match is None:
-        raise CandidateError(f"{label} must match rust-v<stable numeric triplet>, got {value!r}")
+        raise CandidateError(
+            f"{label} must match rust-v<stable numeric triplet>, got {value!r}"
+        )
     return match.group(1)
 
 
@@ -91,16 +92,22 @@ def github_api_json(url: str) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=30) as response:
             final_url = urlparse(response.geturl())
             if final_url.scheme != "https" or final_url.netloc != "api.github.com":
-                raise CandidateError(f"GitHub release API redirected to an unexpected origin: {response.geturl()}")
+                raise CandidateError(
+                    f"GitHub release API redirected to an unexpected origin: {response.geturl()}"
+                )
             payload = response.read(10 * 1024 * 1024 + 1)
     except (OSError, urllib.error.URLError) as exc:
-        raise CandidateError(f"GitHub release API request failed for {url}: {exc}") from exc
+        raise CandidateError(
+            f"GitHub release API request failed for {url}: {exc}"
+        ) from exc
     if len(payload) > 10 * 1024 * 1024:
         raise CandidateError("GitHub release metadata exceeded the 10 MiB safety limit")
     try:
         value = json.loads(payload)
     except json.JSONDecodeError as exc:
-        raise CandidateError(f"GitHub release API returned invalid JSON: {exc}") from exc
+        raise CandidateError(
+            f"GitHub release API returned invalid JSON: {exc}"
+        ) from exc
     if not isinstance(value, dict):
         raise CandidateError("GitHub release API response must be a JSON object")
     return value
@@ -116,7 +123,9 @@ def selection_mode(args: argparse.Namespace) -> str:
 
 def validate_evidence_mode(args: argparse.Namespace) -> None:
     if bool(args.release_json) != bool(args.asset_dir):
-        raise CandidateError("--release-json and --asset-dir must be provided together for a fully offline run")
+        raise CandidateError(
+            "--release-json and --asset-dir must be provided together for a fully offline run"
+        )
     baseline_path = Path(args.baseline_manifest).expanduser().resolve()
     has_override = (
         baseline_path != artifact.DEFAULT_MANIFEST.resolve()
@@ -129,7 +138,9 @@ def validate_evidence_mode(args: argparse.Namespace) -> None:
             "--fixture-mode is required for offline metadata/assets or non-default baseline/tool overrides"
         )
     if args.fixture_mode and args.latest_stable:
-        raise CandidateError("--latest-stable is unavailable in fixture mode; use an explicit version or tag")
+        raise CandidateError(
+            "--latest-stable is unavailable in fixture mode; use an explicit version or tag"
+        )
 
 
 def effective_tool_path(value: str) -> str:
@@ -153,7 +164,9 @@ def build_provenance(
     fixture_mode = bool(args.fixture_mode)
     return {
         "schemaVersion": 1,
-        "evidenceMode": "test-fixture-non-promotable" if fixture_mode else "official-github-online",
+        "evidenceMode": (
+            "test-fixture-non-promotable" if fixture_mode else "official-github-online"
+        ),
         "nonPromotableTestFixture": fixture_mode,
         "selectionMode": selection_mode(args),
         "releaseMetadataSource": (
@@ -162,9 +175,7 @@ def build_provenance(
             else "https://api.github.com/repos/openai/codex/releases"
         ),
         "assetSources": (
-            [str(Path(args.asset_dir).expanduser().resolve())]
-            if args.asset_dir
-            else []
+            [str(Path(args.asset_dir).expanduser().resolve())] if args.asset_dir else []
         ),
         "baselineManifest": {
             "path": display_baseline_path(baseline_path),
@@ -193,7 +204,9 @@ def required_assets(release: dict[str, Any], tag: str) -> dict[str, dict[str, An
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise CandidateError("release metadata assets must be a list")
-    matches: dict[str, list[dict[str, Any]]] = {name: [] for name in REQUIRED_ASSET_NAMES}
+    matches: dict[str, list[dict[str, Any]]] = {
+        name: [] for name in REQUIRED_ASSET_NAMES
+    }
     for index, raw in enumerate(assets):
         if not isinstance(raw, dict):
             raise CandidateError(f"release asset {index} is not an object")
@@ -206,13 +219,24 @@ def required_assets(release: dict[str, Any], tag: str) -> dict[str, dict[str, An
     for name in REQUIRED_ASSET_NAMES:
         values = matches[name]
         if len(values) != 1:
-            raise CandidateError(f"release metadata must contain exactly one asset named {name}; found {len(values)}")
+            raise CandidateError(
+                f"release metadata must contain exactly one asset named {name}; found {len(values)}"
+            )
         asset_value = values[0]
-        expected_url = f"{artifact.OFFICIAL_REPOSITORY_URL}/releases/download/{tag}/{name}"
+        expected_url = (
+            f"{artifact.OFFICIAL_REPOSITORY_URL}/releases/download/{tag}/{name}"
+        )
         if asset_value.get("browser_download_url") != expected_url:
-            raise CandidateError(f"release asset {name} must use the exact official URL {expected_url}")
+            raise CandidateError(
+                f"release asset {name} must use the exact official URL {expected_url}"
+            )
         size = asset_value.get("size")
-        if isinstance(size, bool) or not isinstance(size, int) or size <= 0 or size > MAX_ASSET_SIZE:
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
+            or size > MAX_ASSET_SIZE
+        ):
             raise CandidateError(f"release asset {name} has an invalid size: {size!r}")
         selected[name] = asset_value
     return selected
@@ -231,10 +255,14 @@ def validate_release(
         raise CandidateError("release metadata has no valid tag_name")
     version = version_from_tag(tag, label="release tag_name")
     if expected_tag is not None and tag != expected_tag:
-        raise CandidateError(f"release tag mismatch: expected {expected_tag}, got {tag}")
+        raise CandidateError(
+            f"release tag mismatch: expected {expected_tag}, got {tag}"
+        )
     expected_release_url = f"{artifact.OFFICIAL_REPOSITORY_URL}/releases/tag/{tag}"
     if release.get("html_url") != expected_release_url:
-        raise CandidateError(f"release html_url must be the exact official URL {expected_release_url}")
+        raise CandidateError(
+            f"release html_url must be the exact official URL {expected_release_url}"
+        )
     return version, tag, required_assets(release, tag)
 
 
@@ -250,7 +278,9 @@ def validate_output_path(path: Path) -> Path:
     resolved = path.expanduser().resolve(strict=False)
     vendor_root = (artifact.ROOT / "Vendor").resolve()
     if path_is_within(resolved, vendor_root):
-        raise CandidateError("candidate output must not be written under Vendor; the live manifest is review-only")
+        raise CandidateError(
+            "candidate output must not be written under Vendor; the live manifest is review-only"
+        )
     if resolved.exists() or resolved.is_symlink():
         raise CandidateError(f"candidate output already exists: {resolved}")
     return resolved
@@ -265,13 +295,17 @@ def download_asset(url: str, destination: Path, expected_size: int) -> None:
         with urllib.request.urlopen(request, timeout=120) as response:
             final_url = urlparse(response.geturl())
             if final_url.scheme != "https":
-                raise CandidateError(f"asset download redirected away from HTTPS: {response.geturl()}")
+                raise CandidateError(
+                    f"asset download redirected away from HTTPS: {response.geturl()}"
+                )
             content_length = response.headers.get("Content-Length")
             if content_length is not None:
                 try:
                     declared_size = int(content_length)
                 except ValueError as exc:
-                    raise CandidateError(f"asset response has an invalid Content-Length: {content_length!r}") from exc
+                    raise CandidateError(
+                        f"asset response has an invalid Content-Length: {content_length!r}"
+                    ) from exc
                 if declared_size != expected_size:
                     raise CandidateError(
                         f"asset response size disagrees with release metadata: metadata={expected_size} response={declared_size}"
@@ -318,7 +352,9 @@ def acquire_assets(
         else:
             source = asset_dir / name
             if not source.is_file() or source.is_symlink():
-                raise CandidateError(f"offline asset directory is missing a regular file: {name}")
+                raise CandidateError(
+                    f"offline asset directory is missing a regular file: {name}"
+                )
             source_size = source.stat().st_size
             if source_size != selected[name]["size"]:
                 raise CandidateError(
@@ -355,7 +391,9 @@ def archive_paths(path: Path) -> set[str]:
     with tarfile.open(path, "r:gz") as tar:
         for member_count, member in enumerate(tar, start=1):
             if member_count > MAX_ARCHIVE_MEMBERS:
-                raise CandidateError(f"archive exceeds the {MAX_ARCHIVE_MEMBERS} member safety limit")
+                raise CandidateError(
+                    f"archive exceeds the {MAX_ARCHIVE_MEMBERS} member safety limit"
+                )
             if member.size < 0 or member.size > MAX_ARCHIVE_MEMBER_SIZE:
                 raise CandidateError(
                     f"archive member {member.name!r} exceeds the {MAX_ARCHIVE_MEMBER_SIZE} byte safety limit"
@@ -366,17 +404,23 @@ def archive_paths(path: Path) -> set[str]:
                     f"archive expanded size exceeds the {MAX_EXPANDED_ARCHIVE_SIZE} byte safety limit"
                 )
             normalized = member.name.rstrip("/")
-            relative = str(artifact.validate_relative_path(normalized, "archive member"))
+            relative = str(
+                artifact.validate_relative_path(normalized, "archive member")
+            )
             if relative in discovered:
                 raise CandidateError(f"archive contains duplicate member: {relative}")
             discovered.add(relative)
     missing = artifact.REQUIRED_LAYOUT - discovered
     if missing:
-        raise CandidateError(f"candidate package omits required layout: {sorted(missing)}")
+        raise CandidateError(
+            f"candidate package omits required layout: {sorted(missing)}"
+        )
     return discovered
 
 
-def structural_tree(entries: Sequence[dict[str, Any]]) -> dict[str, tuple[str, bool | None]]:
+def structural_tree(
+    entries: Sequence[dict[str, Any]],
+) -> dict[str, tuple[str, bool | None]]:
     result: dict[str, tuple[str, bool | None]] = {}
     for entry in entries:
         kind = entry["kind"]
@@ -427,10 +471,14 @@ def inspect_target(
     entries_by_path = {entry["path"]: entry for entry in actual_entries}
     for relative in mach_o_files:
         if entries_by_path[relative].get("executable") is not True:
-            raise CandidateError(f"{target}: discovered Mach-O is not executable: {relative}")
-        entries_by_path[relative]["normalizedSha256"] = artifact.normalized_mach_o_sha256(
-            destination / relative,
-            codesign,
+            raise CandidateError(
+                f"{target}: discovered Mach-O is not executable: {relative}"
+            )
+        entries_by_path[relative]["normalizedSha256"] = (
+            artifact.normalized_mach_o_sha256(
+                destination / relative,
+                codesign,
+            )
         )
     return destination, actual_entries, mach_o_files
 
@@ -467,7 +515,9 @@ def build_candidate_manifest(
         "packages": packages,
         "requiredLayout": copy.deepcopy(baseline["requiredLayout"]),
         "machOFiles": mach_o_files,
-        "releaseSigningEntitlements": copy.deepcopy(baseline["releaseSigningEntitlements"]),
+        "releaseSigningEntitlements": copy.deepcopy(
+            baseline["releaseSigningEntitlements"]
+        ),
         "signedExecutables": copy.deepcopy(baseline["signedExecutables"]),
     }
 
@@ -477,13 +527,18 @@ def changed_file_paths(
     candidate: dict[str, Any],
     target: str,
 ) -> list[str]:
-    baseline_entries = {entry["path"]: entry for entry in baseline["packages"][target]["tree"]}
-    candidate_entries = {entry["path"]: entry for entry in candidate["packages"][target]["tree"]}
+    baseline_entries = {
+        entry["path"]: entry for entry in baseline["packages"][target]["tree"]
+    }
+    candidate_entries = {
+        entry["path"]: entry for entry in candidate["packages"][target]["tree"]
+    }
     return sorted(
         path
         for path in baseline_entries
         if baseline_entries[path].get("sha256") != candidate_entries[path].get("sha256")
-        or baseline_entries[path].get("normalizedSha256") != candidate_entries[path].get("normalizedSha256")
+        or baseline_entries[path].get("normalizedSha256")
+        != candidate_entries[path].get("normalizedSha256")
     )
 
 
@@ -660,7 +715,9 @@ def sanitized_release_metadata(
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
 
 
 def write_evidence_sums(root: Path, names: Sequence[str]) -> None:
@@ -703,15 +760,21 @@ def prepare_candidate(args: argparse.Namespace) -> Path:
             for name in sorted(REQUIRED_ASSET_NAMES)
         ]
     if explicit_version is not None and version != explicit_version:
-        raise CandidateError(f"release version mismatch: expected {explicit_version}, got {version}")
+        raise CandidateError(
+            f"release version mismatch: expected {explicit_version}, got {version}"
+        )
     ensure_newer(version, baseline_version)
 
     output = validate_output_path(
-        Path(args.output_dir) if args.output_dir else artifact.ROOT / ".build" / "codex-update-candidate" / tag
+        Path(args.output_dir)
+        if args.output_dir
+        else artifact.ROOT / ".build" / "codex-update-candidate" / tag
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="repoprompt-codex-candidate-work-") as work_value:
+    with tempfile.TemporaryDirectory(
+        prefix="repoprompt-codex-candidate-work-"
+    ) as work_value:
         work = Path(work_value)
         acquired = acquire_assets(
             selected,
@@ -765,10 +828,14 @@ def prepare_candidate(args: argparse.Namespace) -> Path:
                     args.lipo,
                     args.codesign,
                 )
-            release_metadata = sanitized_release_metadata(release, selected, digests, provenance)
+            release_metadata = sanitized_release_metadata(
+                release, selected, digests, provenance
+            )
             write_json(stage / "release-metadata.json", release_metadata)
             write_json(stage / "candidate-provenance.json", provenance)
-            shutil.copyfile(acquired[CHECKSUM_ASSET], stage / "upstream-codex-package_SHA256SUMS")
+            shutil.copyfile(
+                acquired[CHECKSUM_ASSET], stage / "upstream-codex-package_SHA256SUMS"
+            )
             report = render_report(baseline, verified, release, digests, provenance)
             (stage / "candidate-report.md").write_text(report, encoding="utf-8")
             evidence_names = [
@@ -798,14 +865,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Prepare guarded, review-only evidence for an official stable Codex runtime update"
     )
     selector = parser.add_mutually_exclusive_group(required=True)
-    selector.add_argument("--version", help="explicit stable Codex version (for example 0.146.0)")
-    selector.add_argument("--tag", help="explicit stable Codex tag (for example rust-v0.146.0)")
+    selector.add_argument(
+        "--version", help="explicit stable Codex version (for example 0.146.0)"
+    )
+    selector.add_argument(
+        "--tag", help="explicit stable Codex tag (for example rust-v0.146.0)"
+    )
     selector.add_argument(
         "--latest-stable",
         action="store_true",
         help="explicitly resolve GitHub's latest stable openai/codex release",
     )
-    parser.add_argument("--output-dir", help="new evidence directory; defaults under .build/codex-update-candidate")
+    parser.add_argument(
+        "--output-dir",
+        help="new evidence directory; defaults under .build/codex-update-candidate",
+    )
     parser.add_argument(
         "--baseline-manifest",
         default=str(artifact.DEFAULT_MANIFEST),
@@ -816,8 +890,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="mark caller-controlled/offline evidence as a non-promotable test fixture",
     )
-    parser.add_argument("--release-json", help="offline release metadata fixture (requires --fixture-mode)")
-    parser.add_argument("--asset-dir", help="offline directory containing required assets (requires --fixture-mode)")
+    parser.add_argument(
+        "--release-json",
+        help="offline release metadata fixture (requires --fixture-mode)",
+    )
+    parser.add_argument(
+        "--asset-dir",
+        help="offline directory containing required assets (requires --fixture-mode)",
+    )
     parser.add_argument("--lipo", default=DEFAULT_LIPO)
     parser.add_argument("--codesign", default=DEFAULT_CODESIGN)
     return parser
@@ -827,14 +907,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         output = prepare_candidate(args)
-    except (CandidateError, artifact.ContractError, OSError, UnicodeError, tarfile.TarError) as exc:
+    except (
+        CandidateError,
+        artifact.ContractError,
+        OSError,
+        UnicodeError,
+        tarfile.TarError,
+    ) as exc:
         print(f"ERROR: Codex update candidate failed: {exc}", file=sys.stderr)
         return 1
     if args.fixture_mode:
         print(f"OK: prepared NON-PROMOTABLE TEST FIXTURE evidence: {output}")
     else:
         print(f"OK: prepared official online Codex candidate evidence: {output}")
-    print("REVIEW REQUIRED: no repository pin, trust decision, merge, Tip promotion, or release was performed.")
+    print(
+        "REVIEW REQUIRED: no repository pin, trust decision, merge, Tip promotion, or release was performed."
+    )
     return 0
 
 

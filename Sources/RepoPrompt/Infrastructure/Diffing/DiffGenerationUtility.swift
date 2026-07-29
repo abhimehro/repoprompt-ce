@@ -57,7 +57,7 @@ public enum DiffPrecision: String, CaseIterable {
     case high = "High"
 }
 
-class DiffGenerationUtility {
+enum DiffGenerationUtility {
     /// Controls whether detailed logging is enabled. Set to true for debugging diff generation.
     static let enableDetailedLogging: Bool = false
 
@@ -720,7 +720,7 @@ class DiffGenerationUtility {
         }
 
         // If a match was found and selector isn't too large, refine it
-        if bestMatch != -1 && selector.count <= 20 {
+        if bestMatch != -1, selector.count <= 20 {
             bestMatch = refineEndMatch(selector: selector, in: content, around: bestMatch, startLine: startLine)
         }
 

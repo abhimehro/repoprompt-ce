@@ -3,22 +3,22 @@ set -euo pipefail
 
 TRUSTED_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_ROOT="${REPOPROMPT_RELEASE_SOURCE_ROOT:-$TRUSTED_ROOT}"
-CANDIDATE_FRAMEWORK="${1:-}"
+CANDIDATE_FRAMEWORK="${1-}"
 TRUSTED_VENDOR="$TRUSTED_ROOT/Vendor/Sparkle"
 SOURCE_VENDOR="$SOURCE_ROOT/Vendor/Sparkle"
 TRUSTED_FRAMEWORK="$TRUSTED_VENDOR/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 TRUSTED_MANIFEST="$TRUSTED_VENDOR/INSTALLED_MANIFEST.tsv"
 
 fail() {
-    printf 'ERROR: %s\n' "$*" >&2
-    exit 1
+	printf 'ERROR: %s\n' "$*" >&2
+	exit 1
 }
 
-[[ -f "$TRUSTED_MANIFEST" ]] ||
-    fail "Missing trusted Sparkle installed typed manifest"
+[[ -f $TRUSTED_MANIFEST ]] ||
+	fail "Missing trusted Sparkle installed typed manifest"
 
 verify_manifest() {
-    python3 - "$TRUSTED_MANIFEST" "$TRUSTED_VENDOR" <<'PYTHON'
+	python3 - "$TRUSTED_MANIFEST" "$TRUSTED_VENDOR" <<'PYTHON'
 import hashlib
 import os
 import sys
@@ -69,7 +69,7 @@ PYTHON
 verify_manifest
 
 compare_trees() {
-    python3 - "$1" "$2" <<'PYTHON'
+	python3 - "$1" "$2" <<'PYTHON'
 import hashlib
 import os
 import sys
@@ -98,9 +98,9 @@ PYTHON
 
 compare_trees "$TRUSTED_FRAMEWORK" "$SOURCE_VENDOR/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 compare_trees "$TRUSTED_VENDOR/bin" "$SOURCE_VENDOR/bin"
-if [[ -n "$CANDIDATE_FRAMEWORK" ]]; then
-    [[ -d "$CANDIDATE_FRAMEWORK" ]] || fail "Missing built Sparkle framework: $CANDIDATE_FRAMEWORK"
-    compare_trees "$TRUSTED_FRAMEWORK" "$CANDIDATE_FRAMEWORK"
+if [[ -n $CANDIDATE_FRAMEWORK ]]; then
+	[[ -d $CANDIDATE_FRAMEWORK ]] || fail "Missing built Sparkle framework: $CANDIDATE_FRAMEWORK"
+	compare_trees "$TRUSTED_FRAMEWORK" "$CANDIDATE_FRAMEWORK"
 fi
 
 printf 'OK: Sparkle vendor payload matches trusted control-plane baseline.\n'

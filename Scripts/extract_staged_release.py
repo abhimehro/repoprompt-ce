@@ -23,7 +23,11 @@ def normalized_member(name: str) -> PurePosixPath:
     if "\\" in name:
         fail(f"staged archive member uses a backslash: {name}")
     path = PurePosixPath(name)
-    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        path.is_absolute()
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         fail(f"staged archive member escapes extraction root: {name}")
     return path
 
@@ -51,7 +55,11 @@ def allowed_symlink(member: PurePosixPath, target: str, app_name: str) -> bool:
     app = PurePosixPath(".build", "release", f"{app_name}.app")
     cli_links = {
         app / "Contents" / "Resources" / "repoprompt-mcp": "../MacOS/repoprompt-mcp",
-        app / "Contents" / "Resources" / "bin" / "repoprompt-mcp": "../../MacOS/repoprompt-mcp",
+        app
+        / "Contents"
+        / "Resources"
+        / "bin"
+        / "repoprompt-mcp": "../../MacOS/repoprompt-mcp",
     }
     sparkle = app / "Contents" / "Frameworks" / "Sparkle.framework"
     if member in cli_links:
@@ -81,7 +89,9 @@ def extract(archive: Path, destination: Path, app_name: str) -> None:
             elif kind == stat.S_IFLNK:
                 target = source.read(info).decode("utf-8")
                 if not allowed_symlink(member, target, app_name):
-                    fail(f"unexpected or escaping staged archive symlink: {member} -> {target}")
+                    fail(
+                        f"unexpected or escaping staged archive symlink: {member} -> {target}"
+                    )
                 links.append((output, target))
             elif kind in {0, stat.S_IFREG}:
                 output.parent.mkdir(parents=True, exist_ok=True)

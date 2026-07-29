@@ -3400,7 +3400,7 @@ func launchRepoPromptApp() {
         .deletingLastPathComponent() // Contents
         .deletingLastPathComponent() // RepoPrompt.app
 
-    let targetPath: String = if appURL.pathExtension == "app" && FileManager.default.fileExists(atPath: appURL.path) {
+    let targetPath: String = if appURL.pathExtension == "app", FileManager.default.fileExists(atPath: appURL.path) {
         appURL.path
     } else {
         "-b \(repoPromptCEBundleIdentifier)"

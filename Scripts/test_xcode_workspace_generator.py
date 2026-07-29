@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
 import xml.etree.ElementTree as ET
-
+from copy import deepcopy
+from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("generate_xcode_workspace.py")
 SPEC = importlib.util.spec_from_file_location("generate_xcode_workspace", SCRIPT_PATH)
@@ -31,7 +30,9 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         cls.manifest = generator.load_package_manifest(generator.REPO_ROOT)
         cls.outputs = generator.render_outputs(generator.REPO_ROOT, cls.manifest)
 
-    def generate_in_temporary_directory(self) -> tuple[tempfile.TemporaryDirectory, Path]:
+    def generate_in_temporary_directory(
+        self,
+    ) -> tuple[tempfile.TemporaryDirectory, Path]:
         temporary = tempfile.TemporaryDirectory()
         root = Path(temporary.name)
         destination = root / "xcode"
@@ -47,7 +48,11 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     def test_generation_is_byte_identical(self) -> None:
         temporary, destination = self.generate_in_temporary_directory()
         self.addCleanup(temporary.cleanup)
-        first = {path.relative_to(destination): path.read_bytes() for path in destination.rglob("*") if path.is_file()}
+        first = {
+            path.relative_to(destination): path.read_bytes()
+            for path in destination.rglob("*")
+            if path.is_file()
+        }
         root = Path(temporary.name)
         generator.write_outputs(
             destination,
@@ -56,7 +61,11 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
             custom_root=root / "custom",
             repository_root=root,
         )
-        second = {path.relative_to(destination): path.read_bytes() for path in destination.rglob("*") if path.is_file()}
+        second = {
+            path.relative_to(destination): path.read_bytes()
+            for path in destination.rglob("*")
+            if path.is_file()
+        }
         self.assertEqual(first, second)
 
     def test_outputs_do_not_embed_checkout_path_or_timestamps(self) -> None:
@@ -67,30 +76,47 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
                 b"",
             )
             self.assertNotIn(checkout, content_without_working_directory, str(path))
-            self.assertNotRegex(content.decode(errors="ignore"), r"20\d\d-\d\d-\d\d[T ]")
+            self.assertNotRegex(
+                content.decode(errors="ignore"), r"20\d\d-\d\d-\d\d[T ]"
+            )
 
     def test_workspace_references_project_and_root_package(self) -> None:
-        workspace = self.outputs[Path(generator.WORKSPACE_NAME) / "contents.xcworkspacedata"].decode()
+        workspace = self.outputs[
+            Path(generator.WORKSPACE_NAME) / "contents.xcworkspacedata"
+        ].decode()
         self.assertIn("group:RepoPromptCE.xcodeproj", workspace)
         self.assertIn("group:../..", workspace)
 
     def test_custom_destination_uses_correct_relative_repository_path(self) -> None:
         destination = generator.REPO_ROOT / ".build/xcode-custom/team/workspace"
-        outputs = generator.render_outputs(generator.REPO_ROOT, self.manifest, destination)
-        workspace = outputs[Path(generator.WORKSPACE_NAME) / "contents.xcworkspacedata"].decode()
+        outputs = generator.render_outputs(
+            generator.REPO_ROOT, self.manifest, destination
+        )
+        workspace = outputs[
+            Path(generator.WORKSPACE_NAME) / "contents.xcworkspacedata"
+        ].decode()
         self.assertIn("group:../../../..", workspace)
         metadata = json.loads(outputs[Path("generation.json")])
         self.assertEqual(metadata["repositoryRelativePath"], "../../../..")
 
     def test_project_has_delegated_test_scheme(self) -> None:
-        path = Path(generator.PROJECT_NAME) / f"xcshareddata/xcschemes/{generator.TEST_SCHEME}.xcscheme"
+        path = (
+            Path(generator.PROJECT_NAME)
+            / f"xcshareddata/xcschemes/{generator.TEST_SCHEME}.xcscheme"
+        )
         scheme = self.outputs[path].decode()
         self.assertIn(f'BlueprintName = "{generator.TEST_SCHEME}"', scheme)
-        self.assertIn(f'ReferencedContainer = "container:{generator.PROJECT_NAME}"', scheme)
+        self.assertIn(
+            f'ReferencedContainer = "container:{generator.PROJECT_NAME}"', scheme
+        )
 
     def test_workspace_lockfile_is_exact_copy(self) -> None:
-        copied = self.outputs[Path(generator.WORKSPACE_NAME) / "xcshareddata/swiftpm/Package.resolved"]
-        self.assertEqual((generator.REPO_ROOT / "Package.resolved").read_bytes(), copied)
+        copied = self.outputs[
+            Path(generator.WORKSPACE_NAME) / "xcshareddata/swiftpm/Package.resolved"
+        ]
+        self.assertEqual(
+            (generator.REPO_ROOT / "Package.resolved").read_bytes(), copied
+        )
 
     def test_generated_readme_documents_native_xcode_limitations(self) -> None:
         readme = self.outputs[Path("README.md")].decode()
@@ -104,16 +130,25 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertEqual(products["RepoPrompt"]["targets"], ["RepoPrompt"])
         self.assertEqual(targets["RepoPrompt"]["type"], "executable")
         self.assertEqual(targets["RepoPrompt"]["path"], "Sources/RepoPromptExecutable")
-        self.assertEqual(generator._by_name_dependencies(targets["RepoPrompt"]), ["RepoPromptApp"])
+        self.assertEqual(
+            generator._by_name_dependencies(targets["RepoPrompt"]), ["RepoPromptApp"]
+        )
         self.assertEqual(len(targets["RepoPrompt"]["dependencies"]), 1)
 
         self.assertEqual(targets["RepoPromptApp"]["type"], "regular")
         self.assertEqual(targets["RepoPromptApp"]["path"], "Sources/RepoPrompt")
         self.assertEqual(
             set(generator._by_name_dependencies(targets["RepoPromptTests"])),
-            {"RepoPromptApp", "RepoPromptCodeMapCore", "RepoPromptMCP", "RepoPromptShared"},
+            {
+                "RepoPromptApp",
+                "RepoPromptCodeMapCore",
+                "RepoPromptMCP",
+                "RepoPromptShared",
+            },
         )
-        self.assertNotIn("RepoPrompt", generator._by_name_dependencies(targets["RepoPromptTests"]))
+        self.assertNotIn(
+            "RepoPrompt", generator._by_name_dependencies(targets["RepoPromptTests"])
+        )
 
     def test_generation_metadata_records_internal_app_target(self) -> None:
         metadata = json.loads(self.outputs[Path("generation.json")])
@@ -121,19 +156,26 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.assertIn("RepoPromptApp", metadata["package"]["targets"])
 
     def test_project_has_exactly_three_convenience_targets(self) -> None:
-        project = self.outputs[Path(generator.PROJECT_NAME) / "project.pbxproj"].decode()
+        project = self.outputs[
+            Path(generator.PROJECT_NAME) / "project.pbxproj"
+        ].decode()
         self.assertEqual(project.count("isa = PBXLegacyTarget;"), 3)
         self.assertIn(generator.APP_SCHEME, project)
         self.assertIn(generator.MCP_SCHEME, project)
         self.assertIn(generator.TEST_SCHEME, project)
 
     def test_convenience_targets_do_not_pass_xcode_build_settings(self) -> None:
-        project = self.outputs[Path(generator.PROJECT_NAME) / "project.pbxproj"].decode()
+        project = self.outputs[
+            Path(generator.PROJECT_NAME) / "project.pbxproj"
+        ].decode()
         self.assertEqual(project.count("passBuildSettingsInEnvironment = 0;"), 3)
         self.assertNotIn("passBuildSettingsInEnvironment = 1;", project)
 
     def test_app_scheme_has_runnable_markers_and_prepare_action(self) -> None:
-        path = Path(generator.PROJECT_NAME) / f"xcshareddata/xcschemes/{generator.APP_SCHEME}.xcscheme"
+        path = (
+            Path(generator.PROJECT_NAME)
+            / f"xcshareddata/xcschemes/{generator.APP_SCHEME}.xcscheme"
+        )
         scheme = self.outputs[path].decode()
         self.assertIn(str(generator.DEFAULT_DEBUG_APP_BUNDLE), scheme)
         self.assertIn("REPOPROMPT_LAUNCH_SOURCE", scheme)
@@ -168,7 +210,9 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
 
         environment = {
             item.attrib["key"]: item.attrib["value"]
-            for item in launch_action.findall("./EnvironmentVariables/EnvironmentVariable")
+            for item in launch_action.findall(
+                "./EnvironmentVariables/EnvironmentVariable"
+            )
         }
         self.assertEqual(
             environment["__XCODE_BUILT_PRODUCTS_DIR_PATHS"],
@@ -176,7 +220,10 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         )
 
     def test_mcp_scheme_points_at_debug_executable(self) -> None:
-        path = Path(generator.PROJECT_NAME) / f"xcshareddata/xcschemes/{generator.MCP_SCHEME}.xcscheme"
+        path = (
+            Path(generator.PROJECT_NAME)
+            / f"xcshareddata/xcschemes/{generator.MCP_SCHEME}.xcscheme"
+        )
         self.assertIn(".build/debug/repoprompt-mcp", self.outputs[path].decode())
 
     def test_xcodebuild_list_uses_expected_command(self) -> None:
@@ -246,27 +293,39 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         unexpected = destination / generator.WORKSPACE_NAME / "unexpected.txt"
         unexpected.write_text("not managed")
-        with self.assertRaisesRegex(generator.GeneratorError, "unexpected generated file"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "unexpected generated file"
+        ):
             generator.check_outputs(destination, self.outputs)
 
     def test_manifest_errors_are_actionable(self) -> None:
         missing_product = deepcopy(self.manifest)
         missing_product["products"] = [
-            product for product in missing_product["products"] if product["name"] != "RepoPrompt"
+            product
+            for product in missing_product["products"]
+            if product["name"] != "RepoPrompt"
         ]
-        with self.assertRaisesRegex(generator.GeneratorError, "executable product 'RepoPrompt'"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "executable product 'RepoPrompt'"
+        ):
             generator.validate_manifest(missing_product, generator.REPO_ROOT)
 
         missing_target = deepcopy(self.manifest)
         missing_target["targets"] = [
-            target for target in missing_target["targets"] if target["name"] != "RepoPromptShared"
+            target
+            for target in missing_target["targets"]
+            if target["name"] != "RepoPromptShared"
         ]
-        with self.assertRaisesRegex(generator.GeneratorError, "target 'RepoPromptShared'"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "target 'RepoPromptShared'"
+        ):
             generator.validate_manifest(missing_target, generator.REPO_ROOT)
 
         missing_app_target = deepcopy(self.manifest)
         missing_app_target["targets"] = [
-            target for target in missing_app_target["targets"] if target["name"] != "RepoPromptApp"
+            target
+            for target in missing_app_target["targets"]
+            if target["name"] != "RepoPromptApp"
         ]
         with self.assertRaisesRegex(generator.GeneratorError, "target 'RepoPromptApp'"):
             generator.validate_manifest(missing_app_target, generator.REPO_ROOT)
@@ -275,15 +334,21 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         for target in fat_executable["targets"]:
             if target["name"] == "RepoPrompt":
                 target["path"] = "Sources/RepoPrompt"
-        with self.assertRaisesRegex(generator.GeneratorError, "thin Sources/RepoPromptExecutable"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "thin Sources/RepoPromptExecutable"
+        ):
             generator.validate_manifest(fat_executable, generator.REPO_ROOT)
 
         wrong_executable_dependency = deepcopy(self.manifest)
         for target in wrong_executable_dependency["targets"]:
             if target["name"] == "RepoPrompt":
                 target["dependencies"] = [{"byName": ["RepoPromptShared", None]}]
-        with self.assertRaisesRegex(generator.GeneratorError, "depend only on 'RepoPromptApp'"):
-            generator.validate_manifest(wrong_executable_dependency, generator.REPO_ROOT)
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "depend only on 'RepoPromptApp'"
+        ):
+            generator.validate_manifest(
+                wrong_executable_dependency, generator.REPO_ROOT
+            )
 
         old_test_dependency = deepcopy(self.manifest)
         for target in old_test_dependency["targets"]:
@@ -293,73 +358,103 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
                     {"byName": ["RepoPromptMCP", None]},
                     {"byName": ["RepoPromptShared", None]},
                 ]
-        with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptTests must depend"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "RepoPromptTests must depend"
+        ):
             generator.validate_manifest(old_test_dependency, generator.REPO_ROOT)
 
         duplicate_bridging_header_owner = deepcopy(self.manifest)
         target_map = {
-            target["name"]: target for target in duplicate_bridging_header_owner["targets"]
+            target["name"]: target
+            for target in duplicate_bridging_header_owner["targets"]
         }
         target_map["RepoPrompt"]["settings"] = target_map["RepoPromptApp"]["settings"]
         with self.assertRaisesRegex(generator.GeneratorError, "must not own"):
-            generator.validate_manifest(duplicate_bridging_header_owner, generator.REPO_ROOT)
+            generator.validate_manifest(
+                duplicate_bridging_header_owner, generator.REPO_ROOT
+            )
 
         missing_bridging_header_owner = deepcopy(self.manifest)
         target_map = {
-            target["name"]: target for target in missing_bridging_header_owner["targets"]
+            target["name"]: target
+            for target in missing_bridging_header_owner["targets"]
         }
         target_map["RepoPromptApp"]["settings"] = []
         with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptApp must own"):
-            generator.validate_manifest(missing_bridging_header_owner, generator.REPO_ROOT)
+            generator.validate_manifest(
+                missing_bridging_header_owner, generator.REPO_ROOT
+            )
 
         bad_resources = deepcopy(self.manifest)
         for target in bad_resources["targets"]:
             if target["name"] == "RepoPromptCodeMapCoreTests":
                 target["resources"] = []
-        with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptCodeMapCoreTests"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "RepoPromptCodeMapCoreTests"
+        ):
             generator.validate_manifest(bad_resources, generator.REPO_ROOT)
 
         moved_resources = deepcopy(bad_resources)
-        moved_resources["targets"].append({
-            "name": "RepoPromptWorkspaceTests",
-            "type": "test",
-            "resources": [
-                {"path": "Fixtures", "rule": {"copy": {}}},
-                {"path": "Goldens", "rule": {"copy": {}}},
-            ],
-        })
-        with self.assertRaisesRegex(generator.GeneratorError, "RepoPromptCodeMapCoreTests"):
+        moved_resources["targets"].append(
+            {
+                "name": "RepoPromptWorkspaceTests",
+                "type": "test",
+                "resources": [
+                    {"path": "Fixtures", "rule": {"copy": {}}},
+                    {"path": "Goldens", "rule": {"copy": {}}},
+                ],
+            }
+        )
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "RepoPromptCodeMapCoreTests"
+        ):
             generator.validate_manifest(moved_resources, generator.REPO_ROOT)
 
         duplicate_resources = deepcopy(self.manifest)
-        duplicate_resources["targets"].append({
-            "name": "RepoPromptWorkspaceTests",
-            "type": "test",
-            "resources": [
-                {"path": "Fixtures", "rule": {"copy": {}}},
-                {"path": "Goldens", "rule": {"copy": {}}},
-            ],
-        })
-        with self.assertRaisesRegex(generator.GeneratorError, "sole SwiftPM test target"):
+        duplicate_resources["targets"].append(
+            {
+                "name": "RepoPromptWorkspaceTests",
+                "type": "test",
+                "resources": [
+                    {"path": "Fixtures", "rule": {"copy": {}}},
+                    {"path": "Goldens", "rule": {"copy": {}}},
+                ],
+            }
+        )
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "sole SwiftPM test target"
+        ):
             generator.validate_manifest(duplicate_resources, generator.REPO_ROOT)
 
         extra_resources = deepcopy(self.manifest)
         for target in extra_resources["targets"]:
             if target["name"] == "RepoPromptCodeMapCoreTests":
-                target["resources"].append({"path": "Extra/Fixtures", "rule": {"copy": {}}})
+                target["resources"].append(
+                    {"path": "Extra/Fixtures", "rule": {"copy": {}}}
+                )
         generator.validate_manifest(extra_resources, generator.REPO_ROOT)
 
     def test_generation_does_not_modify_package_authority(self) -> None:
-        before = {name: digest(generator.REPO_ROOT / name) for name in ("Package.swift", "Package.resolved")}
+        before = {
+            name: digest(generator.REPO_ROOT / name)
+            for name in ("Package.swift", "Package.resolved")
+        }
         temporary, _ = self.generate_in_temporary_directory()
         self.addCleanup(temporary.cleanup)
-        after = {name: digest(generator.REPO_ROOT / name) for name in ("Package.swift", "Package.resolved")}
+        after = {
+            name: digest(generator.REPO_ROOT / name)
+            for name in ("Package.swift", "Package.resolved")
+        }
         self.assertEqual(before, after)
 
     def test_destination_rejects_destructive_paths(self) -> None:
-        with self.assertRaisesRegex(generator.GeneratorError, "dedicated custom-output root"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "dedicated custom-output root"
+        ):
             generator.validate_destination(generator.REPO_ROOT)
-        with self.assertRaisesRegex(generator.GeneratorError, "dedicated custom-output root"):
+        with self.assertRaisesRegex(
+            generator.GeneratorError, "dedicated custom-output root"
+        ):
             generator.validate_destination(generator.REPO_ROOT / "Sources")
 
     def test_custom_destination_is_confined_to_dedicated_subtree(self) -> None:
@@ -374,9 +469,13 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
                 root,
             )
             self.assertEqual(accepted, custom / "team/workspace")
-            with self.assertRaisesRegex(generator.GeneratorError, "dedicated custom-output root"):
+            with self.assertRaisesRegex(
+                generator.GeneratorError, "dedicated custom-output root"
+            ):
                 generator.validate_destination(root / "other", default, custom, root)
-            with self.assertRaisesRegex(generator.GeneratorError, "dedicated custom-output root"):
+            with self.assertRaisesRegex(
+                generator.GeneratorError, "dedicated custom-output root"
+            ):
                 generator.validate_destination(custom, default, custom, root)
 
     def test_existing_unowned_destination_is_preserved(self) -> None:
@@ -386,7 +485,9 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
             destination.mkdir()
             sentinel = destination / "sentinel.txt"
             sentinel.write_text("keep me")
-            with self.assertRaisesRegex(generator.GeneratorError, "non-generator-owned"):
+            with self.assertRaisesRegex(
+                generator.GeneratorError, "non-generator-owned"
+            ):
                 generator.write_outputs(
                     destination,
                     self.outputs,
@@ -403,7 +504,9 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
             outside.mkdir()
             destination = root / "xcode"
             destination.symlink_to(outside, target_is_directory=True)
-            with self.assertRaisesRegex(generator.GeneratorError, "symlinked destination component"):
+            with self.assertRaisesRegex(
+                generator.GeneratorError, "symlinked destination component"
+            ):
                 generator.validate_destination(
                     destination,
                     destination,
@@ -416,7 +519,10 @@ class XcodeWorkspaceGeneratorTests(unittest.TestCase):
         environment["CONFIGURATION"] = "Debug"
         environment["REPOPROMPT_XCODE_UNCOORDINATED"] = "1"
         result = subprocess.run(
-            [generator.REPO_ROOT / "Scripts/xcode_developer_workflow.sh", "prepare-app-run"],
+            [
+                generator.REPO_ROOT / "Scripts/xcode_developer_workflow.sh",
+                "prepare-app-run",
+            ],
             cwd=generator.REPO_ROOT,
             env=environment,
             capture_output=True,

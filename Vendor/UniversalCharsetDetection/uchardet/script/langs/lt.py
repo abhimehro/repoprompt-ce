@@ -43,14 +43,18 @@ import re
 ## Mandatory Properties ##
 
 # The human name for the language, in English.
-name = 'Lithuanian'
+name = "Lithuanian"
 # Use 2-letter ISO 639-1 if possible, 3-letter ISO code otherwise,
 # or use another catalog as a last resort.
-code = 'lt'
+code = "lt"
 # ASCII characters are also used.
 use_ascii = True
 # The charsets we want to support and create data for.
-charsets = ['ISO-8859-4', 'ISO-8859-10', 'ISO-8859-13', ]
+charsets = [
+    "ISO-8859-4",
+    "ISO-8859-10",
+    "ISO-8859-13",
+]
 
 ## Optional Properties ##
 
@@ -58,10 +62,10 @@ charsets = ['ISO-8859-4', 'ISO-8859-10', 'ISO-8859-13', ]
 # If use_ascii=True, there is no need to add any ASCII characters.
 # If case_mapping=True, there is no need to add several cases of a same
 # character (provided Python algorithms know the right cases).
-alphabet = 'ąčęėįšųūž'
+alphabet = "ąčęėįšųūž"
 # The start page. Just taking the page which was in front page the day
 # I created the data.
-start_pages = ['Karūna (laivas)']
+start_pages = ["Karūna (laivas)"]
 # give possibility to select another code for the Wikipedia URL.
 wikipedia_code = code
 # 'a' and 'A' will be considered the same character, and so on.

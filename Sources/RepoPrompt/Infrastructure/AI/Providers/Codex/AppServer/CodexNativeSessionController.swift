@@ -5229,7 +5229,7 @@ final class CodexNativeSessionController {
         _ update: CommandExecutionRunningUpdate,
         to items: inout [AgentChatItem]
     ) -> Bool {
-        var index: CommandExecutionRunningItemIndex? = nil
+        var index: CommandExecutionRunningItemIndex?
         return applyCommandExecutionRunningUpdate(update, to: &items, index: &index)
     }
 
@@ -5238,7 +5238,7 @@ final class CodexNativeSessionController {
         to items: inout [AgentChatItem]
     ) -> Int {
         guard !updates.isEmpty else { return 0 }
-        var index: CommandExecutionRunningItemIndex? = nil
+        var index: CommandExecutionRunningItemIndex?
         var appliedCount = 0
         for update in updates {
             if applyCommandExecutionRunningUpdate(update, to: &items, index: &index) {

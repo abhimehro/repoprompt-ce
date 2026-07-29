@@ -11,7 +11,7 @@ struct Version: Identifiable {
     let changes: String
 }
 
-class Changelog {
+enum Changelog {
     static let current = Version(
         id: "2.1.24",
         buildNumber: 326,

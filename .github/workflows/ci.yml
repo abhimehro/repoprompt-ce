@@ -100,7 +100,6 @@ jobs:
             --batch-fast-suites \
             --require-runtime-for-batching
 
-
   sentry-enabled-build:
     name: Sentry-enabled Build
     runs-on: macos-26

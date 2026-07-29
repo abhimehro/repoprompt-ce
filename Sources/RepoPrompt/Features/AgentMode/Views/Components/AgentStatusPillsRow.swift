@@ -15,7 +15,7 @@ struct AgentStatusPillsRow: View {
 
     var body: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.statusPillsRow")
+            _ = AgentModePerfDiagnostics.increment("ui.body.statusPillsRow")
         #endif
         HStack(spacing: 12) {
             HStack(spacing: 6) {

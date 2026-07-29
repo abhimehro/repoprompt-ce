@@ -198,7 +198,6 @@ The intended process is:
    releases without rebuilding, explicitly marks that tag as GitHub's latest
    stable release, and runs anonymous post-publish checks.
 
-
 ## Tip Builds
 
 Tip Builds are signed and notarized builds from the latest successful protected
@@ -435,30 +434,30 @@ published release assets and their associated tag.
 
 Add these environment secrets:
 
-| Secret | Contents |
-| --- | --- |
-| `DEVELOPER_ID_APPLICATION_P12_BASE64` | Base64-encoded Developer ID Application certificate and private key exported as PKCS#12. |
-| `DEVELOPER_ID_APPLICATION_P12_PASSWORD` | Password used for the PKCS#12 export. |
-| `CI_KEYCHAIN_PASSWORD` | Random password for the ephemeral CI keychain. |
-| `REPOPROMPT_CE_PROVISIONING_PROFILE_BASE64` | Base64-encoded Developer ID provisioning profile for `com.pvncher.repoprompt.ce`. |
-| `NOTARYTOOL_PRIVATE_KEY_BASE64` | Base64-encoded App Store Connect API `.p8` key accepted by `notarytool`. |
-| `NOTARYTOOL_KEY_ID` | App Store Connect API key ID. |
-| `NOTARYTOOL_ISSUER_ID` | App Store Connect API issuer ID. |
-| `SPARKLE_PRIVATE_KEY` | Modern Sparkle EdDSA private-key seed for the CE update channel. It must decode from base64 to exactly 32 bytes. |
-| `PUBLIC_UPDATE_REPOSITORY_TOKEN` | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-updates` with repository contents read/write permission. |
-| `TIP_UPDATE_REPOSITORY_TOKEN` | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-tip-updates` with repository contents read/write permission. Do not reuse the stable update token. |
-| `SENTRY_DSN` | Sentry DSN injected into official signed builds for release routing. It is not a credential, but keep it in the protected release environment so unofficial artifacts do not route telemetry to the official project. |
-| `SENTRY_AUTH_TOKEN` | Sentry Organization Token used for draft-time debug-symbol/release metadata and verified-promotion deploy recording. Create it with the fixed `org:ci` scope; Organization Token scopes are immutable, and release tooling does not inspect or change them. |
+| Secret                                      | Contents                                                                                                                                                                                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEVELOPER_ID_APPLICATION_P12_BASE64`       | Base64-encoded Developer ID Application certificate and private key exported as PKCS#12.                                                                                                                                                                    |
+| `DEVELOPER_ID_APPLICATION_P12_PASSWORD`     | Password used for the PKCS#12 export.                                                                                                                                                                                                                       |
+| `CI_KEYCHAIN_PASSWORD`                      | Random password for the ephemeral CI keychain.                                                                                                                                                                                                              |
+| `REPOPROMPT_CE_PROVISIONING_PROFILE_BASE64` | Base64-encoded Developer ID provisioning profile for `com.pvncher.repoprompt.ce`.                                                                                                                                                                           |
+| `NOTARYTOOL_PRIVATE_KEY_BASE64`             | Base64-encoded App Store Connect API `.p8` key accepted by `notarytool`.                                                                                                                                                                                    |
+| `NOTARYTOOL_KEY_ID`                         | App Store Connect API key ID.                                                                                                                                                                                                                               |
+| `NOTARYTOOL_ISSUER_ID`                      | App Store Connect API issuer ID.                                                                                                                                                                                                                            |
+| `SPARKLE_PRIVATE_KEY`                       | Modern Sparkle EdDSA private-key seed for the CE update channel. It must decode from base64 to exactly 32 bytes.                                                                                                                                            |
+| `PUBLIC_UPDATE_REPOSITORY_TOKEN`            | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-updates` with repository contents read/write permission.                                                                                                                                 |
+| `TIP_UPDATE_REPOSITORY_TOKEN`               | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-tip-updates` with repository contents read/write permission. Do not reuse the stable update token.                                                                                       |
+| `SENTRY_DSN`                                | Sentry DSN injected into official signed builds for release routing. It is not a credential, but keep it in the protected release environment so unofficial artifacts do not route telemetry to the official project.                                       |
+| `SENTRY_AUTH_TOKEN`                         | Sentry Organization Token used for draft-time debug-symbol/release metadata and verified-promotion deploy recording. Create it with the fixed `org:ci` scope; Organization Token scopes are immutable, and release tooling does not inspect or change them. |
 
 Add these non-secret GitHub environment variables for Sentry symbol upload in
 both the `release` and `tip-release` environments. The workflows map them to
 the release scripts' `REPOPROMPT_SENTRY_*` names and explicitly set
 `REPOPROMPT_ENABLE_SENTRY=1` for official staging and signing.
 
-| Variable | Contents |
-| --- | --- |
-| `SENTRY_ORG` | Sentry organization slug. |
-| `SENTRY_PROJECT` | Sentry project slug. |
+| Variable         | Contents                  |
+| ---------------- | ------------------------- |
+| `SENTRY_ORG`     | Sentry organization slug. |
+| `SENTRY_PROJECT` | Sentry project slug.      |
 
 Official stable promotion intentionally requires `SENTRY_AUTH_TOKEN` and the Sentry org/project/environment configuration so it can record the verified production deploy only after public verification.
 

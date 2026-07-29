@@ -1072,7 +1072,7 @@ extension MCPServerViewModel {
                 let autoRenderMode = hasSlices ? "slice" : "full"
 
                 // Compute copy preset projection if copy usage differs from auto
-                var copyPreset: ToolResultDTOs.SelectedFileInfo.CopyPresetProjection? = nil
+                var copyPreset: ToolResultDTOs.SelectedFileInfo.CopyPresetProjection?
                 if let copyUsage, copyUsage != .auto {
                     let codemapTokenCount = tokens.codemapTokens(
                         for: file,
@@ -1138,7 +1138,7 @@ extension MCPServerViewModel {
                 totalTokens += tokenCount
 
                 // For codemap files, compute copy preset projection
-                var copyPreset: ToolResultDTOs.SelectedFileInfo.CopyPresetProjection? = nil
+                var copyPreset: ToolResultDTOs.SelectedFileInfo.CopyPresetProjection?
                 if let copyUsage, copyUsage != .auto {
                     // Under 'none' or 'selected' mode, codemap-only files wouldn't appear
                     // Under 'complete' mode, same as auto for codemaps
@@ -1292,7 +1292,7 @@ extension MCPServerViewModel {
             pathProjection: WorkspaceRootBindingProjection? = nil,
             displayPathOverrides: [String: String] = [:]
         ) async -> ToolResultDTOs.SelectionReply {
-            var blocks: [String]? = nil
+            var blocks: [String]?
             if includeBlocks {
                 let generated = generateBlocks(
                     selected: collections.selected,
