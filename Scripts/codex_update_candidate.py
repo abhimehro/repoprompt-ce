@@ -455,7 +455,7 @@ def build_candidate_manifest(
             "tree": trees[target],
         }
     return {
-        "schemaVersion": 1,
+        "schemaVersion": artifact.MANIFEST_SCHEMA_VERSION,
         "version": version,
         "tag": tag,
         "releaseURL": f"{artifact.OFFICIAL_REPOSITORY_URL}/releases/tag/{tag}",
@@ -467,6 +467,7 @@ def build_candidate_manifest(
         "packages": packages,
         "requiredLayout": copy.deepcopy(baseline["requiredLayout"]),
         "machOFiles": mach_o_files,
+        "releaseSigningEntitlements": copy.deepcopy(baseline["releaseSigningEntitlements"]),
         "signedExecutables": copy.deepcopy(baseline["signedExecutables"]),
     }
 
@@ -797,8 +798,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Prepare guarded, review-only evidence for an official stable Codex runtime update"
     )
     selector = parser.add_mutually_exclusive_group(required=True)
-    selector.add_argument("--version", help="explicit stable Codex version (for example 0.145.0)")
-    selector.add_argument("--tag", help="explicit stable Codex tag (for example rust-v0.145.0)")
+    selector.add_argument("--version", help="explicit stable Codex version (for example 0.146.0)")
+    selector.add_argument("--tag", help="explicit stable Codex tag (for example rust-v0.146.0)")
     selector.add_argument(
         "--latest-stable",
         action="store_true",
