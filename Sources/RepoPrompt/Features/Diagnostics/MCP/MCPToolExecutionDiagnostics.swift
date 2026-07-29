@@ -186,6 +186,9 @@ enum MCPToolExecutionTracer {
     }
 
     static func emit(_ event: MCPToolExecutionTraceEvent) {
+        // Release-safe concurrency evidence ingestion (counts and bounded latency
+        // aggregates only; see MCPToolConcurrencyEvidenceRecorder).
+        MCPToolConcurrencyEvidenceRecorder.shared.recordExecutionTraceEvent(event)
         let sink: (@Sendable (MCPToolExecutionTraceEvent) -> Void)?
         state.lock.lock()
         sink = state.testSink
