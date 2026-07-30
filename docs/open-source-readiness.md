@@ -1,6 +1,6 @@
 # Open-Source and Release Readiness Notes
 
-Current as of 2026-06-01. This is a contributor/maintainer inventory for RepoPrompt CE's public-readiness work. It documents the current state and follow-ups; it is not legal advice or a substitute for legal review.
+Current as of 2026-07-30. This is a contributor/maintainer inventory for RepoPrompt CE's public-readiness work. It documents the current state and follow-ups; it is not legal advice or a substitute for legal review.
 
 ## Release metadata and signing
 
@@ -8,8 +8,8 @@ Release/debug packaging currently derives app identity from [`version.env`](../v
 
 - `APP_NAME=RepoPrompt`
 - `DISPLAY_NAME="RepoPrompt CE"`
-- `MARKETING_VERSION=1.0.0`
-- `BUILD_NUMBER=1`
+- `MARKETING_VERSION=1.1.1`
+- `BUILD_NUMBER=32`
 - `BUNDLE_ID=com.pvncher.repoprompt.ce`
 - `SIGNING_TEAM_ID=648A27MST5`
 
