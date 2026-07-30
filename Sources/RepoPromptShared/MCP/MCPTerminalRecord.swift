@@ -280,8 +280,10 @@ public enum MCPTerminalRecordStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(record).write(to: fileURL, options: .atomic)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        let data = try encoder.encode(record)
+        if !fileManager.createFile(atPath: fileURL.path, contents: data, attributes: [.posixPermissions: 0o600]) {
+            throw CocoaError(.fileWriteUnknown)
+        }
         // Retention is best-effort: never discard the terminal event we just
         // captured merely because an older diagnostic could not be removed.
         try? pruneTerminalRecords(

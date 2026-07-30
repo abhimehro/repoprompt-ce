@@ -1,0 +1,4 @@
+## 2026-07-30 - Prevent TOCTOU Race Condition on Sensitive File Creation
+**Vulnerability:** Writing sensitive configuration files (e.g. MCP Config Leases, wrapper configs, terminal records) using `.write(to:)` followed by `FileManager.setAttributes` creates a Time-of-Check-to-Time-of-Use (TOCTOU) race condition. In this brief window, files are written with default permissions and could be read by an unauthorized process before permissions are restricted.
+**Learning:** This codebase manages several security-sensitive outputs (like temporary MCP integration json configs). Writing the file and then modifying its POSIX attributes exposes the file's data momentarily.
+**Prevention:** Always use `FileManager.default.createFile(atPath:contents:attributes:)` with the desired POSIX permissions to create sensitive files securely in a single step, rather than sequentially writing and setting attributes.
