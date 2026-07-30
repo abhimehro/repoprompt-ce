@@ -5959,7 +5959,7 @@ private struct AgentRunningElapsedText: View {
         if isLive {
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 #if DEBUG
-                    _ = AgentModePerfDiagnostics.increment("timeline.runningIndicator.tick")
+                    let _ = AgentModePerfDiagnostics.increment("timeline.runningIndicator.tick")
                 #endif
                 elapsedText(now: timeline.date)
             }

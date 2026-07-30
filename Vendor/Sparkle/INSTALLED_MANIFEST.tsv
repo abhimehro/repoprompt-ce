@@ -48,7 +48,7 @@ dir	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resource
 dir	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/Base.lproj	-
 file	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/Base.lproj/Sparkle.strings	bf93bdde8ad020f2ba210ecfa0e84b5365d0342355a3ca39d88fec0acb1e4a40
 file	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/Info.plist	ceabca1a3c33f5c95be5db0dfc0861c23b472f59f0cc5c3d75ad0d4c2b9a5c47
-file	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/ReleaseNotesColorStyle.css	76bd6999758fd8e51d17e6b482db434f9b4768c02b037af6bd2e3a000ce8cbc1
+file	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/ReleaseNotesColorStyle.css	95977b42677eb2407320b56f4de478293ebec563526bd6d2655e99a6f8014dd5
 file	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/SUStatus.nib	bba15dd37a26af87476214b68b06d6455118ce507fd77863f4947d654a6045af
 file	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/SUUpdateAlert.nib	3987a333da7c2728ef2cb9656e5eeaf0832884873cabf78353fcb9099c5d8fbe
 dir	Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/SUUpdatePermissionPrompt.nib	-
