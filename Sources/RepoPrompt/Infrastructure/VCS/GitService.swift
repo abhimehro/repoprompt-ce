@@ -4161,7 +4161,7 @@ actor GitService {
             fence: authorityFence,
             sealedAuthority: sealedAuthority
         )
-        return try GitTargetEvidenceArtifactIdentity(
+        return GitTargetEvidenceArtifactIdentity(
             physicalWorktree: sealedAuthority.physicalWorktree,
             repositoryCommonDirectory: sealedAuthority.repositoryCommonDirectory,
             repositoryGitDirectory: sealedAuthority.repositoryGitDirectory,
@@ -5269,7 +5269,7 @@ actor GitService {
         func snapshot() -> GitPrefixControlCollectionDetail {
             lock.lock()
             defer { lock.unlock() }
-            var summary = prunedRootSummary
+            let summary = prunedRootSummary
             return GitPrefixControlCollectionDetail(
                 collectionCompleted: collectionCompleted,
                 ignoreControlCount: ignoreControlCount,

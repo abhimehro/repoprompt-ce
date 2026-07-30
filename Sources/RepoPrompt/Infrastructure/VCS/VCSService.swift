@@ -233,15 +233,15 @@ public actor VCSService {
 
     /// Detect the VCS type and find the repository root.
     private func detectAndResolve(from url: URL) async -> VCSResolvedRepo? {
-        let fm = FileManager.default
-        let startPath = url.standardizedFileURL.path
+
+
 
         // Walk up the directory tree looking for .jj or .git
         var currentURL = url.standardizedFileURL
 
         // Ensure we're starting from a directory
         var isDir: ObjCBool = false
-        if fm.fileExists(atPath: currentURL.path, isDirectory: &isDir) {
+        if FileManager.default.fileExists(atPath: currentURL.path, isDirectory: &isDir) {
             if !isDir.boolValue {
                 currentURL = currentURL.deletingLastPathComponent()
             }
