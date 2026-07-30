@@ -566,9 +566,7 @@ class PromptViewModel: ObservableObject {
     }
 
     var preferredAIModel: AIModel {
-        // print("Preffered model: \(preferredModel)")
         AIModel.fromModelName(preferredModel) ?? .claude4Sonnet
-        // print("model=\(model)")
     }
 
     var preferredModel: String {
