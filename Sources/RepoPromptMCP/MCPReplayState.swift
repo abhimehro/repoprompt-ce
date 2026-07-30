@@ -179,7 +179,7 @@ actor MCPOutstandingRequestReplayState {
             return
         }
 
-        for object in Self.jsonObjects(from: frame) where !object.keys.contains("method") {
+        for object in Self.jsonObjects(from: frame) where object["method"] == nil {
             guard object["result"] != nil || object["error"] != nil,
                   let id = MCPInitializeReplayState.jsonRPCID(from: object["id"])
             else {

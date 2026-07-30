@@ -62,7 +62,7 @@ private struct IndentCache {
 }
 
 /// A utility for re-indenting snippets to match existing code blocks, optimized to reduce repeated computations.
-enum IndentCorrectionUtility {
+class IndentCorrectionUtility {
     // MARK: - Config Constants
 
     private static let MAX_SHIFT = IndentationConfig.maxAllowedShift
@@ -320,15 +320,12 @@ enum IndentCorrectionUtility {
         let topLineSnippet = snippet.indentLevels[0]
         let topLineDiff = abs(topLineOld - topLineSnippet)
 
-        // print("Top line diff: \(topLineDiff) / old \(topLineOld) / snippet \(topLineSnippet)")
 
         // *** If old block is tabs, treat "1" as a full indent level. Otherwise, use the old block's indentSize. ***
         let threshold = (oldBlock.indentType == "t") ? 1 : baseIndentUnit
-        // print("Threshold: \(threshold) - type \(oldBlock.indentType)")
 
         // If the first line is off by a whole indent level, bail out
         if topLineDiff >= threshold {
-            // print("Diff too high: \(topLineDiff)")
             return false
         }
 

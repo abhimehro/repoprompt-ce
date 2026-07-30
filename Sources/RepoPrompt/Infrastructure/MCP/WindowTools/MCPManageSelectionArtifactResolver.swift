@@ -154,7 +154,8 @@ struct MCPManageSelectionArtifactResolver {
             }
         }
 
-        for alias in artifactSliceAliases where !request.paths.contains(alias) {
+        let requestPathsSet = Set(request.paths)
+        for alias in artifactSliceAliases where !requestPathsSet.contains(alias) {
             appendUnique("\(alias): Git artifacts do not support slices", to: &invalid)
         }
 
