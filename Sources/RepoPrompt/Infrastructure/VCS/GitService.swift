@@ -6346,6 +6346,8 @@ actor GitService {
             )
         } catch GitProcessCaptureError.stdoutByteLimitExceeded {
             throw GitBlobIdentityError.malformedGitOutput("check-attr output exceeds byte limit")
+        } catch {
+            throw error
         }
         guard exitCode == 0 else {
             throw GitError(message: "git check-attr for blob identity failed: \(stderr)")

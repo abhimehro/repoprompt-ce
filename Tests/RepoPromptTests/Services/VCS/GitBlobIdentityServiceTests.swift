@@ -664,11 +664,10 @@ final class GitBlobIdentityServiceTests: XCTestCase {
                 repositoryRelativePaths: ["File.swift"]
             )
             XCTFail("expected bounded check-attr byte rejection")
-        } catch let error as GitBlobIdentityError {
-            XCTAssertEqual(
-                error,
-                .malformedGitOutput("check-attr output exceeds byte limit")
-            )
+        } catch GitBlobIdentityError.malformedGitOutput(let message) {
+            XCTAssertEqual(message, "check-attr output exceeds byte limit")
+        } catch {
+            XCTFail("unexpected error: \(error)")
         }
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: completionMarker.path),
