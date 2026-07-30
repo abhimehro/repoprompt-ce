@@ -42,14 +42,14 @@ import re
 
 ## Mandatory Properties ##
 
-name = 'Thai'
-code = 'th'
+name = "Thai"
+code = "th"
 use_ascii = False
-charsets = ['ISO-8859-11', 'TIS-620']
+charsets = ["ISO-8859-11", "TIS-620"]
 
 ## Optional Properties ##
 
 # The start page. Though optional, it is advised to choose one yourself.
-start_pages = ['หน้าหลัก']
+start_pages = ["หน้าหลัก"]
 wikipedia_code = code
 case_mapping = False

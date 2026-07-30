@@ -16,7 +16,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / "Scripts" / "codex_runtime_artifact.py"
 V8_ENTITLEMENTS = {
@@ -70,7 +69,9 @@ def mach_o_fixture_bytes(architecture: str, payload: bytes) -> bytes:
         0,
         0,
     )
-    return header + linkedit + bytes(file_offset - len(header) - len(linkedit)) + payload
+    return (
+        header + linkedit + bytes(file_offset - len(header) - len(linkedit)) + payload
+    )
 
 
 def write_mach_o_fixture(path: Path, architecture: str, payload: bytes) -> None:
@@ -79,12 +80,16 @@ def write_mach_o_fixture(path: Path, architecture: str, payload: bytes) -> None:
     path.chmod(0o755)
 
 
-def apply_fixture_signature(path: Path, signature: bytes = b"fixture-signature") -> None:
+def apply_fixture_signature(
+    path: Path, signature: bytes = b"fixture-signature"
+) -> None:
     data = bytearray(path.read_bytes())
     command_count, command_bytes = struct.unpack_from("<II", data, 16)
     signature_offset = len(data)
     struct.pack_into("<II", data, 16, command_count + 1, command_bytes + 16)
-    struct.pack_into("<IIII", data, 32 + command_bytes, 0x1D, 16, signature_offset, len(signature))
+    struct.pack_into(
+        "<IIII", data, 32 + command_bytes, 0x1D, 16, signature_offset, len(signature)
+    )
     linkedit_file_size = struct.unpack_from("<Q", data, 32 + 48)[0] + len(signature)
     struct.pack_into("<Q", data, 32 + 48, linkedit_file_size)
     struct.pack_into("<Q", data, 32 + 32, linkedit_file_size + 0x2000)
@@ -234,7 +239,9 @@ fi
         (root / "bin").mkdir(parents=True)
         (root / "codex-path").mkdir()
         (root / "codex-resources" / "zsh" / "bin").mkdir(parents=True)
-        (root / "codex-package.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        (root / "codex-package.json").write_text(
+            json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+        )
         for relative in (
             "bin/codex",
             "bin/codex-code-mode-host",
@@ -280,7 +287,9 @@ fi
             paths.sort(key=lambda path: (path.is_dir(), path.as_posix()))
         with tarfile.open(destination, "w:gz") as tar:
             for path in paths:
-                tar.add(path, arcname=path.relative_to(source).as_posix(), recursive=False)
+                tar.add(
+                    path, arcname=path.relative_to(source).as_posix(), recursive=False
+                )
             if extra_member is not None:
                 info = tarfile.TarInfo(extra_member)
                 info.size = 1
@@ -289,7 +298,10 @@ fi
     def write_manifest(self, packages: dict[str, dict[str, object]]) -> Path:
         sums = self.archives / "codex-package_SHA256SUMS"
         sums.write_text(
-            "".join(f"{package['sha256']}  {package['archive']}\n" for package in packages.values()),
+            "".join(
+                f"{package['sha256']}  {package['archive']}\n"
+                for package in packages.values()
+            ),
             encoding="utf-8",
         )
         manifest = {
@@ -366,7 +378,9 @@ fi
             }
         return self.write_manifest(packages)
 
-    def run_tool(self, *arguments: str, env: dict[str, str] | None = None, expected: int = 0) -> subprocess.CompletedProcess[str]:
+    def run_tool(
+        self, *arguments: str, env: dict[str, str] | None = None, expected: int = 0
+    ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
             str(TOOL),
@@ -390,7 +404,11 @@ fi
             stderr=subprocess.PIPE,
             env=tool_env,
         )
-        self.assertEqual(result.returncode, expected, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertEqual(
+            result.returncode,
+            expected,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
         return result
 
     def acquire_all(self) -> None:
@@ -411,9 +429,13 @@ fi
         self.assertIn("x86_64-apple-darwin", result.stdout)
         packaged = self.cache / "0.145.0" / "aarch64-apple-darwin"
         self.assertTrue((packaged / "bin" / "codex-code-mode-host").is_file())
-        self.assertTrue((packaged / "codex-resources" / "zsh" / "bin" / "zsh").is_file())
+        self.assertTrue(
+            (packaged / "codex-resources" / "zsh" / "bin" / "zsh").is_file()
+        )
 
-    def test_stage_and_verify_universal_bundle_uses_exact_target_directories(self) -> None:
+    def test_stage_and_verify_universal_bundle_uses_exact_target_directories(
+        self,
+    ) -> None:
         self.acquire_all()
         self.run_tool(
             "stage-bundle",
@@ -439,7 +461,9 @@ fi
         )
         self.run_tool("verify-bundle", "--arch", "all", "--bundle", str(self.bundle))
 
-    def test_release_resigned_bundle_verifies_every_manifest_mach_o_for_expected_team(self) -> None:
+    def test_release_resigned_bundle_verifies_every_manifest_mach_o_for_expected_team(
+        self,
+    ) -> None:
         self.acquire_all()
         self.run_tool(
             "stage-bundle",
@@ -561,8 +585,13 @@ fi
             self.assertEqual(directory_mode(self.cache / "0.145.0" / target), 0o755)
 
         self.run_tool(
-            "stage-bundle", "--arch", "all", "--cache-root", str(self.cache),
-            "--bundle", str(self.bundle),
+            "stage-bundle",
+            "--arch",
+            "all",
+            "--cache-root",
+            str(self.cache),
+            "--bundle",
+            str(self.bundle),
         )
 
         self.assertEqual(directory_mode(self.bundle), 0o755)
@@ -574,21 +603,39 @@ fi
         package = self.cache / "0.145.0" / "aarch64-apple-darwin"
         package.chmod(0o700)
         invalid_package = self.run_tool(
-            "verify", "--arch", "arm64", "--package", str(package), expected=1,
+            "verify",
+            "--arch",
+            "arm64",
+            "--package",
+            str(package),
+            expected=1,
         )
         self.assertIn("directory mode must be 0755", invalid_package.stderr)
         self.assertIn("got 0700", invalid_package.stderr)
         package.chmod(0o755)
 
         self.run_tool(
-            "stage-bundle", "--arch", "all", "--cache-root", str(self.cache),
-            "--bundle", str(self.bundle),
+            "stage-bundle",
+            "--arch",
+            "all",
+            "--cache-root",
+            str(self.cache),
+            "--bundle",
+            str(self.bundle),
         )
-        for directory in (self.bundle, self.bundle / "x86_64-apple-darwin" / "codex-resources"):
+        for directory in (
+            self.bundle,
+            self.bundle / "x86_64-apple-darwin" / "codex-resources",
+        ):
             with self.subTest(directory=directory.relative_to(self.bundle)):
                 directory.chmod(0o700)
                 invalid_bundle = self.run_tool(
-                    "verify-bundle", "--arch", "all", "--bundle", str(self.bundle), expected=1,
+                    "verify-bundle",
+                    "--arch",
+                    "all",
+                    "--bundle",
+                    str(self.bundle),
+                    expected=1,
                 )
                 self.assertIn("directory mode must be 0755", invalid_bundle.stderr)
                 self.assertIn("got 0700", invalid_bundle.stderr)
@@ -597,40 +644,74 @@ fi
     def test_verify_universal_bundle_rejects_missing_or_extra_target(self) -> None:
         self.acquire_all()
         self.run_tool(
-            "stage-bundle", "--arch", "all", "--cache-root", str(self.cache),
-            "--bundle", str(self.bundle),
+            "stage-bundle",
+            "--arch",
+            "all",
+            "--cache-root",
+            str(self.cache),
+            "--bundle",
+            str(self.bundle),
         )
         shutil.rmtree(self.bundle / "x86_64-apple-darwin")
         missing = self.run_tool(
-            "verify-bundle", "--arch", "all", "--bundle", str(self.bundle), expected=1,
+            "verify-bundle",
+            "--arch",
+            "all",
+            "--bundle",
+            str(self.bundle),
+            expected=1,
         )
         self.assertIn("missing=['x86_64-apple-darwin']", missing.stderr)
 
         (self.bundle / "unexpected").mkdir()
         extra = self.run_tool(
-            "verify-bundle", "--arch", "arm64", "--bundle", str(self.bundle), expected=1,
+            "verify-bundle",
+            "--arch",
+            "arm64",
+            "--bundle",
+            str(self.bundle),
+            expected=1,
         )
         self.assertIn("extra=['unexpected']", extra.stderr)
 
-    def test_stage_single_target_bundle_keeps_non_public_packaging_coherent(self) -> None:
+    def test_stage_single_target_bundle_keeps_non_public_packaging_coherent(
+        self,
+    ) -> None:
         self.run_tool(
-            "acquire", "--arch", "x86_64", "--archive-dir", str(self.archives),
-            "--cache-root", str(self.cache),
+            "acquire",
+            "--arch",
+            "x86_64",
+            "--archive-dir",
+            str(self.archives),
+            "--cache-root",
+            str(self.cache),
         )
         self.run_tool(
-            "stage-bundle", "--arch", "x86_64", "--cache-root", str(self.cache),
-            "--bundle", str(self.bundle),
+            "stage-bundle",
+            "--arch",
+            "x86_64",
+            "--cache-root",
+            str(self.cache),
+            "--bundle",
+            str(self.bundle),
         )
 
-        self.assertEqual([path.name for path in self.bundle.iterdir()], ["x86_64-apple-darwin"])
+        self.assertEqual(
+            [path.name for path in self.bundle.iterdir()], ["x86_64-apple-darwin"]
+        )
         self.run_tool("verify-bundle", "--arch", "x86_64", "--bundle", str(self.bundle))
 
     def test_verified_cache_hit_requires_no_source_or_network(self) -> None:
         self.acquire_all()
         shutil.rmtree(self.archives)
         self.run_tool(
-            "acquire", "--arch", "all", "--archive-dir", str(self.archives),
-            "--cache-root", str(self.cache),
+            "acquire",
+            "--arch",
+            "all",
+            "--archive-dir",
+            str(self.archives),
+            "--cache-root",
+            str(self.cache),
         )
 
     def test_archive_checksum_mismatch_fails_without_cache(self) -> None:
@@ -652,14 +733,30 @@ fi
     def test_official_checksum_must_agree_with_repository_pin(self) -> None:
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         sums = self.archives / "codex-package_SHA256SUMS"
-        sums.write_text(sums.read_text(encoding="utf-8").replace(manifest["packages"]["aarch64-apple-darwin"]["sha256"], "0" * 64), encoding="utf-8")
-        manifest["checksums"]["sha256"] = digest(sums)
-        self.manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        result = self.run_tool(
-            "acquire", "--arch", "arm64", "--archive-dir", str(self.archives),
-            "--cache-root", str(self.cache), expected=1,
+        sums.write_text(
+            sums.read_text(encoding="utf-8").replace(
+                manifest["packages"]["aarch64-apple-darwin"]["sha256"], "0" * 64
+            ),
+            encoding="utf-8",
         )
-        self.assertIn("official checksum and repository-pinned archive digest disagree", result.stderr)
+        manifest["checksums"]["sha256"] = digest(sums)
+        self.manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        result = self.run_tool(
+            "acquire",
+            "--arch",
+            "arm64",
+            "--archive-dir",
+            str(self.archives),
+            "--cache-root",
+            str(self.cache),
+            expected=1,
+        )
+        self.assertIn(
+            "official checksum and repository-pinned archive digest disagree",
+            result.stderr,
+        )
 
     def test_manifest_requires_exact_official_release_and_asset_urls(self) -> None:
         mutations = (
@@ -679,7 +776,9 @@ fi
             ),
             (
                 "package asset URL",
-                lambda manifest: manifest["packages"]["aarch64-apple-darwin"].__setitem__(
+                lambda manifest: manifest["packages"][
+                    "aarch64-apple-darwin"
+                ].__setitem__(
                     "url",
                     "https://example.invalid/codex-package-aarch64-apple-darwin.tar.gz",
                 ),
@@ -690,17 +789,23 @@ fi
             with self.subTest(label=label):
                 manifest = json.loads(baseline)
                 mutate(manifest)
-                self.manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                self.manifest_path.write_text(
+                    json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+                )
                 result = self.run_tool("validate-manifest", expected=1)
                 self.assertIn("URL", result.stderr)
 
-    def test_refresh_normalized_digests_derives_manifest_values_from_verified_cache(self) -> None:
+    def test_refresh_normalized_digests_derives_manifest_values_from_verified_cache(
+        self,
+    ) -> None:
         self.acquire_all()
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         for package in manifest["packages"].values():
             for entry in package["tree"]:
                 entry.pop("normalizedSha256", None)
-        self.manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        self.manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
 
         result = self.run_tool(
             "refresh-normalized-digests",
@@ -748,11 +853,13 @@ fi
         self.assertEqual(result.stdout.strip(), "0.145.0")
         source = (ROOT / "Scripts" / "package_app.sh").read_text(encoding="utf-8")
         self.assertIn('CODEX_VERSION="$(python3 "$CODEX_ARTIFACT_TOOL"', source)
-        self.assertIn('stage-bundle', source)
+        self.assertIn("stage-bundle", source)
         self.assertIn('--cache-root "$CODEX_CACHE_ROOT"', source)
         self.assertNotIn("CODEX_CACHE_ROOT/0.145.0", source)
 
-    def test_archive_accepts_file_members_before_explicit_parent_directories(self) -> None:
+    def test_archive_accepts_file_members_before_explicit_parent_directories(
+        self,
+    ) -> None:
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         target = "aarch64-apple-darwin"
         package = manifest["packages"][target]
@@ -782,7 +889,9 @@ fi
         target = "aarch64-apple-darwin"
         package = manifest["packages"][target]
         archive = self.archives / package["archive"]
-        self.make_archive(self.temp / f"source-{target}", archive, extra_member="unexpected-resource")
+        self.make_archive(
+            self.temp / f"source-{target}", archive, extra_member="unexpected-resource"
+        )
         package["sha256"] = digest(archive)
         self.manifest_path = self.write_manifest(manifest["packages"])
         result = self.run_tool(
@@ -812,7 +921,9 @@ fi
                 "executable": True,
             }
         )
-        self.manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        self.manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
 
         result = self.run_tool(
             "verify",
@@ -832,47 +943,84 @@ fi
         result = self.run_tool("status", "--cache-root", str(self.cache), expected=1)
         self.assertIn("package tree does not match pinned manifest", result.stdout)
 
-    def test_version_metadata_mismatch_is_rejected_even_when_tree_is_repinned(self) -> None:
+    def test_version_metadata_mismatch_is_rejected_even_when_tree_is_repinned(
+        self,
+    ) -> None:
         self.acquire_all()
         target = "aarch64-apple-darwin"
         package = self.cache / "0.145.0" / target
         metadata_path = package / "codex-package.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         metadata["version"] = "0.145.1"
-        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+        )
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        entry = next(item for item in manifest["packages"][target]["tree"] if item["path"] == "codex-package.json")
+        entry = next(
+            item
+            for item in manifest["packages"][target]["tree"]
+            if item["path"] == "codex-package.json"
+        )
         entry["sha256"] = digest(metadata_path)
-        self.manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        result = self.run_tool("verify", "--arch", "arm64", "--package", str(package), expected=1)
+        self.manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        result = self.run_tool(
+            "verify", "--arch", "arm64", "--package", str(package), expected=1
+        )
         self.assertIn("codex-package.json metadata mismatch", result.stderr)
 
     def test_architecture_and_signature_mismatch_are_rejected(self) -> None:
         self.acquire_all()
         package = self.cache / "0.145.0" / "aarch64-apple-darwin"
         arch = self.run_tool(
-            "verify", "--arch", "arm64", "--package", str(package),
-            env={"FAKE_ARCH": "x86_64"}, expected=1,
+            "verify",
+            "--arch",
+            "arm64",
+            "--package",
+            str(package),
+            env={"FAKE_ARCH": "x86_64"},
+            expected=1,
         )
         self.assertIn("architectures", arch.stderr)
         signature = self.run_tool(
-            "verify", "--arch", "arm64", "--package", str(package),
-            env={"FAKE_SIGNATURE_METADATA_FAILURE": "1"}, expected=1,
+            "verify",
+            "--arch",
+            "arm64",
+            "--package",
+            str(package),
+            env={"FAKE_SIGNATURE_METADATA_FAILURE": "1"},
+            expected=1,
         )
         self.assertIn("signature metadata", signature.stderr)
         invalid_signature = self.run_tool(
-            "verify", "--arch", "arm64", "--package", str(package),
-            env={"FAKE_SIGNATURE_FAILURE": "1"}, expected=1,
+            "verify",
+            "--arch",
+            "arm64",
+            "--package",
+            str(package),
+            env={"FAKE_SIGNATURE_FAILURE": "1"},
+            expected=1,
         )
         self.assertIn("signature check", invalid_signature.stderr)
         no_runtime = self.run_tool(
-            "verify", "--arch", "arm64", "--package", str(package),
-            env={"FAKE_CODE_DIRECTORY_FLAGS": "0x2(adhoc)"}, expected=1,
+            "verify",
+            "--arch",
+            "arm64",
+            "--package",
+            str(package),
+            env={"FAKE_CODE_DIRECTORY_FLAGS": "0x2(adhoc)"},
+            expected=1,
         )
         self.assertIn("hardened-runtime signing flag", no_runtime.stderr)
         no_timestamp = self.run_tool(
-            "verify", "--arch", "arm64", "--package", str(package),
-            env={"FAKE_OMIT_TIMESTAMP": "1"}, expected=1,
+            "verify",
+            "--arch",
+            "arm64",
+            "--package",
+            str(package),
+            env={"FAKE_OMIT_TIMESTAMP": "1"},
+            expected=1,
         )
         self.assertIn("trusted signing timestamp", no_timestamp.stderr)
 
@@ -912,23 +1060,51 @@ fi
         self.acquire_all()
         package = self.cache / "0.145.0" / "aarch64-apple-darwin"
         for label, env, message in (
-            ("missing", {"FAKE_ENTITLEMENTS_OMIT": "codex-code-mode-host"}, "signed entitlements do not match"),
-            ("extra key", {"FAKE_ENTITLEMENTS_EXTRA": "1"}, "signed entitlements do not match"),
-            ("false value", {"FAKE_ENTITLEMENTS_FALSE": "1"}, "signed entitlements do not match"),
-            ("malformed", {"FAKE_ENTITLEMENTS_MALFORMED": "1"}, "malformed signed entitlements"),
+            (
+                "missing",
+                {"FAKE_ENTITLEMENTS_OMIT": "codex-code-mode-host"},
+                "signed entitlements do not match",
+            ),
+            (
+                "extra key",
+                {"FAKE_ENTITLEMENTS_EXTRA": "1"},
+                "signed entitlements do not match",
+            ),
+            (
+                "false value",
+                {"FAKE_ENTITLEMENTS_FALSE": "1"},
+                "signed entitlements do not match",
+            ),
+            (
+                "malformed",
+                {"FAKE_ENTITLEMENTS_MALFORMED": "1"},
+                "malformed signed entitlements",
+            ),
         ):
             with self.subTest(label=label):
                 result = self.run_tool(
-                    "verify", "--arch", "arm64", "--package", str(package),
-                    env=env, expected=1,
+                    "verify",
+                    "--arch",
+                    "arm64",
+                    "--package",
+                    str(package),
+                    env=env,
+                    expected=1,
                 )
                 self.assertIn(message, result.stderr)
 
-    def test_release_resigned_bundle_enforces_per_mach_o_entitlement_profiles(self) -> None:
+    def test_release_resigned_bundle_enforces_per_mach_o_entitlement_profiles(
+        self,
+    ) -> None:
         self.acquire_all()
         self.run_tool(
-            "stage-bundle", "--arch", "all", "--cache-root", str(self.cache),
-            "--bundle", str(self.bundle),
+            "stage-bundle",
+            "--arch",
+            "all",
+            "--cache-root",
+            str(self.cache),
+            "--bundle",
+            str(self.bundle),
         )
         for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
             for relative in (
@@ -947,13 +1123,24 @@ fi
         }
 
         self.run_tool(
-            "verify-bundle", "--arch", "all", "--bundle", str(self.bundle),
-            "--signed-team-identifier", "648A27MST5", env=release_env,
+            "verify-bundle",
+            "--arch",
+            "all",
+            "--bundle",
+            str(self.bundle),
+            "--signed-team-identifier",
+            "648A27MST5",
+            env=release_env,
         )
 
         stripped_host = self.run_tool(
-            "verify-bundle", "--arch", "all", "--bundle", str(self.bundle),
-            "--signed-team-identifier", "648A27MST5",
+            "verify-bundle",
+            "--arch",
+            "all",
+            "--bundle",
+            str(self.bundle),
+            "--signed-team-identifier",
+            "648A27MST5",
             env={**release_env, "FAKE_ENTITLEMENTS_OMIT": "codex-code-mode-host"},
             expected=1,
         )
@@ -962,8 +1149,13 @@ fi
         self.assertIn("missing=", stripped_host.stderr)
 
         over_entitled = self.run_tool(
-            "verify-bundle", "--arch", "all", "--bundle", str(self.bundle),
-            "--signed-team-identifier", "648A27MST5",
+            "verify-bundle",
+            "--arch",
+            "all",
+            "--bundle",
+            str(self.bundle),
+            "--signed-team-identifier",
+            "648A27MST5",
             env={**release_env, "FAKE_ENTITLEMENTS_GRANT_ALL": "1"},
             expected=1,
         )
@@ -984,7 +1176,9 @@ fi
         ]
         self.assertEqual(listed.stdout.splitlines(), expected)
 
-    def test_manifest_rejects_legacy_schema_and_open_world_entitlement_profiles(self) -> None:
+    def test_manifest_rejects_legacy_schema_and_open_world_entitlement_profiles(
+        self,
+    ) -> None:
         baseline = self.manifest_path.read_text(encoding="utf-8")
         mutations = (
             (
@@ -999,38 +1193,44 @@ fi
             ),
             (
                 "uncovered Mach-O",
-                lambda manifest: manifest["releaseSigningEntitlements"].__delitem__("codex-path/rg"),
+                lambda manifest: manifest["releaseSigningEntitlements"].__delitem__(
+                    "codex-path/rg"
+                ),
                 "cover exactly the Mach-O inventory",
             ),
             (
                 "unlisted profile path",
-                lambda manifest: manifest["releaseSigningEntitlements"].__setitem__("bin/future-helper", {}),
+                lambda manifest: manifest["releaseSigningEntitlements"].__setitem__(
+                    "bin/future-helper", {}
+                ),
                 "cover exactly the Mach-O inventory",
             ),
             (
                 "unapproved release key",
-                lambda manifest: manifest["releaseSigningEntitlements"]["bin/codex"].__setitem__(
-                    "com.apple.security.get-task-allow", True
-                ),
+                lambda manifest: manifest["releaseSigningEntitlements"][
+                    "bin/codex"
+                ].__setitem__("com.apple.security.get-task-allow", True),
                 "unapproved entitlement key",
             ),
             (
                 "non-true release value",
-                lambda manifest: manifest["releaseSigningEntitlements"]["bin/codex"].__setitem__(
-                    "com.apple.security.cs.allow-jit", False
-                ),
+                lambda manifest: manifest["releaseSigningEntitlements"][
+                    "bin/codex"
+                ].__setitem__("com.apple.security.cs.allow-jit", False),
                 "must be exactly true",
             ),
             (
                 "vendor policy without entitlements",
-                lambda manifest: manifest["signedExecutables"][0].__delitem__("entitlements"),
+                lambda manifest: manifest["signedExecutables"][0].__delitem__(
+                    "entitlements"
+                ),
                 "entitlement profile must be an object",
             ),
             (
                 "unapproved vendor key",
-                lambda manifest: manifest["signedExecutables"][1]["entitlements"].__setitem__(
-                    "com.apple.security.cs.disable-library-validation", True
-                ),
+                lambda manifest: manifest["signedExecutables"][1][
+                    "entitlements"
+                ].__setitem__("com.apple.security.cs.disable-library-validation", True),
                 "unapproved entitlement key",
             ),
         )
@@ -1038,15 +1238,21 @@ fi
             with self.subTest(label=label):
                 manifest = json.loads(baseline)
                 mutate(manifest)
-                self.manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                self.manifest_path.write_text(
+                    json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+                )
                 result = self.run_tool("validate-manifest", expected=1)
                 self.assertIn(message, result.stderr)
         self.manifest_path.write_text(baseline, encoding="utf-8")
         self.run_tool("validate-manifest")
 
-    def test_package_script_embeds_before_outer_sign_and_never_resigns_codex(self) -> None:
+    def test_package_script_embeds_before_outer_sign_and_never_resigns_codex(
+        self,
+    ) -> None:
         source = (ROOT / "Scripts" / "package_app.sh").read_text(encoding="utf-8")
-        embed = source.index('phase "Embedding verified Codex $CODEX_VERSION target package artifacts"')
+        embed = source.index(
+            'phase "Embedding verified Codex $CODEX_VERSION target package artifacts"'
+        )
         sign = source.index('phase "Signing app bundle"')
         post_sign = source.index("# The outer signature seals the resource tree")
         self.assertLess(embed, sign)
@@ -1054,8 +1260,8 @@ fi
         signing_section = source[sign:post_sign]
         self.assertNotIn('sign_path "$CODEX_APP_DIR"', signing_section)
         self.assertIn("Contents/Resources/BundledRuntimes/Codex", source)
-        self.assertIn('stage-bundle', source)
-        self.assertIn('verify-bundle', source)
+        self.assertIn("stage-bundle", source)
+        self.assertIn("verify-bundle", source)
         self.assertIn('CODEX_BUNDLE_ARCH="all"', source)
 
 

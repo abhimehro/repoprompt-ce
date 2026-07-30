@@ -2056,10 +2056,10 @@ import XCTest
 
                         window.mcpServer.setAgentRunDispatchOverrideForTesting {
                             sessionID,
-                            tabID,
-                            _,
-                            _,
-                            viewModel in
+                                tabID,
+                                _,
+                                _,
+                                viewModel in
                             let runID = UUID()
                             targetRunID = runID
                             let session = viewModel.session(for: tabID)

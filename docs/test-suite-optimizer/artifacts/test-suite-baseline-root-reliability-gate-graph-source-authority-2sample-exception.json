@@ -125,10 +125,7 @@
     "invalid_samples": 0,
     "median_seconds": 680.5654999999999,
     "observed_p95_seconds": 708.6,
-    "raw_execution_seconds": [
-      708.6,
-      652.531
-    ],
+    "raw_execution_seconds": [708.6, 652.531],
     "relative_mad": 0.04119294909894792,
     "noise_classification": "user-directed-2-sample-exception",
     "counted_root_methods": 2835,

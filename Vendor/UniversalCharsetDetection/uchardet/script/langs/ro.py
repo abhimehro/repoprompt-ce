@@ -42,11 +42,10 @@ import re
 
 ## Mandatory Properties ##
 
-name = 'Romanian'
-code = 'ro'
+name = "Romanian"
+code = "ro"
 use_ascii = True
-charsets = ['ISO-8859-2', 'ISO-8859-16',
-            'Windows-1250', 'IBM852']
+charsets = ["ISO-8859-2", "ISO-8859-16", "Windows-1250", "IBM852"]
 
 ## Optional Properties ##
 
@@ -57,9 +56,9 @@ charsets = ['ISO-8859-2', 'ISO-8859-16',
 # It may be worth adding some common_replacement_letters logics in
 # the training and models.
 # https://en.wikipedia.org/wiki/Romanian_alphabet#ISO_8859
-alphabet = 'ăâîșț'
+alphabet = "ăâîșț"
 # The starred page which was rewarded on the main page when I created
 # the data.
-start_pages = ['The Loving Kind']
+start_pages = ["The Loving Kind"]
 wikipedia_code = code
 case_mapping = True

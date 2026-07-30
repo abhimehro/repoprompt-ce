@@ -4,20 +4,20 @@ Store the live inventory in a task-specific plan or local `docs/investigations/`
 
 ## Inventory schema
 
-| Field | Purpose |
-|---|---|
-| Package / target | Compilation and configuration boundary |
-| File / declaration | Exact owning source |
+| Field                 | Purpose                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| Package / target      | Compilation and configuration boundary                                                            |
+| File / declaration    | Exact owning source                                                                               |
 | Diagnostic / category | Global state, sendability, isolation, task capture, continuation, interop, or other stable family |
-| Current settings | Language mode, strict checking, default isolation, upcoming features |
-| Isolation boundary | Main actor, global actor, actor instance, nonisolated, task capture, global state, C/Objective-C |
-| Runtime risk | Race, stale state, deadlock, lost cancellation, leak, ordering, UI violation, compile-only |
-| Root-cause confidence | Confirmed, plausible, or unknown |
-| Proposed fix class | Static isolation, value snapshot, ownership, synchronization, API adjustment, dependency |
-| Escape hatch | Existing, proposed, or none; include invariant and removal/audit condition |
-| Dependency / blocker | Upstream target, imported API, package, or phase |
-| Phase / status | Baseline, active, fixed, deferred, blocked |
-| Validation evidence | Conductor ticket, log path, focused suite, profile artifact |
+| Current settings      | Language mode, strict checking, default isolation, upcoming features                              |
+| Isolation boundary    | Main actor, global actor, actor instance, nonisolated, task capture, global state, C/Objective-C  |
+| Runtime risk          | Race, stale state, deadlock, lost cancellation, leak, ordering, UI violation, compile-only        |
+| Root-cause confidence | Confirmed, plausible, or unknown                                                                  |
+| Proposed fix class    | Static isolation, value snapshot, ownership, synchronization, API adjustment, dependency          |
+| Escape hatch          | Existing, proposed, or none; include invariant and removal/audit condition                        |
+| Dependency / blocker  | Upstream target, imported API, package, or phase                                                  |
+| Phase / status        | Baseline, active, fixed, deferred, blocked                                                        |
+| Validation evidence   | Conductor ticket, log path, focused suite, profile artifact                                       |
 
 ## Baseline checklist
 

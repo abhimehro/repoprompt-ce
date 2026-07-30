@@ -45,7 +45,7 @@ extension Service {
 ///  with a clean DSL style (`@ToolBuilder var tools: [Tool] { … }`)
 /// ---------------------------------------------------------------------
 @resultBuilder
-struct ToolBuilder {
+enum ToolBuilder {
     static func buildBlock(_ tools: Tool...) -> [Tool] {
         tools
     }

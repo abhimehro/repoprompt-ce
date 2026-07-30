@@ -63,7 +63,7 @@ private struct MessageFooterStrip: View {
         if let runtimeFooter {
             if let completedDate = runtimeFooter.completedDate {
                 #if DEBUG
-                    let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.completed")
+                    _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.completed")
                 #endif
                 let elapsed = AgentRuntimeDurationFormatter.string(from: runtimeFooter.anchorDate, to: completedDate)
                 Text("\(runtimeFooter.statusText) \(elapsed)")
@@ -73,18 +73,18 @@ private struct MessageFooterStrip: View {
             } else if agentWindowIsFocused {
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     #if DEBUG
-                        let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.tick")
+                        _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.tick")
                     #endif
                     runtimeFooterText(runtimeFooter, now: timeline.date)
                 }
                 #if DEBUG
-                .onAppear {
+                    .onAppear {
                         AgentModePerfDiagnostics.increment("timeline.messageFooter.liveMount")
                     }
                 #endif
             } else {
                 #if DEBUG
-                    let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.unfocused")
+                    _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.unfocused")
                 #endif
                 runtimeFooterText(runtimeFooter, now: Date())
             }

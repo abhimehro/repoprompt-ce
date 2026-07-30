@@ -40,9 +40,13 @@ def parse_command(binary: Path, command: str) -> dict[str, Any]:
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
-        raise HarnessError(f"parser command returned invalid JSON for {command!r}: {error}\n{completed.stdout}") from error
+        raise HarnessError(
+            f"parser command returned invalid JSON for {command!r}: {error}\n{completed.stdout}"
+        ) from error
     if not isinstance(payload, dict):
-        raise HarnessError(f"parser command returned non-object JSON for {command!r}: {payload!r}")
+        raise HarnessError(
+            f"parser command returned non-object JSON for {command!r}: {payload!r}"
+        )
     return payload
 
 
@@ -52,7 +56,9 @@ def require_equal(actual: Any, expected: Any, label: str) -> None:
 
 
 def run(binary: Path) -> None:
-    shorthand = parse_command(binary, "manage_worktree op=list include_graph=true graph_limit=8")
+    shorthand = parse_command(
+        binary, "manage_worktree op=list include_graph=true graph_limit=8"
+    )
     require_equal(shorthand.get("success"), True, "shorthand success")
     require_equal(shorthand.get("command"), "aliasCall", "shorthand command")
     require_equal(shorthand.get("toolName"), "manage_worktree", "shorthand toolName")
@@ -84,7 +90,9 @@ def main() -> int:
         print(f"ERROR: repoprompt-mcp binary not found: {binary}", file=sys.stderr)
         return 1
     if not os.access(binary, os.X_OK):
-        print(f"ERROR: repoprompt-mcp binary is not executable: {binary}", file=sys.stderr)
+        print(
+            f"ERROR: repoprompt-mcp binary is not executable: {binary}", file=sys.stderr
+        )
         return 1
     try:
         run(binary)

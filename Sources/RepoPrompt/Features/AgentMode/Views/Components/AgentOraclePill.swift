@@ -236,7 +236,7 @@ struct AgentOraclePill: View {
 
     var body: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.oracle")
+            _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.oracle")
         #endif
         Group {
             if hasAnySessions {

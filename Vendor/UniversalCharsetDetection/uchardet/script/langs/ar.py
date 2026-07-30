@@ -42,10 +42,10 @@ import re
 
 ## Mandatory Properties ##
 
-name = 'Arabic'
-code = 'ar'
+name = "Arabic"
+code = "ar"
 use_ascii = False
-charsets = ['ISO-8859-6', 'WINDOWS-1256']
+charsets = ["ISO-8859-6", "WINDOWS-1256"]
 
 ## Optional Properties ##
 
@@ -54,6 +54,6 @@ charsets = ['ISO-8859-6', 'WINDOWS-1256']
 # glyphs while others would encode only the forms. In doubt, I will
 # just let the defaults for now.
 
-start_pages = ['الصفحة_الرئيسية']
+start_pages = ["الصفحة_الرئيسية"]
 wikipedia_code = code
 case_mapping = False

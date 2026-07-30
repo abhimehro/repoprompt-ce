@@ -42,18 +42,33 @@ class LibProcInspector:
         if sys.platform != "darwin":
             raise ProcessIdentityError("debug app process checks require macOS")
         self.libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-        self.libproc.proc_listpids.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
+        self.libproc.proc_listpids.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
         self.libproc.proc_listpids.restype = ctypes.c_int
-        self.libproc.proc_name.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        self.libproc.proc_name.argtypes = [
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
         self.libproc.proc_name.restype = ctypes.c_int
-        self.libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        self.libproc.proc_pidpath.argtypes = [
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
         self.libproc.proc_pidpath.restype = ctypes.c_int
 
     def list_pids(self) -> list[int]:
         capacity = 4096
         while capacity <= 1_048_576:
             buffer = (ctypes.c_int * capacity)()
-            byte_count = self.libproc.proc_listpids(PROC_ALL_PIDS, 0, buffer, ctypes.sizeof(buffer))
+            byte_count = self.libproc.proc_listpids(
+                PROC_ALL_PIDS, 0, buffer, ctypes.sizeof(buffer)
+            )
             if byte_count <= 0:
                 error = ctypes.get_errno()
                 detail = os.strerror(error) if error else "process enumeration failed"
@@ -62,7 +77,9 @@ class LibProcInspector:
             if count < capacity:
                 return [pid for pid in buffer[:count] if pid > 0]
             capacity *= 2
-        raise ProcessIdentityError("process enumeration exceeded the supported capacity")
+        raise ProcessIdentityError(
+            "process enumeration exceeded the supported capacity"
+        )
 
     def process_name(self, pid: int) -> str | None:
         buffer = ctypes.create_string_buffer(PROC_PIDPATHINFO_MAXSIZE)
@@ -77,13 +94,19 @@ class LibProcInspector:
         if length <= 0:
             error = ctypes.get_errno()
             if error in {errno.ENOENT, errno.ESRCH}:
-                raise ProcessGone(f"process {pid} exited before its executable could be resolved")
+                raise ProcessGone(
+                    f"process {pid} exited before its executable could be resolved"
+                )
             detail = os.strerror(error) if error else "process is unavailable"
-            raise ProcessIdentityError(f"could not resolve executable for pid {pid}: {detail}")
+            raise ProcessIdentityError(
+                f"could not resolve executable for pid {pid}: {detail}"
+            )
         try:
             return Path(os.fsdecode(buffer.value)).resolve(strict=True)
         except OSError as exc:
-            raise ProcessIdentityError(f"could not resolve executable path for pid {pid}: {exc}") from exc
+            raise ProcessIdentityError(
+                f"could not resolve executable path for pid {pid}: {exc}"
+            ) from exc
 
 
 def expected_executable_path(path: Path) -> Path:
@@ -91,15 +114,23 @@ def expected_executable_path(path: Path) -> Path:
         resolved = path.expanduser().resolve(strict=True)
         metadata = resolved.stat()
     except FileNotFoundError as exc:
-        raise TargetExecutableMissing(f"target debug app executable is not installed: {path}") from exc
+        raise TargetExecutableMissing(
+            f"target debug app executable is not installed: {path}"
+        ) from exc
     except OSError as exc:
-        raise ProcessIdentityError(f"target debug app executable is unavailable: {path}: {exc}") from exc
+        raise ProcessIdentityError(
+            f"target debug app executable is unavailable: {path}: {exc}"
+        ) from exc
     if not stat.S_ISREG(metadata.st_mode) or not metadata.st_mode & 0o111:
-        raise ProcessIdentityError(f"target debug app executable is not executable: {resolved}")
+        raise ProcessIdentityError(
+            f"target debug app executable is not executable: {resolved}"
+        )
     return resolved
 
 
-def matching_processes(expected_executable: Path, inspector: ProcessInspector | None = None) -> list[int]:
+def matching_processes(
+    expected_executable: Path, inspector: ProcessInspector | None = None
+) -> list[int]:
     try:
         expected = expected_executable_path(expected_executable)
     except TargetExecutableMissing:
@@ -144,7 +175,9 @@ def terminate_matching_processes(
         except ProcessLookupError:
             continue
         except OSError as exc:
-            raise ProcessIdentityError(f"could not signal debug app pid {pid}: {exc}") from exc
+            raise ProcessIdentityError(
+                f"could not signal debug app pid {pid}: {exc}"
+            ) from exc
         signaled.append(pid)
     return signaled
 

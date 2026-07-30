@@ -77,9 +77,9 @@ class OpenRouterProvider: AIProvider {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    var promptTokens: Int? = nil
-                    var completionTokens: Int? = nil
-                    var cost: Double? = nil
+                    var promptTokens: Int?
+                    var completionTokens: Int?
+                    var cost: Double?
 
                     for try await chunk in stream {
                         // Use optional chaining to unwrap the optional 'choices'

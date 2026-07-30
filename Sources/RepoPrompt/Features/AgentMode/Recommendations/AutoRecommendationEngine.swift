@@ -182,7 +182,7 @@ final class AutoRecommendationEngine {
         // Priority for CHAT: Codex CLI > OpenAI API > Claude Code
         let defaultBackend: ChatBackendKind
         var priorityPath: [String] = []
-        var upgradeHint: String? = nil
+        var upgradeHint: String?
 
         if codexOption != nil {
             defaultBackend = .codex

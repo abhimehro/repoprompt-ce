@@ -17,7 +17,11 @@ export class TaskStore extends EventEmitter {
 }
 
 export function normalizeTask(input) {
-  return { id: input.id, title: input.title.trim(), label: `${input.id}:${input.title.trim()}` };
+  return {
+    id: input.id,
+    title: input.title.trim(),
+    label: `${input.id}:${input.title.trim()}`,
+  };
 }
 
 export const createTask = (title) => ({
