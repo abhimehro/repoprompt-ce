@@ -235,6 +235,7 @@ public actor VCSService {
     private func detectAndResolve(from url: URL) async -> VCSResolvedRepo? {
         let fm = FileManager.default
         let startPath = url.standardizedFileURL.path
+        _ = startPath
 
         // Walk up the directory tree looking for .jj or .git
         var currentURL = url.standardizedFileURL

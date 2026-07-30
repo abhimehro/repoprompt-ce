@@ -830,8 +830,9 @@ actor GitWorkspaceStateAuthority {
                 pending.waiters[waiterID] = continuation
                 pendingUncachedPrefixControlFlights[key] = pending
                 if Task.isCancelled {
+                    let taskKey = key
                     Task { await self.cancelUncachedPrefixControlWaiter(
-                        key: key,
+                        key: taskKey,
                         flightID: flightID,
                         waiterID: waiterID
                     ) }
