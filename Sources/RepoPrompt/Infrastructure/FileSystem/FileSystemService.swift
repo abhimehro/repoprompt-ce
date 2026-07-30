@@ -2,6 +2,7 @@ import Combine
 import CoreServices
 import Dispatch
 import Foundation
+import OSLog
 #if DEBUG || EDIT_FLOW_PERF
     import os
 #endif
@@ -50,6 +51,8 @@ actor FileSystemService {
         /// Static flag to enable verbose debug logging (default: false)
         static var enableDebugLogging = false
     #endif
+
+    static let logger = Logger(subsystem: "com.repoprompt.filesystem", category: "FSEvents")
 
     func fileSystemDebugLog(_ message: @autoclosure () -> String) {
         #if DEBUG

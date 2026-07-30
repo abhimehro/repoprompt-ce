@@ -488,7 +488,7 @@ extension FileSystemService {
             } else {
                 #if DEBUG
                     if enableDebugLogging {
-                        print("DEBUG: Dropping unexpected FSEvent path payload at index \(index): \(type(of: cfObject))")
+                        Self.logger.debug("DEBUG: Dropping unexpected FSEvent path payload at index \(index): \(type(of: cfObject))")
                     }
                 #endif
                 copiedPath = nil
@@ -535,19 +535,19 @@ extension FileSystemService {
 
         #if DEBUG
             if payload.count != count {
-                print("DEBUG: FSEvents vector length mismatch. numEvents=\(count), payloadCount=\(payload.count)")
+                Self.logger.debug("DEBUG: FSEvents vector length mismatch. numEvents=\(count), payloadCount=\(payload.count)")
             }
 
             // Log raw FSEvents as they arrive
             if enableDebugLogging {
-                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                print("🔔 RAW FSEVENTS CALLBACK: \(payload.count) events")
+                Self.logger.debug("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                Self.logger.debug("🔔 RAW FSEVENTS CALLBACK: \(payload.count) events")
                 for (index, entry) in payload.entries.enumerated() {
-                    print("  [\(index)] path: \(entry.path)")
-                    print("       flags: \(formatFSEventFlags(entry.flags))")
-                    print("       eventId: \(entry.id)")
+                    Self.logger.debug("  [\(index)] path: \(entry.path)")
+                    Self.logger.debug("       flags: \(formatFSEventFlags(entry.flags))")
+                    Self.logger.debug("       eventId: \(entry.id)")
                 }
-                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                Self.logger.debug("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             }
         #endif
 
@@ -1031,18 +1031,18 @@ extension FileSystemService {
 
         #if DEBUG
             if Self.enableDebugLogging {
-                print("┌─────────────────────────────────────────────────────────────")
-                print("│ 📥 handleBatchedEvents: Processing \(events.count) coalesced events")
+                Self.logger.debug("┌─────────────────────────────────────────────────────────────")
+                Self.logger.debug("│ 📥 handleBatchedEvents: Processing \(events.count) coalesced events")
                 for (path, flags, eventId) in events {
-                    print("│   path: '\(path)'")
-                    print("│   flags: \(Self.formatFSEventFlags(flags)), eventId: \(eventId)")
+                    Self.logger.debug("│   path: '\(path)'")
+                    Self.logger.debug("│   flags: \(Self.formatFSEventFlags(flags)), eventId: \(eventId)")
                 }
-                print("└─────────────────────────────────────────────────────────────")
+                Self.logger.debug("└─────────────────────────────────────────────────────────────")
             }
             if isTestMode, Self.enableDebugLogging {
-                print("DEBUG: handleBatchedEvents called with \(events.count) events")
+                Self.logger.debug("DEBUG: handleBatchedEvents called with \(events.count) events")
                 for (path, flags, _) in events {
-                    print("DEBUG: Event - path: '\(path)', flags: \(flags)")
+                    Self.logger.debug("DEBUG: Event - path: '\(path)', flags: \(flags)")
                 }
             }
         #endif
@@ -1065,7 +1065,7 @@ extension FileSystemService {
             case let .outside(original):
                 #if DEBUG
                     if isTestMode, Self.enableDebugLogging {
-                        print("DEBUG: Dropping event outside root: \(original)")
+                        Self.logger.debug("DEBUG: Dropping event outside root: \(original)")
                     }
                 #endif
                 continue
@@ -1076,7 +1076,7 @@ extension FileSystemService {
             if isGitMetadataPath(relPath) {
                 #if DEBUG
                     if isTestMode, Self.enableDebugLogging {
-                        print("DEBUG: Ignoring .git metadata event at \(relPath)")
+                        Self.logger.debug("DEBUG: Ignoring .git metadata event at \(relPath)")
                     }
                 #endif
                 continue
@@ -1088,7 +1088,7 @@ extension FileSystemService {
 
             #if DEBUG
                 if isTestMode, Self.enableDebugLogging {
-                    print("DEBUG: Converted absolute path '\(absPath)' to relative path '\(relPath)'")
+                    Self.logger.debug("DEBUG: Converted absolute path '\(absPath)' to relative path '\(relPath)'")
                 }
             #endif
 
@@ -1112,7 +1112,7 @@ extension FileSystemService {
                 trackFolder("", eventId: eventId)
                 #if DEBUG
                     if isTestMode, Self.enableDebugLogging {
-                        print("DEBUG: Aggressive scan required - mustScan=\(parsed.mustScanSubdirs), dropped=\(parsed.userOrKernelDropped), rootChanged=\(parsed.rootChanged)")
+                        Self.logger.debug("DEBUG: Aggressive scan required - mustScan=\(parsed.mustScanSubdirs), dropped=\(parsed.userOrKernelDropped), rootChanged=\(parsed.rootChanged)")
                     }
                 #endif
                 continue
@@ -1129,7 +1129,7 @@ extension FileSystemService {
             #if DEBUG
                 if isTestMode, Self.enableDebugLogging {
                     let isRename = (flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed)) != 0
-                    print("DEBUG: Processing event for '\(relPath)' - isKnown=\(isKnown), isRename=\(isRename), shouldIgnore=\(shouldIgnore), isIgnoreFile=\(isIgnoreFile(relPath))")
+                    Self.logger.debug("DEBUG: Processing event for '\(relPath)' - isKnown=\(isKnown), isRename=\(isRename), shouldIgnore=\(shouldIgnore), isIgnoreFile=\(isIgnoreFile(relPath))")
                 }
             #endif
 
@@ -1137,7 +1137,7 @@ extension FileSystemService {
             if !isKnown && !isControlFile && shouldIgnore {
                 #if DEBUG
                     if isTestMode, Self.enableDebugLogging {
-                        print("DEBUG: FILTERED OUT event for path: \(relPath)")
+                        Self.logger.debug("DEBUG: FILTERED OUT event for path: \(relPath)")
                     }
                 #endif
                 continue
@@ -1151,14 +1151,14 @@ extension FileSystemService {
 
             #if DEBUG
                 if Self.enableDebugLogging {
-                    print("📋 Event for '\(relPath)':")
-                    print("   isKnown=\(isKnown), isDir=\(isDir), isRenamed=\(parsed.isRenamed)")
-                    print("   removed=\(removed), created=\(created), modified=\(modified)")
+                    Self.logger.debug("📋 Event for '\(relPath)':")
+                    Self.logger.debug("   isKnown=\(isKnown), isDir=\(isDir), isRenamed=\(parsed.isRenamed)")
+                    Self.logger.debug("   removed=\(removed), created=\(created), modified=\(modified)")
                     if removed, !isKnown {
-                        print("   ⚠️ REMOVED flag set but path NOT KNOWN - will NOT emit fileRemoved!")
+                        Self.logger.debug("   ⚠️ REMOVED flag set but path NOT KNOWN - will NOT emit fileRemoved!")
                     }
                     if removed, !parsed.isRenamed {
-                        print("   📋 REMOVED flag set but NOT a rename - pure deletion (handled)")
+                        Self.logger.debug("   📋 REMOVED flag set but NOT a rename - pure deletion (handled)")
                     }
                 }
             #endif
@@ -1166,18 +1166,18 @@ extension FileSystemService {
             #if DEBUG
                 // Debug logging for flag analysis
                 if isTestMode, Self.enableDebugLogging, relPath.contains("file.txt") {
-                    print("DEBUG: Flags for \(relPath): \(flags)")
-                    print("  ItemModified: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified))")
-                    print("  ItemCreated: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated))")
-                    print("  ItemRemoved: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved))")
-                    print("  ItemRenamed: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed))")
-                    print("  ItemInodeMetaMod: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemInodeMetaMod))")
-                    print("  ItemFinderInfoMod: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemFinderInfoMod))")
-                    print("  ItemChangeOwner: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemChangeOwner))")
-                    print("  ItemXattrMod: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemXattrMod))")
-                    print("  Calculated modified: \(modified)")
-                    print("  Calculated removed: \(removed)")
-                    print("  Is in visitedPaths: \(visitedPaths.contains(relPath))")
+                    Self.logger.debug("DEBUG: Flags for \(relPath): \(flags)")
+                    Self.logger.debug("  ItemModified: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified))")
+                    Self.logger.debug("  ItemCreated: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated))")
+                    Self.logger.debug("  ItemRemoved: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved))")
+                    Self.logger.debug("  ItemRenamed: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed))")
+                    Self.logger.debug("  ItemInodeMetaMod: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemInodeMetaMod))")
+                    Self.logger.debug("  ItemFinderInfoMod: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemFinderInfoMod))")
+                    Self.logger.debug("  ItemChangeOwner: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemChangeOwner))")
+                    Self.logger.debug("  ItemXattrMod: \(flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemXattrMod))")
+                    Self.logger.debug("  Calculated modified: \(modified)")
+                    Self.logger.debug("  Calculated removed: \(removed)")
+                    Self.logger.debug("  Is in visitedPaths: \(visitedPaths.contains(relPath))")
                 }
             #endif
 
@@ -1211,7 +1211,7 @@ extension FileSystemService {
                     // File is truly gone - emit removal delta
                     #if DEBUG
                         if Self.enableDebugLogging {
-                            print("🗑️ PURE DELETION detected for '\(relPath)' (no rename flag)")
+                            Self.logger.debug("🗑️ PURE DELETION detected for '\(relPath)' (no rename flag)")
                         }
                     #endif
                     immediateModifications.append(isDir ? .folderRemoved(relPath) : .fileRemoved(relPath))
@@ -1307,7 +1307,7 @@ extension FileSystemService {
                         immediateModifications.append(.fileModified(relPath, mdate))
                         #if DEBUG
                             if isTestMode, Self.enableDebugLogging {
-                                print("DEBUG: Detected atomic save for '\(relPath)'")
+                                Self.logger.debug("DEBUG: Detected atomic save for '\(relPath)'")
                             }
                         #endif
                         // Skip parent scan for atomic saves - we already know what changed
@@ -1316,7 +1316,7 @@ extension FileSystemService {
                         // File gone - this is a move-away (trash, mv out), not an atomic save
                         #if DEBUG
                             if Self.enableDebugLogging {
-                                print("🗑️ MOVE-AWAY detected for '\(relPath)' (Created+Renamed but file gone)")
+                                Self.logger.debug("🗑️ MOVE-AWAY detected for '\(relPath)' (Created+Renamed but file gone)")
                             }
                         #endif
                         immediateModifications.append(.fileRemoved(relPath))
@@ -1330,7 +1330,7 @@ extension FileSystemService {
                 if removed, isKnown {
                     #if DEBUG
                         if Self.enableDebugLogging {
-                            print("🗑️ REMOVAL detected for KNOWN path: '\(relPath)' (isDir=\(isDir))")
+                            Self.logger.debug("🗑️ REMOVAL detected for KNOWN path: '\(relPath)' (isDir=\(isDir))")
                         }
                     #endif
                     // Anomaly check: verify the file is actually gone
@@ -1340,7 +1340,7 @@ extension FileSystemService {
 
                     #if DEBUG
                         if Self.enableDebugLogging {
-                            print("   → Disk check: stillExists=\(stillExists) at '\(fullPath)'")
+                            Self.logger.debug("   → Disk check: stillExists=\(stillExists) at '\(fullPath)'")
                         }
                     #endif
 
@@ -1349,10 +1349,10 @@ extension FileSystemService {
                         // Don't remove from visitedPaths; treat as modification and verify via scan
                         #if DEBUG
                             if Self.enableDebugLogging {
-                                print("   ⚠️ ANOMALY: File still exists, treating as modification")
+                                Self.logger.debug("   ⚠️ ANOMALY: File still exists, treating as modification")
                             }
                             if isTestMode, Self.enableDebugLogging {
-                                print("DEBUG: Removal anomaly - '\(relPath)' still exists on disk")
+                                Self.logger.debug("DEBUG: Removal anomaly - '\(relPath)' still exists on disk")
                             }
                         #endif
                         if !isDir {
@@ -1370,7 +1370,7 @@ extension FileSystemService {
                     // Normal removal: generate delta and update state
                     #if DEBUG
                         if Self.enableDebugLogging {
-                            print("   ✅ EMITTING: \(isDir ? "folderRemoved" : "fileRemoved")('\(relPath)')")
+                            Self.logger.debug("   ✅ EMITTING: \(isDir ? "folderRemoved" : "fileRemoved")('\(relPath)')")
                         }
                     #endif
                     immediateModifications.append(isDir ? .folderRemoved(relPath) : .fileRemoved(relPath))
@@ -1408,7 +1408,7 @@ extension FileSystemService {
                         // Don't add to visitedPaths; schedule parent scan to verify
                         #if DEBUG
                             if isTestMode, Self.enableDebugLogging {
-                                print("DEBUG: Creation anomaly - '\(relPath)' doesn't exist on disk")
+                                Self.logger.debug("DEBUG: Creation anomaly - '\(relPath)' doesn't exist on disk")
                             }
                         #endif
                         let parent = parentDirectory(of: relPath)
@@ -1533,7 +1533,7 @@ extension FileSystemService {
                     pendingQuietFolderScanTargets.formIntersection(Set(pendingScanTargets.keys))
                 }
             } catch {
-                print("Error during parallel folder scanning: \(error)")
+                Self.logger.error("Error during parallel folder scanning: \(error, privacy: .public)")
                 if seedReplayRequiresFailClosedRecovery() {
                     failCurrentSeedReplayForRecovery()
                     return testMode ? [] : nil
@@ -1555,7 +1555,7 @@ extension FileSystemService {
                         // Record verification time for safety-net tracking
                         recordFolderVerified(folderRelPath)
                     } catch {
-                        print("Error scanning folder '\(folderRelPath)': \(error)")
+                        Self.logger.error("Error scanning folder '\(folderRelPath)': \(error, privacy: .public)")
                         if markRecoveryScanFailed(folderRelPath) {
                             targetsRequiringFullResync.insert(folderRelPath)
                         }
@@ -1571,7 +1571,7 @@ extension FileSystemService {
                         recoveryScanFailureCountByFolder.removeAll(keepingCapacity: false)
                         requiresFullResync = true
                     } catch {
-                        print("Error during recovery full resync for '\(path)': \(error)")
+                        Self.logger.error("Error during recovery full resync for '\(path)': \(error, privacy: .public)")
                         dirtyRecoveryScanTargets.formUnion(targetsRequiringFullResync)
                     }
                 }
@@ -1580,22 +1580,22 @@ extension FileSystemService {
 
         #if DEBUG
             if Self.enableDebugLogging {
-                print("┌─────────────────────────────────────────────────────────────")
-                print("│ 📤 PUBLISHING \(allDeltas.count) deltas:")
+                Self.logger.debug("┌─────────────────────────────────────────────────────────────")
+                Self.logger.debug("│ 📤 PUBLISHING \(allDeltas.count) deltas:")
                 for delta in allDeltas {
                     switch delta {
-                    case let .fileAdded(path): print("│   ➕ fileAdded: '\(path)'")
-                    case let .fileRemoved(path): print("│   ➖ fileRemoved: '\(path)'")
-                    case let .folderAdded(path): print("│   📁➕ folderAdded: '\(path)'")
-                    case let .folderRemoved(path): print("│   📁➖ folderRemoved: '\(path)'")
-                    case let .fileModified(path, _): print("│   ✏️ fileModified: '\(path)'")
-                    case let .folderModified(path, _): print("│   📁✏️ folderModified: '\(path)'")
+                    case let .fileAdded(path): Self.logger.debug("│   ➕ fileAdded: '\(path)'")
+                    case let .fileRemoved(path): Self.logger.debug("│   ➖ fileRemoved: '\(path)'")
+                    case let .folderAdded(path): Self.logger.debug("│   📁➕ folderAdded: '\(path)'")
+                    case let .folderRemoved(path): Self.logger.debug("│   📁➖ folderRemoved: '\(path)'")
+                    case let .fileModified(path, _): Self.logger.debug("│   ✏️ fileModified: '\(path)'")
+                    case let .folderModified(path, _): Self.logger.debug("│   📁✏️ folderModified: '\(path)'")
                     }
                 }
                 if allDeltas.isEmpty {
-                    print("│   (no deltas to publish)")
+                    Self.logger.debug("│   (no deltas to publish)")
                 }
-                print("└─────────────────────────────────────────────────────────────")
+                Self.logger.debug("└─────────────────────────────────────────────────────────────")
             }
         #endif
 
