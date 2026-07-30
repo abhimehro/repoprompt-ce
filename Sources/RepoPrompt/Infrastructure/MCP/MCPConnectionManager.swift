@@ -6847,7 +6847,7 @@ actor ServerNetworkManager {
         else {
             return false
         }
-        return props["window_id"] != nil
+        return props.keys.contains("window_id")
     }
 
     /// Injects `window_id` into tool arguments if:

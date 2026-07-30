@@ -12,7 +12,7 @@ enum AgentOracleAuthoritativeChatIDPolicy {
     }
 
     static func extract(fromRootObject object: [String: Any]) -> String? {
-        guard object["chatID"] == nil,
+        guard !object.keys.contains("chatID"),
               !containsChatID(in: object, excludingAuthoritativeRoot: true),
               let chatID = object["chat_id"] as? String
         else { return nil }

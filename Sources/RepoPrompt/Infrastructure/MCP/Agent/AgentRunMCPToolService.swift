@@ -2411,7 +2411,7 @@ struct AgentRunMCPToolService {
         if explicitSkip, responseRaw != nil, !responseIsSkipSentinel {
             throw MCPError.invalidParams("skip cannot be combined with response.")
         }
-        let containsDecisionArgument = args["decision"] != nil
+        let containsDecisionArgument = args.keys.contains("decision")
 
         let content = try parseAgentJSONObject(args["content"], name: "content")
         let meta = try parseAgentJSONObject(args["meta"] ?? args["_meta"], name: "meta")
