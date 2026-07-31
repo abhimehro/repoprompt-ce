@@ -25,7 +25,6 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@unittest.skipIf(not shutil.which("swift"), "swift not found")
 @unittest.skipIf(not __import__("shutil").which("swift"), "macOS tools missing")
 class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     @classmethod
