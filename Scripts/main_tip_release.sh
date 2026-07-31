@@ -321,7 +321,7 @@ PYTHON
 	[[ $enclosure_url == "$TIP_DOWNLOAD_URL_PREFIX$(basename "$UPDATE_ZIP")" ]] ||
 		fail "Tip appcast enclosure URL mismatch: $enclosure_url"
 	[[ -n $enclosure_signature ]] || fail "Tip appcast enclosure is missing an EdDSA signature"
-	[[ $enclosure_length == "$(stat -f %z "$UPDATE_ZIP")" ]] ||
+	[[ $enclosure_length == "$(wc -c < "$UPDATE_ZIP" | tr -d ' ')" ]] ||
 		fail "Tip appcast enclosure length does not match $(basename "$UPDATE_ZIP")"
 	[[ $appcast_build == "$TIP_BUILD_NUMBER" ]] ||
 		fail "Tip appcast build mismatch: expected $TIP_BUILD_NUMBER, got $appcast_build"

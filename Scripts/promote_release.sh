@@ -344,7 +344,7 @@ PYTHON
 	[[ $enclosure_url == "$PUBLIC_UPDATE_BASE_URL/$UPDATE_ZIP_NAME" ]] ||
 		fail "Appcast enclosure URL mismatch: $enclosure_url"
 	[[ -n $enclosure_signature ]] || fail "Appcast enclosure is missing an EdDSA signature"
-	[[ $enclosure_length == "$(stat -f %z "$UPDATE_ZIP")" ]] ||
+	[[ $enclosure_length == "$(wc -c < "$UPDATE_ZIP" | tr -d ' ')" ]] ||
 		fail "Appcast enclosure length does not match $UPDATE_ZIP_NAME"
 	[[ $appcast_build == "$BUILD_NUMBER" ]] ||
 		fail "Appcast build mismatch: expected $BUILD_NUMBER, got $appcast_build"
