@@ -5269,7 +5269,7 @@ actor GitService {
         func snapshot() -> GitPrefixControlCollectionDetail {
             lock.lock()
             defer { lock.unlock() }
-            var summary = prunedRootSummary
+            let summary = prunedRootSummary
             return GitPrefixControlCollectionDetail(
                 collectionCompleted: collectionCompleted,
                 ignoreControlCount: ignoreControlCount,

@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import shutil
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from pathlib import Path
@@ -24,6 +25,8 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@unittest.skipIf(not shutil.which("swift"), "swift not found")
+@unittest.skipIf(not __import__("shutil").which("swift"), "macOS tools missing")
 class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

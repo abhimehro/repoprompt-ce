@@ -23,6 +23,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+@unittest.skipIf(not __import__("shutil").which("plutil"), "macOS tools missing")
+@unittest.skipIf(not __import__("shutil").which("plutil"), "macOS tools missing")
 class ReleaseToolingTests(unittest.TestCase):
     def test_debug_provenance_uses_json_validation_and_rejects_truncated_output(
         self,
