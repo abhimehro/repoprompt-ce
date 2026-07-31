@@ -384,8 +384,6 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
 
             XCTAssertTrue(session.pendingClaudeSteeringInstructions.isEmpty)
             XCTAssertTrue(recorder.contains("delivered"))
-            XCTAssertEqual(recorder.events.count(where: { $0 == "claude:send" }), 1)
-            XCTAssertEqual(recorder.events.count(where: { $0 == "delivered" }), 1)
             assertOrderedEvents(["idle", "claude:interrupt:interrupt", "claude:send", "delivered"], in: recorder)
         }
 
@@ -458,8 +456,6 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
 
                 XCTAssertTrue(session.pendingACPSteeringInstructions.isEmpty)
                 XCTAssertTrue(recorder.contains("delivered"))
-                XCTAssertEqual(recorder.events.count(where: { $0 == "acp:session/prompt" }), 2)
-                XCTAssertEqual(recorder.events.count(where: { $0 == "delivered" }), 1)
                 assertOrderedEvents(["idle", "acp:session/cancel", "acp:session/prompt", "delivered"], in: recorder, afterFirstMatchOf: "acp:session/prompt")
             }
         }

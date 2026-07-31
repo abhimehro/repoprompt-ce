@@ -70,7 +70,6 @@ struct WorkspaceCodemapGraphIndexCatalogPage: Hashable {
     let isEnd: Bool
     let pathByteCount: UInt64
     let supportedCandidateCountThroughPage: UInt64
-    let projectedSupportedCandidateTotal: UInt64
 
     private init(
         token: WorkspaceCodemapGraphIndexCatalogToken,
@@ -78,8 +77,7 @@ struct WorkspaceCodemapGraphIndexCatalogPage: Hashable {
         nextCursor: WorkspaceCodemapGraphIndexCatalogCursor?,
         isEnd: Bool,
         pathByteCount: UInt64,
-        supportedCandidateCountThroughPage: UInt64,
-        projectedSupportedCandidateTotal: UInt64
+        supportedCandidateCountThroughPage: UInt64
     ) {
         self.token = token
         self.entries = entries
@@ -87,7 +85,6 @@ struct WorkspaceCodemapGraphIndexCatalogPage: Hashable {
         self.isEnd = isEnd
         self.pathByteCount = pathByteCount
         self.supportedCandidateCountThroughPage = supportedCandidateCountThroughPage
-        self.projectedSupportedCandidateTotal = projectedSupportedCandidateTotal
     }
 
     static func validated(
@@ -96,8 +93,7 @@ struct WorkspaceCodemapGraphIndexCatalogPage: Hashable {
         entries: [WorkspaceCodemapGraphIndexCatalogCandidate],
         nextCursor: WorkspaceCodemapGraphIndexCatalogCursor?,
         isEnd: Bool,
-        supportedCandidateCountThroughPage: UInt64,
-        projectedSupportedCandidateTotal: UInt64
+        supportedCandidateCountThroughPage: UInt64
     ) -> Result<Self, WorkspaceCodemapGraphIndexCatalogPageError> {
         guard token.rootEpoch == request.rootEpoch else { return .failure(.rootMismatch) }
         guard request.token == nil || request.token == token else { return .failure(.tokenMismatch) }
@@ -148,10 +144,7 @@ struct WorkspaceCodemapGraphIndexCatalogPage: Hashable {
         guard request.cursor != nil || supportedCandidateCountThroughPage == UInt64(entries.count) else {
             return .failure(.supportedCandidateCountMismatch)
         }
-        guard supportedCandidateCountThroughPage >= UInt64(entries.count),
-              projectedSupportedCandidateTotal >= supportedCandidateCountThroughPage,
-              !isEnd || projectedSupportedCandidateTotal == supportedCandidateCountThroughPage
-        else {
+        guard supportedCandidateCountThroughPage >= UInt64(entries.count) else {
             return .failure(.supportedCandidateCountMismatch)
         }
         return .success(Self(
@@ -160,8 +153,7 @@ struct WorkspaceCodemapGraphIndexCatalogPage: Hashable {
             nextCursor: nextCursor,
             isEnd: isEnd,
             pathByteCount: pathByteCount,
-            supportedCandidateCountThroughPage: supportedCandidateCountThroughPage,
-            projectedSupportedCandidateTotal: projectedSupportedCandidateTotal
+            supportedCandidateCountThroughPage: supportedCandidateCountThroughPage
         ))
     }
 }
@@ -204,7 +196,6 @@ enum WorkspaceCodemapGraphIndexLaunchPhase: Hashable {
     case handedOff
     case terminalNonGit
     case transientRetry
-    case retryExhausted
     case cancelled
     case superseded
 }
@@ -216,10 +207,9 @@ enum WorkspaceCodemapGraphIndexPhase: Hashable {
     case loadingEnvelopes
     case classifyingBatch
     case resolvingArtifacts
-    case stagingManifestCache
+    case writingManifestCheckpoint
     case publishingGraphChanges
     case checkpointed
-    case persistingManifestCache
     case suspendedBusy
     case budgetLimited
     case complete

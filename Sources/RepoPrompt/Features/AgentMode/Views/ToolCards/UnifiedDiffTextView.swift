@@ -33,13 +33,6 @@ extension NSAttributedString.Key {
     static let unifiedDiffLineBackgroundColor = NSAttributedString.Key("RepoPromptUnifiedDiffLineBackgroundColor")
 }
 
-extension NSTextView {
-    func disableAutomaticLinkAndDataDetection() {
-        isAutomaticLinkDetectionEnabled = false
-        isAutomaticDataDetectionEnabled = false
-    }
-}
-
 private final class UnifiedDiffLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
@@ -101,7 +94,8 @@ struct UnifiedDiffTextView: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = false
         textView.isGrammarCheckingEnabled = false
-        textView.disableAutomaticLinkAndDataDetection()
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
         textView.isHorizontallyResizable = true
         textView.isVerticallyResizable = true
         textView.textContainerInset = NSSize(width: 0, height: UnifiedDiffCardRendering.appKitVerticalTextInset(for: fontPreset))

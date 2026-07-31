@@ -463,29 +463,6 @@ final class CodexNativeSessionController {
             }
         }
 
-        struct ToolItemObservation: Equatable {
-            enum Kind: Equatable {
-                case commandExecution
-                case mcpToolCall
-                case dynamicToolCall
-                case fileChange
-            }
-
-            enum Status: Equatable {
-                case inProgress
-                case terminal
-                case unknown
-            }
-
-            let turnID: String
-            let itemID: String
-            let invocationID: UUID?
-            let kind: Kind
-            let toolName: String?
-            let processID: String?
-            let status: Status
-        }
-
         let conversationID: String
         let rolloutPath: String?
         let model: String?
@@ -493,40 +470,7 @@ final class CodexNativeSessionController {
         let runtimeStatus: RuntimeStatus
         let currentTurnID: String?
         let activeTurnIDs: [String]
-        /// Identifier paired with `latestTurnStatus`; this is the last terminal turn, not an active turn.
-        let latestTerminalTurnID: String?
         let latestTurnStatus: TurnStatus?
-        let latestTurnFailure: TurnFailure?
-        let activeToolItems: [ToolItemObservation]
-        let hasAuthoritativeActiveTurnItems: Bool
-
-        init(
-            conversationID: String,
-            rolloutPath: String?,
-            model: String?,
-            reasoningEffort: String?,
-            runtimeStatus: RuntimeStatus,
-            currentTurnID: String?,
-            activeTurnIDs: [String],
-            latestTerminalTurnID: String? = nil,
-            latestTurnStatus: TurnStatus?,
-            latestTurnFailure: TurnFailure? = nil,
-            activeToolItems: [ToolItemObservation] = [],
-            hasAuthoritativeActiveTurnItems: Bool = false
-        ) {
-            self.conversationID = conversationID
-            self.rolloutPath = rolloutPath
-            self.model = model
-            self.reasoningEffort = reasoningEffort
-            self.runtimeStatus = runtimeStatus
-            self.currentTurnID = currentTurnID
-            self.activeTurnIDs = activeTurnIDs
-            self.latestTerminalTurnID = latestTerminalTurnID
-            self.latestTurnStatus = latestTurnStatus
-            self.latestTurnFailure = latestTurnFailure
-            self.activeToolItems = activeToolItems
-            self.hasAuthoritativeActiveTurnItems = hasAuthoritativeActiveTurnItems
-        }
 
         var sessionRef: SessionRef {
             SessionRef(
@@ -2017,38 +1961,20 @@ final class CodexNativeSessionController {
         let runtimeStatus = parseThreadRuntimeStatus(from: thread["status"])
         let turns = thread["turns"] as? [[String: Any]] ?? []
         var activeTurnIDs: [String] = []
-        var latestTerminalTurnID: String?
         var latestTurnStatus: TurnStatus?
-        var latestTurnFailure: TurnFailure?
-        var activeToolItems: [ThreadSnapshot.ToolItemObservation] = []
-        var authoritativeActiveTurnIDs: Set<String> = []
         for turn in turns {
             let statusRaw = firstString(in: turn, keys: ["status"])
-            let turnID = firstString(in: turn, keys: ["id", "turnId", "turn_id", "turnID"])
-            if isThreadSnapshotTurnActive(statusRaw), let turnID {
-                if !activeTurnIDs.contains(turnID) {
+            if isThreadSnapshotTurnActive(statusRaw) {
+                if let turnID = firstString(in: turn, keys: ["id", "turnId", "turn_id", "turnID"]),
+                   !activeTurnIDs.contains(turnID)
+                {
                     activeTurnIDs.append(turnID)
-                }
-                let itemsView = firstString(in: turn, keys: ["itemsView", "items_view"])?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                if turn["items"] is [[String: Any]], itemsView == nil || itemsView == "full" {
-                    authoritativeActiveTurnIDs.insert(turnID)
-                }
-                if let items = turn["items"] as? [[String: Any]] {
-                    activeToolItems.append(contentsOf: items.compactMap {
-                        parseThreadSnapshotToolItem($0, turnID: turnID)
-                    })
                 }
             }
             if let parsedStatus = parseTerminalTurnStatus(from: statusRaw) {
-                latestTerminalTurnID = turnID
                 latestTurnStatus = parsedStatus
-                latestTurnFailure = parsedStatus == .failed ? parseTurnFailure(from: turn) : nil
             }
         }
-        let hasAuthoritativeActiveTurnItems = !activeTurnIDs.isEmpty
-            && activeTurnIDs.allSatisfy(authoritativeActiveTurnIDs.contains)
         return ThreadSnapshot(
             conversationID: conversationID,
             rolloutPath: rolloutPath,
@@ -2057,62 +1983,7 @@ final class CodexNativeSessionController {
             runtimeStatus: runtimeStatus,
             currentTurnID: activeTurnIDs.last,
             activeTurnIDs: activeTurnIDs,
-            latestTerminalTurnID: latestTerminalTurnID,
-            latestTurnStatus: latestTurnStatus,
-            latestTurnFailure: latestTurnFailure,
-            activeToolItems: activeToolItems,
-            hasAuthoritativeActiveTurnItems: hasAuthoritativeActiveTurnItems
-        )
-    }
-
-    private static func parseThreadSnapshotToolItem(
-        _ item: [String: Any],
-        turnID: String
-    ) -> ThreadSnapshot.ToolItemObservation? {
-        let normalizedType = firstString(in: item, keys: ["type"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "-", with: "")
-        let kind: ThreadSnapshot.ToolItemObservation.Kind
-        switch normalizedType {
-        case "commandexecution":
-            kind = .commandExecution
-        case "mcptoolcall":
-            kind = .mcpToolCall
-        case "dynamictoolcall":
-            kind = .dynamicToolCall
-        case "filechange":
-            kind = .fileChange
-        default:
-            return nil
-        }
-        guard let itemID = firstString(in: item, keys: ["id", "itemId", "item_id"]),
-              !itemID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            return nil
-        }
-        let normalizedStatus = firstString(in: item, keys: ["status"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "-", with: "")
-        let status: ThreadSnapshot.ToolItemObservation.Status = switch normalizedStatus {
-        case "inprogress", "running", "pending":
-            .inProgress
-        case "completed", "failed", "declined", "interrupted", "cancelled", "canceled":
-            .terminal
-        default:
-            .unknown
-        }
-        return .init(
-            turnID: turnID,
-            itemID: itemID,
-            invocationID: stableInvocationID(from: itemID),
-            kind: kind,
-            toolName: firstString(in: item, keys: ["tool", "name"]),
-            processID: firstString(in: item, keys: ["processId", "process_id"]),
-            status: status
+            latestTurnStatus: latestTurnStatus
         )
     }
 
@@ -2896,12 +2767,6 @@ final class CodexNativeSessionController {
                 }
             }
 
-            let isCommandExecution = typeRaw == "commandexecution"
-                || typeRaw == "command_execution"
-            if method == "item/completed", isCommandExecution, let scope {
-                guard markCanonicalItemCompleted(scope) else { return }
-            }
-
             if typeRaw == "mcptoolcall" || typeRaw == "mcp_tool_call" {
                 guard let scope else { return }
                 if method == "item/completed" {
@@ -2999,11 +2864,6 @@ final class CodexNativeSessionController {
             }
         case "item/commandExecution/terminalInteraction":
             let itemID = commandExecutionItemID(from: params)
-            if let scope = Self.canonicalItemScope(from: params),
-               completedCanonicalItemScopes.contains(scope)
-            {
-                break
-            }
             guard shouldAcceptCommandExecutionEvent(itemID: itemID, family: .normalized) else {
                 break
             }
@@ -5253,7 +5113,7 @@ final class CodexNativeSessionController {
         _ update: CommandExecutionRunningUpdate,
         to items: inout [AgentChatItem]
     ) -> Bool {
-        var index: CommandExecutionRunningItemIndex?
+        var index: CommandExecutionRunningItemIndex? = nil
         return applyCommandExecutionRunningUpdate(update, to: &items, index: &index)
     }
 
@@ -5262,7 +5122,7 @@ final class CodexNativeSessionController {
         to items: inout [AgentChatItem]
     ) -> Int {
         guard !updates.isEmpty else { return 0 }
-        var index: CommandExecutionRunningItemIndex?
+        var index: CommandExecutionRunningItemIndex? = nil
         var appliedCount = 0
         for update in updates {
             if applyCommandExecutionRunningUpdate(update, to: &items, index: &index) {
@@ -7502,10 +7362,6 @@ final class CodexNativeSessionController {
     }
 
     private func invocationID(from rawItemID: String?) -> UUID? {
-        Self.stableInvocationID(from: rawItemID)
-    }
-
-    private static func stableInvocationID(from rawItemID: String?) -> UUID? {
         guard let raw = rawItemID?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return nil
         }

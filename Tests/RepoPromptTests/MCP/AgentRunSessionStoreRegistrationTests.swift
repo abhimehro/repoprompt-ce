@@ -122,12 +122,6 @@ final class AgentRunSessionStoreRegistrationTests: XCTestCase {
             expected: nil,
             kind: .initial
         )
-        await AgentRunSessionStore.signalSnapshotAndWakeWaiters(
-            makeSnapshot(sessionID: sessionID, status: .running),
-            cursor: .init(registration: registration, epoch: firstEpoch),
-            reason: .steeringRequested,
-            steeringMessage: "old epoch steering"
-        )
         let secondEpoch = try await beginEpoch(
             registration: registration,
             activationID: activationID,
@@ -221,8 +215,7 @@ final class AgentRunSessionStoreRegistrationTests: XCTestCase {
         await AgentRunSessionStore.wakeCurrentWaiters(
             makeSnapshot(sessionID: sessionID, status: .running),
             cursor: cursor,
-            reason: .steeringRequested,
-            steeringMessage: "late steering after terminal"
+            reason: .steeringRequested
         )
         let stored = await AgentRunSessionStore.snapshot(for: cursor)
         let disposition = await AgentRunSessionStore.waitUntilInteresting(cursor: cursor, timeoutSeconds: 0)
@@ -247,8 +240,7 @@ final class AgentRunSessionStoreRegistrationTests: XCTestCase {
         await AgentRunSessionStore.wakeCurrentWaiters(
             running,
             cursor: cursor,
-            reason: .steeringRequested,
-            steeringMessage: "edge-triggered only"
+            reason: .steeringRequested
         )
 
         let disposition = await AgentRunSessionStore.waitUntilInteresting(cursor: cursor, timeoutSeconds: 0)
@@ -273,31 +265,23 @@ final class AgentRunSessionStoreRegistrationTests: XCTestCase {
         }
         try await waitForAgentRunSessionStoreWaiter(registration: registration)
 
-        let steeringMessage = "deliver this steering once"
         await AgentRunSessionStore.wakeCurrentWaiters(
             running,
             cursor: cursor,
-            reason: .steeringRequested,
-            steeringMessage: steeringMessage
+            reason: .steeringRequested
         )
         let firstDisposition = await firstWait.value
-        XCTAssertEqual(firstDisposition, .noteworthySnapshot(.init(
-            snapshot: running,
-            reason: .steeringRequested,
-            steeringMessage: steeringMessage
-        )))
+        XCTAssertEqual(firstDisposition, .noteworthySnapshot(running, .steeringRequested))
 
         await AgentRunSessionStore.wakeCurrentWaiters(
             running,
             cursor: cursor,
-            reason: .steeringRequested,
-            steeringMessage: "dropped duplicate one"
+            reason: .steeringRequested
         )
         await AgentRunSessionStore.wakeCurrentWaiters(
             running,
             cursor: cursor,
-            reason: .steeringRequested,
-            steeringMessage: "dropped duplicate two"
+            reason: .steeringRequested
         )
 
         let freshDisposition = await AgentRunSessionStore.waitUntilInteresting(
@@ -320,17 +304,11 @@ final class AgentRunSessionStoreRegistrationTests: XCTestCase {
         let cursor = AgentRunSessionStore.WaitCursor(registration: registration, epoch: epoch)
         let running = makeSnapshot(sessionID: sessionID, status: .running)
 
-        let steeringMessage = "sticky signaled steering"
-        let steeringOriginRunID = UUID()
         await AgentRunSessionStore.signalSnapshotAndWakeWaiters(
             running,
             cursor: cursor,
-            reason: .steeringRequested,
-            steeringMessage: steeringMessage,
-            steeringOriginRunID: steeringOriginRunID
+            reason: .instructionDelivered
         )
-        let refreshedRunning = makeSnapshot(sessionID: sessionID, status: .running)
-        await AgentRunSessionStore.signalSnapshot(refreshedRunning, cursor: cursor)
 
         let firstDisposition = await AgentRunSessionStore.waitUntilInteresting(
             cursor: cursor,
@@ -340,12 +318,7 @@ final class AgentRunSessionStoreRegistrationTests: XCTestCase {
             cursor: cursor,
             timeoutSeconds: 0
         )
-        XCTAssertEqual(firstDisposition, .noteworthySnapshot(.init(
-            snapshot: refreshedRunning,
-            reason: .steeringRequested,
-            steeringMessage: steeringMessage,
-            steeringOriginRunID: steeringOriginRunID
-        )))
+        XCTAssertEqual(firstDisposition, .noteworthySnapshot(running, .instructionDelivered))
         XCTAssertEqual(secondDisposition, .timedOut)
         await AgentRunSessionStore.cleanup(registration: registration)
     }
@@ -366,8 +339,7 @@ final class AgentRunSessionStoreRegistrationTests: XCTestCase {
         await AgentRunSessionStore.signalSnapshotAndWakeWaiters(
             running,
             cursor: cursor,
-            reason: .steeringRequested,
-            steeringMessage: "discarded by actionable publication"
+            reason: .steeringRequested
         )
         await AgentRunSessionStore.signalSnapshot(actionable, cursor: cursor)
 

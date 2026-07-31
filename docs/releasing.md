@@ -23,11 +23,11 @@ the closed app's version history.
 
 ## Bundled Codex artifact
 
-Debug and release packaging include the complete official OpenAI Codex 0.145.0
+Debug and release packaging include the complete official OpenAI Codex 0.144.6
 standalone package. The authority is the repository-owned
 [`Vendor/Codex/manifest.json`](../Vendor/Codex/manifest.json), which pins the
-official [`rust-v0.145.0` release](https://github.com/openai/codex/releases/tag/rust-v0.145.0),
-the official [`codex-package_SHA256SUMS`](https://github.com/openai/codex/releases/download/rust-v0.145.0/codex-package_SHA256SUMS),
+official [`rust-v0.144.6` release](https://github.com/openai/codex/releases/tag/rust-v0.144.6),
+the official [`codex-package_SHA256SUMS`](https://github.com/openai/codex/releases/download/rust-v0.144.6/codex-package_SHA256SUMS),
 both macOS package assets, their complete extracted layouts, file hashes,
 architectures, and primary executable signing identities. The upstream release
 publishes SHA-256 sums but does not document a public GPG, minisign, or SLSA
@@ -78,7 +78,7 @@ rejects this policy, stop rather than silently re-signing the upstream payload.
 The bundled package is RepoPrompt's default Codex runtime authority; runtime
 selection never falls through to the user's shell `PATH`. Advanced users may set
 one explicit absolute external override with `REPOPROMPT_CODEX_EXECUTABLE`.
-RepoPrompt rejects overrides older than 0.145.0, matching the bundled runtime and
+RepoPrompt rejects overrides older than 0.144.6, matching the bundled runtime and
 the documented app-server contract floor. Bundled and external runtimes both use
 RepoPrompt-owned `CODEX_HOME` and `CODEX_SQLITE_HOME` directories under
 `~/Library/Application Support/RepoPrompt CE/Codex/{Debug,Release}/`, leaving
@@ -104,7 +104,7 @@ To diagnose acquisition independently of a build, run:
 python3 Scripts/codex_runtime_artifact.py acquire --arch all
 python3 Scripts/codex_runtime_artifact.py verify \
   --arch aarch64-apple-darwin \
-  --package .build/codex-runtime/0.145.0/aarch64-apple-darwin
+  --package .build/codex-runtime/0.144.6/aarch64-apple-darwin
 python3 Scripts/codex_runtime_artifact.py stage-bundle \
   --arch all \
   --cache-root .build/codex-runtime \
@@ -126,8 +126,8 @@ does not edit or replace `Vendor/Codex/manifest.json`. Select exactly one explic
 stable version/tag, or opt in explicitly to GitHub's latest stable release:
 
 ```bash
-make codex-update-candidate CODEX_CANDIDATE_VERSION=0.146.0
-make codex-update-candidate CODEX_CANDIDATE_TAG=rust-v0.146.0
+make codex-update-candidate CODEX_CANDIDATE_VERSION=0.145.0
+make codex-update-candidate CODEX_CANDIDATE_TAG=rust-v0.145.0
 make codex-update-candidate CODEX_CANDIDATE_LATEST=1
 ```
 
@@ -149,15 +149,8 @@ inventory/architecture, normalized-payload, and OpenAI signing-identity drift.
 The official output directory contains a proposed `candidate-manifest.json`,
 `candidate-provenance.json`, sanitized `release-metadata.json`, the upstream
 checksum file, self-checksums, and a deterministic `candidate-report.md`. The live
-0.145.0 pin remains authoritative
+0.144.6 pin remains authoritative
 until a maintainer reviews and deliberately applies a complete rotation change.
-
-The known-good rollback for the 0.145.0 rotation is verified Codex 0.144.6
-(`rust-v0.144.6`; arm64 archive SHA-256
-`bcbfa76650b6c581505aa5178c1e799d37ff12fc43a35ff16c90b97fa757e63f`, x86_64
-archive SHA-256 `daa3df37c8a041280f52a2198dbe7acbead64936b23f8b660edf9d886df5f9da`).
-After a reviewed rotation, roll back by reverting the complete rotation change and
-rebuilding from the restored manifest rather than mixing old and new authority files.
 
 The manual **Codex Runtime Update Candidate** workflow runs only from `main`, has
 `contents: read`, uploads those evidence files, and cannot commit, open a pull
@@ -197,6 +190,7 @@ The intended process is:
    the existing draft, mirrors the public update assets, publishes both
    releases without rebuilding, explicitly marks that tag as GitHub's latest
    stable release, and runs anonymous post-publish checks.
+
 
 ## Tip Builds
 
@@ -346,10 +340,7 @@ a local-only production app by double-clicking
 in Finder. The Finder launcher requires Python 3, confirms replacement of any
 existing installed app, runs the coordinated developer daemon, and keeps the
 terminal window open so certificate approval prompts and build results remain
-visible. Local production packaging requires a full Xcode installation. The
-installer preserves an explicit compatible `DEVELOPER_DIR`; otherwise it uses
-the selected full Xcode or discovers a compatible Xcode app for that process
-without changing the system-wide `xcode-select` setting.
+visible.
 
 The equivalent command-line path is:
 
@@ -434,30 +425,30 @@ published release assets and their associated tag.
 
 Add these environment secrets:
 
-| Secret                                      | Contents                                                                                                                                                                                                                                                    |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEVELOPER_ID_APPLICATION_P12_BASE64`       | Base64-encoded Developer ID Application certificate and private key exported as PKCS#12.                                                                                                                                                                    |
-| `DEVELOPER_ID_APPLICATION_P12_PASSWORD`     | Password used for the PKCS#12 export.                                                                                                                                                                                                                       |
-| `CI_KEYCHAIN_PASSWORD`                      | Random password for the ephemeral CI keychain.                                                                                                                                                                                                              |
-| `REPOPROMPT_CE_PROVISIONING_PROFILE_BASE64` | Base64-encoded Developer ID provisioning profile for `com.pvncher.repoprompt.ce`.                                                                                                                                                                           |
-| `NOTARYTOOL_PRIVATE_KEY_BASE64`             | Base64-encoded App Store Connect API `.p8` key accepted by `notarytool`.                                                                                                                                                                                    |
-| `NOTARYTOOL_KEY_ID`                         | App Store Connect API key ID.                                                                                                                                                                                                                               |
-| `NOTARYTOOL_ISSUER_ID`                      | App Store Connect API issuer ID.                                                                                                                                                                                                                            |
-| `SPARKLE_PRIVATE_KEY`                       | Modern Sparkle EdDSA private-key seed for the CE update channel. It must decode from base64 to exactly 32 bytes.                                                                                                                                            |
-| `PUBLIC_UPDATE_REPOSITORY_TOKEN`            | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-updates` with repository contents read/write permission.                                                                                                                                 |
-| `TIP_UPDATE_REPOSITORY_TOKEN`               | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-tip-updates` with repository contents read/write permission. Do not reuse the stable update token.                                                                                       |
-| `SENTRY_DSN`                                | Sentry DSN injected into official signed builds for release routing. It is not a credential, but keep it in the protected release environment so unofficial artifacts do not route telemetry to the official project.                                       |
-| `SENTRY_AUTH_TOKEN`                         | Sentry Organization Token used for draft-time debug-symbol/release metadata and verified-promotion deploy recording. Create it with the fixed `org:ci` scope; Organization Token scopes are immutable, and release tooling does not inspect or change them. |
+| Secret | Contents |
+| --- | --- |
+| `DEVELOPER_ID_APPLICATION_P12_BASE64` | Base64-encoded Developer ID Application certificate and private key exported as PKCS#12. |
+| `DEVELOPER_ID_APPLICATION_P12_PASSWORD` | Password used for the PKCS#12 export. |
+| `CI_KEYCHAIN_PASSWORD` | Random password for the ephemeral CI keychain. |
+| `REPOPROMPT_CE_PROVISIONING_PROFILE_BASE64` | Base64-encoded Developer ID provisioning profile for `com.pvncher.repoprompt.ce`. |
+| `NOTARYTOOL_PRIVATE_KEY_BASE64` | Base64-encoded App Store Connect API `.p8` key accepted by `notarytool`. |
+| `NOTARYTOOL_KEY_ID` | App Store Connect API key ID. |
+| `NOTARYTOOL_ISSUER_ID` | App Store Connect API issuer ID. |
+| `SPARKLE_PRIVATE_KEY` | Modern Sparkle EdDSA private-key seed for the CE update channel. It must decode from base64 to exactly 32 bytes. |
+| `PUBLIC_UPDATE_REPOSITORY_TOKEN` | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-updates` with repository contents read/write permission. |
+| `TIP_UPDATE_REPOSITORY_TOKEN` | Fine-grained GitHub token scoped only to `repoprompt/repoprompt-ce-tip-updates` with repository contents read/write permission. Do not reuse the stable update token. |
+| `SENTRY_DSN` | Sentry DSN injected into official signed builds for release routing. It is not a credential, but keep it in the protected release environment so unofficial artifacts do not route telemetry to the official project. |
+| `SENTRY_AUTH_TOKEN` | Sentry Organization Token used for draft-time debug-symbol/release metadata and verified-promotion deploy recording. Create it with the fixed `org:ci` scope; Organization Token scopes are immutable, and release tooling does not inspect or change them. |
 
 Add these non-secret GitHub environment variables for Sentry symbol upload in
 both the `release` and `tip-release` environments. The workflows map them to
 the release scripts' `REPOPROMPT_SENTRY_*` names and explicitly set
 `REPOPROMPT_ENABLE_SENTRY=1` for official staging and signing.
 
-| Variable         | Contents                  |
-| ---------------- | ------------------------- |
-| `SENTRY_ORG`     | Sentry organization slug. |
-| `SENTRY_PROJECT` | Sentry project slug.      |
+| Variable | Contents |
+| --- | --- |
+| `SENTRY_ORG` | Sentry organization slug. |
+| `SENTRY_PROJECT` | Sentry project slug. |
 
 Official stable promotion intentionally requires `SENTRY_AUTH_TOKEN` and the Sentry org/project/environment configuration so it can record the verified production deploy only after public verification.
 

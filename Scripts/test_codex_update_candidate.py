@@ -20,10 +20,11 @@ import codex_runtime_artifact as artifact
 import codex_update_candidate as candidate
 import test_codex_runtime_artifact as artifact_fixtures
 
+
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / "Scripts" / "codex_update_candidate.py"
 BASELINE = ROOT / "Vendor" / "Codex" / "manifest.json"
-VERSION = "0.146.0"
+VERSION = "0.145.0"
 TAG = f"rust-v{VERSION}"
 TARGETS = (
     ("aarch64-apple-darwin", "arm64"),
@@ -66,10 +67,6 @@ esac
 set -euo pipefail
 if [[ "$1" == "--remove-signature" ]]; then exit 1; fi
 if [[ "$1" == "--verify" ]]; then exit 0; fi
-if [[ "$*" == *"--entitlements"* ]]; then
-    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>com.apple.security.cs.allow-jit</key><true/><key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/></dict></plist>\n'
-    exit 0
-fi
 path="${!#}"
 cat >&2 <<EOF
 Identifier=$(basename "$path")
@@ -99,9 +96,7 @@ EOF
             "resourcesDir": "codex-resources",
             "pathDir": "codex-path",
         }
-        (root / "codex-package.json").write_text(
-            json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
-        )
+        (root / "codex-package.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         for relative in (
             "bin/codex",
             "bin/codex-code-mode-host",
@@ -118,9 +113,7 @@ EOF
     def _make_archive(source: Path, destination: Path) -> None:
         with tarfile.open(destination, "w:gz") as tar:
             for path in sorted(source.rglob("*")):
-                tar.add(
-                    path, arcname=path.relative_to(source).as_posix(), recursive=False
-                )
+                tar.add(path, arcname=path.relative_to(source).as_posix(), recursive=False)
 
     def _rebuild_assets_and_release(self) -> None:
         archive_names: list[str] = []
@@ -153,17 +146,13 @@ EOF
             ],
         }
         self.release_path = self.temp / "release.json"
-        self.release_path.write_text(
-            json.dumps(release, indent=2) + "\n", encoding="utf-8"
-        )
+        self.release_path.write_text(json.dumps(release, indent=2) + "\n", encoding="utf-8")
 
     def _release(self) -> dict[str, object]:
         return json.loads(self.release_path.read_text(encoding="utf-8"))
 
     def _write_release(self, release: dict[str, object]) -> None:
-        self.release_path.write_text(
-            json.dumps(release, indent=2) + "\n", encoding="utf-8"
-        )
+        self.release_path.write_text(json.dumps(release, indent=2) + "\n", encoding="utf-8")
 
     def _run(
         self,
@@ -197,16 +186,10 @@ EOF
             stderr=subprocess.PIPE,
             env={**os.environ, **(env or {})},
         )
-        self.assertEqual(
-            result.returncode,
-            expected,
-            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
-        )
+        self.assertEqual(result.returncode, expected, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         return result
 
-    def _run_raw(
-        self, *arguments: str, expected: int = 0
-    ) -> subprocess.CompletedProcess[str]:
+    def _run_raw(self, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             [sys.executable, str(TOOL), *arguments],
             text=True,
@@ -214,16 +197,10 @@ EOF
             stderr=subprocess.PIPE,
             env=os.environ,
         )
-        self.assertEqual(
-            result.returncode,
-            expected,
-            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
-        )
+        self.assertEqual(result.returncode, expected, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         return result
 
-    def test_happy_path_is_deterministic_non_promotable_and_preserves_live_manifest(
-        self,
-    ) -> None:
+    def test_happy_path_is_deterministic_non_promotable_and_preserves_live_manifest(self) -> None:
         original_manifest = BASELINE.read_bytes()
         first = self.temp / "candidate-first"
         second = self.temp / "candidate-second"
@@ -246,40 +223,22 @@ EOF
         self.assertEqual({path.name for path in second.iterdir()}, expected_files)
         self.assertEqual({path.name for path in tagged.iterdir()}, expected_files)
         for name in expected_files:
-            self.assertEqual(
-                (first / name).read_bytes(), (second / name).read_bytes(), name
-            )
+            self.assertEqual((first / name).read_bytes(), (second / name).read_bytes(), name)
 
-        provenance = json.loads(
-            (first / "candidate-provenance.json").read_text(encoding="utf-8")
-        )
+        provenance = json.loads((first / "candidate-provenance.json").read_text(encoding="utf-8"))
         self.assertEqual(provenance["evidenceMode"], "test-fixture-non-promotable")
         self.assertTrue(provenance["nonPromotableTestFixture"])
         self.assertEqual(provenance["selectionMode"], "explicit-version")
-        self.assertEqual(
-            provenance["releaseMetadataSource"], str(self.release_path.resolve())
-        )
+        self.assertEqual(provenance["releaseMetadataSource"], str(self.release_path.resolve()))
         self.assertEqual(provenance["assetSources"], [str(self.assets.resolve())])
-        self.assertEqual(
-            provenance["baselineManifest"]["path"], "Vendor/Codex/manifest.json"
-        )
-        self.assertEqual(
-            provenance["baselineManifest"]["sha256"], artifact.sha256(BASELINE)
-        )
-        self.assertEqual(
-            provenance["verificationTools"]["lipo"], str(self.lipo.resolve())
-        )
-        self.assertEqual(
-            provenance["verificationTools"]["codesign"], str(self.codesign.resolve())
-        )
-        tagged_provenance = json.loads(
-            (tagged / "candidate-provenance.json").read_text(encoding="utf-8")
-        )
+        self.assertEqual(provenance["baselineManifest"]["path"], "Vendor/Codex/manifest.json")
+        self.assertEqual(provenance["baselineManifest"]["sha256"], artifact.sha256(BASELINE))
+        self.assertEqual(provenance["verificationTools"]["lipo"], str(self.lipo.resolve()))
+        self.assertEqual(provenance["verificationTools"]["codesign"], str(self.codesign.resolve()))
+        tagged_provenance = json.loads((tagged / "candidate-provenance.json").read_text(encoding="utf-8"))
         self.assertEqual(tagged_provenance["selectionMode"], "explicit-tag")
 
-        verified = artifact.load_manifest(
-            first / manifest_name, expected_version=VERSION
-        )
+        verified = artifact.load_manifest(first / manifest_name, expected_version=VERSION)
         self.assertEqual(verified["tag"], TAG)
         report = (first / "candidate-report.md").read_text(encoding="utf-8")
         for required in (
@@ -293,7 +252,7 @@ EOF
             "minimumExternalVersion",
             "License and NOTICE review",
             "Manual approval and soak",
-            "0.145.0",
+            "0.144.6",
             str(self.lipo),
             str(self.codesign),
         ):
@@ -319,9 +278,7 @@ EOF
             selector=("--latest-stable",),
             expected=1,
         )
-        self.assertIn(
-            "--latest-stable is unavailable in fixture mode", latest_fixture.stderr
-        )
+        self.assertIn("--latest-stable is unavailable in fixture mode", latest_fixture.stderr)
 
         baseline_copy = self.temp / "baseline.json"
         shutil.copyfile(BASELINE, baseline_copy)
@@ -354,13 +311,9 @@ EOF
 
     def test_online_download_and_archive_expansion_are_bounded(self) -> None:
         class FakeResponse(io.BytesIO):
-            def __init__(
-                self, payload: bytes, content_length: str | None = None
-            ) -> None:
+            def __init__(self, payload: bytes, content_length: str | None = None) -> None:
                 super().__init__(payload)
-                self.headers = (
-                    {} if content_length is None else {"Content-Length": content_length}
-                )
+                self.headers = {} if content_length is None else {"Content-Length": content_length}
 
             def __enter__(self) -> "FakeResponse":
                 return self
@@ -378,12 +331,8 @@ EOF
             "urlopen",
             return_value=FakeResponse(b"12345"),
         ):
-            with self.assertRaisesRegex(
-                candidate.CandidateError, "exceeded release metadata size"
-            ):
-                candidate.download_asset(
-                    "https://github.com/openai/codex/asset", oversized_output, 4
-                )
+            with self.assertRaisesRegex(candidate.CandidateError, "exceeded release metadata size"):
+                candidate.download_asset("https://github.com/openai/codex/asset", oversized_output, 4)
         self.assertFalse(oversized_output.exists())
 
         wrong_length_output = self.temp / "wrong-content-length"
@@ -392,12 +341,8 @@ EOF
             "urlopen",
             return_value=FakeResponse(b"1234", content_length="5"),
         ):
-            with self.assertRaisesRegex(
-                candidate.CandidateError, "response size disagrees"
-            ):
-                candidate.download_asset(
-                    "https://github.com/openai/codex/asset", wrong_length_output, 4
-                )
+            with self.assertRaisesRegex(candidate.CandidateError, "response size disagrees"):
+                candidate.download_asset("https://github.com/openai/codex/asset", wrong_length_output, 4)
         self.assertFalse(wrong_length_output.exists())
 
         archive = self.assets / "codex-package-aarch64-apple-darwin.tar.gz"
@@ -405,29 +350,20 @@ EOF
             with self.assertRaisesRegex(candidate.CandidateError, "expanded size"):
                 candidate.archive_paths(archive)
         with mock.patch.object(candidate, "MAX_ARCHIVE_MEMBERS", 1):
-            with self.assertRaisesRegex(
-                candidate.CandidateError, "member safety limit"
-            ):
+            with self.assertRaisesRegex(candidate.CandidateError, "member safety limit"):
                 candidate.archive_paths(archive)
 
-    def test_release_metadata_rejects_draft_prerelease_mismatch_missing_and_duplicate_assets(
-        self,
-    ) -> None:
+    def test_release_metadata_rejects_draft_prerelease_mismatch_missing_and_duplicate_assets(self) -> None:
         baseline = self._release()
         checksum_asset = copy.deepcopy(baseline["assets"][0])
         mutations = {
             "draft": lambda value: value.__setitem__("draft", True),
             "prerelease": lambda value: value.__setitem__("prerelease", True),
-            "tag mismatch": lambda value: value.__setitem__(
-                "tag_name", "rust-v0.145.1"
-            ),
+            "tag mismatch": lambda value: value.__setitem__("tag_name", "rust-v0.145.1"),
             "missing asset": lambda value: value["assets"].pop(),
-            "duplicate asset": lambda value: value["assets"].append(
-                copy.deepcopy(checksum_asset)
-            ),
+            "duplicate asset": lambda value: value["assets"].append(copy.deepcopy(checksum_asset)),
             "wrong asset URL": lambda value: value["assets"][0].__setitem__(
-                "browser_download_url",
-                "https://example.invalid/codex-package_SHA256SUMS",
+                "browser_download_url", "https://example.invalid/codex-package_SHA256SUMS"
             ),
         }
         for index, (label, mutate) in enumerate(mutations.items()):
@@ -463,9 +399,7 @@ EOF
 
     def test_signing_identity_drift_fails_closed(self) -> None:
         output = self.temp / "signature-rejected"
-        result = self._run(
-            output, env={"FAKE_TEAM_IDENTIFIER": "WRONGTEAM"}, expected=1
-        )
+        result = self._run(output, env={"FAKE_TEAM_IDENTIFIER": "WRONGTEAM"}, expected=1)
         self.assertIn("TeamIdentifier", result.stderr)
         self.assertFalse(output.exists())
 
@@ -479,7 +413,7 @@ EOF
 
         not_newer = self._run(
             self.temp / "not-newer",
-            selector=("--version", "0.145.0"),
+            selector=("--version", "0.144.6"),
             expected=1,
         )
         self.assertIn("must be newer", not_newer.stderr)

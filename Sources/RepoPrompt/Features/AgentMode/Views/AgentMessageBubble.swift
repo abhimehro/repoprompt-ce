@@ -63,7 +63,7 @@ private struct MessageFooterStrip: View {
         if let runtimeFooter {
             if let completedDate = runtimeFooter.completedDate {
                 #if DEBUG
-                    _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.completed")
+                    let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.completed")
                 #endif
                 let elapsed = AgentRuntimeDurationFormatter.string(from: runtimeFooter.anchorDate, to: completedDate)
                 Text("\(runtimeFooter.statusText) \(elapsed)")
@@ -73,18 +73,18 @@ private struct MessageFooterStrip: View {
             } else if agentWindowIsFocused {
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     #if DEBUG
-                        _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.tick")
+                        let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.tick")
                     #endif
                     runtimeFooterText(runtimeFooter, now: timeline.date)
                 }
                 #if DEBUG
-                    .onAppear {
+                .onAppear {
                         AgentModePerfDiagnostics.increment("timeline.messageFooter.liveMount")
                     }
                 #endif
             } else {
                 #if DEBUG
-                    _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.unfocused")
+                    let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.unfocused")
                 #endif
                 runtimeFooterText(runtimeFooter, now: Date())
             }
@@ -344,10 +344,7 @@ struct AgentMessageBubble: View {
                     if !item.taggedFileAttachments.isEmpty {
                         TaggedFilesBadge(attachments: item.taggedFileAttachments)
                     }
-                    CollapsibleUserMessage(
-                        text: item.text,
-                        bareURLLinkificationPolicy: .httpHTTPSOnly
-                    )
+                    CollapsibleUserMessage(text: item.text)
                 }
                 .padding(12)
                 .background(BubbleColors.lightBlue)
@@ -456,17 +453,12 @@ struct AgentMessageBubble: View {
     @ViewBuilder
     private var assistantContent: some View {
         if shouldShowCollapsedAssistantView {
-            CollapsibleAssistantTranscriptContent(
-                text: item.text,
-                bareURLLinkificationPolicy: .httpHTTPSOnly
-            )
+            CollapsibleAssistantTranscriptContent(text: item.text)
         } else {
             MarkdownTextView(
                 text: item.text,
                 isMarkdown: true,
                 allowInteraction: true,
-                bareURLLinkificationPolicy: .httpHTTPSOnly,
-                suppressBareLinksTouchingEndBoundary: item.isStreaming,
                 renderCadence: item.isStreaming ? .streamingCoalesced : .immediate
             )
         }
@@ -898,8 +890,7 @@ struct AgentMessageBubble: View {
                 text: item.text,
                 isMarkdown: true,
                 allowInteraction: true,
-                forceTextColor: .secondary.opacity(0.85),
-                bareURLLinkificationPolicy: .httpHTTPSOnly
+                forceTextColor: .secondary.opacity(0.85)
             )
             .padding(.vertical, 6)
             .padding(.leading, 10)
@@ -1441,7 +1432,6 @@ enum AgentAssistantLineDerivation {
 
 private struct CollapsibleAssistantTranscriptContent: View {
     let text: String
-    var bareURLLinkificationPolicy: BareURLLinkificationPolicy = .disabled
     @ObservedObject private var fontScale = FontScaleManager.shared
     private var fontPreset: FontScalePreset {
         fontScale.preset
@@ -1449,12 +1439,6 @@ private struct CollapsibleAssistantTranscriptContent: View {
 
     @State private var isExpanded = false
     private let previewLineCount = 10
-
-    private var collapsedPreviewMaxHeight: CGFloat {
-        let font = fontPreset.nsFont
-        let lineHeight = ceil(font.ascender - font.descender + font.leading)
-        return max(lineHeight, 1) * CGFloat(previewLineCount)
-    }
 
     private var lineSummary: AgentAssistantLineDerivation.PreviewSummary {
         #if DEBUG
@@ -1485,28 +1469,13 @@ private struct CollapsibleAssistantTranscriptContent: View {
         let summary = lineSummary
         VStack(alignment: .leading, spacing: 6) {
             if isExpanded || !summary.needsCollapse {
-                MarkdownTextView(
-                    text: text,
-                    isMarkdown: true,
-                    allowInteraction: true,
-                    bareURLLinkificationPolicy: bareURLLinkificationPolicy
-                )
-            } else if bareURLLinkificationPolicy.isEnabled, BareURLLinkifier.containsHTTPHTTPSURLSignal(in: summary.previewText) {
-                MarkdownTextView(
-                    text: summary.previewText,
-                    isMarkdown: true,
-                    allowInteraction: true,
-                    bareURLLinkificationPolicy: bareURLLinkificationPolicy,
-                    suppressBareLinksTouchingEndBoundary: true
-                )
-                .frame(maxHeight: collapsedPreviewMaxHeight, alignment: .top)
-                .clipped()
+                MarkdownTextView(text: text, isMarkdown: true, allowInteraction: true)
             } else {
                 Text(summary.previewText)
                     .font(fontPreset.standardFont)
                     .foregroundColor(.primary)
-                    .lineLimit(previewLineCount)
                     .textSelection(.enabled)
+                    .lineLimit(previewLineCount)
             }
 
             if summary.needsCollapse {

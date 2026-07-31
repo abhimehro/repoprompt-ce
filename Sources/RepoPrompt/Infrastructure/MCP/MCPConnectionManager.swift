@@ -11161,20 +11161,6 @@ actor ServerNetworkManager {
                 EditFlowPerf.Dimensions(toolName: toolName)
             )
             defer { EditFlowPerf.end(EditFlowPerf.Stage.MCPToolCall.total, totalState) }
-            // Release-safe bounded concurrency evidence (counts/latency aggregates only;
-            // never arguments, paths, or result bodies). No admission behavior change.
-            let evidenceClock = ContinuousClock()
-            let evidenceArrival = evidenceClock.now
-            let evidenceClass = MCPToolConcurrencyEvidenceClass(
-                admissionClass: MCPToolAdmissionPolicy.classification(forCanonicalToolName: toolName)
-            )
-            defer {
-                MCPToolConcurrencyEvidenceRecorder.shared.recordCallCompleted(
-                    classKey: evidenceClass,
-                    canonicalToolName: toolName,
-                    totalMilliseconds: evidenceArrival.duration(to: evidenceClock.now).mcpMilliseconds
-                )
-            }
             let preLimiterEnvelopeState = EditFlowPerf.begin(
                 EditFlowPerf.Stage.MCPToolCall.preLimiterEnvelope,
                 EditFlowPerf.Dimensions(toolName: toolName)
@@ -11402,10 +11388,6 @@ actor ServerNetworkManager {
             // Connection lanes provide bounded FIFO admission only. Shared-state correctness is
             // enforced below by explicit window/app/repository resource ownership.
             guard let admissionClass = Self.admissionClass(forCanonicalToolName: toolName) else {
-                MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
-                    classKey: .unclassified,
-                    reason: .unclassifiedTool
-                )
                 return await finalizeToolResult(
                     Self.executionContractToolErrorResult(
                         rawJSON: capturedRawJSON,
@@ -11434,8 +11416,6 @@ actor ServerNetworkManager {
                 )
             }
             connectionLog("tools/call \(toolName): entering limiter lane=\(callLane.rawValue)")
-            let evidenceLaneWaitStart = evidenceClock.now
-            MCPToolConcurrencyEvidenceRecorder.shared.recordLaneWaitBegan(classKey: evidenceClass)
             let result = await EditFlowPerf.measure(
                 EditFlowPerf.Stage.MCPToolCall.limiterEnvelope,
                 EditFlowPerf.Dimensions(toolName: toolName)
@@ -11457,23 +11437,13 @@ actor ServerNetworkManager {
                     toolName: toolName,
                     lifecycleCorrelation: lifecycleCorrelation,
                     cancellationResult: {
-                        MCPToolConcurrencyEvidenceRecorder.shared.recordLaneWaitAbandoned(classKey: evidenceClass)
-                        MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
-                            classKey: evidenceClass,
-                            reason: .laneWaitCancelled
-                        )
-                        return Self.executionContractToolErrorResult(
+                        Self.executionContractToolErrorResult(
                             rawJSON: capturedRawJSON,
                             code: "tool_execution_connection_terminal",
                             message: "The MCP connection is closing."
                         )
                     }
                 ) {
-                    MCPToolConcurrencyEvidenceRecorder.shared.recordLaneAdmitted(
-                        classKey: evidenceClass,
-                        waitMilliseconds: evidenceLaneWaitStart.duration(to: evidenceClock.now).mcpMilliseconds
-                    )
-                    defer { MCPToolConcurrencyEvidenceRecorder.shared.recordLanePermitReleased(classKey: evidenceClass) }
                     guard !Task.isCancelled,
                           await !(self.executionWatchdogTerminalConnections.contains(connectionID))
                     else {
@@ -11694,17 +11664,8 @@ actor ServerNetworkManager {
                                         )
                                     }
                                     do {
-                                        let evidenceLeaseWaitStart = evidenceClock.now
                                         mutationAdmissionLease = try await self.mutationAdmissionController.acquire(mutationResource)
-                                        MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
-                                            classKey: evidenceClass,
-                                            milliseconds: evidenceLeaseWaitStart.duration(to: evidenceClock.now).mcpMilliseconds
-                                        )
                                     } catch {
-                                        MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
-                                            classKey: evidenceClass,
-                                            reason: .leaseWaitTermination(for: error)
-                                        )
                                         return Self.executionContractToolErrorResult(
                                             rawJSON: capturedRawJSON,
                                             code: "tool_execution_connection_terminal",
@@ -11726,17 +11687,8 @@ actor ServerNetworkManager {
                                         )
                                     }
                                     do {
-                                        let evidenceLeaseWaitStart = evidenceClock.now
                                         smallReadAdmissionLease = try await self.smallReadAdmissionController.acquire(.window(chosenID))
-                                        MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
-                                            classKey: evidenceClass,
-                                            milliseconds: evidenceLeaseWaitStart.duration(to: evidenceClock.now).mcpMilliseconds
-                                        )
                                     } catch {
-                                        MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
-                                            classKey: evidenceClass,
-                                            reason: .leaseWaitTermination(for: error)
-                                        )
                                         return Self.executionContractToolErrorResult(
                                             rawJSON: capturedRawJSON,
                                             code: "tool_execution_connection_terminal",
@@ -11979,9 +11931,7 @@ actor ServerNetworkManager {
                                         cleanupDisposition: MCPToolExecutionCleanupDisposition?,
                                         slot: MCPCodeStructureSettlementRegistry.Slot?
                                     )
-                                    if contract.cleanupDisposition == .detachAndSettle,
-                                       toolName != MCPWindowToolName.fileActions
-                                    {
+                                    if contract.cleanupDisposition == .detachAndSettle {
                                         guard let windowID = Self.currentToolDispatchAuthorization?.windowIdentity?.windowID else {
                                             throw MCPToolExecutionDispatchError.structureSettlementWindowUnresolved
                                         }
@@ -12230,7 +12180,7 @@ actor ServerNetworkManager {
                                                             cancellationOrigin: .watchdogDeadline,
                                                             settlement: "detached",
                                                             graceOutcome: "expired",
-                                                            escalationReason: "detach_disposition_handler_ignored_cancellation"
+                                                            escalationReason: "read_only_handler_ignored_cancellation"
                                                         )
                                                     }
                                                 },
@@ -12342,8 +12292,8 @@ actor ServerNetworkManager {
                                         code = "tool_execution_structure_settlement_busy"
                                         let abandoned = reason == .abandoned
                                         message = abandoned
-                                            ? "A prior canceled MCP operation for window \(windowID) is still settling. Retry after it drains."
-                                            : "A prior timed-out MCP operation for window \(windowID) is still settling. Retry after it drains."
+                                            ? "A prior canceled get_code_structure operation for window \(windowID) is still settling. Retry after it drains."
+                                            : "A prior timed-out get_code_structure operation for window \(windowID) is still settling. Retry after it drains."
                                         outcome = "executionStructureSettlementBusy"
                                         shouldForceDisconnect = false
                                         errorMetadata = [
@@ -12358,7 +12308,7 @@ actor ServerNetworkManager {
                                         ]
                                     case MCPToolExecutionDispatchError.structureSettlementWindowUnresolved:
                                         code = "tool_execution_structure_settlement_window_unresolved"
-                                        message = "\(toolName) requires a resolved window before its settlement policy can be selected."
+                                        message = "get_code_structure requires a resolved window before its settlement policy can be selected."
                                         outcome = "executionStructureSettlementWindowUnresolved"
                                         shouldForceDisconnect = false
                                         errorMetadata = ["retryable": .bool(false)]
@@ -12372,15 +12322,12 @@ actor ServerNetworkManager {
                                             "settlement": .string(settlement.rawValue)
                                         ]
                                     case MCPToolExecutionWatchdogError.executionDetached:
-                                        let mutationOutcomeMayStillReconcile = toolName == MCPWindowToolName.fileActions
                                         code = "tool_execution_timeout"
-                                        message = mutationOutcomeMayStillReconcile
-                                            ? "Tool '\(toolName)' exceeded its \(selectedDeadlineDescription)-second execution contract. Watchdog cancellation did not settle the mutation provider during grace, so it was detached for eventual reconciliation. Inspect the filesystem before issuing another mutation."
-                                            : "Tool '\(toolName)' exceeded its \(selectedDeadlineDescription)-second execution contract. Watchdog cancellation did not settle the read-only provider during grace, so it was detached for eventual cleanup."
+                                        message = "Tool '\(toolName)' exceeded its \(selectedDeadlineDescription)-second execution contract. Watchdog cancellation did not settle the read-only provider during grace, so it was detached for eventual cleanup."
                                         outcome = "executionDetached"
                                         shouldForceDisconnect = false
                                         errorMetadata = [
-                                            "retryable": .bool(!mutationOutcomeMayStillReconcile),
+                                            "retryable": .bool(true),
                                             "cancellation_origin": .string(MCPToolExecutionCancellationOrigin.watchdogDeadline.rawValue),
                                             "settlement": .string("detached")
                                         ]

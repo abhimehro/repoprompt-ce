@@ -406,7 +406,7 @@ enum StoreBackedWorkspaceSearch {
             .cachedMetadata
         }
         let aliasByRootPath = pathSearchAliasByRootPath(roots: visibleRootRecords)
-        var wasAutoCorrected: Bool?
+        var wasAutoCorrected: Bool? = nil
         var results: SearchResults
         #if DEBUG
             var diagnosticActorStart: UInt64?

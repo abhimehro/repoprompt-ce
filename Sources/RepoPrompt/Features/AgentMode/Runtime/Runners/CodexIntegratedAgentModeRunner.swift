@@ -60,7 +60,7 @@ final class CodexIntegratedAgentModeRunner {
             switch outcome {
             case .sent:
                 session.recordRunProgress(ownership: ownership, kind: .stageTransition, stage: .running)
-            case .preDispatchRejected, .cancelled, .failed, .stale:
+            case .cancelled, .failed, .stale:
                 if createdOwnership {
                     session.endRunAttempt(ifCurrent: ownership, source: "codex.sendRejected")
                 }

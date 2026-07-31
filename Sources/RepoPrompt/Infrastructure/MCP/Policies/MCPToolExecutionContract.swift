@@ -79,18 +79,11 @@ enum MCPToolExecutionContractCatalog {
             cleanupDisposition: .forceDisconnect
         )
         var result = Dictionary(uniqueKeysWithValues: orderedAdvertisedToolNames.map { ($0, bounded) })
-        for toolName in [
-            MCPWindowToolName.fileActions,
-            MCPWindowToolName.getCodeStructure,
-            MCPWindowToolName.readFile,
-            MCPWindowToolName.getFileTree
-        ] {
-            result[toolName] = .bounded(
-                deadline: MCPTimeoutPolicy.boundedToolExecutionDeadline,
-                cancellationGrace: MCPTimeoutPolicy.boundedToolCancellationCleanupGrace,
-                cleanupDisposition: .detachAndSettle
-            )
-        }
+        result[MCPWindowToolName.getCodeStructure] = .bounded(
+            deadline: MCPTimeoutPolicy.boundedToolExecutionDeadline,
+            cancellationGrace: MCPTimeoutPolicy.boundedToolCancellationCleanupGrace,
+            cleanupDisposition: .detachAndSettle
+        )
 
         for toolName in [
             MCPWindowToolName.oracleUtils,
@@ -139,17 +132,6 @@ enum MCPToolExecutionContractCatalog {
         arguments: [String: Value]
     ) -> MCPToolExecutionContract? {
         guard let baseContract = contract(for: toolName) else { return nil }
-        if toolName == MCPWindowToolName.fileActions,
-           arguments["action"]?.stringValue?
-           .trimmingCharacters(in: .whitespacesAndNewlines)
-           .lowercased() == "delete"
-        {
-            return .bounded(
-                deadline: MCPTimeoutPolicy.fileActionTrashExecutionDeadline,
-                cancellationGrace: MCPTimeoutPolicy.boundedToolCancellationCleanupGrace,
-                cleanupDisposition: .detachAndSettle
-            )
-        }
         guard toolName == MCPGlobalToolName.manageWorkspaces else { return baseContract }
         guard let rawAction = arguments["action"]?.stringValue else {
             return baseContract

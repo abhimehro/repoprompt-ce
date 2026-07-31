@@ -17,15 +17,15 @@ Use this file when changing `Package.swift` or the provider manifest. These are 
 
 Do not collapse these independent controls:
 
-| Axis                                   | SwiftPM 6.2 spelling                                       | Scope        | What it changes                                                       |
-| -------------------------------------- | ---------------------------------------------------------- | ------------ | --------------------------------------------------------------------- |
-| Tools version                          | `// swift-tools-version: 6.2`                              | Manifest API | Which `PackageDescription` APIs are available                         |
-| Package language compatibility/default | `swiftLanguageModes: [...]`                                | Package      | Package language-mode declaration and default selection               |
-| Target language mode                   | `.swiftLanguageMode(.v5/.v6)`                              | Target       | The `-swift-version` passed for that target                           |
-| Complete checking in Swift 5           | `.enableExperimentalFeature("StrictConcurrency")`          | Target       | Diagnostic strictness without the full Swift 6 language-mode switch   |
-| Default actor isolation                | `.defaultIsolation(MainActor.self)`                        | Target       | Inference for otherwise-unannotated declarations                      |
-| Caller-actor async semantics           | `.enableUpcomingFeature("NonisolatedNonsendingByDefault")` | Target       | Whether nonisolated async calls stay on the caller's actor by default |
-| Isolated-conformance inference         | `.enableUpcomingFeature("InferIsolatedConformances")`      | Target       | Whether eligible isolated conformances are inferred                   |
+| Axis | SwiftPM 6.2 spelling | Scope | What it changes |
+|---|---|---|---|
+| Tools version | `// swift-tools-version: 6.2` | Manifest API | Which `PackageDescription` APIs are available |
+| Package language compatibility/default | `swiftLanguageModes: [...]` | Package | Package language-mode declaration and default selection |
+| Target language mode | `.swiftLanguageMode(.v5/.v6)` | Target | The `-swift-version` passed for that target |
+| Complete checking in Swift 5 | `.enableExperimentalFeature("StrictConcurrency")` | Target | Diagnostic strictness without the full Swift 6 language-mode switch |
+| Default actor isolation | `.defaultIsolation(MainActor.self)` | Target | Inference for otherwise-unannotated declarations |
+| Caller-actor async semantics | `.enableUpcomingFeature("NonisolatedNonsendingByDefault")` | Target | Whether nonisolated async calls stay on the caller's actor by default |
+| Isolated-conformance inference | `.enableUpcomingFeature("InferIsolatedConformances")` | Target | Whether eligible isolated conformances are inferred |
 
 The active compiler is the final authority. Record `swift --version` and inspect the actual build command before treating a setting as active.
 
@@ -211,13 +211,13 @@ Advance one gate at a time unless a target is already diagnostic-free and the PR
 
 ## Xcode equivalents
 
-| Decision                       | Xcode/compiler setting                                                       |
-| ------------------------------ | ---------------------------------------------------------------------------- |
-| Swift 6 mode                   | `SWIFT_VERSION = 6` / `-swift-version 6`                                     |
-| Complete checking              | `SWIFT_STRICT_CONCURRENCY = complete` / `-strict-concurrency=complete`       |
-| Default MainActor              | `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` / `-default-isolation MainActor` |
-| Caller-actor semantics         | `SWIFT_UPCOMING_FEATURE_NONISOLATED_NONSENDING_BY_DEFAULT = YES`             |
-| Isolated-conformance inference | `SWIFT_UPCOMING_FEATURE_INFER_ISOLATED_CONFORMANCES = YES`                   |
+| Decision | Xcode/compiler setting |
+|---|---|
+| Swift 6 mode | `SWIFT_VERSION = 6` / `-swift-version 6` |
+| Complete checking | `SWIFT_STRICT_CONCURRENCY = complete` / `-strict-concurrency=complete` |
+| Default MainActor | `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` / `-default-isolation MainActor` |
+| Caller-actor semantics | `SWIFT_UPCOMING_FEATURE_NONISOLATED_NONSENDING_BY_DEFAULT = YES` |
+| Isolated-conformance inference | `SWIFT_UPCOMING_FEATURE_INFER_ISOLATED_CONFORMANCES = YES` |
 
 `SWIFT_APPROACHABLE_CONCURRENCY` is an Xcode umbrella setting. SwiftPM uses the individual APIs above; do not invent an `ApproachableConcurrency` feature name.
 

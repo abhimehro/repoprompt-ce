@@ -352,7 +352,6 @@ public extension VCSService {
         compare: GitDiffCompareSpec,
         includeUntrackedWhenApplicable: Bool = true,
         detectRenames: Bool = false,
-        paths: [String]? = nil,
         at repoURL: URL
     ) async throws -> [VCSUncommittedFile] {
         let backend = await backend(forRepoRoot: repoURL)
@@ -360,7 +359,6 @@ public extension VCSService {
             compare: compare,
             includeUntrackedWhenApplicable: includeUntrackedWhenApplicable,
             detectRenames: detectRenames,
-            paths: paths,
             at: repoURL
         )
     }

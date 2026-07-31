@@ -285,7 +285,7 @@ enum MCPCommandParser {
         }
 
         // Find the first non-empty alias value
-        var foundAlias: (key: String, value: String)?
+        var foundAlias: (key: String, value: String)? = nil
         var conflictingAliases: [String] = []
 
         for alias in contextBuilderInstructionAliases where alias != "instructions" {
@@ -333,7 +333,7 @@ enum MCPCommandParser {
         }
 
         // Find the first non-empty alias value
-        var foundAlias: (key: String, value: String)?
+        var foundAlias: (key: String, value: String)? = nil
         var conflictingAliases: [String] = []
 
         for alias in contextBuilderInstructionAliases where alias != "instructions" {
@@ -755,7 +755,7 @@ enum MCPCommandParser {
             let remaining = Array(parts.dropFirst())
             let flags = parseFlagArgs(remaining)
             var include: [String] = ["prompt", "selection", "code", "tokens"]
-            var pathDisplay: String?
+            var pathDisplay: String? = nil
 
             if let includeStr = flags["include"] ?? flags["includes"] {
                 include = includeStr.split(separator: ",").map {
@@ -862,7 +862,7 @@ enum MCPCommandParser {
                       let startLine = Int(token[startRange]) else { return nil }
 
                 let path = String(token[pathRange])
-                var endLine: Int?
+                var endLine: Int? = nil
                 if match.range(at: 3).location != NSNotFound,
                    let endRange = Range(match.range(at: 3), in: token)
                 {
@@ -875,8 +875,8 @@ enum MCPCommandParser {
             /// Helper to extract mode flags, global flags, paths, and slices from tokens
             func extractFlagsAndPaths(from tokens: [String]) -> (mode: String?, strict: Bool?, pathDisplay: String?, paths: [String], slices: [[String: Any]]?) {
                 let flags = parseFlagArgs(tokens)
-                var mode: String?
-                var pathDisplay: String?
+                var mode: String? = nil
+                var pathDisplay: String? = nil
                 var slices: [[String: Any]] = []
 
                 if flags["codemap"] != nil || flags["m"] != nil {
@@ -977,7 +977,7 @@ enum MCPCommandParser {
                     args["view"] = UncheckedSendableValue("codemaps")
                 }
 
-                var pathDisplay: String?
+                var pathDisplay: String? = nil
                 if flags["relative"] != nil {
                     pathDisplay = "relative"
                 } else if flags["full-paths"] != nil {
@@ -1944,7 +1944,7 @@ enum MCPCommandParser {
     private static func rawRemainderAfterFirstToken(_ input: String) -> String? {
         let trimmed = input.trimmingCharacters(in: .whitespaces)
         // Find the end of the first token (command name)
-        var inQuote: Character?
+        var inQuote: Character? = nil
         var i = trimmed.startIndex
         // Skip leading whitespace (shouldn't be any after trim, but be safe)
         while i < trimmed.endIndex, trimmed[i].isWhitespace {
@@ -2377,7 +2377,7 @@ enum MCPCommandParser {
     /// Normalizes dashes to underscores before comparison.
     static func suggestCommand(for input: String) -> String? {
         let threshold = 2 // Max edit distance
-        var bestMatch: (command: String, distance: Int)?
+        var bestMatch: (command: String, distance: Int)? = nil
         // Normalize: convert dashes to underscores for consistent matching
         let normalized = input.lowercased().replacingOccurrences(of: "-", with: "_")
 

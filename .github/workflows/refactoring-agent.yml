@@ -15,6 +15,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     steps:
       - name: Debug raw comment
         shell: bash
@@ -66,8 +67,8 @@ jobs:
 
           # Default: Google on, Mistral off, unless overridden via repo/org Variables.
           # (Currently flipped for isolated Mistral testing.)
-          ENABLE_GOOGLE="${ENABLE_GOOGLE_VAR:-true}"
-          ENABLE_MISTRAL="${ENABLE_MISTRAL_VAR:-false}"
+          ENABLE_GOOGLE="${ENABLE_GOOGLE_VAR:-false}"
+          ENABLE_MISTRAL="${ENABLE_MISTRAL_VAR:-true}"
 
           if [[ "$ENABLE_GOOGLE" != "true" && "$ENABLE_MISTRAL" != "true" ]]; then
             echo "::error::Both ENABLE_GOOGLE and ENABLE_MISTRAL are disabled. Enable at least one via repo Variables."
@@ -77,7 +78,7 @@ jobs:
           if [[ -n "${MODEL_OVERRIDE:-}" ]]; then
             MODEL="$MODEL_OVERRIDE"
           elif [[ "$ENABLE_GOOGLE" == "true" ]]; then
-            MODEL="google/gemini-3.6-flash"
+            MODEL="google/gemini-3.5-flash"
           else
             MODEL="mistral/mistral-medium-latest"
           fi
@@ -141,9 +142,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # Pin bc0d8b91: fixes spurious skill:github-pr-comment prepend in earlier tags.
+      # trunk-ignore(pinact/parse-error)
       - id: refactor-attempt-1
         continue-on-error: true
-        uses: codescene-oss/pr-refactoring-agent@bbc72fbfb8e514ed2dd0a1ba2dda2e0083abac73 # v1.0.8
+        uses: codescene-oss/pr-refactoring-agent@bbc72fbfb8e514ed2dd0a1ba2dda2e0083abac73 # untagged-fix-commit
         env:
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
@@ -169,10 +171,11 @@ jobs:
 
       # A retry handles transient non-fast-forward push failures when another bot
       # updates the PR branch while the first refactoring attempt is running.
+      # trunk-ignore(pinact/parse-error)
       - id: refactor-attempt-2
         if: steps.refactor-attempt-1.outcome == 'failure'
         continue-on-error: true
-        uses: codescene-oss/pr-refactoring-agent@bbc72fbfb8e514ed2dd0a1ba2dda2e0083abac73 # v1.0.8
+        uses: codescene-oss/pr-refactoring-agent@bbc72fbfb8e514ed2dd0a1ba2dda2e0083abac73 # untagged-fix-commit
         env:
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}

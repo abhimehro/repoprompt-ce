@@ -556,7 +556,6 @@ struct GlobalScalarPreferences: Codable, Equatable {
         var codexReasoningSummariesEnabled: Bool?
         var providerConversationCleanupAction: String?
         var restrictMCPAgentDiscoveryToRoleLabels: Bool?
-        var agentSessionHandoffInstructions: String?
 
         init(
             proEditAgentMode: Bool? = nil,
@@ -569,8 +568,7 @@ struct GlobalScalarPreferences: Codable, Equatable {
             codexGoalSupportEnabled: Bool? = nil,
             codexReasoningSummariesEnabled: Bool? = nil,
             providerConversationCleanupAction: String? = nil,
-            restrictMCPAgentDiscoveryToRoleLabels: Bool? = nil,
-            agentSessionHandoffInstructions: String? = nil
+            restrictMCPAgentDiscoveryToRoleLabels: Bool? = nil
         ) {
             self.proEditAgentMode = proEditAgentMode
             self.proEditAgentKind = proEditAgentKind
@@ -583,7 +581,6 @@ struct GlobalScalarPreferences: Codable, Equatable {
             self.codexReasoningSummariesEnabled = codexReasoningSummariesEnabled
             self.providerConversationCleanupAction = providerConversationCleanupAction
             self.restrictMCPAgentDiscoveryToRoleLabels = restrictMCPAgentDiscoveryToRoleLabels
-            self.agentSessionHandoffInstructions = agentSessionHandoffInstructions
         }
     }
 }

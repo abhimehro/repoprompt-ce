@@ -138,12 +138,10 @@ enum WorkspaceCodemapGraphCatalogCoverageValidationError: Error, Hashable {
     case rootMismatch
     case missingCatalogWatermark
     case unexpectedCatalogWatermark
-    case catalogSealWithoutWatermark
     case nonzeroNotStartedCount
     case accountingOverflow
     case classifiedCountMismatch(expected: UInt64, actual: UInt64)
     case supportedCountMismatch(expected: UInt64, actual: UInt64)
-    case completeWithoutCatalogSeal
     case completeWithPendingSupportedSlots(UInt64)
 }
 
@@ -151,7 +149,6 @@ struct WorkspaceCodemapGraphCatalogCoverage: Hashable {
     let rootEpoch: WorkspaceCodemapRootEpoch
     let catalogWatermark: WorkspaceCodemapGraphIndexCatalogToken?
     let enumerationState: WorkspaceCodemapGraphCatalogEnumerationState
-    let isCatalogSealed: Bool
     let supportedCount: UInt64
     let classifiedCount: UInt64
     let pendingCount: UInt64
@@ -164,7 +161,6 @@ struct WorkspaceCodemapGraphCatalogCoverage: Hashable {
         rootEpoch: WorkspaceCodemapRootEpoch,
         catalogWatermark: WorkspaceCodemapGraphIndexCatalogToken?,
         enumerationState: WorkspaceCodemapGraphCatalogEnumerationState,
-        isCatalogSealed: Bool,
         supportedCount: UInt64,
         classifiedCount: UInt64,
         pendingCount: UInt64,
@@ -176,7 +172,6 @@ struct WorkspaceCodemapGraphCatalogCoverage: Hashable {
         self.rootEpoch = rootEpoch
         self.catalogWatermark = catalogWatermark
         self.enumerationState = enumerationState
-        self.isCatalogSealed = isCatalogSealed
         self.supportedCount = supportedCount
         self.classifiedCount = classifiedCount
         self.pendingCount = pendingCount
@@ -190,7 +185,6 @@ struct WorkspaceCodemapGraphCatalogCoverage: Hashable {
         rootEpoch: WorkspaceCodemapRootEpoch,
         catalogWatermark: WorkspaceCodemapGraphIndexCatalogToken?,
         enumerationState: WorkspaceCodemapGraphCatalogEnumerationState,
-        isCatalogSealed: Bool,
         supportedCount: UInt64,
         classifiedCount: UInt64,
         pendingCount: UInt64,
@@ -201,8 +195,6 @@ struct WorkspaceCodemapGraphCatalogCoverage: Hashable {
     ) -> Result<Self, WorkspaceCodemapGraphCatalogCoverageValidationError> {
         if let catalogWatermark {
             guard catalogWatermark.rootEpoch == rootEpoch else { return .failure(.rootMismatch) }
-        } else if isCatalogSealed {
-            return .failure(.catalogSealWithoutWatermark)
         }
         switch enumerationState {
         case .notStarted:
@@ -238,18 +230,14 @@ struct WorkspaceCodemapGraphCatalogCoverage: Hashable {
                 actual: supportedCount
             ))
         }
-        if enumerationState == .complete {
-            guard isCatalogSealed else { return .failure(.completeWithoutCatalogSeal) }
-            guard pendingCount == 0 else {
-                return .failure(.completeWithPendingSupportedSlots(pendingCount))
-            }
+        if enumerationState == .complete, pendingCount != 0 {
+            return .failure(.completeWithPendingSupportedSlots(pendingCount))
         }
 
         return .success(Self(
             rootEpoch: rootEpoch,
             catalogWatermark: catalogWatermark,
             enumerationState: enumerationState,
-            isCatalogSealed: isCatalogSealed,
             supportedCount: supportedCount,
             classifiedCount: classifiedCount,
             pendingCount: pendingCount,
@@ -401,9 +389,9 @@ struct WorkspaceCodemapGraphCheckpoint: Hashable {
             }
         }
 
-        guard let observedSupportedCount = UInt64(exactly: slots.count),
-              coverage.supportedCount >= observedSupportedCount,
-              coverage.pendingCount >= pendingCount,
+        guard let supportedCount = UInt64(exactly: slots.count),
+              coverage.supportedCount == supportedCount,
+              coverage.pendingCount == pendingCount,
               coverage.contributedCount == contributedCount,
               coverage.emptyCount == emptyCount,
               coverage.terminalArtifactCount == terminalArtifactCount,

@@ -432,7 +432,6 @@ final class MCPServerViewModel: ObservableObject {
             WorkspaceLookupContext?,
             ToolResultDTOs.SelectionReply
         ) -> Void)?
-        private var beforeAgentRunWaiterWakeForTesting: (@MainActor @Sendable (UUID, UUID) async -> Void)?
 
         func setOracleChatSendOverrideForTesting(_ override: MCPOracleToolService.SendChat?) {
             oracleChatSendOverrideForTesting = override
@@ -446,12 +445,6 @@ final class MCPServerViewModel: ObservableObject {
             _ override: AgentExternalMCPRunStarter.DispatchInstruction?
         ) {
             agentRunDispatchOverrideForTesting = override
-        }
-
-        func setBeforeAgentRunWaiterWakeForTesting(
-            _ hook: (@MainActor @Sendable (UUID, UUID) async -> Void)?
-        ) {
-            beforeAgentRunWaiterWakeForTesting = hook
         }
 
         func executeAgentRunForTesting(args: [String: Value]) async throws -> Value {
@@ -2115,11 +2108,7 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     @MainActor
-    private func beginAgentRunWaitScope(
-        metadata: RequestMetadata,
-        sessionIDs: Set<UUID>,
-        timeoutSeconds: TimeInterval?
-    ) async -> AgentRunWaitScopeRegistration? {
+    private func beginAgentRunWaitScope(metadata: RequestMetadata, sessionIDs: Set<UUID>, timeoutSeconds: TimeInterval?) async -> UUID? {
         guard !sessionIDs.isEmpty else { return nil }
         purgeStaleAgentRunWaitScopes(source: "begin")
         let resolvedContext = try? resolveTabContextSnapshot(
@@ -2145,7 +2134,7 @@ final class MCPServerViewModel: ObservableObject {
             childAgentRunWaitCountsByParentRunID[parentRunID, default: [:]][sessionID, default: 0] += 1
         }
         steeringDebugLog("[AgentRunSteeringWake] agent_run wait scope begin parentRunID=\(parentRunID) token=\(token) timeout=\(timeoutSeconds.map { String($0) } ?? "none") childSessions=\(sessionIDs.map(\.uuidString).sorted().joined(separator: ",")) counts=\(debugChildAgentRunWaits(for: parentRunID))")
-        return AgentRunWaitScopeRegistration(token: token, parentRunID: parentRunID)
+        return token
     }
 
     @MainActor
@@ -2203,8 +2192,6 @@ final class MCPServerViewModel: ObservableObject {
     func wakeAgentRunWaitersOwnedByActiveRun(
         runID: UUID,
         source: String,
-        steeringMessage: String? = nil,
-        steeringOriginRunID: () -> UUID? = { nil },
         publicationForSessionID: (UUID) -> (snapshot: AgentRunMCPSnapshot, cursor: AgentRunSessionStore.WaitCursor)?
     ) async {
         let sessionIDs = Set(childAgentRunWaitCountsByParentRunID[runID]?.keys.map(\.self) ?? [])
@@ -2218,18 +2205,10 @@ final class MCPServerViewModel: ObservableObject {
                 steeringDebugLog("[AgentRunSteeringWake] parent wake skipped missing child snapshot source=\(source) parentRunID=\(runID) childSessionID=\(sessionID)")
                 continue
             }
-            #if DEBUG
-                if let beforeAgentRunWaiterWakeForTesting {
-                    await beforeAgentRunWaiterWakeForTesting(runID, sessionID)
-                }
-            #endif
-            let validatedSteeringOriginRunID = steeringOriginRunID()
             await AgentRunSessionStore.wakeCurrentWaiters(
                 publication.snapshot,
                 cursor: publication.cursor,
-                reason: .steeringRequested,
-                steeringMessage: steeringMessage,
-                steeringOriginRunID: validatedSteeringOriginRunID
+                reason: .steeringRequested
             )
         }
         await Task.yield()
@@ -2240,9 +2219,7 @@ final class MCPServerViewModel: ObservableObject {
     func wakeAndDrainAgentRunWaitersOwnedByActiveRun(
         runID: UUID,
         source: String,
-        steeringMessage: String? = nil,
         timeoutSeconds: TimeInterval,
-        steeringOriginRunID: () -> UUID? = { nil },
         publicationForSessionID: (UUID) -> (snapshot: AgentRunMCPSnapshot, cursor: AgentRunSessionStore.WaitCursor)?
     ) async -> Bool {
         guard hasActiveChildAgentRunWaits(runID: runID) else {
@@ -2255,8 +2232,6 @@ final class MCPServerViewModel: ObservableObject {
             await wakeAgentRunWaitersOwnedByActiveRun(
                 runID: runID,
                 source: source,
-                steeringMessage: steeringMessage,
-                steeringOriginRunID: steeringOriginRunID,
                 publicationForSessionID: publicationForSessionID
             )
 
@@ -2382,7 +2357,7 @@ final class MCPServerViewModel: ObservableObject {
             metadata: RequestMetadata,
             sessionIDs: Set<UUID>,
             timeoutSeconds: TimeInterval?
-        ) async -> AgentRunWaitScopeRegistration? {
+        ) async -> UUID? {
             await beginAgentRunWaitScope(
                 metadata: metadata,
                 sessionIDs: sessionIDs,
@@ -5964,14 +5939,30 @@ final class MCPServerViewModel: ObservableObject {
         // The filesystem mutation is durable. From this point cancellation must not be
         // misreported as a safe-to-retry pre-mutation failure.
         await MCPToolExecutionHandlerPhaseContext.report(.fileActionsPostMutationCatalog)
-        // Workspace-backed mutations publish their catalog delta before returning.
-        // Re-entering the store here to await watcher ingress is both redundant and
-        // unsafe for request settlement: a concurrent Context Builder rebuild can hold
-        // the store actor after the durable mutation and strand this acknowledgement.
-        // External watcher reconciliation remains asynchronous by design.
-        let freshness = "fresh"
+        var freshness = "fresh"
+        do {
+            _ = try await store.awaitAppliedIngressForExplicitRequest(
+                userPath: effectivePath,
+                fallbackScope: lookupContext.rootScope,
+                timeout: .seconds(2)
+            )
+            if let effectiveNewPath {
+                _ = try await store.awaitAppliedIngressForExplicitRequest(
+                    userPath: effectiveNewPath,
+                    fallbackScope: lookupContext.rootScope,
+                    timeout: .seconds(2)
+                )
+            }
+        } catch {
+            freshness = "pending"
+        }
         await MCPToolExecutionHandlerPhaseContext.report(.fileActionsPostMutationCatalog, transition: .completed)
         var acknowledgementWarnings: [String] = []
+        if freshness == "pending" {
+            acknowledgementWarnings.append(
+                "The filesystem mutation is durable, but workspace freshness is still pending. Inspect the filesystem with read_file or file_search and use operation ID \(operationID) only to correlate this result; do not blindly replay the mutation."
+            )
+        }
         if Task.isCancelled {
             acknowledgementWarnings.append(
                 "Reply delivery was cancelled after the durable mutation. Inspect the filesystem and use operation ID \(operationID) only to correlate this result; do not blindly replay."
@@ -6008,6 +5999,10 @@ final class MCPServerViewModel: ObservableObject {
                         "The file was created, but its selection was not confirmed. \(error)"
                     )
                 }
+            } else if freshness == "pending" {
+                acknowledgementWarnings.append(
+                    "The created path selection was not confirmed while workspace freshness was pending."
+                )
             }
             await MCPToolExecutionHandlerPhaseContext.report(.fileActionsPostMutationSelection, transition: .completed)
         }

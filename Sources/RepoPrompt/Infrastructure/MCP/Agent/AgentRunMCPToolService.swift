@@ -93,11 +93,6 @@ enum AgentOracleExport {
     }
 }
 
-struct AgentRunWaitScopeRegistration: Equatable {
-    let token: UUID
-    let parentRunID: UUID
-}
-
 struct AgentRunWaitScopeCompletion: Equatable {
     enum Reason: String, Equatable {
         case snapshotReady = "snapshot_ready"
@@ -118,7 +113,7 @@ struct AgentRunWaitScopeCompletion: Equatable {
 
 private enum MultiWaitDisposition {
     case actionable(AgentRunMCPSnapshot)
-    case steeringInterrupted(AgentRunSessionStore.NoteworthyWake)
+    case steeringInterrupted(AgentRunMCPSnapshot)
     case superseded(AgentRunMCPSnapshot)
     case terminalPublicationRejected(String)
     case timedOut
@@ -251,7 +246,7 @@ struct AgentRunMCPToolService {
     let resolveSpawnParentSessionID: (_ metadata: RequestMetadata, _ targetWindow: WindowState) async -> UUID?
     var resolveSpawnParentSessionIDFromSourceTabID: ((_ sourceTabID: UUID, _ targetWindow: WindowState) async -> UUID?)?
     let withHeartbeat: (_ connectionID: UUID?, _ tool: String, _ stage: String, _ message: String, _ operation: @escaping HeartbeatOperation) async throws -> Value
-    var beginAgentRunWait: (_ metadata: RequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval?) async -> AgentRunWaitScopeRegistration? = { _, _, _ in nil }
+    var beginAgentRunWait: (_ metadata: RequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval?) async -> UUID? = { _, _, _ in nil }
     var endAgentRunWait: (_ token: UUID, _ completion: AgentRunWaitScopeCompletion) async -> Void = { _, _ in }
     let startRun: StartRun
     var currentSnapshotProvider: (@Sendable (_ sessionID: UUID, _ agentModeVM: AgentModeViewModel) async -> AgentRunMCPSnapshot?)?
@@ -789,7 +784,7 @@ struct AgentRunMCPToolService {
             )
         }
 
-        let waitScopeRegistration = await beginAgentRunWait(metadata, Set(sessionIDs), timeoutSeconds)
+        let waitScopeToken = await beginAgentRunWait(metadata, Set(sessionIDs), timeoutSeconds)
         do {
             let value = try await withHeartbeat(
                 metadata.connectionID,
@@ -801,13 +796,12 @@ struct AgentRunMCPToolService {
                     sessionIDs: sessionIDs,
                     agentModeVM: agentModeVM,
                     timeoutSeconds: timeoutSeconds,
-                    initialSnapshots: initialSnapshots,
-                    waitConsumerParentRunID: waitScopeRegistration?.parentRunID
+                    initialSnapshots: initialSnapshots
                 )
             }
             let completion = waitScopeCompletion(from: value, fallbackSessionIDs: sessionIDs)
-            if let waitScopeRegistration {
-                await endAgentRunWait(waitScopeRegistration.token, completion)
+            if let waitScopeToken {
+                await endAgentRunWait(waitScopeToken, completion)
             }
             return value
         } catch is CancellationError {
@@ -817,20 +811,20 @@ struct AgentRunMCPToolService {
                 fallbackSnapshots: initialSnapshots
             ) {
                 let completion = waitScopeCompletion(from: value, fallbackSessionIDs: sessionIDs)
-                if let waitScopeRegistration {
-                    await endAgentRunWait(waitScopeRegistration.token, completion)
+                if let waitScopeToken {
+                    await endAgentRunWait(waitScopeToken, completion)
                 }
                 return value
             }
             let completion = AgentRunWaitScopeCompletion(reason: .cancelled, result: "cancelled", winnerSessionID: nil, pendingSessionIDs: Set(sessionIDs), errorDescription: nil)
-            if let waitScopeRegistration {
-                await endAgentRunWait(waitScopeRegistration.token, completion)
+            if let waitScopeToken {
+                await endAgentRunWait(waitScopeToken, completion)
             }
             throw CancellationError()
         } catch {
             let completion = AgentRunWaitScopeCompletion(reason: .error, result: "error", winnerSessionID: nil, pendingSessionIDs: Set(sessionIDs), errorDescription: String(describing: error))
-            if let waitScopeRegistration {
-                await endAgentRunWait(waitScopeRegistration.token, completion)
+            if let waitScopeToken {
+                await endAgentRunWait(waitScopeToken, completion)
             }
             throw error
         }
@@ -1148,7 +1142,7 @@ struct AgentRunMCPToolService {
         }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
-        let waitScopeRegistration = await beginAgentRunWait(metadata, [sessionID], timeoutSeconds)
+        let waitScopeToken = await beginAgentRunWait(metadata, [sessionID], timeoutSeconds)
         let completionBox = WaitScopeCompletionBox()
         let snapshot: Value
         do {
@@ -1190,8 +1184,7 @@ struct AgentRunMCPToolService {
                             errorDescription: nil
                         ))
                         return triggeringSnapshot.toValue()
-                    case let .noteworthySnapshot(wake):
-                        let triggeringSnapshot = wake.snapshot
+                    case let .noteworthySnapshot(triggeringSnapshot, reason):
                         if triggeringSnapshot.isActionableForMCPWait {
                             completionBox.set(AgentRunWaitScopeCompletion(
                                 reason: .snapshotReady,
@@ -1202,7 +1195,7 @@ struct AgentRunMCPToolService {
                             ))
                             return triggeringSnapshot.toValue()
                         }
-                        if wake.reason == .steeringRequested {
+                        if reason == .steeringRequested {
                             completionBox.set(AgentRunWaitScopeCompletion(
                                 reason: .cancelled,
                                 result: "interrupted_by_steering",
@@ -1210,10 +1203,7 @@ struct AgentRunMCPToolService {
                                 pendingSessionIDs: [sessionID],
                                 errorDescription: nil
                             ))
-                            return Self.steeringInterruptedSingleWaitValue(
-                                wake,
-                                waitConsumerParentRunID: waitScopeRegistration?.parentRunID
-                            )
+                            return Self.steeringInterruptedSingleWaitValue(triggeringSnapshot)
                         }
                         continue
                     case let .epochAdvanced(epoch, transitionKind):
@@ -1262,8 +1252,8 @@ struct AgentRunMCPToolService {
                    agentModeVM: agentModeVM
                )
             {
-                if let waitScopeRegistration {
-                    await endAgentRunWait(waitScopeRegistration.token, resolution.completion)
+                if let waitScopeToken {
+                    await endAgentRunWait(waitScopeToken, resolution.completion)
                 }
                 return await finalDecoratedSingleWaitValue(
                     from: resolution.rawValue,
@@ -1273,7 +1263,7 @@ struct AgentRunMCPToolService {
                     initialDelivery: initialDelivery
                 )
             }
-            if let waitScopeRegistration {
+            if let waitScopeToken {
                 let completion = AgentRunWaitScopeCompletion(
                     reason: error is CancellationError ? .cancelled : .error,
                     result: error is CancellationError ? "cancelled" : "error",
@@ -1281,13 +1271,13 @@ struct AgentRunMCPToolService {
                     pendingSessionIDs: [sessionID],
                     errorDescription: String(describing: error)
                 )
-                await endAgentRunWait(waitScopeRegistration.token, completion)
+                await endAgentRunWait(waitScopeToken, completion)
             }
             throw error
         }
-        if let waitScopeRegistration {
+        if let waitScopeToken {
             let completion = completionBox.get() ?? singleWaitScopeCompletion(from: snapshot, sessionID: sessionID)
-            await endAgentRunWait(waitScopeRegistration.token, completion)
+            await endAgentRunWait(waitScopeToken, completion)
         }
         return await finalDecoratedSingleWaitValue(
             from: snapshot,
@@ -1334,19 +1324,12 @@ struct AgentRunMCPToolService {
     }
 
     private nonisolated static func steeringInterruptedSingleWaitValue(
-        _ wake: AgentRunSessionStore.NoteworthyWake,
-        waitConsumerParentRunID: UUID?
+        _ snapshot: AgentRunMCPSnapshot
     ) -> Value {
-        var object = wake.snapshot.asObject()
+        var object = snapshot.asObject()
         object["_meta"] = .object([
             "wake_reason": .string(AgentRunSessionStore.WakeReason.steeringRequested.rawValue)
         ])
-        if let steeringMessage = projectedSteeringMessage(
-            wake,
-            waitConsumerParentRunID: waitConsumerParentRunID
-        ) {
-            object["wait"] = .object(["steering_message": .string(steeringMessage)])
-        }
         return .object(object)
     }
 
@@ -1372,7 +1355,6 @@ struct AgentRunMCPToolService {
     ) async -> Value {
         let resolvedSnapshot: AgentRunMCPSnapshot
         let wakeReason = rawValue.objectValue.flatMap(wakeReason(from:))
-        let steeringMessage = rawValue.objectValue.flatMap(steeringMessage(from:))
         if let parsedSnapshot = rawValue.objectValue.flatMap(snapshot(from:)) {
             resolvedSnapshot = parsedSnapshot
         } else {
@@ -1382,8 +1364,7 @@ struct AgentRunMCPToolService {
             snapshot: resolvedSnapshot,
             workflow: workflow,
             delivery: initialDelivery,
-            wakeReason: wakeReason,
-            steeringMessage: steeringMessage
+            wakeReason: wakeReason
         )
         guard var object = decorated.objectValue,
               let rawMeta = rawValue.objectValue?["_meta"]?.objectValue
@@ -1423,11 +1404,9 @@ struct AgentRunMCPToolService {
     private func waitAnySteeringInterruptValue(
         sessionIDs: [UUID],
         agentModeVM: AgentModeViewModel,
-        wake: AgentRunSessionStore.NoteworthyWake,
-        latestSnapshots: [AgentRunMCPSnapshot],
-        waitConsumerParentRunID: UUID?
+        triggeringSnapshot: AgentRunMCPSnapshot,
+        latestSnapshots: [AgentRunMCPSnapshot]
     ) async -> Value {
-        let triggeringSnapshot = wake.snapshot
         let freshSnapshots = await collectCurrentSnapshots(sessionIDs: sessionIDs, agentModeVM: agentModeVM)
         var snapshots = freshSnapshots.isEmpty ? latestSnapshots : freshSnapshots
         if snapshots.isEmpty {
@@ -1442,30 +1421,8 @@ struct AgentRunMCPToolService {
             representativeSnapshot: triggeringSnapshot,
             snapshots: snapshots,
             pendingSessionIDs: pendingIDs.isEmpty && !runningIDs.isEmpty ? runningIDs : pendingIDs,
-            interruptedSessionID: triggeringSnapshot.sessionID,
-            steeringMessage: Self.projectedSteeringMessage(
-                wake,
-                waitConsumerParentRunID: waitConsumerParentRunID
-            )
+            interruptedSessionID: triggeringSnapshot.sessionID
         )
-    }
-
-    private nonisolated static func projectedSteeringMessage(
-        _ wake: AgentRunSessionStore.NoteworthyWake,
-        waitConsumerParentRunID: UUID?
-    ) -> String? {
-        guard wake.reason == .steeringRequested,
-              let steeringMessage = wake.steeringMessage
-        else {
-            return nil
-        }
-        guard let waitConsumerParentRunID,
-              let steeringOriginRunID = wake.steeringOriginRunID,
-              waitConsumerParentRunID == steeringOriginRunID
-        else {
-            return steeringMessage
-        }
-        return nil
     }
 
     private nonisolated static func decoratedMultiWaitInterruptValue(
@@ -1473,8 +1430,7 @@ struct AgentRunMCPToolService {
         representativeSnapshot: AgentRunMCPSnapshot,
         snapshots: [AgentRunMCPSnapshot],
         pendingSessionIDs: [UUID],
-        interruptedSessionID: UUID,
-        steeringMessage: String? = nil
+        interruptedSessionID: UUID
     ) -> Value {
         var object = representativeSnapshot.asObject()
         object.removeValue(forKey: "assistant_text")
@@ -1483,7 +1439,7 @@ struct AgentRunMCPToolService {
             "wake_reason": .string(AgentRunSessionStore.WakeReason.steeringRequested.rawValue),
             "note": .string(agentRunSteeringWakeNote)
         ])
-        var wait: [String: Value] = [
+        object["wait"] = .object([
             "mode": .string("any"),
             "result": .string("interrupted_by_steering"),
             "winner_session_id": .null,
@@ -1492,11 +1448,7 @@ struct AgentRunMCPToolService {
             "waited_count": .int(sessionIDs.count),
             "pending_session_ids": .array(pendingSessionIDs.map { .string($0.uuidString) }),
             "instruction": .string(agentRunSteeringWakeNote)
-        ]
-        if let steeringMessage {
-            wait["steering_message"] = .string(steeringMessage)
-        }
-        object["wait"] = .object(wait)
+        ])
         object["snapshots"] = .array(snapshots.map { snapshot in
             var snapshotObject = snapshot.asObject()
             if !snapshot.status.isTerminal {
@@ -1511,8 +1463,7 @@ struct AgentRunMCPToolService {
         sessionIDs: [UUID],
         agentModeVM: AgentModeViewModel,
         timeoutSeconds: TimeInterval,
-        initialSnapshots: [AgentRunMCPSnapshot],
-        waitConsumerParentRunID: UUID?
+        initialSnapshots: [AgentRunMCPSnapshot]
     ) async throws -> Value {
         let cursors = await MainActor.run {
             sessionIDs.compactMap { agentModeVM.mcpWaitCursor(sessionID: $0) }
@@ -1540,13 +1491,12 @@ struct AgentRunMCPToolService {
                 snapshots: snapshots,
                 pendingSessionIDs: pendingSessionIDs(from: snapshots).filter { $0 != snapshot.sessionID }
             )
-        case let .steeringInterrupted(wake):
+        case let .steeringInterrupted(snapshot):
             return await waitAnySteeringInterruptValue(
                 sessionIDs: sessionIDs,
                 agentModeVM: agentModeVM,
-                wake: wake,
-                latestSnapshots: snapshots,
-                waitConsumerParentRunID: waitConsumerParentRunID
+                triggeringSnapshot: snapshot,
+                latestSnapshots: snapshots
             )
         case let .superseded(snapshot):
             return decoratedMultiWaitSupersededValue(
@@ -1659,12 +1609,12 @@ struct AgentRunMCPToolService {
                 if snapshot.isActionableForMCPWait {
                     return WaitAnyResult(sessionID: sessionID, disposition: .actionable(snapshot))
                 }
-            case let .noteworthySnapshot(wake):
-                if wake.snapshot.isActionableForMCPWait {
-                    return WaitAnyResult(sessionID: sessionID, disposition: .actionable(wake.snapshot))
+            case let .noteworthySnapshot(snapshot, reason):
+                if snapshot.isActionableForMCPWait {
+                    return WaitAnyResult(sessionID: sessionID, disposition: .actionable(snapshot))
                 }
-                if wake.reason == .steeringRequested {
-                    return WaitAnyResult(sessionID: sessionID, disposition: .steeringInterrupted(wake))
+                if reason == .steeringRequested {
+                    return WaitAnyResult(sessionID: sessionID, disposition: .steeringInterrupted(snapshot))
                 }
             case let .epochAdvanced(epoch, transitionKind):
                 if transitionKind == .unrelated {
@@ -1730,30 +1680,16 @@ struct AgentRunMCPToolService {
             representativeSnapshot: AgentRunMCPSnapshot? = nil,
             snapshots: [AgentRunMCPSnapshot],
             pendingSessionIDs: [UUID],
-            interruptedSessionID: UUID,
-            steeringMessage: String? = nil,
-            steeringOriginRunID: UUID? = nil,
-            waitConsumerParentRunID: UUID? = nil
+            interruptedSessionID: UUID
         ) -> Value {
-            let representativeSnapshot = representativeSnapshot
-                ?? snapshots.first { $0.sessionID == interruptedSessionID }
-                ?? agentRunExpiredSnapshot(sessionID: interruptedSessionID)
-            let wake = AgentRunSessionStore.NoteworthyWake(
-                snapshot: representativeSnapshot,
-                reason: .steeringRequested,
-                steeringMessage: steeringMessage,
-                steeringOriginRunID: steeringOriginRunID
-            )
-            return decoratedMultiWaitInterruptValue(
+            decoratedMultiWaitInterruptValue(
                 sessionIDs: sessionIDs,
-                representativeSnapshot: representativeSnapshot,
+                representativeSnapshot: representativeSnapshot
+                    ?? snapshots.first { $0.sessionID == interruptedSessionID }
+                    ?? agentRunExpiredSnapshot(sessionID: interruptedSessionID),
                 snapshots: snapshots,
                 pendingSessionIDs: pendingSessionIDs,
-                interruptedSessionID: interruptedSessionID,
-                steeringMessage: projectedSteeringMessage(
-                    wake,
-                    waitConsumerParentRunID: waitConsumerParentRunID
-                )
+                interruptedSessionID: interruptedSessionID
             )
         }
 
@@ -1775,11 +1711,7 @@ struct AgentRunMCPToolService {
                     }
                     return WaitAnyResult(
                         sessionID: steeringSessionID,
-                        disposition: .steeringInterrupted(.init(
-                            snapshot: Self.agentRunExpiredSnapshot(sessionID: steeringSessionID),
-                            reason: .steeringRequested,
-                            steeringMessage: "post-cancellation steering"
-                        ))
+                        disposition: .steeringInterrupted(Self.agentRunExpiredSnapshot(sessionID: steeringSessionID))
                     )
                 }
             ]
@@ -1807,47 +1739,40 @@ struct AgentRunMCPToolService {
         static func test_waitUntilActionableDisposition(
             sessionID: UUID,
             timeoutSeconds: TimeInterval
-        ) async -> (
-            disposition: String,
-            wakeReason: String?,
-            steeringMessage: String?,
-            sessionID: UUID,
-            snapshotStatus: String?
-        ) {
+        ) async -> (disposition: String, wakeReason: String?, sessionID: UUID, snapshotStatus: String?) {
             guard let registration = await AgentRunSessionStore.currentRegistration(for: sessionID),
                   let cursor = await AgentRunSessionStore.currentCursor(for: registration)
             else {
-                return ("expired", nil, nil, sessionID, nil)
+                return ("expired", nil, sessionID, nil)
             }
             let result = await waitUntilActionable(cursor: cursor, timeoutSeconds: timeoutSeconds)
             switch result.disposition {
             case let .actionable(snapshot):
-                return ("actionable", nil, nil, result.sessionID, snapshot.status.rawValue)
-            case let .steeringInterrupted(wake):
+                return ("actionable", nil, result.sessionID, snapshot.status.rawValue)
+            case let .steeringInterrupted(snapshot):
                 return (
                     "steering_interrupted",
                     AgentRunSessionStore.WakeReason.steeringRequested.rawValue,
-                    wake.steeringMessage,
                     result.sessionID,
-                    wake.snapshot.status.rawValue
+                    snapshot.status.rawValue
                 )
             case let .superseded(snapshot):
-                return ("superseded", "superseded_turn", nil, result.sessionID, snapshot.status.rawValue)
+                return ("superseded", "superseded_turn", result.sessionID, snapshot.status.rawValue)
             case .terminalPublicationRejected:
-                return ("publication_rejected", nil, nil, result.sessionID, nil)
+                return ("publication_rejected", nil, result.sessionID, nil)
             case .timedOut:
-                return ("timed_out", nil, nil, result.sessionID, nil)
+                return ("timed_out", nil, result.sessionID, nil)
             case .expired:
-                return ("expired", nil, nil, result.sessionID, nil)
+                return ("expired", nil, result.sessionID, nil)
             case .cancelled:
-                return ("cancelled", nil, nil, result.sessionID, nil)
+                return ("cancelled", nil, result.sessionID, nil)
             }
         }
 
         static func test_waitUntilFirstActionableDisposition(
             sessionIDs: [UUID],
             timeoutSeconds: TimeInterval
-        ) async -> (sessionID: UUID, disposition: String, steeringMessage: String?) {
+        ) async -> (sessionID: UUID, disposition: String) {
             var cursors: [AgentRunSessionStore.WaitCursor] = []
             for sessionID in sessionIDs {
                 guard let registration = await AgentRunSessionStore.currentRegistration(for: sessionID),
@@ -1869,12 +1794,7 @@ struct AgentRunMCPToolService {
             case .timedOut: "timed_out"
             case .cancelled: "cancelled"
             }
-            let steeringMessage: String? = if case let .steeringInterrupted(wake) = result.disposition {
-                wake.steeringMessage
-            } else {
-                nil
-            }
-            return (result.sessionID, disposition, steeringMessage)
+            return (result.sessionID, disposition)
         }
 
         static func test_arbitrateWaitAnyDisposition(
@@ -1888,11 +1808,7 @@ struct AgentRunMCPToolService {
                 case "publication_rejected":
                     disposition = .terminalPublicationRejected("test")
                 case "steering_interrupted":
-                    disposition = .steeringInterrupted(.init(
-                        snapshot: snapshot,
-                        reason: .steeringRequested,
-                        steeringMessage: nil
-                    ))
+                    disposition = .steeringInterrupted(snapshot)
                 case "actionable":
                     disposition = .actionable(snapshot)
                 case "superseded":
@@ -1982,8 +1898,7 @@ struct AgentRunMCPToolService {
         workflow: AgentWorkflowDefinition? = nil,
         delivery: AgentModeViewModel.MCPInstructionDispatch? = nil,
         wakeReason: AgentRunSessionStore.WakeReason? = nil,
-        warning: String? = nil,
-        steeringMessage: String? = nil
+        warning: String? = nil
     ) -> Value {
         var object = snapshot.asObject()
         if let warning = warning?.trimmingCharacters(in: .whitespacesAndNewlines), !warning.isEmpty {
@@ -2006,14 +1921,10 @@ struct AgentRunMCPToolService {
         }
         if wakeReason == .steeringRequested {
             object["status_text"] = .string("Wait interrupted by a new steering instruction; the agent run is still running.")
-            var wait: [String: Value] = [
+            object["wait"] = .object([
                 "result": .string("interrupted_by_steering"),
                 "instruction": .string(agentRunSteeringWakeNote)
-            ]
-            if let steeringMessage {
-                wait["steering_message"] = .string(steeringMessage)
-            }
-            object["wait"] = .object(wait)
+            ])
         }
         return .object(object)
     }
@@ -2112,10 +2023,6 @@ struct AgentRunMCPToolService {
     private func wakeReason(from object: [String: Value]) -> AgentRunSessionStore.WakeReason? {
         guard let raw = object["_meta"]?.objectValue?["wake_reason"]?.stringValue else { return nil }
         return AgentRunSessionStore.WakeReason(rawValue: raw)
-    }
-
-    private func steeringMessage(from object: [String: Value]) -> String? {
-        object["wait"]?.objectValue?["steering_message"]?.stringValue
     }
 
     private func snapshot(from object: [String: Value]) -> AgentRunMCPSnapshot? {

@@ -26,13 +26,17 @@ actor GitDiffSnapshotPublisher {
         compareInput: String?,
         scope: GitDiffScope,
         selectedAbsolutePaths: [String],
-        pathspecs: [String]? = nil,
         contextLines: Int,
         detectRenames: Bool,
         snapshotIDOverride: String?,
         tabID: UUID? = nil
     ) async throws -> GitDiffSnapshotManifest {
         let normalizedSelected = normalizedAbsolutePaths(selectedAbsolutePaths)
+        let requestedPaths: [String]? = {
+            guard scope == .selected else { return nil }
+            let gitPaths = gitRelativePaths(from: normalizedSelected, repoRootPath: repo.rootPath)
+            return normalizeRequestedPaths(gitPaths)
+        }()
 
         return try await publishNewSnapshot(
             workspaceDirectory: workspaceDirectory,
@@ -42,8 +46,8 @@ actor GitDiffSnapshotPublisher {
             compareResolved: compareDisplay,
             compareInput: compareInput,
             scope: scope,
+            requestedPaths: requestedPaths,
             selectedAbsolutePaths: normalizedSelected,
-            pathspecs: pathspecs,
             contextLines: contextLines,
             detectRenames: detectRenames,
             snapshotIDOverride: snapshotIDOverride,
@@ -60,34 +64,23 @@ actor GitDiffSnapshotPublisher {
         compareResolved: String,
         compareInput: String?,
         scope: GitDiffScope,
+        requestedPaths: [String]?,
         selectedAbsolutePaths: [String],
-        pathspecs: [String]?,
         contextLines: Int,
         detectRenames: Bool,
         snapshotIDOverride: String?,
         tabID: UUID?
     ) async throws -> GitDiffSnapshotManifest {
-        let inputs: GitDiffEngine.GitDiffSnapshotBuildResult = if let pathspecs, !pathspecs.isEmpty {
-            try await engine.buildSnapshotInputs(
-                compare: compare,
-                pathspecs: pathspecs,
-                repoURL: repo.rootURL,
-                contextLines: contextLines,
-                detectRenames: detectRenames,
-                generateDiffText: mode != .quick
-            )
-        } else {
-            try await engine.buildSnapshotInputs(
-                compare: compare,
-                scope: scope,
-                selectedAbsolutePaths: selectedAbsolutePaths,
-                repoURL: repo.rootURL,
-                contextLines: contextLines,
-                detectRenames: detectRenames,
-                includeUntrackedInUnstaged: true,
-                generateDiffText: mode != .quick
-            )
-        }
+        let inputs = try await engine.buildSnapshotInputs(
+            compare: compare,
+            scope: scope,
+            selectedAbsolutePaths: selectedAbsolutePaths,
+            repoURL: repo.rootURL,
+            contextLines: contextLines,
+            detectRenames: detectRenames,
+            includeUntrackedInUnstaged: true,
+            generateDiffText: mode != .quick
+        )
 
         let snapshotID = resolveSnapshotID(
             override: snapshotIDOverride,
@@ -105,7 +98,7 @@ actor GitDiffSnapshotPublisher {
             mode: mode,
             compareRaw: compareResolved,
             compareInput: compareInput,
-            scope: inputs.scope,
+            scope: scope,
             requestedPaths: inputs.requestedPaths,
             fingerprint: inputs.fingerprint,
             contextLines: contextLines,
@@ -170,7 +163,6 @@ actor GitDiffSnapshotPublisher {
         compareInput: String?,
         scope: GitDiffScope,
         selectedAbsolutePaths: [String],
-        pathspecs: [String]? = nil,
         contextLines: Int,
         detectRenames: Bool,
         snapshotIDOverride: String?,
@@ -186,7 +178,6 @@ actor GitDiffSnapshotPublisher {
             compareInput: compareInput,
             scope: scope,
             selectedAbsolutePaths: selectedAbsolutePaths,
-            pathspecs: pathspecs,
             contextLines: contextLines,
             detectRenames: detectRenames,
             snapshotIDOverride: snapshotIDOverride,
@@ -196,5 +187,20 @@ actor GitDiffSnapshotPublisher {
 
     private func normalizedAbsolutePaths(_ paths: [String]) -> [String] {
         GitDiffPathNormalization.normalizedAbsolutePaths(paths)
+    }
+
+    private func gitRelativePaths(from absolutePaths: [String], repoRootPath: String) -> [String] {
+        GitDiffPathNormalization.gitRelativePaths(from: absolutePaths, repoRootPath: repoRootPath)
+    }
+
+    private func normalizeRequestedPaths(_ paths: [String]?) -> [String]? {
+        guard let paths else { return nil }
+        let cleaned = Set(
+            paths
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !cleaned.isEmpty else { return nil }
+        return cleaned.sorted()
     }
 }

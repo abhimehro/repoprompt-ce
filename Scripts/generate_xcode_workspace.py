@@ -10,19 +10,20 @@ source browsing.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 import fcntl
 import hashlib
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from contextlib import contextmanager
-from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
+
 
 SCHEMA_VERSION = 1
 GENERATOR_ID = "com.repoprompt.ce.xcode-workspace-generator"
@@ -67,18 +68,14 @@ def load_package_manifest(repo_root: Path) -> dict:
             text=True,
         )
     except FileNotFoundError as error:
-        raise GeneratorError(
-            "swift is required; install/select the Xcode toolchain"
-        ) from error
+        raise GeneratorError("swift is required; install/select the Xcode toolchain") from error
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
         raise GeneratorError(f"{' '.join(command)} failed: {detail}")
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise GeneratorError(
-            f"swift package dump-package returned invalid JSON: {error}"
-        ) from error
+        raise GeneratorError(f"swift package dump-package returned invalid JSON: {error}") from error
 
 
 def _target_map(manifest: dict) -> dict[str, dict]:
@@ -97,15 +94,11 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     if manifest.get("name") != "RepoPromptCE":
         raise GeneratorError("Package.swift must define package 'RepoPromptCE'")
 
-    products = {
-        product.get("name"): product for product in manifest.get("products", [])
-    }
+    products = {product.get("name"): product for product in manifest.get("products", [])}
     for name in ("RepoPrompt", "repoprompt-mcp"):
         product = products.get(name)
         if product is None or "executable" not in product.get("type", {}):
-            raise GeneratorError(
-                f"Package.swift must retain executable product '{name}'"
-            )
+            raise GeneratorError(f"Package.swift must retain executable product '{name}'")
     if products["RepoPrompt"].get("targets") != ["RepoPrompt"]:
         raise GeneratorError(
             "Executable product 'RepoPrompt' must remain mapped only to target 'RepoPrompt'"
@@ -139,9 +132,9 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         raise GeneratorError(
             "Target 'RepoPrompt' must remain the thin Sources/RepoPromptExecutable entry target"
         )
-    if len(repo_prompt.get("dependencies", [])) != 1 or _by_name_dependencies(
-        repo_prompt
-    ) != ["RepoPromptApp"]:
+    if len(repo_prompt.get("dependencies", [])) != 1 or _by_name_dependencies(repo_prompt) != [
+        "RepoPromptApp"
+    ]:
         raise GeneratorError("Target 'RepoPrompt' must depend only on 'RepoPromptApp'")
     repo_prompt_unsafe_flags = [
         setting.get("kind", {}).get("unsafeFlags", {}).get("_0", [])
@@ -154,9 +147,7 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
 
     repo_prompt_app = targets["RepoPromptApp"]
     if repo_prompt_app.get("type") != "regular":
-        raise GeneratorError(
-            "Target 'RepoPromptApp' must remain an internal library target"
-        )
+        raise GeneratorError("Target 'RepoPromptApp' must remain an internal library target")
     if repo_prompt_app.get("path") != "Sources/RepoPrompt":
         raise GeneratorError(
             "Target 'RepoPromptApp' must retain the existing Sources/RepoPrompt implementation"
@@ -169,15 +160,10 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         "RepoPromptShared",
     }
     repo_prompt_tests = targets["RepoPromptTests"]
-<<<<<<< HEAD
-    if set(_by_name_dependencies(repo_prompt_tests)) != expected_test_dependencies:
-=======
     if (
-        len(repo_prompt_tests.get("dependencies", []))
-        != len(expected_test_dependencies)
+        len(repo_prompt_tests.get("dependencies", [])) != len(expected_test_dependencies)
         or set(_by_name_dependencies(repo_prompt_tests)) != expected_test_dependencies
     ):
->>>>>>> 7e4441bd (- Refactor hooks bundle indentation and add telemetry)
         raise GeneratorError(
             "RepoPromptTests must depend on RepoPromptApp, RepoPromptCodeMapCore, "
             "RepoPromptMCP, and RepoPromptShared"
@@ -188,9 +174,7 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
         value = setting.get("kind", {}).get("unsafeFlags", {}).get("_0")
         if isinstance(value, list):
             unsafe_flags.append(value)
-    expected_header = (
-        repo_root / "Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h"
-    )
+    expected_header = repo_root / "Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h"
     if not any(
         len(flags) == 3
         and flags[0] == "-import-objc-header"
@@ -238,9 +222,7 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
     )
     for relative_path in required_paths:
         if not (repo_root / relative_path).exists():
-            raise GeneratorError(
-                f"required repository path is missing: {relative_path}"
-            )
+            raise GeneratorError(f"required repository path is missing: {relative_path}")
 
 
 def render_workspace(repository_relative_path: str) -> str:
@@ -278,15 +260,7 @@ def render_project(repository_relative_path: str) -> str:
     test_debug_id = stable_id("config:test:debug")
     test_release_id = stable_id("config:test:release")
 
-    folder_names = (
-        "Sources",
-        "Tests",
-        "Packages",
-        "AppBundle",
-        "AppResources",
-        "Scripts",
-        "docs",
-    )
+    folder_names = ("Sources", "Tests", "Packages", "AppBundle", "AppResources", "Scripts", "docs")
     folder_ids = {name: stable_id(f"folder:{name}") for name in folder_names}
     root_files = (
         ("Package.swift", "sourcecode.swift"),
@@ -299,11 +273,11 @@ def render_project(repository_relative_path: str) -> str:
     file_ids = {name: stable_id(f"file:{name}") for name, _ in root_files}
 
     folder_section = "\n".join(
-        f'\t\t{folder_ids[name]} /* {name} */ = {{isa = PBXFileSystemSynchronizedRootGroup; path = {repository_relative_path}/{name}; sourceTree = "<group>"; }};'
+        f"\t\t{folder_ids[name]} /* {name} */ = {{isa = PBXFileSystemSynchronizedRootGroup; path = {repository_relative_path}/{name}; sourceTree = \"<group>\"; }};"
         for name in folder_names
     )
     file_section = "\n".join(
-        f'\t\t{file_ids[name]} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = {file_type}; path = {repository_relative_path}/{name}; sourceTree = "<group>"; }};'
+        f"\t\t{file_ids[name]} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = {file_type}; path = {repository_relative_path}/{name}; sourceTree = \"<group>\"; }};"
         for name, file_type in root_files
     )
     main_children = "\n".join(
@@ -599,9 +573,7 @@ def render_generation_manifest(
         "inputs": {
             "Package.resolved": sha256_file(repo_root / "Package.resolved"),
             "Package.swift": sha256_file(repo_root / "Package.swift"),
-            "Scripts/generate_xcode_workspace.py": sha256_file(
-                Path(__file__).resolve()
-            ),
+            "Scripts/generate_xcode_workspace.py": sha256_file(Path(__file__).resolve()),
             "Scripts/xcode_developer_workflow.sh": sha256_file(
                 repo_root / "Scripts/xcode_developer_workflow.sh"
             ),
@@ -621,19 +593,15 @@ def render_outputs(
     validate_manifest(manifest, repo_root)
     relative_repo = repository_relative_path(repo_root, destination)
     return {
-        Path(WORKSPACE_NAME)
-        / "contents.xcworkspacedata": render_workspace(relative_repo).encode(),
-        Path(WORKSPACE_NAME)
-        / "xcshareddata/swiftpm/Package.resolved": (
+        Path(WORKSPACE_NAME) / "contents.xcworkspacedata": render_workspace(relative_repo).encode(),
+        Path(WORKSPACE_NAME) / "xcshareddata/swiftpm/Package.resolved": (
             repo_root / "Package.resolved"
         ).read_bytes(),
-        Path(PROJECT_NAME)
-        / f"xcshareddata/xcschemes/{TEST_SCHEME}.xcscheme": (
+        Path(PROJECT_NAME) / f"xcshareddata/xcschemes/{TEST_SCHEME}.xcscheme": (
             render_test_scheme(repo_root).encode()
         ),
         Path(PROJECT_NAME) / "project.pbxproj": render_project(relative_repo).encode(),
-        Path(PROJECT_NAME)
-        / f"xcshareddata/xcschemes/{APP_SCHEME}.xcscheme": render_scheme(
+        Path(PROJECT_NAME) / f"xcshareddata/xcschemes/{APP_SCHEME}.xcscheme": render_scheme(
             APP_SCHEME,
             "target:app",
             str(DEFAULT_DEBUG_APP_BUNDLE),
@@ -641,8 +609,7 @@ def render_outputs(
             repository_relative_path=relative_repo,
             working_directory=repo_root,
         ).encode(),
-        Path(PROJECT_NAME)
-        / f"xcshareddata/xcschemes/{MCP_SCHEME}.xcscheme": render_scheme(
+        Path(PROJECT_NAME) / f"xcshareddata/xcschemes/{MCP_SCHEME}.xcscheme": render_scheme(
             MCP_SCHEME,
             "target:mcp",
             f"$(PROJECT_DIR)/{relative_repo}/.build/debug/repoprompt-mcp",
@@ -664,31 +631,23 @@ def metadata_from_outputs(outputs: dict[Path, bytes]) -> dict:
     try:
         return json.loads(outputs[Path("generation.json")])
     except (KeyError, json.JSONDecodeError) as error:
-        raise GeneratorError(
-            f"rendered generation metadata is invalid: {error}"
-        ) from error
+        raise GeneratorError(f"rendered generation metadata is invalid: {error}") from error
 
 
 def expected_symlinks(outputs: dict[Path, bytes]) -> dict[Path, str]:
     metadata = metadata_from_outputs(outputs)
     relative_repo = metadata.get("repositoryRelativePath")
     if not isinstance(relative_repo, str) or not relative_repo:
-        raise GeneratorError(
-            "rendered generation metadata lacks repositoryRelativePath"
-        )
+        raise GeneratorError("rendered generation metadata lacks repositoryRelativePath")
     return {Path("Sources"): f"{relative_repo}/Sources"}
 
 
 def _write_tree(destination: Path, outputs: dict[Path, bytes]) -> None:
-    for relative_path, content in sorted(
-        outputs.items(), key=lambda item: str(item[0])
-    ):
+    for relative_path, content in sorted(outputs.items(), key=lambda item: str(item[0])):
         path = destination / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    for relative_path, target in sorted(
-        expected_symlinks(outputs).items(), key=lambda item: str(item[0])
-    ):
+    for relative_path, target in sorted(expected_symlinks(outputs).items(), key=lambda item: str(item[0])):
         path = destination / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.symlink_to(target, target_is_directory=True)
@@ -699,9 +658,7 @@ def validate_structure(destination: Path) -> None:
     try:
         marker_content = marker.read_text()
     except OSError as error:
-        raise GeneratorError(
-            f"generated ownership marker is missing: {error}"
-        ) from error
+        raise GeneratorError(f"generated ownership marker is missing: {error}") from error
     if marker.is_symlink() or marker_content != f"{GENERATOR_ID}\n":
         raise GeneratorError("generated ownership marker is invalid")
 
@@ -722,59 +679,40 @@ def validate_structure(destination: Path) -> None:
         workspace = ET.parse(workspace_path)
     except (ET.ParseError, OSError) as error:
         raise GeneratorError(f"invalid generated workspace XML: {error}") from error
-    locations = {
-        node.attrib.get("location") for node in workspace.findall(".//FileRef")
-    }
+    locations = {node.attrib.get("location") for node in workspace.findall(".//FileRef")}
     if locations != {"group:RepoPromptCE.xcodeproj", f"group:{relative_repo}"}:
-        raise GeneratorError(
-            "generated workspace does not reference the project and root package"
-        )
+        raise GeneratorError("generated workspace does not reference the project and root package")
 
     project_text = (destination / PROJECT_NAME / "project.pbxproj").read_text()
     if project_text.count("isa = PBXLegacyTarget;") != 3:
-        raise GeneratorError(
-            "generated project must contain exactly three convenience targets"
-        )
+        raise GeneratorError("generated project must contain exactly three convenience targets")
     for name in (APP_SCHEME, MCP_SCHEME, TEST_SCHEME):
         if name not in project_text:
             raise GeneratorError(f"generated project is missing target '{name}'")
 
     for name in (APP_SCHEME, MCP_SCHEME):
-        scheme_path = (
-            destination / PROJECT_NAME / f"xcshareddata/xcschemes/{name}.xcscheme"
-        )
+        scheme_path = destination / PROJECT_NAME / f"xcshareddata/xcschemes/{name}.xcscheme"
         try:
             ET.parse(scheme_path)
         except (ET.ParseError, OSError) as error:
-            raise GeneratorError(
-                f"invalid generated scheme XML for '{name}': {error}"
-            ) from error
+            raise GeneratorError(f"invalid generated scheme XML for '{name}': {error}") from error
 
-    test_scheme_path = (
-        destination / PROJECT_NAME / f"xcshareddata/xcschemes/{TEST_SCHEME}.xcscheme"
-    )
+    test_scheme_path = destination / PROJECT_NAME / f"xcshareddata/xcschemes/{TEST_SCHEME}.xcscheme"
     try:
         test_scheme = ET.parse(test_scheme_path)
     except (ET.ParseError, OSError) as error:
-        raise GeneratorError(
-            f"invalid generated scheme XML for '{TEST_SCHEME}': {error}"
-        ) from error
+        raise GeneratorError(f"invalid generated scheme XML for '{TEST_SCHEME}': {error}") from error
     test_blueprints = {
         node.attrib.get("BlueprintName")
         for node in test_scheme.findall(".//BuildableReference")
     }
     if TEST_SCHEME not in test_blueprints:
-        raise GeneratorError(
-            "generated test scheme does not reference the test workflow target"
-        )
+        raise GeneratorError("generated test scheme does not reference the test workflow target")
 
     for relative_path, target in {Path("Sources"): f"{relative_repo}/Sources"}.items():
         path = destination / relative_path
         if not path.is_symlink() or os.readlink(path) != target:
-            raise GeneratorError(
-                f"generated compatibility symlink is stale: {relative_path}"
-            )
-
+            raise GeneratorError(f"generated compatibility symlink is stale: {relative_path}")
 
 def lexical_absolute(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path.expanduser())))
@@ -786,20 +724,14 @@ def reject_symlinked_components(path: Path, repository_root: Path) -> None:
     try:
         relative = path.relative_to(repository_root)
     except ValueError as error:
-        raise GeneratorError(
-            f"destination must remain inside {repository_root}"
-        ) from error
+        raise GeneratorError(f"destination must remain inside {repository_root}") from error
     current = repository_root
     if current.is_symlink():
-        raise GeneratorError(
-            f"symlinked destination component is not allowed: {current}"
-        )
+        raise GeneratorError(f"symlinked destination component is not allowed: {current}")
     for component in relative.parts:
         current /= component
         if current.is_symlink():
-            raise GeneratorError(
-                f"symlinked destination component is not allowed: {current}"
-            )
+            raise GeneratorError(f"symlinked destination component is not allowed: {current}")
         if current.exists() and current != path and not current.is_dir():
             raise GeneratorError(f"destination parent is not a directory: {current}")
 
@@ -864,13 +796,7 @@ def atomic_exchange_directories(left: Path, right: Path) -> None:
         raise GeneratorError("atomic workspace regeneration requires macOS")
     libc = ctypes.CDLL(None, use_errno=True)
     renameatx_np = libc.renameatx_np
-    renameatx_np.argtypes = [
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    ]
+    renameatx_np.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     renameatx_np.restype = ctypes.c_int
     at_fdcwd = -2
     rename_swap = 0x00000002
@@ -908,9 +834,7 @@ def write_outputs(
             repository_root,
         )
         validate_generator_owned_destination(destination)
-        stage = Path(
-            tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
-        )
+        stage = Path(tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent))
         try:
             _write_tree(stage, outputs)
             validate_structure(stage)
@@ -925,10 +849,7 @@ def write_outputs(
 
 
 def is_ignored_xcode_user_path(relative_path: Path) -> bool:
-    if not relative_path.parts or relative_path.parts[0] not in {
-        WORKSPACE_NAME,
-        PROJECT_NAME,
-    }:
+    if not relative_path.parts or relative_path.parts[0] not in {WORKSPACE_NAME, PROJECT_NAME}:
         return False
     return (
         "xcuserdata" in relative_path.parts
@@ -940,9 +861,7 @@ def is_ignored_xcode_user_path(relative_path: Path) -> bool:
 def check_outputs(destination: Path, outputs: dict[Path, bytes]) -> None:
     with generation_lock(destination):
         if not destination.is_dir():
-            raise GeneratorError(
-                f"generated workspace is missing at {destination}; run xcode-generate"
-            )
+            raise GeneratorError(f"generated workspace is missing at {destination}; run xcode-generate")
         actual_files = {
             path.relative_to(destination)
             for path in destination.rglob("*")
@@ -952,25 +871,17 @@ def check_outputs(destination: Path, outputs: dict[Path, bytes]) -> None:
         expected_files = set(outputs)
         missing = sorted(expected_files - actual_files, key=str)
         if missing:
-            raise GeneratorError(
-                f"generated file is missing: {missing[0]}; run xcode-generate"
-            )
+            raise GeneratorError(f"generated file is missing: {missing[0]}; run xcode-generate")
         unexpected = sorted(actual_files - expected_files, key=str)
         if unexpected:
-            raise GeneratorError(
-                f"unexpected generated file: {unexpected[0]}; run xcode-generate"
-            )
+            raise GeneratorError(f"unexpected generated file: {unexpected[0]}; run xcode-generate")
         for relative_path in sorted(expected_files, key=str):
             if (destination / relative_path).read_bytes() != outputs[relative_path]:
-                raise GeneratorError(
-                    f"generated file is stale: {relative_path}; run xcode-generate"
-                )
+                raise GeneratorError(f"generated file is stale: {relative_path}; run xcode-generate")
         for relative_path, target in expected_symlinks(outputs).items():
             path = destination / relative_path
             if not path.is_symlink() or os.readlink(path) != target:
-                raise GeneratorError(
-                    f"generated compatibility symlink is stale: {relative_path}; run xcode-generate"
-                )
+                raise GeneratorError(f"generated compatibility symlink is stale: {relative_path}; run xcode-generate")
         validate_structure(destination)
 
 
@@ -992,9 +903,7 @@ def validate_xcodebuild_list(destination: Path) -> None:
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise GeneratorError(
-            f"xcodebuild -list returned invalid JSON: {error}"
-        ) from error
+        raise GeneratorError(f"xcodebuild -list returned invalid JSON: {error}") from error
     schemes = set(payload.get("workspace", {}).get("schemes", []))
     required = {APP_SCHEME, MCP_SCHEME, TEST_SCHEME, "RepoPrompt"}
     missing = sorted(required - schemes)

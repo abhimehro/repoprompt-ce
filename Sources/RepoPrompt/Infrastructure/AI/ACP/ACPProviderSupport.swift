@@ -71,7 +71,7 @@ enum ACPRuntimeEventParsing {
     }
 
     private static func repoPromptToolNameFromParenthesizedServerTitle(_ rawTitle: String) -> String? {
-        guard let match = rawTitle.wholeMatch(of: /^([A - Za - z0 - 9.:\/-]+) \ s +\ (.+)\ $/) else {
+        guard let match = rawTitle.wholeMatch(of: /^([A-Za-z0-9_.:\/-]+)\s+\((.+)\)$/) else {
             return nil
         }
 

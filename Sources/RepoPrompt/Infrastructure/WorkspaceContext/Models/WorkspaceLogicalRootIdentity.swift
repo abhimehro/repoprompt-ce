@@ -12,18 +12,10 @@ enum WorkspaceLogicalRootIdentity {
     }
 
     static func labels(for descriptors: [RootDescriptor]) -> [UUID: String] {
-        var seenPhysicalRootIDs = Set<UUID>()
-        var normalizedDescriptors: [RootDescriptor] = []
-        normalizedDescriptors.reserveCapacity(descriptors.count)
-        // Only the first complete descriptor for each physical root participates in labeling.
-        for descriptor in descriptors where seenPhysicalRootIDs.insert(descriptor.physicalRootID).inserted {
-            normalizedDescriptors.append(descriptor)
-        }
-
-        let nameCounts = Dictionary(grouping: normalizedDescriptors) {
+        let nameCounts = Dictionary(grouping: descriptors) {
             $0.preferredName.lowercased()
         }.mapValues(\.count)
-        let ordered = normalizedDescriptors.sorted { lhs, rhs in
+        let ordered = descriptors.sorted { lhs, rhs in
             let lhsLabel = label(for: lhs.rootEpoch)
             let rhsLabel = label(for: rhs.rootEpoch)
             if lhsLabel != rhsLabel {

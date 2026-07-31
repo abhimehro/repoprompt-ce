@@ -80,7 +80,7 @@ struct AgentInputBar: View {
 
     var body: some View {
         #if DEBUG
-            _ = AgentModePerfDiagnostics.increment("ui.body.inputBar")
+            let _ = AgentModePerfDiagnostics.increment("ui.body.inputBar")
         #endif
         AgentComposerView(
             props: composerUI.props,
@@ -159,7 +159,7 @@ struct AgentInputBar: View {
     @ViewBuilder
     private var statusPills: some View {
         #if DEBUG
-            _ = AgentModePerfDiagnostics.increment("ui.body.inputBar.statusPills")
+            let _ = AgentModePerfDiagnostics.increment("ui.body.inputBar.statusPills")
         #endif
         AgentStatusPillsRow(
             agentModeVM: agentModeVM,
@@ -253,7 +253,6 @@ struct AgentComposerView: View, Equatable {
 
     @State private var localInputText: String = ""
     @State private var submissionLatch = AgentComposerSubmissionLatch()
-    @State private var lastAppliedDraftRestorationEventIDByTab: [UUID: UUID] = [:]
     @State private var editorTextFieldHeight: CGFloat = ResizableTextField.height(forPresetIndex: 0, preset: .normal)
     @State private var isInputEmpty: Bool = true
     @State private var chromeOcclusion: CGFloat = 0
@@ -435,7 +434,7 @@ struct AgentComposerView: View, Equatable {
 
     var body: some View {
         #if DEBUG
-            _ = AgentModePerfDiagnostics.increment("ui.body.composer")
+            let _ = AgentModePerfDiagnostics.increment("ui.body.composer")
         #endif
         VStack(spacing: 0) {
             ComposerChrome(
@@ -515,18 +514,7 @@ struct AgentComposerView: View, Equatable {
                 } else {
                     restoredText = event.text + "\n" + existing
                 }
-            case .replaceAlways:
-                if let operation = event.operation {
-                    restoredText = AgentComposerDraftRestorationReducer.apply(
-                        operation,
-                        to: localInputText,
-                        lastAppliedRestorationEventID: lastAppliedDraftRestorationEventIDByTab[event.tabID]
-                    )
-                } else {
-                    restoredText = event.text
-                }
             }
-            lastAppliedDraftRestorationEventIDByTab[event.tabID] = event.id
             setLocalInputText(restoredText, forceRevision: true)
             actions.storeDraft(event.tabID, restoredText)
             DispatchQueue.main.async {

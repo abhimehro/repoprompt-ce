@@ -447,11 +447,9 @@ class WorkspaceFilesViewModel: ObservableObject {
     private var deferredReplayRoutingVersion: UInt64 = 0
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: ‑ Deferred replay routing
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - Root-keyed storage (stable string keys instead of URL to avoid key instability)
 
     private typealias RootKey = String
@@ -484,7 +482,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     private var deltaReplayRunID: UUID?
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - Child insertion coalescer (same-tick batching)
 
     /// ─────────────────────────────────────────────────────────────
@@ -763,18 +760,6 @@ class WorkspaceFilesViewModel: ObservableObject {
         )
         let update = await workspaceFileContextStore.currentCodemapRootStatusUpdate()
         handleCodemapRootStatus(update)
-    }
-
-    @discardableResult
-    func prioritizeCodemapGraphIndexNow(
-        rootID: UUID
-    ) async -> WorkspaceCodemapGraphIndexPrioritizeDisposition {
-        let disposition = await workspaceFileContextStore.prioritizeCodemapGraphIndexNow(
-            rootID: rootID
-        )
-        let update = await workspaceFileContextStore.currentCodemapRootStatusUpdate()
-        handleCodemapRootStatus(update)
-        return disposition
     }
 
     @MainActor
@@ -1277,7 +1262,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     private let automaticCodemapReadinessRetryPolicy: WorkspaceCodemapAutomaticSelectionRequestPolicy
     private let automaticCodemapSelectionWaiter: WorkspaceCodemapAutomaticSelectionWaiter
     private let automaticCodemapReadinessRetryDelay: Duration
-    private let defaultApplicationOpener: DefaultApplicationOpener
 
     init(
         alwaysReadableHomeDirectoryURL: URL? = nil,
@@ -1290,8 +1274,7 @@ class WorkspaceFilesViewModel: ObservableObject {
             maximumTotalWait: .seconds(10)
         ),
         automaticCodemapSelectionWaiter: WorkspaceCodemapAutomaticSelectionWaiter = .production,
-        automaticCodemapReadinessRetryDelay: Duration = .milliseconds(400),
-        defaultApplicationOpener: DefaultApplicationOpener = .system
+        automaticCodemapReadinessRetryDelay: Duration = .milliseconds(400)
     ) {
         self.alwaysReadableHomeDirectoryURL = (alwaysReadableHomeDirectoryURL ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
         self.workspaceFileContextStore = workspaceFileContextStore
@@ -1299,7 +1282,6 @@ class WorkspaceFilesViewModel: ObservableObject {
         self.automaticCodemapReadinessRetryPolicy = automaticCodemapReadinessRetryPolicy
         self.automaticCodemapSelectionWaiter = automaticCodemapSelectionWaiter
         self.automaticCodemapReadinessRetryDelay = automaticCodemapReadinessRetryDelay
-        self.defaultApplicationOpener = defaultApplicationOpener
         // If you store sortMethod in user defaults, do that here
         if let loaded = SortMethod(rawValue: storedSortMethod) {
             currentSortMethod = loaded
@@ -3498,7 +3480,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ------------------------------------------------------------------
-
     // MARK: Mention support
 
     /// ------------------------------------------------------------------
@@ -3518,7 +3499,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ------------------------------------------------------------------
-
     // MARK: Explicit helpers for mention tokens (add / remove)
 
     /// ------------------------------------------------------------------
@@ -4651,7 +4631,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - Insert batching helpers
 
     /// ─────────────────────────────────────────────────────────────
@@ -4829,7 +4808,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ============================================================
-
     // MARK: - File insertion
 
     /// ============================================================
@@ -5345,7 +5323,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-
     // MARK: – Helpers for expanding relative paths into absolute candidates
 
     /// ─────────────────────────────────────────────────────────────────────────────
@@ -5370,7 +5347,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-
     // MARK: - Selection Management Helpers
 
     /// ─────────────────────────────────────────────────────────────────────────────
@@ -5454,7 +5430,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-
     // MARK: – FileSystemService lookup by user path
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -5963,7 +5938,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // Helper to replay queued deltas once the app regains focus
-
     // MARK: – Window-focus replay
 
     @MainActor
@@ -8720,7 +8694,7 @@ class WorkspaceFilesViewModel: ObservableObject {
             .split(separator: "/")
             .map(String.init)
 
-        var currentFolder: FolderViewModel?
+        var currentFolder: FolderViewModel? = nil
         for root in rootFolders {
             if standardizedPath.hasPrefix(root.standardizedFullPath) || root.name == pathComponents.first {
                 currentFolder = root
@@ -9152,7 +9126,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     @MainActor private var cachedSearchFolderSuffixIndexByScope: [LookupRootScope: (generation: UInt64, index: SearchFolderSuffixIndex<FolderViewModel>)] = [:]
 
     // ------------------------------------------------------------------
-
     // MARK: Unified bulk path selection helpers (files and folders)
 
     // ------------------------------------------------------------------
@@ -12000,14 +11973,15 @@ extension WorkspaceFilesViewModel {
     @MainActor
     func openFileForMarkdownLink(_ target: MarkdownFileLinkTarget) async -> Bool {
         if let file = await resolveFileForMarkdownLink(target) {
-            return await file.openInDefaultApp(using: defaultApplicationOpener)
+            file.openInDefaultApp()
+            return true
         }
 
         let standardizedPath = (target.normalizedPath as NSString).standardizingPath
         guard standardizedPath.hasPrefix("/") else { return false }
 
         let fileURL = URL(fileURLWithPath: standardizedPath)
-        return await defaultApplicationOpener.open(fileURL)
+        return NSWorkspace.shared.open(fileURL)
     }
 
     @MainActor

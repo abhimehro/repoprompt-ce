@@ -81,7 +81,7 @@ struct AgentModeSessionsSidebarView: View {
 
     var body: some View {
         #if DEBUG
-            _ = Self.recordBodyMetric()
+            let _ = Self.recordBodyMetric()
         #endif
         VStack(spacing: 0) {
             // Search box at top
@@ -372,7 +372,7 @@ struct AgentModeSessionsListView: View {
 
     var body: some View {
         #if DEBUG
-            _ = Self.recordBodyMetric()
+            let _ = Self.recordBodyMetric()
         #endif
         let snapshot = sidebarListSnapshot
         let defaultCollapseSeedKeys = agentModeVM.defaultCollapsedSidebarThreadKeys(
@@ -831,7 +831,7 @@ struct ArchivedSessionsPagedList: View {
 
     var body: some View {
         #if DEBUG
-            _ = Self.recordBodyMetric()
+            let _ = Self.recordBodyMetric()
         #endif
         let sections = AgentSidebarDateSectionBuilder.archivedSections(
             for: Array(displayedTabs),

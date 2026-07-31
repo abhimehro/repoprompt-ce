@@ -11,7 +11,6 @@ import Foundation
 struct AppcastVersion {
     let version: String
     let buildNumber: String?
-    let title: String?
     let date: Date?
     let description: String?
     let releaseNotesURL: String?
@@ -27,7 +26,6 @@ final class AppcastParser: NSObject, XMLParserDelegate {
     private var currentElement: String = ""
     private var currentVersion: String?
     private var currentBuildNumber: String?
-    private var currentTitle: String?
     private var currentDate: Date?
     private var currentReleaseNotesURL: String?
     private var currentDownloadURL: String?
@@ -73,7 +71,6 @@ final class AppcastParser: NSObject, XMLParserDelegate {
     private func resetCurrentItem() {
         currentVersion = nil
         currentBuildNumber = nil
-        currentTitle = nil
         currentDate = nil
         currentReleaseNotesURL = nil
         currentDownloadURL = nil
@@ -110,7 +107,6 @@ final class AppcastParser: NSObject, XMLParserDelegate {
             // Reset item-specific state but keep inItem = true
             currentVersion = nil
             currentBuildNumber = nil
-            currentTitle = nil
             currentDate = nil
             currentReleaseNotesURL = nil
             currentDownloadURL = nil
@@ -140,7 +136,6 @@ final class AppcastParser: NSObject, XMLParserDelegate {
                 let appcastVersion = AppcastVersion(
                     version: version,
                     buildNumber: currentBuildNumber,
-                    title: currentTitle,
                     date: currentDate,
                     description: nil,
                     releaseNotesURL: currentReleaseNotesURL,
@@ -163,11 +158,6 @@ final class AppcastParser: NSObject, XMLParserDelegate {
                 if currentVersion == nil {
                     currentVersion = trimmedText
                 }
-            }
-
-        case "title":
-            if inItem, !trimmedText.isEmpty {
-                currentTitle = trimmedText
             }
 
         case "pubDate":

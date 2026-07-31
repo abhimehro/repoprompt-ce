@@ -14,9 +14,9 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent
@@ -48,12 +48,8 @@ def certificate(
 
 
 class LocalProductionIdentityToolTests(unittest.TestCase):
-    def test_command_inventory_parses_all_exact_name_identities_independent_of_output_order(
-        self,
-    ) -> None:
-        spec = importlib.util.spec_from_file_location(
-            "local_signing_identity", SCRIPT_DIR / "local_signing_identity.py"
-        )
+    def test_command_inventory_parses_all_exact_name_identities_independent_of_output_order(self) -> None:
+        spec = importlib.util.spec_from_file_location("local_signing_identity", SCRIPT_DIR / "local_signing_identity.py")
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
@@ -62,26 +58,18 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
 
         pem_b = b"-----BEGIN CERTIFICATE-----\nCERT-B\n-----END CERTIFICATE-----\n"
         pem_a = b"-----BEGIN CERTIFICATE-----\nCERT-A\n-----END CERTIFICATE-----\n"
-        pem_without_key = (
-            b"-----BEGIN CERTIFICATE-----\nCERT-C\n-----END CERTIFICATE-----\n"
-        )
+        pem_without_key = b"-----BEGIN CERTIFICATE-----\nCERT-C\n-----END CERTIFICATE-----\n"
         identity_output = (
             f'  1) {SHA1_B} "{PINNED_CERTIFICATE_NAME}"\n'
             f'  2) {SHA1_A} "{PINNED_CERTIFICATE_NAME}"\n'
             f'  3) {SHA1_C} "{PINNED_CERTIFICATE_NAME} Copy"\n'
         ).encode()
 
-        def fake_run_command(
-            arguments: list[str], *, input_data: bytes | None = None
-        ) -> bytes:
+        def fake_run_command(arguments: list[str], *, input_data: bytes | None = None) -> bytes:
             if arguments[:2] == ["security", "find-identity"]:
                 return identity_output
             self.assertEqual(arguments[:3], ["openssl", "x509", "-noout"])
-            marker = (
-                "A"
-                if b"CERT-A" in (input_data or b"")
-                else "B" if b"CERT-B" in (input_data or b"") else "C"
-            )
+            marker = "A" if b"CERT-A" in (input_data or b"") else "B" if b"CERT-B" in (input_data or b"") else "C"
             values = {
                 "A": (SHA1_A, SHA256_A),
                 "B": (SHA1_B, SHA256_B),
@@ -101,9 +89,7 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
             stdout=pem_b + pem_without_key + pem_a,
             stderr=b"",
         )
-        with mock.patch.object(
-            module, "run_command", side_effect=fake_run_command
-        ), mock.patch.object(
+        with mock.patch.object(module, "run_command", side_effect=fake_run_command), mock.patch.object(
             module.subprocess,
             "run",
             return_value=certificate_result,
@@ -114,17 +100,11 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
                 module.evaluation_time("2030-01-01T00:00:00Z"),
             )
 
-        self.assertEqual(
-            [item["sha256"] for item in inventory["candidates"]], [SHA256_A, SHA256_B]
-        )
-        by_fingerprint = {
-            item["sha256"]: item for item in inventory["matchingCertificates"]
-        }
+        self.assertEqual([item["sha256"] for item in inventory["candidates"]], [SHA256_A, SHA256_B])
+        by_fingerprint = {item["sha256"]: item for item in inventory["matchingCertificates"]}
         self.assertFalse(by_fingerprint[SHA256_C]["hasPrivateKey"])
 
-    def test_offline_inventory_filters_exact_name_private_key_and_expiry_and_sorts(
-        self,
-    ) -> None:
+    def test_offline_inventory_filters_exact_name_private_key_and_expiry_and_sorts(self) -> None:
         result = subprocess.run(
             [
                 "python3",
@@ -145,12 +125,8 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         inventory = json.loads(result.stdout)
-        self.assertEqual(
-            [item["sha256"] for item in inventory["candidates"]], [SHA256_A, SHA256_B]
-        )
-        by_fingerprint = {
-            item["sha256"]: item for item in inventory["matchingCertificates"]
-        }
+        self.assertEqual([item["sha256"] for item in inventory["candidates"]], [SHA256_A, SHA256_B])
+        by_fingerprint = {item["sha256"]: item for item in inventory["matchingCertificates"]}
         self.assertFalse(by_fingerprint[SHA256_C]["hasPrivateKey"])
         self.assertTrue(by_fingerprint["D" * 64]["isExpired"])
         self.assertNotIn("E" * 64, by_fingerprint)
@@ -180,12 +156,7 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
 
     def test_registry_write_is_atomic_owner_only_and_versioned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = (
-                Path(tmp)
-                / "Application Support"
-                / "RepoPrompt CE"
-                / "local-signing-identity-v1.json"
-            )
+            path = Path(tmp) / "Application Support" / "RepoPrompt CE" / "local-signing-identity-v1.json"
             result = subprocess.run(
                 [
                     "python3",
@@ -220,138 +191,6 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
 
 
 class LocalProductionInstallerTests(unittest.TestCase):
-    def test_full_xcode_resolver_preserves_explicit_compatible_developer_dir(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            developer_dir = self.create_fake_xcode(
-                root / "Explicit Xcode.app", sdk_version="27.0"
-            )
-            candidate_dir = self.create_fake_xcode(
-                root / "Candidate Xcode.app", sdk_version="27.0"
-            )
-            marker = root / "xcode-select-invoked"
-            bin_dir = self.create_xcode_resolver_stubs(root, marker=marker)
-            env = os.environ.copy()
-            env.update(
-                {
-                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
-                    "DEVELOPER_DIR": str(developer_dir),
-                }
-            )
-
-            result = subprocess.run(
-                [
-                    str(SCRIPT_DIR / "resolve_full_xcode_developer_dir.sh"),
-                    str(candidate_dir),
-                ],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=10,
-            )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), str(developer_dir))
-        self.assertFalse(marker.exists())
-
-    def test_full_xcode_resolver_discovers_first_compatible_candidate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            selected_clt = root / "CommandLineTools"
-            selected_clt.mkdir()
-            old_xcode = self.create_fake_xcode(
-                root / "Xcode-old.app", sdk_version="25.4"
-            )
-            compatible_xcode = self.create_fake_xcode(
-                root / "Xcode-beta.app", sdk_version="27.0"
-            )
-            bin_dir = self.create_xcode_resolver_stubs(root, selected_path=selected_clt)
-            env = os.environ.copy()
-            env.pop("DEVELOPER_DIR", None)
-            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
-
-            result = subprocess.run(
-                [
-                    str(SCRIPT_DIR / "resolve_full_xcode_developer_dir.sh"),
-                    str(old_xcode),
-                    str(compatible_xcode),
-                ],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=10,
-            )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), str(compatible_xcode))
-
-    def test_full_xcode_resolver_prefers_compatible_stable_candidate_over_beta(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            selected_clt = root / "CommandLineTools"
-            selected_clt.mkdir()
-            beta_xcode = self.create_fake_xcode(
-                root / "Xcode-beta.app", sdk_version="27.0"
-            )
-            stable_xcode = self.create_fake_xcode(
-                root / "Xcode-26.3.app", sdk_version="26.3"
-            )
-            bin_dir = self.create_xcode_resolver_stubs(root, selected_path=selected_clt)
-            env = os.environ.copy()
-            env.pop("DEVELOPER_DIR", None)
-            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
-
-            result = subprocess.run(
-                [
-                    str(SCRIPT_DIR / "resolve_full_xcode_developer_dir.sh"),
-                    str(beta_xcode),
-                    str(stable_xcode),
-                ],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=10,
-            )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), str(stable_xcode))
-
-    def test_full_xcode_resolver_fails_actionably_when_no_candidate_is_compatible(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            selected_clt = root / "CommandLineTools"
-            selected_clt.mkdir()
-            old_xcode = self.create_fake_xcode(
-                root / "Xcode-old.app", sdk_version="25.4"
-            )
-            bin_dir = self.create_xcode_resolver_stubs(root, selected_path=selected_clt)
-            env = os.environ.copy()
-            env.pop("DEVELOPER_DIR", None)
-            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
-
-            result = subprocess.run(
-                [
-                    str(SCRIPT_DIR / "resolve_full_xcode_developer_dir.sh"),
-                    str(old_xcode),
-                ],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=10,
-            )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(
-            "requires a full Xcode with the macOS 26 SDK or newer", result.stderr
-        )
-        self.assertIn(str(selected_clt), result.stderr)
-
     def test_finder_launcher_routes_confirmed_install_through_conductor(self) -> None:
         launcher = ROOT_DIR / "Install RepoPrompt CE Local Production.command"
         self.assertTrue(os.access(launcher, os.X_OK))
@@ -363,7 +202,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             capture = root / "capture.txt"
             conductor = root / "conductor"
             conductor.write_text(
-                '#!/usr/bin/env bash\nset -euo pipefail\nprintf \'%s\\n\' "$CONFIRM_LOCAL_PRODUCTION_INSTALL" > "$LAUNCHER_CAPTURE"\nprintf \'%s\\n\' "$@" >> "$LAUNCHER_CAPTURE"\n',
+                "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$CONFIRM_LOCAL_PRODUCTION_INSTALL\" > \"$LAUNCHER_CAPTURE\"\nprintf '%s\\n' \"$@\" >> \"$LAUNCHER_CAPTURE\"\n",
                 encoding="utf-8",
             )
             conductor.chmod(0o755)
@@ -392,10 +231,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             shutil.copy2(launcher, copied_launcher)
             capture = root / "capture.txt"
             conductor = root / "conductor"
-            conductor.write_text(
-                "#!/bin/bash\nprintf 'invoked\\n' > \"$LAUNCHER_CAPTURE\"\n",
-                encoding="utf-8",
-            )
+            conductor.write_text("#!/bin/bash\nprintf 'invoked\\n' > \"$LAUNCHER_CAPTURE\"\n", encoding="utf-8")
             conductor.chmod(0o755)
             env = os.environ.copy()
             env["LAUNCHER_CAPTURE"] = str(capture)
@@ -411,14 +247,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertFalse(capture.exists())
         self.assertIn("Install canceled.", result.stdout)
 
-    def test_local_entitlements_and_packaging_require_fingerprint_metadata(
-        self,
-    ) -> None:
-        template = (
-            ROOT_DIR
-            / "AppBundle"
-            / "RepoPrompt.local-self-signed.entitlements.template"
-        )
+    def test_local_entitlements_and_packaging_require_fingerprint_metadata(self) -> None:
+        template = ROOT_DIR / "AppBundle" / "RepoPrompt.local-self-signed.entitlements.template"
         with template.open("rb") as handle:
             entitlements = plistlib.load(handle)
         self.assertEqual(
@@ -435,18 +265,14 @@ class LocalProductionInstallerTests(unittest.TestCase):
         )
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")
         self.assertIn("LOCAL_SIGNING_CERTIFICATE_SHA256", package_script)
-        info_template = (ROOT_DIR / "AppBundle" / "Info.plist.template").read_text(
-            encoding="utf-8"
-        )
+        info_template = (ROOT_DIR / "AppBundle" / "Info.plist.template").read_text(encoding="utf-8")
         self.assertIn("RepoPromptLocalSigningCertificateSHA256", info_template)
         self.assertIn("RepoPromptLocalSecureStorageGeneration", info_template)
-        self.assertIn('--extract-certificates="$certificate_prefix"', package_script)
+        self.assertIn("--extract-certificates=\"$certificate_prefix\"", package_script)
         self.assertIn("Extracted designated requirement", package_script)
 
     def test_first_use_adopts_sole_identity_and_writes_registry(self) -> None:
-        result, context = self.run_installer(
-            [certificate(SHA1_A, SHA256_A)], expected_sha1=SHA1_A
-        )
+        result, context = self.run_installer([certificate(SHA1_A, SHA256_A)], expected_sha1=SHA1_A)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         generation = self.registry(context)["serviceGeneration"]
@@ -458,26 +284,9 @@ class LocalProductionInstallerTests(unittest.TestCase):
             context["package_capture"].read_text(encoding="utf-8").strip(),
             f"{SHA1_A}|{SHA256_A}|{generation}",
         )
-        self.assertNotIn(
-            "find-identity", context["security_log"].read_text(encoding="utf-8")
-        )
+        self.assertNotIn("find-identity", context["security_log"].read_text(encoding="utf-8"))
 
-    def test_installer_uses_packager_output_without_reinvoking_swift(self) -> None:
-        result, context = self.run_installer(
-            [certificate(SHA1_A, SHA256_A)], expected_sha1=SHA1_A
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(context["swift_log"].exists())
-        self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(
-                encoding="utf-8"
-            ),
-            "new\n",
-        )
-
-    def test_multiple_first_use_candidates_fail_with_fingerprints_and_explicit_selection_succeeds(
-        self,
-    ) -> None:
+    def test_multiple_first_use_candidates_fail_with_fingerprints_and_explicit_selection_succeeds(self) -> None:
         failed, _ = self.run_installer(
             [certificate(SHA1_B, SHA256_B), certificate(SHA1_A, SHA256_A)],
             expected_sha1=SHA1_A,
@@ -495,16 +304,11 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertEqual(selected.returncode, 0, selected.stderr)
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_B)
 
-    def test_registered_missing_expired_or_private_keyless_identity_fails_without_reminting(
-        self,
-    ) -> None:
+    def test_registered_missing_expired_or_private_keyless_identity_fails_without_reminting(self) -> None:
         scenarios = [
             ([], "is missing"),
             ([certificate(SHA1_A, SHA256_A, expired=True)], "expired"),
-            (
-                [certificate(SHA1_A, SHA256_A, private_key=False)],
-                "does not have an available private key",
-            ),
+            ([certificate(SHA1_A, SHA256_A, private_key=False)], "does not have an available private key"),
         ]
         for certificates, expected_message in scenarios:
             with self.subTest(expected_message=expected_message):
@@ -518,9 +322,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
                 self.assertFalse(context["import_log"].exists())
                 self.assertEqual(self.registry(context)["serviceGeneration"], 2)
 
-    def test_first_use_with_certificate_without_private_key_mints_exactly_one_identity(
-        self,
-    ) -> None:
+    def test_first_use_with_certificate_without_private_key_mints_exactly_one_identity(self) -> None:
         result, context = self.run_installer(
             [certificate(SHA1_A, SHA256_A, private_key=False)],
             after_mint=[
@@ -533,9 +335,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_C)
         self.assertTrue(context["import_log"].exists())
 
-    def test_explicit_rotation_advances_generation_and_preserves_prior_service_generation(
-        self,
-    ) -> None:
+    def test_explicit_rotation_advances_generation_and_preserves_prior_service_generation(self) -> None:
         result, context = self.run_installer(
             [certificate(SHA1_A, SHA256_A), certificate(SHA1_B, SHA256_B)],
             registry={"fingerprint": SHA256_A, "generation": 4},
@@ -546,13 +346,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_B)
         self.assertEqual(self.registry(context)["serviceGeneration"], 5)
-        self.assertIn(
-            "prior local secure-storage generation inaccessible", result.stderr
-        )
-        self.assertEqual(
-            context["package_capture"].read_text(encoding="utf-8").strip(),
-            f"{SHA1_B}|{SHA256_B}|5",
-        )
+        self.assertIn("prior local secure-storage generation inaccessible", result.stderr)
+        self.assertEqual(context["package_capture"].read_text(encoding="utf-8").strip(), f"{SHA1_B}|{SHA256_B}|5")
 
     def test_rotation_without_selection_mints_one_new_identity(self) -> None:
         result, context = self.run_installer(
@@ -566,12 +361,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_C)
         self.assertEqual(self.registry(context)["serviceGeneration"], 2)
 
-    def test_two_consecutive_installs_keep_fingerprint_generation_and_designated_requirement(
-        self,
-    ) -> None:
-        first, context = self.run_installer(
-            [certificate(SHA1_A, SHA256_A)], expected_sha1=SHA1_A
-        )
+    def test_two_consecutive_installs_keep_fingerprint_generation_and_designated_requirement(self) -> None:
+        first, context = self.run_installer([certificate(SHA1_A, SHA256_A)], expected_sha1=SHA1_A)
         self.assertEqual(first.returncode, 0, first.stderr)
         first_requirement = self.requirement_line(first.stdout)
         first_generation = self.registry(context)["serviceGeneration"]
@@ -582,9 +373,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
         self.assertEqual(self.requirement_line(second.stdout), first_requirement)
         self.assertFalse(context["import_log"].exists())
 
-    def test_existing_install_lock_fails_closed_without_removing_other_owner_lock(
-        self,
-    ) -> None:
+    def test_existing_install_lock_fails_closed_without_removing_other_owner_lock(self) -> None:
         result, context = self.run_installer(
             [certificate(SHA1_A, SHA256_A)],
             expected_sha1=SHA1_A,
@@ -604,16 +393,11 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_backup_copy=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(),
-            "old\n",
-        )
+        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
         self.assertEqual(context["registry"].stat().st_mode & 0o777, 0o600)
-        self.assertEqual(
-            list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), []
-        )
+        self.assertEqual(list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), [])
 
     def test_failed_registry_write_restores_prior_app_and_exact_registry(self) -> None:
         result, context = self.run_installer(
@@ -625,16 +409,11 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_write=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(),
-            "old\n",
-        )
+        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
         self.assertEqual(context["registry"].stat().st_mode & 0o777, 0o600)
-        self.assertEqual(
-            list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), []
-        )
+        self.assertEqual(list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), [])
 
     def test_failed_app_backup_preserves_prior_app_and_registry(self) -> None:
         result, context = self.run_installer(
@@ -647,19 +426,12 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_restore_copy=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(),
-            "old\n",
-        )
+        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
-        self.assertEqual(
-            list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), []
-        )
+        self.assertEqual(list(context["install_dir"].glob(".RepoPrompt CE.app.backup.*")), [])
 
-    def test_failed_registry_restore_preserves_snapshot_for_manual_recovery(
-        self,
-    ) -> None:
+    def test_failed_registry_restore_preserves_snapshot_for_manual_recovery(self) -> None:
         result, context = self.run_installer(
             [certificate(SHA1_A, SHA256_A), certificate(SHA1_B, SHA256_B)],
             registry={"fingerprint": SHA256_A, "generation": 4},
@@ -670,30 +442,17 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_restore_copy=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(),
-            "old\n",
-        )
-        self.assertEqual(
-            context["registry"].read_text(encoding="utf-8"), "damaged registry\n"
-        )
-        match = re.search(
-            r"Preserving failed transaction snapshot for manual recovery: ([^\n]+)",
-            result.stderr,
-        )
+        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
+        self.assertEqual(context["registry"].read_text(encoding="utf-8"), "damaged registry\n")
+        match = re.search(r"Preserving failed transaction snapshot for manual recovery: ([^\n]+)", result.stderr)
         self.assertIsNotNone(match, result.stderr)
         preserved = Path(match.group(1))
         self.addCleanup(shutil.rmtree, preserved, True)
         snapshot = preserved / "local-signing-identity-registry.backup"
         self.assertTrue(snapshot.is_file())
-        self.assertEqual(
-            json.loads(snapshot.read_text(encoding="utf-8"))["certificateSHA256"],
-            SHA256_A,
-        )
+        self.assertEqual(json.loads(snapshot.read_text(encoding="utf-8"))["certificateSHA256"], SHA256_A)
 
-    def test_failed_postwrite_registry_verification_restores_prior_app_and_registry(
-        self,
-    ) -> None:
+    def test_failed_postwrite_registry_verification_restores_prior_app_and_registry(self) -> None:
         result, context = self.run_installer(
             [certificate(SHA1_A, SHA256_A), certificate(SHA1_B, SHA256_B)],
             registry={"fingerprint": SHA256_A, "generation": 4},
@@ -703,31 +462,21 @@ class LocalProductionInstallerTests(unittest.TestCase):
             fail_registry_verification=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(),
-            "old\n",
-        )
+        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
         self.assertEqual(self.registry(context)["certificateSHA256"], SHA256_A)
         self.assertEqual(self.registry(context)["serviceGeneration"], 4)
 
-    def test_failed_replacement_restores_prior_app_and_does_not_write_registry(
-        self,
-    ) -> None:
+    def test_failed_replacement_restores_prior_app_and_does_not_write_registry(self) -> None:
         result, context = self.run_installer(
             [certificate(SHA1_A, SHA256_A)],
             expected_sha1=SHA1_A,
             fail_final_install_move=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            (context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(),
-            "old\n",
-        )
+        self.assertEqual((context["install_dir"] / "RepoPrompt CE.app" / "payload.txt").read_text(), "old\n")
         self.assertFalse(context["registry"].exists())
 
-    def test_certificate_minting_omits_legacy_when_openssl_does_not_support_it(
-        self,
-    ) -> None:
+    def test_certificate_minting_omits_legacy_when_openssl_does_not_support_it(self) -> None:
         result, _ = self.run_installer(
             [],
             after_mint=[certificate(SHA1_C, SHA256_C)],
@@ -761,23 +510,14 @@ class LocalProductionInstallerTests(unittest.TestCase):
         root = temp_dir / "repo"
         scripts = root / "Scripts"
         scripts.mkdir(parents=True)
-        shutil.copy2(
-            SCRIPT_DIR / "install_local_production.sh",
-            scripts / "install_local_production.sh",
-        )
-        shutil.copy2(
-            SCRIPT_DIR / "local_signing_identity.py",
-            scripts / "local_signing_identity.py",
-        )
-        shutil.copy2(
-            SCRIPT_DIR / "resolve_full_xcode_developer_dir.sh",
-            scripts / "resolve_full_xcode_developer_dir.sh",
-        )
+        shutil.copy2(SCRIPT_DIR / "install_local_production.sh", scripts / "install_local_production.sh")
+        shutil.copy2(SCRIPT_DIR / "local_signing_identity.py", scripts / "local_signing_identity.py")
         if fail_registry_verification or fail_registry_write:
             real_tool = scripts / "local_signing_identity_real.py"
             shutil.move(scripts / "local_signing_identity.py", real_tool)
             (scripts / "local_signing_identity.py").write_text(
-                textwrap.dedent("""\
+                textwrap.dedent(
+                    """\
                     import os
                     import subprocess
                     import sys
@@ -799,7 +539,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
                     if command == "write-registry" and result.returncode == 0:
                         open(marker, "w", encoding="utf-8").close()
                     raise SystemExit(result.returncode)
-                    """),
+                    """
+                ),
                 encoding="utf-8",
             )
         (root / "version.env").write_text(
@@ -807,7 +548,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        build_dir = root / ".build" / "release"
+        build_dir = temp_dir / "build"
         install_dir = temp_dir / "Applications"
         installed_app = install_dir / "RepoPrompt CE.app"
         installed_app.mkdir(parents=True)
@@ -818,15 +559,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
         fixture = temp_dir / "inventory.json"
         fixture.write_text(json.dumps({"certificates": certificates}), encoding="utf-8")
         after_fixture = temp_dir / "inventory-after-mint.json"
-        after_fixture.write_text(
-            json.dumps({"certificates": after_mint or certificates}), encoding="utf-8"
-        )
-        registry_path = (
-            temp_dir
-            / "Application Support"
-            / "RepoPrompt CE"
-            / "local-signing-identity-v1.json"
-        )
+        after_fixture.write_text(json.dumps({"certificates": after_mint or certificates}), encoding="utf-8")
+        registry_path = temp_dir / "Application Support" / "RepoPrompt CE" / "local-signing-identity-v1.json"
         if registry:
             registry_path.parent.mkdir(parents=True)
             registry_path.write_text(
@@ -848,7 +582,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
 
         package_capture = temp_dir / "package-capture.txt"
         (scripts / "package_app.sh").write_text(
-            textwrap.dedent("""\
+            textwrap.dedent(
+                """\
                 #!/usr/bin/env bash
                 set -euo pipefail
                 app="$FAKE_BUILD_DIR/RepoPrompt.app"
@@ -863,7 +598,8 @@ class LocalProductionInstallerTests(unittest.TestCase):
                   <key>RepoPromptLocalSecureStorageGeneration</key><string>$LOCAL_SIGNING_SERVICE_GENERATION</string>
                 </dict></plist>
                 EOF
-                """),
+                """
+            ),
             encoding="utf-8",
         )
         (scripts / "package_app.sh").chmod(0o755)
@@ -887,21 +623,7 @@ class LocalProductionInstallerTests(unittest.TestCase):
             esac
             """,
         )
-        swift_log = temp_dir / "swift.log"
-        self.write_stub(
-            bin_dir, "swift", 'printf "%s\\n" "$*" >> "$SWIFT_LOG"\nexit 97\n'
-        )
-        self.write_stub(
-            bin_dir,
-            "xcrun",
-            """\
-            if [[ "$*" == "--sdk macosx --show-sdk-version" && "${DEVELOPER_DIR:-}" == "$FAKE_DEVELOPER_DIR" ]]; then
-                printf '27.0\\n'
-                exit 0
-            fi
-            exit 1
-            """,
-        )
+        self.write_stub(bin_dir, "swift", 'printf "%s\\n" "$FAKE_BUILD_DIR"\n')
         self.write_stub(
             bin_dir,
             "codesign",
@@ -958,9 +680,6 @@ class LocalProductionInstallerTests(unittest.TestCase):
         )
 
         env = os.environ.copy()
-        fake_developer_dir = self.create_fake_xcode(
-            temp_dir / "Xcode.app", sdk_version="27.0"
-        )
         env.update(
             {
                 "PATH": f"{bin_dir}:{env.get('PATH', '')}",
@@ -970,28 +689,23 @@ class LocalProductionInstallerTests(unittest.TestCase):
                 "LOCAL_SIGNING_IDENTITY_INVENTORY_FIXTURE": str(fixture),
                 "LOCAL_SIGNING_IDENTITY_EVALUATED_AT": "2030-01-01T00:00:00Z",
                 "FAKE_BUILD_DIR": str(build_dir),
-                "FAKE_DEVELOPER_DIR": str(fake_developer_dir),
                 "FAKE_KEYCHAIN": str(keychain),
                 "FAKE_INVENTORY_FIXTURE": str(fixture),
                 "FAKE_AFTER_MINT_FIXTURE": str(after_fixture),
                 "FAKE_IMPORTED_IDENTITY": str(import_log),
                 "FAKE_DESIGNATED_SHA1": expected_sha1,
                 "SECURITY_LOG": str(security_log),
-                "SWIFT_LOG": str(swift_log),
                 "PACKAGE_CAPTURE": str(package_capture),
                 "OPENSSL_REJECTS_LEGACY": "1" if openssl_rejects_legacy else "0",
                 "FAIL_FINAL_INSTALL_MOVE": "1" if fail_final_install_move else "0",
                 "FAIL_APP_BACKUP_MOVE": "1" if fail_app_backup_move else "0",
                 "FAIL_REGISTRY_BACKUP_COPY": "1" if fail_registry_backup_copy else "0",
                 "FAIL_REGISTRY_WRITE": "1" if fail_registry_write else "0",
-                "FAIL_REGISTRY_RESTORE_COPY": (
-                    "1" if fail_registry_restore_copy else "0"
-                ),
+                "FAIL_REGISTRY_RESTORE_COPY": "1" if fail_registry_restore_copy else "0",
                 "FAIL_REGISTRY_READ_MARKER": str(temp_dir / "fail-registry-read"),
                 "TMPDIR": str(installer_tmp),
                 "FAKE_REGISTRY_PATH": str(registry_path),
                 "FAKE_INSTALLED_APP": str(installed_app),
-                "DEVELOPER_DIR": str(fake_developer_dir),
             }
         )
         if selected:
@@ -1007,7 +721,6 @@ class LocalProductionInstallerTests(unittest.TestCase):
             "package_capture": package_capture,
             "security_log": security_log,
             "import_log": import_log,
-            "swift_log": swift_log,
             "tmp_root": installer_tmp,
         }
         return self.invoke(context), context
@@ -1028,63 +741,13 @@ class LocalProductionInstallerTests(unittest.TestCase):
 
     @staticmethod
     def requirement_line(output: str) -> str:
-        return next(
-            line
-            for line in output.splitlines()
-            if line.startswith("Packaged designated requirement:")
-        )
+        return next(line for line in output.splitlines() if line.startswith("Packaged designated requirement:"))
 
     @staticmethod
     def write_stub(bin_dir: Path, name: str, body: str) -> None:
         path = bin_dir / name
-        path.write_text(
-            "#!/usr/bin/env bash\nset -euo pipefail\n" + textwrap.dedent(body),
-            encoding="utf-8",
-        )
+        path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + textwrap.dedent(body), encoding="utf-8")
         path.chmod(0o755)
-
-    @staticmethod
-    def create_fake_xcode(app_path: Path, *, sdk_version: str) -> Path:
-        developer_dir = app_path / "Contents" / "Developer"
-        (developer_dir / "usr" / "bin").mkdir(parents=True)
-        (developer_dir / "Platforms" / "MacOSX.platform").mkdir(parents=True)
-        xcodebuild = developer_dir / "usr" / "bin" / "xcodebuild"
-        xcodebuild.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-        xcodebuild.chmod(0o755)
-        (developer_dir / ".fixture-sdk-version").write_text(
-            f"{sdk_version}\n", encoding="utf-8"
-        )
-        return developer_dir
-
-    @classmethod
-    def create_xcode_resolver_stubs(
-        cls,
-        root: Path,
-        *,
-        selected_path: Path | None = None,
-        marker: Path | None = None,
-    ) -> Path:
-        bin_dir = root / "bin"
-        bin_dir.mkdir(exist_ok=True)
-        selected = str(selected_path or root / "CommandLineTools")
-        marker_command = f"printf 'invoked\\n' > {str(marker)!r}\n" if marker else ""
-        cls.write_stub(
-            bin_dir,
-            "xcode-select",
-            f"""\
-            {marker_command}printf '%s\\n' {selected!r}
-            """,
-        )
-        cls.write_stub(
-            bin_dir,
-            "xcrun",
-            """\
-            [[ "$*" == "--sdk macosx --show-sdk-version" ]] || exit 64
-            [[ -f "${DEVELOPER_DIR:-}/.fixture-sdk-version" ]] || exit 65
-            cat "$DEVELOPER_DIR/.fixture-sdk-version"
-            """,
-        )
-        return bin_dir
 
 
 if __name__ == "__main__":

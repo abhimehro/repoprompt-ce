@@ -36,13 +36,8 @@ enum ToolResultDTOs {
 
         static func sessionBound(from projection: WorkspaceRootBindingProjection?) -> WorktreeScopeDTO? {
             guard let projection, !projection.isEmpty else { return nil }
-            let orderedMetadataBoundRoots = projection.boundRootsForMetadata
-            var seenLabelSourcePhysicalRootIDs = Set<UUID>()
-            let labelSourceBoundRoots = orderedMetadataBoundRoots.filter { boundRoot in
-                seenLabelSourcePhysicalRootIDs.insert(boundRoot.physicalRoot.id).inserted
-            }
             let rootLabels = WorkspaceLogicalRootIdentity.labels(
-                for: labelSourceBoundRoots.map { boundRoot in
+                for: projection.boundRootsForMetadata.map { boundRoot in
                     WorkspaceLogicalRootIdentity.RootDescriptor(
                         physicalRootID: boundRoot.physicalRoot.id,
                         rootEpoch: WorkspaceCodemapRootEpoch(
@@ -53,7 +48,7 @@ enum ToolResultDTOs {
                     )
                 }
             )
-            let mappings = orderedMetadataBoundRoots.compactMap { boundRoot -> RootMappingDTO? in
+            let mappings = projection.boundRootsForMetadata.compactMap { boundRoot -> RootMappingDTO? in
                 let logicalPath = boundRoot.logicalRoot.standardizedFullPath
                 let effectivePath = boundRoot.physicalRoot.standardizedFullPath
                 guard logicalPath != effectivePath else { return nil }

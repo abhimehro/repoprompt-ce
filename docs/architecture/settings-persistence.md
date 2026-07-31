@@ -1,6 +1,6 @@
 # Settings Persistence
 
-Current as of 2026-07-26. This document is contributor-facing: use it when changing durable settings, workspace overrides, Agent Models settings, or MCP settings surfaces.
+Current as of 2026-07-14. This document is contributor-facing: use it when changing durable settings, workspace overrides, Agent Models settings, or MCP settings surfaces.
 
 ## Durable settings file
 
@@ -23,15 +23,15 @@ same numeric version.
 
 ## Classification matrix
 
-| `schemaLineage`                                | `schemaVersion`                           | Behavior                                                                                                          |
-| ---------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `repoprompt-ce.global-settings`                | `<= currentSchemaVersion`                 | Load normally without rewriting merely because the schema is older.                                               |
-| `repoprompt-ce.global-settings`                | `> currentSchemaVersion`                  | Preserve and block saves as a same-lineage future CE file. The UI does not offer compatible import for this lane. |
-| any other non-empty value                      | any                                       | Preserve and block saves as an incompatible/foreign schema.                                                       |
-| absent                                         | `<= legacyUnlineagedSchemaVersionCeiling` | Accept as legacy OSS CE.                                                                                          |
-| absent                                         | `> legacyUnlineagedSchemaVersionCeiling`  | Preserve and block saves as incompatible/foreign, permanently.                                                    |
-| header is undecodable but bytes are valid JSON | n/a                                       | Preserve and block saves as incompatible/foreign.                                                                 |
-| bytes are not JSON                             | n/a                                       | Back up as corrupt and write current defaults if the backup succeeds.                                             |
+| `schemaLineage` | `schemaVersion` | Behavior |
+| --- | --- | --- |
+| `repoprompt-ce.global-settings` | `<= currentSchemaVersion` | Load normally without rewriting merely because the schema is older. |
+| `repoprompt-ce.global-settings` | `> currentSchemaVersion` | Preserve and block saves as a same-lineage future CE file. The UI does not offer compatible import for this lane. |
+| any other non-empty value | any | Preserve and block saves as an incompatible/foreign schema. |
+| absent | `<= legacyUnlineagedSchemaVersionCeiling` | Accept as legacy OSS CE. |
+| absent | `> legacyUnlineagedSchemaVersionCeiling` | Preserve and block saves as incompatible/foreign, permanently. |
+| header is undecodable but bytes are valid JSON | n/a | Preserve and block saves as incompatible/foreign. |
+| bytes are not JSON | n/a | Back up as corrupt and write current defaults if the backup succeeds. |
 
 ## Minimum schema stamping
 
@@ -125,49 +125,6 @@ session. The store owns dismissal across workspace windows and clears it when th
 changes or persistence unblocks. It is never stored in `UserDefaults`. The Settings
 window always shows the active warning and recovery controls.
 
-## Agent Mode Handoff instructions
-
-The reusable titlebar Handoff default is one optional app-wide scalar:
-
-```text
-scalarPreferences.agentMode.agentSessionHandoffInstructions
-```
-
-This setting is global across workspaces. It does not use the Agent Models
-workspace-profile system, which is feature-specific rather than a generic
-layered-settings authority. Workspace-scoped Handoff instructions require a
-separate persistence and migration design.
-
-The field is a JSON string when present. An absent or decoded `null` field resolves to
-exactly `""` through `GlobalSettingsStore.agentSessionHandoffInstructions()` without
-materializing the field or rewriting the file. The typed setter preserves text verbatim:
-leading and trailing whitespace, blank lines, and whitespace-only values are significant.
-Setting exactly `""` removes the optional field (`nil`); clearing an already absent field
-is an accepted no-op that does not publish or save.
-
-Supported UI and store writes accept at most 20,000 Swift `Character`s, counted with
-`String.count`. Exactly 20,000 is valid. The setter rejects 20,001 or more without changing
-memory or disk and never trims or truncates. An oversized value from externally authored
-JSON remains loaded so Settings can show the full invalid draft for correction or clearing;
-it does not make the document corrupt or authorize a compatibility fallback that silently
-omits configured instructions.
-
-This scalar belongs to the existing baseline scalar container, requires no schema-version
-bump or migration, and leaves baseline-only documents stamped v2. Compatible import retains
-a type-compatible string. False-v4 normalization changes only the raw root `schemaVersion`,
-so the raw Handoff field and its exact value survive unchanged. Setting or clearing this
-field uses the sibling-preserving Agent Mode scalar update path.
-
-The setting is intentionally local to the Agent Mode settings UI and titlebar Handoff flow.
-It has no `app_settings` descriptor, catalog key, getter, setter, candidate schema, or MCP
-tool property. Do not expose `agent_mode.handoff_instructions` (or an equivalent key)
-without a separate public-surface design and migration decision.
-
-If global-settings persistence is blocked, an accepted Save or Clear remains active in
-memory for the current launch and the Handoff card surfaces a noninteractive warning. The
-existing global-settings warning and recovery controls remain the only recovery authority;
-the card does not roll back the accepted value or create a second recovery path.
-
 ## Agent Models profiles
 
 Agent Models settings cover the controls shown on Settings → Agent Models:
@@ -185,14 +142,14 @@ These fields are grouped in `AgentModelsSettingsProfile`.
 
 The global Agent Models profile is not a separate JSON blob. It is projected from existing durable fields:
 
-| Profile field                           | Backing setting                                                     |
-| --------------------------------------- | ------------------------------------------------------------------- |
-| `planningModelRaw`                      | `scalarPreferences.modelSelection.planningModel`                    |
-| `preferredComposeModelRaw`              | `scalarPreferences.modelSelection.preferredComposeModel`            |
-| `syncChatModelWithOracle`               | `scalarPreferences.modelSelection.syncChatModelWithOracle`          |
-| `contextBuilderAgentRaw`                | `globalDefaults.discoverAgentRaw`                                   |
-| `contextBuilderModelsByAgent`           | `globalDefaults.discoverModelsByAgent`                              |
-| `mcpAgentRoleOverrides`                 | `globalDefaults.mcpAgentRoleOverrides`                              |
+| Profile field | Backing setting |
+| --- | --- |
+| `planningModelRaw` | `scalarPreferences.modelSelection.planningModel` |
+| `preferredComposeModelRaw` | `scalarPreferences.modelSelection.preferredComposeModel` |
+| `syncChatModelWithOracle` | `scalarPreferences.modelSelection.syncChatModelWithOracle` |
+| `contextBuilderAgentRaw` | `globalDefaults.discoverAgentRaw` |
+| `contextBuilderModelsByAgent` | `globalDefaults.discoverModelsByAgent` |
+| `mcpAgentRoleOverrides` | `globalDefaults.mcpAgentRoleOverrides` |
 | `restrictMCPAgentDiscoveryToRoleLabels` | `scalarPreferences.agentMode.restrictMCPAgentDiscoveryToRoleLabels` |
 
 Use `GlobalSettingsStore.globalAgentModelsProfile()` and `setGlobalAgentModelsProfile(_:contextBuilderWriteIntent:)` for whole-profile reads/writes. The write intent distinguishes user-owned Context Builder changes from automatic seeding while allowing unrelated model changes to preserve the existing ownership marker. User-driven Context Builder edits and workspace-to-global copies mark the selection as user-defined; automatic seeding stores an explicit unmarked state and never demotes an established user choice.

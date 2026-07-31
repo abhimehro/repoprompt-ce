@@ -57,8 +57,12 @@ struct SystemSettingsView: View {
                             Image(systemName: sparkleManager.updateAvailable ? "arrow.down.circle.fill" : "checkmark.circle.fill")
                                 .foregroundColor(sparkleManager.updateAvailable ? .blue : .green)
 
-                            Text(sparkleManager.availableUpdate?.availabilityStatus ?? "You have the latest version")
-                                .foregroundColor(sparkleManager.updateAvailable ? .blue : .secondary)
+                            Text(
+                                sparkleManager.updateAvailable ?
+                                    "Version \(sparkleManager.updateVersion ?? "Unknown") is available" :
+                                    "You have the latest version"
+                            )
+                            .foregroundColor(sparkleManager.updateAvailable ? .blue : .secondary)
 
                             Spacer()
 
@@ -71,8 +75,8 @@ struct SystemSettingsView: View {
                         }
 
                         // Install button (only when update is available)
-                        if let availableUpdate = sparkleManager.availableUpdate {
-                            Button(availableUpdate.installButtonTitle) {
+                        if sparkleManager.updateAvailable {
+                            Button("Install Update") {
                                 sparkleManager.installUpdate()
                             }
                             .buttonStyle(.borderedProminent)

@@ -5667,9 +5667,8 @@ extension ToolOutputFormatter {
             lines.append("- Run ID: `\(runID)`")
         }
         lines.append(contentsOf: formattedAgentRunWorktreeLines(worktrees))
-        // Wait metadata
+        // Multi-wait metadata
         let waitMeta = object["wait"]?.objectValue
-        let steeringMessage = waitMeta?["steering_message"]?.stringValue
         if let waitMeta, waitMeta["mode"]?.stringValue == "any" {
             let waitResult = waitMeta["result"]?.stringValue ?? ""
             let waitedCount = waitMeta["waited_count"]?.intValue
@@ -5693,9 +5692,6 @@ extension ToolOutputFormatter {
             if !pendingIDs.isEmpty {
                 lines.append("- Pending: \(pendingIDs.map { "`\($0)`" }.joined(separator: ", "))")
             }
-        }
-        if let steeringMessage, !steeringMessage.isEmpty {
-            lines.append("\n**Steering message**\n\n\(steeringMessage)")
         }
         if let agentName, !agentName.isEmpty {
             var agentLine = "- Agent: **\(agentName)**"

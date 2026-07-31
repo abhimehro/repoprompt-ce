@@ -81,11 +81,14 @@ struct UpdateAvailableToolbarPill: View {
             .disabled(!canCheckForUpdates)
             .hoverTooltip(canCheckForUpdates ? notice.availableTooltip : notice.notReadyTooltip, .bottom)
             .accessibilityLabel(notice.accessibilityLabel)
-            .accessibilityHint(
-                canCheckForUpdates ?
-                    notice.accessibilityHint :
-                    "Sparkle is not ready to check for updates yet."
-            )
+            .accessibilityHint(accessibilityHint(canCheckForUpdates: canCheckForUpdates))
         }
+    }
+
+    private func accessibilityHint(canCheckForUpdates: Bool) -> String {
+        if canCheckForUpdates {
+            return "Opens Sparkle's release notes and install dialog."
+        }
+        return "Sparkle is not ready to check for updates yet."
     }
 }

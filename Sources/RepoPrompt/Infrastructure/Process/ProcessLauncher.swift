@@ -156,7 +156,7 @@ enum ProcessLauncher {
 
         _ = FDWriteSupport.configureNoSigPipe(fd: stdinPipe[1])
 
-        var fileActions: posix_spawn_file_actions_t?
+        var fileActions: posix_spawn_file_actions_t? = nil
         let fileActionsInitResult: Int32 = if case let .fileActions(errno)? = initializationFailure {
             errno
         } else {
@@ -198,7 +198,7 @@ enum ProcessLauncher {
             }
         }
 
-        var attributes: posix_spawnattr_t?
+        var attributes: posix_spawnattr_t? = nil
         let attributesInitResult: Int32 = if case let .attributes(errno)? = initializationFailure {
             errno
         } else {
@@ -233,20 +233,6 @@ enum ProcessLauncher {
             throw ProcessLauncherError.spawnAttributesFailed(operation: "setsigdefault", errno: setSigDefaultResult)
         }
 
-        // `posix_spawn` otherwise inherits the calling thread's signal mask. Provider launches
-        // happen on Swift/GCD executor threads whose masks are not an application-level
-        // contract; inheriting a blocked SIGCHLD can strand a child's async process waiter after
-        // its shell has exited. Start every provider/tool root from an explicit empty mask.
-        var childSignalMask = sigset_t()
-        sigemptyset(&childSignalMask)
-        let setSigMaskResult = posix_spawnattr_setsigmask(&attributes, &childSignalMask)
-        if setSigMaskResult != 0 {
-            closePipe(&stdinPipe)
-            closePipe(&stdoutPipe)
-            closePipe(&stderrPipe)
-            throw ProcessLauncherError.spawnAttributesFailed(operation: "setsigmask", errno: setSigMaskResult)
-        }
-
         // Place each spawned CLI/provider root in its own process group. Cancellation
         // and timeout cleanup can then signal the whole tool family, not just the
         // direct child PID, which prevents same-PGID descendants from surviving if
@@ -259,10 +245,7 @@ enum ProcessLauncher {
             throw ProcessLauncherError.spawnAttributesFailed(operation: "setpgroup", errno: setProcessGroupResult)
         }
 
-        var configuredSpawnFlags = spawnFlags
-            | Int16(POSIX_SPAWN_SETSIGDEF)
-            | Int16(POSIX_SPAWN_SETSIGMASK)
-            | Int16(POSIX_SPAWN_SETPGROUP)
+        var configuredSpawnFlags = spawnFlags | Int16(POSIX_SPAWN_SETSIGDEF) | Int16(POSIX_SPAWN_SETPGROUP)
         #if canImport(Darwin)
             configuredSpawnFlags |= Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)
         #endif

@@ -606,7 +606,6 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         )
         session.codexNativeToolLiveness.inFlight[livenessKey] = .init(
             toolName: "bash",
-            turnID: nil,
             startedAt: Date(),
             lastSignalAt: Date(),
             processID: "123"

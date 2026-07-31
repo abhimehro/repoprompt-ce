@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 load_release_metadata() {
-	local root="$1"
-	local assignments
-	assignments="$(
-		python3 - "$root/version.env" <<'PYTHON'
+    local root="$1"
+    local assignments
+    assignments="$(
+        python3 - "$root/version.env" <<'PYTHON'
 import re
 import shlex
 import sys
@@ -40,6 +40,6 @@ if missing:
 for key in patterns:
     print(f"{key}={shlex.quote(values[key])}")
 PYTHON
-	)" || return
-	eval "$assignments"
+    )" || return
+    eval "$assignments"
 }

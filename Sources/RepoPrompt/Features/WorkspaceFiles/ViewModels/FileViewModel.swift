@@ -163,33 +163,6 @@ enum FileViewModelContentProviderError: Error {
     case providerUnavailable
 }
 
-@MainActor
-struct DefaultApplicationOpener {
-    private let handler: @MainActor (URL) async -> Bool
-
-    init(open: @escaping @MainActor (URL) async -> Bool) {
-        handler = open
-    }
-
-    func open(_ url: URL) async -> Bool {
-        await handler(url)
-    }
-
-    static let system = DefaultApplicationOpener { url in
-        await withCheckedContinuation { continuation in
-            let configuration = NSWorkspace.OpenConfiguration()
-            NSWorkspace.shared.open(url, configuration: configuration) { application, error in
-                if let error {
-                    print("Unable to open file: \(url.path): \(error)")
-                } else if application == nil {
-                    print("Unable to open file: \(url.path): no application was returned")
-                }
-                continuation.resume(returning: error == nil && application != nil)
-            }
-        }
-    }
-}
-
 class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Equatable, Hashable {
     // MARK: - Identity & paths
 
@@ -500,7 +473,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
     }
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - DEBUG aid: fallback-return telemetry (lightweight)
 
     // ─────────────────────────────────────────────────────────────
@@ -1018,9 +990,12 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
         }
     }
 
-    func openInDefaultApp(using opener: DefaultApplicationOpener = .system) async -> Bool {
+    func openInDefaultApp() {
         let fileURL = URL(fileURLWithPath: standardizedFullPath)
-        return await opener.open(fileURL)
+        let opened = NSWorkspace.shared.open(fileURL)
+        if !opened {
+            print("Unable to open file: \(standardizedFullPath)")
+        }
     }
 
     func copyContentsToPasteboard() {
@@ -1085,7 +1060,7 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
         let end = utf8.endIndex
 
         var lineEndsFound = 0
-        var cutUTF8Index: String.UTF8View.Index?
+        var cutUTF8Index: String.UTF8View.Index? = nil
         var truncatedByBytes = false
 
         var lfCount = 0

@@ -11,7 +11,6 @@
 ### Contributers
 
 You can obtain the full list of contributors to `uchardet` by running the following commands in the root of the source code directory tree:
-
 ```
 $ git submodule init uchardet
 $ git submodule update uchardet

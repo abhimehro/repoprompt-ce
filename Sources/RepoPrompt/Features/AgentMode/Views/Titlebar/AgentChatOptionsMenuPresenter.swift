@@ -11,10 +11,9 @@ struct AgentChatOptionsMenuTarget: Equatable {
 enum AgentSessionHandoffPrompt {
     static func render(
         target: AgentChatOptionsMenuTarget,
-        cliCommandName: String,
-        instructions: String = ""
+        cliCommandName: String
     ) -> String {
-        let prompt = """
+        """
         Use RepoPrompt CE to continue this exact Agent Mode session.
 
         Window ID: \(target.windowID)
@@ -30,10 +29,6 @@ enum AgentSessionHandoffPrompt {
         CLI equivalent (`\(cliCommandName)`):
         `\(cliCommandName) -w \(target.windowID) --context-id \(target.tabID.uuidString) -c agent_manage -j '{"op":"extract_handoff","session_id":"\(target.agentSessionID.uuidString)"}'`
         """
-        guard !instructions.isEmpty else {
-            return prompt
-        }
-        return prompt + "\n\nAdditional instructions:\n" + instructions
     }
 }
 

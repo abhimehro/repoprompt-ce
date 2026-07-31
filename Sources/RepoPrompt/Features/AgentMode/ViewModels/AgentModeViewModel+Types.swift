@@ -490,7 +490,6 @@ extension AgentModeViewModel {
 
         struct Execution: Equatable {
             let toolName: String
-            let turnID: String?
             let startedAt: Date
             var lastSignalAt: Date
             var processID: String?
@@ -873,7 +872,6 @@ extension AgentModeViewModel {
         let text: String
         let message: String
         let strategy: AgentModeRunService.DraftRestorationStrategy
-        let operation: AgentComposerDraftRestorationOperation?
     }
 
     /// Internal for cross-file AgentModeViewModel extension access after the mechanical file split.

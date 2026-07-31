@@ -1,7 +1,6 @@
 # Test Coverage Value Audit: Plan
 
 ## Goal
-
 Fully rebalance RepoPrompt CE's first-party Swift tests around current contract value: remove tests that do not earn retention, consolidate true overlap, preserve distinct layered protections, and add focused coverage where shipped behavior is materially exposed. Method count is an outcome measure, not the optimization target; use **500 executable XCTest methods as a provisional ceiling**, not a desired quota.
 
 ## Background
@@ -31,14 +30,14 @@ Fully rebalance RepoPrompt CE's first-party Swift tests around current contract 
 
 These are grounded candidates from static source/test mapping; the audit must confirm indirect coverage before adding tests.
 
-| Candidate contract seam                                                   | Evidence in shipped code                                                                                                                                                                                                                            | Current coverage signal                                                                                                                                  |
-| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Edit/diff generation routing, search-block ambiguity and failure behavior | `Sources/RepoPrompt/Infrastructure/Diffing/DiffGenerationUtility.swift:72-140` routes create/delete/rewrite/search-block behavior and throws on unmatched selection                                                                                 | Existing direct diff tests concentrate on application/parser/rendering; no direct test reference to `DiffGenerationUtility` was found.                   |
-| DEBUG secure-storage persistence policy and write path                    | `Sources/RepoPrompt/Infrastructure/Security/SecureKeyValueStorageBackend.swift:22-82` chooses Keychain vs ephemeral storage from marker/signing identity; `Tests/RepoPromptTests/Security/KeychainServiceTests.swift:7-77` covers reads/delete only | Current behavior is security-sensitive and deterministic, but no direct policy test reference was found.                                                 |
-| Pure app close decision behavior                                          | `Sources/RepoPrompt/App/WindowCloseCoordinator.swift:114-140` branches on active work and MCP continuity                                                                                                                                            | No focused test reference was found despite a deterministic contract.                                                                                    |
-| Slice persistence/rebase correctness                                      | `Sources/RepoPrompt/Infrastructure/WorkspaceContext/Slices/PartitionStore.swift:37-109` persists partitioned selections; `SliceRebaseEngine.swift:4-70` handles rebasing/dropped ranges and a P0-described cache edge                               | Existing broad workspace tests cover selection/store outcomes; no direct reference to either seam was found.                                             |
-| Agent-mode provider/run lifecycle                                         | `Sources/RepoPrompt/Features/AgentMode/Runtime/AgentModeRunService.swift:125-152` begins provider-specific run dispatch and startup-failure handling (with later steer/cancel paths in the same type)                                               | AgentMode has substantial surrounding coverage, but no direct `AgentModeRunService` test reference was found during mapping.                             |
-| Executable CE MCP CLI parsing/forwarding                                  | `Sources/RepoPromptMCP/CommandRunner/MCPCommandParser.swift:430-461` exposes actual command parsing; the CLI product also owns execution/transport paths                                                                                            | `CECLINamingAndRoutingTests.swift:75-112` reads parser/help source strings; a suite search found that as the only test occurrence of `MCPCommandParser`. |
+| Candidate contract seam | Evidence in shipped code | Current coverage signal |
+| --- | --- | --- |
+| Edit/diff generation routing, search-block ambiguity and failure behavior | `Sources/RepoPrompt/Infrastructure/Diffing/DiffGenerationUtility.swift:72-140` routes create/delete/rewrite/search-block behavior and throws on unmatched selection | Existing direct diff tests concentrate on application/parser/rendering; no direct test reference to `DiffGenerationUtility` was found. |
+| DEBUG secure-storage persistence policy and write path | `Sources/RepoPrompt/Infrastructure/Security/SecureKeyValueStorageBackend.swift:22-82` chooses Keychain vs ephemeral storage from marker/signing identity; `Tests/RepoPromptTests/Security/KeychainServiceTests.swift:7-77` covers reads/delete only | Current behavior is security-sensitive and deterministic, but no direct policy test reference was found. |
+| Pure app close decision behavior | `Sources/RepoPrompt/App/WindowCloseCoordinator.swift:114-140` branches on active work and MCP continuity | No focused test reference was found despite a deterministic contract. |
+| Slice persistence/rebase correctness | `Sources/RepoPrompt/Infrastructure/WorkspaceContext/Slices/PartitionStore.swift:37-109` persists partitioned selections; `SliceRebaseEngine.swift:4-70` handles rebasing/dropped ranges and a P0-described cache edge | Existing broad workspace tests cover selection/store outcomes; no direct reference to either seam was found. |
+| Agent-mode provider/run lifecycle | `Sources/RepoPrompt/Features/AgentMode/Runtime/AgentModeRunService.swift:125-152` begins provider-specific run dispatch and startup-failure handling (with later steer/cancel paths in the same type) | AgentMode has substantial surrounding coverage, but no direct `AgentModeRunService` test reference was found during mapping. |
+| Executable CE MCP CLI parsing/forwarding | `Sources/RepoPromptMCP/CommandRunner/MCPCommandParser.swift:430-461` exposes actual command parsing; the CLI product also owns execution/transport paths | `CECLINamingAndRoutingTests.swift:75-112` reads parser/help source strings; a suite search found that as the only test occurrence of `MCPCommandParser`. |
 
 ### Ownership and integration boundary
 
@@ -58,12 +57,12 @@ This effort is a **contract-value audit followed by bounded suite reshaping**, n
 
 ### Validation classes and review triggers
 
-| Class                     | Meaning                                                                                                                      | Count treatment                 | Retention rule                                                                                                                                                                       |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Behavioral coverage       | Executable assertion of a current CE output, failure/rejection boundary, transformation, integration, or external contract   | Counts as XCTest methods        | Primary retained coverage; preserve layers that protect distinct contracts                                                                                                           |
+| Class | Meaning | Count treatment | Retention rule |
+| --- | --- | --- | --- |
+| Behavioral coverage | Executable assertion of a current CE output, failure/rejection boundary, transformation, integration, or external contract | Counts as XCTest methods | Primary retained coverage; preserve layers that protect distinct contracts |
 | Structural/deletion guard | Source shape, removed-symbol absence, layering, naming/help exposure, or architecture constraint without executable behavior | Counts if implemented as XCTest | Retain only with a rationale that behavior or an existing guardrail is insufficient; a final allocation above **10** methods requires explicit justification at the retention freeze |
-| Diagnostic benchmark      | DEBUG/opt-in measurement/report harness rather than behavior protection                                                      | Counts if declared as XCTest    | Track separately; a final allocation above **2** methods requires explicit justification at the retention freeze                                                                     |
-| Live smoke                | Running-app/MCP/CLI/runtime validation outside deterministic XCTest coverage                                                 | Does not count                  | Record separately and run only for affected live boundaries                                                                                                                          |
+| Diagnostic benchmark | DEBUG/opt-in measurement/report harness rather than behavior protection | Counts if declared as XCTest | Track separately; a final allocation above **2** methods requires explicit justification at the retention freeze |
+| Live smoke | Running-app/MCP/CLI/runtime validation outside deterministic XCTest coverage | Does not count | Record separately and run only for affected live boundaries |
 
 The numeric structural/diagnostic thresholds are **review triggers, not pre-approved hard caps**; evidence determines the retained allocation. A rejection test protecting a current JSON-only or unsupported-input contract is behavioral coverage, not legacy scope and not automatically a structural guard.
 
@@ -75,25 +74,25 @@ The implementation pass creates `docs/investigations/test-coverage-value-audit-l
 
 One census row owns the count for each existing declared method. If a method protects multiple behaviors, it receives one primary `contract_id` for counting and additional contract tags for traceability; it is never counted twice.
 
-| Census field                                     | Purpose                                                                                                          |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `method_id`, `file`, `target`, `domain`          | Reconcile every `func test...` declaration to root or provider totals                                            |
-| `primary_contract_id`, `secondary_contract_tags` | Assign one counting owner without losing multi-contract traceability                                             |
-| `validation_class`, `layer`                      | Separate behavior, structural, diagnostic, and live evidence; identify unit/bridge/integration/runtime ownership |
-| `scenario_or_fixture_note`                       | Record breadth hidden inside golden, fixture-loop, or table-driven methods                                       |
-| `tentative_disposition`                          | Identify methods needing a detailed decision record: retain, review, delete, or consolidate                      |
+| Census field | Purpose |
+| --- | --- |
+| `method_id`, `file`, `target`, `domain` | Reconcile every `func test...` declaration to root or provider totals |
+| `primary_contract_id`, `secondary_contract_tags` | Assign one counting owner without losing multi-contract traceability |
+| `validation_class`, `layer` | Separate behavior, structural, diagnostic, and live evidence; identify unit/bridge/integration/runtime ownership |
+| `scenario_or_fixture_note` | Record breadth hidden inside golden, fixture-loop, or table-driven methods |
+| `tentative_disposition` | Identify methods needing a detailed decision record: retain, review, delete, or consolidate |
 
 ### Detailed decision records
 
 Create a detailed record for every deletion, consolidation, retained structural/diagnostic exception, ownership-layer overlap decision, apparent-gap candidate, approved addition, or production testability seam.
 
-| Decision field                                         | Purpose                                                                                            |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `contract_id`, `current_contract`, `affected_methods`  | State the current CE boundary being changed or protected                                           |
-| `surviving_or_added_protection`, `preserved_scenarios` | Prove deletion/consolidation/addition does not erase meaningful behavior                           |
-| `direct_or_indirect_evidence`                          | Establish whether nearby coverage is sufficient or a current gap remains                           |
-| `disposition`, `count_delta`, `batch_dependency`       | Freeze the result and require add-first/atomic sequencing where a reduction depends on replacement |
-| `validation_lane`, `testability_seam_required`         | Bind focused evidence and allow only narrowly justified deterministic seams                        |
+| Decision field | Purpose |
+| --- | --- |
+| `contract_id`, `current_contract`, `affected_methods` | State the current CE boundary being changed or protected |
+| `surviving_or_added_protection`, `preserved_scenarios` | Prove deletion/consolidation/addition does not erase meaningful behavior |
+| `direct_or_indirect_evidence` | Establish whether nearby coverage is sufficient or a current gap remains |
+| `disposition`, `count_delta`, `batch_dependency` | Freeze the result and require add-first/atomic sequencing where a reduction depends on replacement |
+| `validation_lane`, `testability_seam_required` | Bind focused evidence and allow only narrowly justified deterministic seams |
 
 ### Ledger invariants
 
@@ -108,39 +107,38 @@ Create a detailed record for every deletion, consolidation, retained structural/
 
 Because the provider package owns distinct pure behavior and currently contributes only five methods, the plan does not assign deletion quotas by domain in advance. Exact subtotals and whether the suite shrinks or grows are set only after value review; a larger root domain is an audit priority, not an automatic reduction target.
 
-| Target                                    | Current methods | Behavioral retained/added |            Structural retained |           Diagnostic retained | Removed/consolidated away |                              Final subtotal |
-| ----------------------------------------- | --------------: | ------------------------: | -----------------------------: | ----------------------------: | ------------------------: | ------------------------------------------: |
-| `RepoPromptTests`                         |             478 |            Ledger-derived |                 Ledger-derived |                Ledger-derived |            Ledger-derived |                                         `R` |
-| `RepoPromptClaudeCompatibleProviderTests` |               5 |            Ledger-derived |                 Ledger-derived |                Ledger-derived |            Ledger-derived |                                         `P` |
-| **Counted total**                         |         **483** |            Ledger-derived | Ledger-derived; justify if >10 | Ledger-derived; justify if >2 |            Ledger-derived | **`R + P ≤ 500` provisionally; no minimum** |
+| Target | Current methods | Behavioral retained/added | Structural retained | Diagnostic retained | Removed/consolidated away | Final subtotal |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `RepoPromptTests` | 478 | Ledger-derived | Ledger-derived | Ledger-derived | Ledger-derived | `R` |
+| `RepoPromptClaudeCompatibleProviderTests` | 5 | Ledger-derived | Ledger-derived | Ledger-derived | Ledger-derived | `P` |
+| **Counted total** | **483** | Ledger-derived | Ledger-derived; justify if >10 | Ledger-derived; justify if >2 | Ledger-derived | **`R + P ≤ 500` provisionally; no minimum** |
 
-| Gate                         | Required evidence                                                                                                                                                                                                                                                   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **0 — Baseline**             | The verified `478 + 5 = 483` declaration baseline and count policy are recorded.                                                                                                                                                                                    |
-| **1 — Ledger complete**      | The census reconciles every current method once; detailed decision records cover every change, exception, overlap decision, and candidate; fixture/golden breadth is captured; no Swift edits have begun.                                                           |
-| **2 — Retention freeze**     | Exact `R` and `P`, all dispositions/additions, class totals and any threshold rationale, dependency-safe batch deltas, and validation lanes are recorded; final count is value-justified and `R + P ≤ 500` unless this provisional ceiling is explicitly revisited. |
-| **3 — Batch reconciliation** | Each later reduction/addition batch matches its declared delta, lands replacement protection first or atomically when required, and passes focused coordinated validation before another batch lands.                                                               |
-| **4 — Acceptance**           | Final method recount matches frozen subtotals; class totals and rationales are recorded; complete coordinated root/provider validation passes; applicable live smoke is recorded separately.                                                                        |
+| Gate | Required evidence |
+| --- | --- |
+| **0 — Baseline** | The verified `478 + 5 = 483` declaration baseline and count policy are recorded. |
+| **1 — Ledger complete** | The census reconciles every current method once; detailed decision records cover every change, exception, overlap decision, and candidate; fixture/golden breadth is captured; no Swift edits have begun. |
+| **2 — Retention freeze** | Exact `R` and `P`, all dispositions/additions, class totals and any threshold rationale, dependency-safe batch deltas, and validation lanes are recorded; final count is value-justified and `R + P ≤ 500` unless this provisional ceiling is explicitly revisited. |
+| **3 — Batch reconciliation** | Each later reduction/addition batch matches its declared delta, lands replacement protection first or atomically when required, and passes focused coordinated validation before another batch lands. |
+| **4 — Acceptance** | Final method recount matches frozen subtotals; class totals and rationales are recorded; complete coordinated root/provider validation passes; applicable live smoke is recorded separately. |
 
 ## Candidate Gap Confirmation Protocol
 
 The preliminary gaps in `## Background` require detailed ledger decisions; they are not automatic additions. For each seam, inspect existing direct and outcome-level coverage before approving a focused new test or a narrowly enabling seam.
 
-| Candidate seam                                                                                                                                                   | If still uncovered, ownership                                                                                    | Confirmation question before addition                                                                                                                                                                       | Allowed disposition                                                                                                           |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `DiffGenerationUtility` routing/search-block ambiguity/failure (`Sources/RepoPrompt/Infrastructure/Diffing/DiffGenerationUtility.swift:72-140`)                  | Root Diffing/MCP apply-edits boundary                                                                            | Do existing parser, applicator, or ApplyEdits tests assert routing and unmatched/ambiguity outcomes, not merely adjacent output rendering?                                                                  | Retain indirect coverage or add narrow behavior tests                                                                         |
-| DEBUG storage selection and successful secure write (`Sources/RepoPrompt/Infrastructure/Security/SecureKeyValueStorageBackend.swift:22-82`)                      | Root Security                                                                                                    | Do security suites execute backend selection and successful write behavior, beyond Keychain read/delete and permission-store outcomes?                                                                      | Add deterministic policy/write tests; allow only minimal injection if required                                                |
-| `WindowCloseCoordinator.decide` (`Sources/RepoPrompt/App/WindowCloseCoordinator.swift:114-140`)                                                                  | Root App                                                                                                         | Is active-work/MCP-continuity close policy already asserted through another focused test?                                                                                                                   | Add pure decision cases only for uncovered branches                                                                           |
-| `PartitionStore` / `SliceRebaseEngine` (`Sources/RepoPrompt/Infrastructure/WorkspaceContext/Slices/PartitionStore.swift:37-109`; `SliceRebaseEngine.swift:4-70`) | Root WorkspaceContext                                                                                            | Do existing selection/store tests protect partition persistence, dropped-range rebasing, and the stated cache edge at the observable layer?                                                                 | Prefer sufficient integration tests; otherwise add missing direct outcomes                                                    |
-| `AgentModeRunService` provider/run lifecycle (`Sources/RepoPrompt/Features/AgentMode/Runtime/AgentModeRunService.swift:125-152`)                                 | Root AgentMode                                                                                                   | Do current coordinator/view-model tests actually execute provider dispatch/startup failure/steer/cancel service paths?                                                                                      | Add focused lifecycle tests; use live smoke only where runtime-sensitive                                                      |
-| Executable CLI parsing/forwarding (`Sources/RepoPromptMCP/CommandRunner/MCPCommandParser.swift:430-461`)                                                         | To be assigned only after accessibility review: existing root harness, executable/process harness, or live smoke | Is there runtime parser/forwarding coverage beyond `CECLINamingAndRoutingTests.swift:75-112`; can an existing test target reach the CLI boundary without changing target dependencies or production design? | Prefer an existing executable/harness boundary; otherwise classify live-only or approve a narrow seam before retention freeze |
+| Candidate seam | If still uncovered, ownership | Confirmation question before addition | Allowed disposition |
+| --- | --- | --- | --- |
+| `DiffGenerationUtility` routing/search-block ambiguity/failure (`Sources/RepoPrompt/Infrastructure/Diffing/DiffGenerationUtility.swift:72-140`) | Root Diffing/MCP apply-edits boundary | Do existing parser, applicator, or ApplyEdits tests assert routing and unmatched/ambiguity outcomes, not merely adjacent output rendering? | Retain indirect coverage or add narrow behavior tests |
+| DEBUG storage selection and successful secure write (`Sources/RepoPrompt/Infrastructure/Security/SecureKeyValueStorageBackend.swift:22-82`) | Root Security | Do security suites execute backend selection and successful write behavior, beyond Keychain read/delete and permission-store outcomes? | Add deterministic policy/write tests; allow only minimal injection if required |
+| `WindowCloseCoordinator.decide` (`Sources/RepoPrompt/App/WindowCloseCoordinator.swift:114-140`) | Root App | Is active-work/MCP-continuity close policy already asserted through another focused test? | Add pure decision cases only for uncovered branches |
+| `PartitionStore` / `SliceRebaseEngine` (`Sources/RepoPrompt/Infrastructure/WorkspaceContext/Slices/PartitionStore.swift:37-109`; `SliceRebaseEngine.swift:4-70`) | Root WorkspaceContext | Do existing selection/store tests protect partition persistence, dropped-range rebasing, and the stated cache edge at the observable layer? | Prefer sufficient integration tests; otherwise add missing direct outcomes |
+| `AgentModeRunService` provider/run lifecycle (`Sources/RepoPrompt/Features/AgentMode/Runtime/AgentModeRunService.swift:125-152`) | Root AgentMode | Do current coordinator/view-model tests actually execute provider dispatch/startup failure/steer/cancel service paths? | Add focused lifecycle tests; use live smoke only where runtime-sensitive |
+| Executable CLI parsing/forwarding (`Sources/RepoPromptMCP/CommandRunner/MCPCommandParser.swift:430-461`) | To be assigned only after accessibility review: existing root harness, executable/process harness, or live smoke | Is there runtime parser/forwarding coverage beyond `CECLINamingAndRoutingTests.swift:75-112`; can an existing test target reach the CLI boundary without changing target dependencies or production design? | Prefer an existing executable/harness boundary; otherwise classify live-only or approve a narrow seam before retention freeze |
 
 Each candidate row must finish as one of: `covered-directly — no addition`, `covered-indirectly — no addition`, `uncovered-current-contract — focused addition approved`, `uncovered-but-live-only — smoke lane recorded`, or `not-current-contract — no addition`.
 
 ## Work Items
 
 ### Item 1 — Create the audit ledger and executable-method census
-
 **Goal:** Establish a stable audit artifact and count ownership for the verified 483-method baseline without forcing full decision prose for every retained method.
 
 **Done when:** `docs/investigations/test-coverage-value-audit-ledger-2026-05-29.md` exists; its census accounts once for every root/provider method with primary contract, class, layer, scenario/fixture note, and tentative disposition; its subtotals equal 478 root and 5 provider.
@@ -152,7 +150,6 @@ Each candidate row must finish as one of: `covered-directly — no addition`, `c
 **Size:** Large.
 
 ### Item 2 — Make retention and consolidation decisions by value and ownership layer
-
 **Goal:** Decide which existing tests earn retention, consolidation, or deletion while preserving distinct package/root, unit/integration, and current rejection-contract protection.
 
 **Done when:** Detailed ledger records cover every proposed deletion/consolidation, every retained structural/diagnostic exception, and every cross-layer overlap decision; non-behavioral class totals are explicit, with rationale if structural guards exceed 10 or diagnostic benchmarks exceed 2; CodeMap is judged by recorded fixture/golden breadth; package-owned behavior and root bridge/policy coverage are not collapsed merely for sharing identifiers.
@@ -164,7 +161,6 @@ Each candidate row must finish as one of: `covered-directly — no addition`, `c
 **Size:** Large.
 
 ### Item 3 — Confirm missing coverage, including executable-boundary accessibility
-
 **Goal:** Replace apparent-gap speculation with evidence-backed addition, live-only, or no-addition decisions for important shipped seams.
 
 **Done when:** Each candidate in `## Candidate Gap Confirmation Protocol` has a detailed ledger disposition backed by direct/indirect coverage evidence; the CLI row records whether an existing target/harness can reach `RepoPromptMCP` behavior before any seam is considered; approved additions name target, scenarios, count delta, and validation; any production seam is minimal, deterministic, behavior-preserving, and paired with protection.
@@ -176,7 +172,6 @@ Each candidate row must finish as one of: `covered-directly — no addition`, `c
 **Size:** Large.
 
 ### Item 4 — Freeze retained subtotals and dependency-safe batches
-
 **Goal:** Convert audit conclusions into a value-justified implementation sequence that does not temporarily delete required protection or manufacture changes solely to hit a number.
 
 **Done when:** The ledger records exact root subtotal `R`, provider subtotal `P`, class totals and any threshold rationale, every delete/consolidate/add delta, touched files, focused validation lanes, and ordered batches; the resulting total is justified by retained/added contracts and stays within the provisional 500-method ceiling unless explicitly revisited; any reduction relying on a new test or seam is marked add-first or atomic in its batch dependency.
@@ -188,7 +183,6 @@ Each candidate row must finish as one of: `covered-directly — no addition`, `c
 **Size:** Medium.
 
 ### Item 5 — Execute evidence-approved change batches
-
 **Goal:** Apply only frozen reductions and confirmed additions/seams while continuously demonstrating current contract protection.
 
 **Done when:** Each future batch preserves documented scenario breadth, installs prerequisite replacement protection before or atomically with dependent removals, reconciles actual method deltas against the ledger, and passes its focused daemon tests before the next batch begins; independent low-value reductions need no invented replacement.
@@ -200,7 +194,6 @@ Each candidate row must finish as one of: `covered-directly — no addition`, `c
 **Size:** Large.
 
 ### Item 6 — Prove final allocation and validation acceptance
-
 **Goal:** Close with a fully rebalanced, high-value, explainable suite and separate evidence for any live boundary, regardless of whether the net method count decreases or increases.
 
 **Done when:** Final recount equals frozen `R + P`; class totals and required rationales are recorded; candidate dispositions and batch deltas are complete; full root/provider coordinated suites pass; formatting/lint/build/smoke evidence is recorded where the implemented changes require it.
@@ -215,16 +208,16 @@ Each candidate row must finish as one of: `covered-directly — no addition`, `c
 
 Later implementation must use daemon-coordinated validation rather than uncoordinated `swift test` unless the daemon is unavailable.
 
-| Later batch type                              | Required evidence                                                                                                                                                          |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Root test reduction/addition                  | `make dev-test FILTER=<touched-suite>` and method-delta reconciliation                                                                                                     |
-| Provider-package test change                  | `make dev-provider-test FILTER=<touched-suite>` and provider-subtotal reconciliation                                                                                       |
-| CodeMap resource-backed change                | `make dev-test FILTER=CodeMapGoldenTests` plus retained fixture/golden inventory                                                                                           |
-| Narrow root source seam                       | Relevant focused tests and `make dev-swift-build PRODUCT=RepoPrompt`                                                                                                       |
-| MCP CLI/server source seam                    | Relevant focused MCP tests and `make dev-swift-build PRODUCT=repoprompt-mcp`; live smoke if runtime flow changes                                                           |
-| AgentMode or other running-app-sensitive seam | Relevant focused tests and the applicable CE live MCP smoke flow                                                                                                           |
-| Any Swift-file completion pass                | `make dev-format` only when formatting mutation is intended, followed by `make dev-lint`                                                                                   |
-| Final acceptance                              | Root/provider recount, class totals plus threshold rationale where triggered, `make dev-test`, and `make dev-provider-test`; live smoke recorded separately when triggered |
+| Later batch type | Required evidence |
+| --- | --- |
+| Root test reduction/addition | `make dev-test FILTER=<touched-suite>` and method-delta reconciliation |
+| Provider-package test change | `make dev-provider-test FILTER=<touched-suite>` and provider-subtotal reconciliation |
+| CodeMap resource-backed change | `make dev-test FILTER=CodeMapGoldenTests` plus retained fixture/golden inventory |
+| Narrow root source seam | Relevant focused tests and `make dev-swift-build PRODUCT=RepoPrompt` |
+| MCP CLI/server source seam | Relevant focused MCP tests and `make dev-swift-build PRODUCT=repoprompt-mcp`; live smoke if runtime flow changes |
+| AgentMode or other running-app-sensitive seam | Relevant focused tests and the applicable CE live MCP smoke flow |
+| Any Swift-file completion pass | `make dev-format` only when formatting mutation is intended, followed by `make dev-lint` |
+| Final acceptance | Root/provider recount, class totals plus threshold rationale where triggered, `make dev-test`, and `make dev-provider-test`; live smoke recorded separately when triggered |
 
 Completion evidence appended to `docs/investigations/test-coverage-value-audit-ledger-2026-05-29.md` must include final root/provider subtotals, class totals and threshold rationales where required, fixture/golden breadth notes for retained consolidated methods, candidate-gap dispositions, batch dependencies and count deltas, daemon commands/results, and any uncounted live-smoke outcome.
 

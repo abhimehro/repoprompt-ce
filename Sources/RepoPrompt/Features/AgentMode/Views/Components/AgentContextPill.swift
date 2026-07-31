@@ -83,7 +83,7 @@ struct AgentContextPill: View {
 
     var body: some View {
         #if DEBUG
-            _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.context")
+            let _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.context")
         #endif
         let cornerRadius = AgentPillMetrics.cornerRadius()
         let summary = selectionSummary

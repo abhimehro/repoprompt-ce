@@ -168,16 +168,6 @@ struct TextKitView: NSViewRepresentable {
         Coordinator(self)
     }
 
-    #if DEBUG
-        @MainActor
-        func configuredTextViewForTesting() -> NSTextView {
-            let coordinator = Coordinator(self)
-            let textView = NSTextView()
-            setupTextView(textView, coordinator: coordinator)
-            return textView
-        }
-    #endif
-
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
         guard let textView = scrollView.documentView as? NSTextView else {

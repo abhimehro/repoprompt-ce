@@ -195,7 +195,7 @@ actor BootstrapSocketConnectionManager: MCPServerConnection {
         healthMonitoringTask = Task { [self] in
             let hardIdleSec = UserDefaults.standard.integer(forKey: "mcp.idleConnectionSeconds")
             let keepaliveSec = UserDefaults.standard.integer(forKey: "mcp.keepaliveSeconds")
-            var lastKeepaliveAt: Date?
+            var lastKeepaliveAt: Date? = nil
             while !Task.isCancelled {
                 guard await parentManager.isRunning() else { break }
                 let idle = await transport.secondsSinceLastActivity()

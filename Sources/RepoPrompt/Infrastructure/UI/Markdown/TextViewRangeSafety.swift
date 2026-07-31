@@ -31,11 +31,8 @@ extension NSTextView {
     }
 
     @discardableResult
-    func restoreSelectionCandidate(
-        _ candidate: NSRange,
-        scrollToVisible: Bool = false
-    ) -> NSRange {
-        let clamped = candidate.clamped(to: currentStringLength())
+    func clampSelectionToCurrentString(scrollToVisible: Bool = false) -> NSRange {
+        let clamped = clampedSelectedRange()
         if clamped != selectedRange() {
             setSelectedRange(clamped)
         }
@@ -43,10 +40,5 @@ extension NSTextView {
             scrollRangeToVisible(clamped)
         }
         return clamped
-    }
-
-    @discardableResult
-    func clampSelectionToCurrentString(scrollToVisible: Bool = false) -> NSRange {
-        restoreSelectionCandidate(selectedRange(), scrollToVisible: scrollToVisible)
     }
 }

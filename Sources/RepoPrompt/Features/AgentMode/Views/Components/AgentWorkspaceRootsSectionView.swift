@@ -27,7 +27,6 @@ struct AgentWorkspaceRootsSectionView: View {
     var worktreeMergeAttentionsByLogicalRootPath: [String: AgentWorktreeMergeAttention] = [:]
     var branchSwitchActions: AgentWorkspaceBranchSwitchActions = .unavailable
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var addFolderError: String?
     @State private var hoveredRootID: UUID?
     @FocusState private var focusedRootAction: RootActionFocus?
@@ -40,7 +39,62 @@ struct AgentWorkspaceRootsSectionView: View {
         fontScale.preset
     }
 
-    private typealias CodemapSummary = AgentWorkspaceCodemapSummary
+    private struct CodemapSummary {
+        enum State: Equatable {
+            case indexing
+            case reconciling
+            case ready
+            case paused
+            case mixed
+            case unavailable
+        }
+
+        let state: State
+        let progressFraction: Double?
+        let classifiedCount: UInt64
+        let supportedCount: UInt64?
+        let readyRootCount: Int
+        let reconcilingRootCount: Int
+        let pausedRootCount: Int
+
+        var progressPercentage: Int? {
+            guard state == .indexing || state == .reconciling, let progressFraction else { return nil }
+            return min(99, max(0, Int((progressFraction * 100).rounded(.down))))
+        }
+
+        var label: String {
+            switch state {
+            case .indexing, .reconciling, .ready, .unavailable: "Code Map"
+            case .paused: "Paused"
+            case .mixed: "Partial"
+            }
+        }
+
+        var detailText: String {
+            switch state {
+            case .indexing:
+                var details = [progressPercentage.map { "Indexing \($0)%" } ?? "Preparing index…"]
+                if reconcilingRootCount > 0 { details.append("\(reconcilingRootCount) reconciling") }
+                if pausedRootCount > 0 { details.append("\(pausedRootCount) paused") }
+                return details.joined(separator: " • ")
+            case .reconciling:
+                let detail = "Reconciling watcher changes"
+                return pausedRootCount > 0 ? "\(detail) • \(pausedRootCount) paused" : detail
+            case .ready:
+                return "All available roots mapped"
+            case .paused:
+                return "Indexing paused"
+            case .mixed:
+                return "\(readyRootCount) mapped • \(pausedRootCount) paused"
+            case .unavailable:
+                return "Code Maps unavailable"
+            }
+        }
+
+        var tooltip: String {
+            "\(detailText). Click for graph coverage and per-root controls."
+        }
+    }
 
     private struct RootActionFocus: Hashable {
         enum Action: Hashable {
@@ -190,7 +244,53 @@ struct AgentWorkspaceRootsSectionView: View {
     }
 
     private var codemapSummary: CodemapSummary {
-        CodemapSummary.make(roots.map(\.codemap))
+        let availableRoots = roots.filter(\.codemap.canToggle)
+        let activeRoots = availableRoots.filter {
+            switch $0.codemap.state {
+            case .notInitialized, .indexing, .updating: true
+            case .reconciling, .ready, .paused, .unavailable, .revoked: false
+            }
+        }
+        let reconcilingRoots = availableRoots.filter { $0.codemap.state == .reconciling }
+        let pausedRoots = availableRoots.filter(\.codemap.isPaused)
+        let readyRoots = availableRoots.filter { $0.codemap.state == .ready }
+        let progressRoots = availableRoots.filter { !$0.codemap.isPaused }
+        let totalsAreKnown = !progressRoots.isEmpty && progressRoots.allSatisfy {
+            $0.codemap.supportedCount != nil
+        }
+        let classified = progressRoots.reduce(UInt64(0)) { $0 + $1.codemap.classifiedCount }
+        let supported = totalsAreKnown
+            ? progressRoots.reduce(UInt64(0)) { $0 + ($1.codemap.supportedCount ?? 0) }
+            : nil
+        let rawProgress = supported.flatMap { supported -> Double? in
+            guard supported > 0 else { return activeRoots.isEmpty ? 1 : nil }
+            return min(1, Double(classified) / Double(supported))
+        }
+        let state: CodemapSummary.State = if !activeRoots.isEmpty {
+            .indexing
+        } else if !reconcilingRoots.isEmpty {
+            .reconciling
+        } else if availableRoots.isEmpty {
+            .unavailable
+        } else if pausedRoots.count == availableRoots.count {
+            .paused
+        } else if readyRoots.count == availableRoots.count {
+            .ready
+        } else {
+            .mixed
+        }
+        let progress = rawProgress.map {
+            state == .indexing || state == .reconciling ? min(0.99, $0) : $0
+        }
+        return CodemapSummary(
+            state: state,
+            progressFraction: progress,
+            classifiedCount: classified,
+            supportedCount: supported,
+            readyRootCount: readyRoots.count,
+            reconcilingRootCount: reconcilingRoots.count,
+            pausedRootCount: pausedRoots.count
+        )
     }
 
     /// Resolves the active session's worktree indicator bound to `row`, if any.
@@ -319,8 +419,7 @@ struct AgentWorkspaceRootsSectionView: View {
         }
         .buttonStyle(CustomButtonStyle(verticalPadding: 0, horizontalPadding: 8, height: 26))
         .hoverTooltip(summary.tooltip, .top)
-        .accessibilityLabel("Code Map status")
-        .accessibilityValue(summary.accessibilityValue)
+        .accessibilityLabel(summary.tooltip)
         .popover(isPresented: $showCodemapPopover, arrowEdge: .top) {
             codemapPopoverContent
         }
@@ -357,12 +456,16 @@ struct AgentWorkspaceRootsSectionView: View {
                         .trim(from: 0, to: progress)
                         .stroke(tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                        .animation(reduceMotion ? nil : .linear(duration: 0.15), value: progress)
+                        .animation(.linear(duration: 0.15), value: progress)
+                    if let progressPercentage = summary.progressPercentage {
+                        Text("\(progressPercentage)")
+                            .font(fontPreset.swiftUIFont(sizeAtNormal: 6, weight: .medium))
+                            .foregroundStyle(tint)
+                    }
                 } else {
                     ProgressView()
-                        .controlSize(.small)
-                        .tint(tint)
-                        .accessibilityHidden(true)
+                        .controlSize(.mini)
+                        .scaleEffect(0.55)
                 }
             case .ready:
                 Image(systemName: "checkmark.circle")
@@ -410,15 +513,23 @@ struct AgentWorkspaceRootsSectionView: View {
                 if let progress = summary.progressFraction {
                     ProgressView(value: progress)
                         .tint(.accentColor)
-                    if let classified = summary.classifiedCount, let total = summary.supportedCount {
-                        Text("\(classified) of \(total) files indexed")
+                    if let total = summary.supportedCount {
+                        Text("\(summary.classifiedCount) of \(total) files indexed")
                             .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text(summary.preSealProgressText)
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(
+                            summary.pausedRootCount > 0
+                                ? "Per-root progress continues below."
+                                : "Preparing repository catalogs…"
+                        )
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
                         .foregroundStyle(.secondary)
+                    }
                 }
             }
 

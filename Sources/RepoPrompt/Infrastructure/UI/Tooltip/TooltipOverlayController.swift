@@ -187,7 +187,7 @@ final class TooltipOverlayController {
                 Task { @MainActor [weak self] in
                     self?.hide()
                 }
-            }
+        }
     }
 
     private func bubbleSize(for text: String, preset: FontScalePreset) -> CGSize {
@@ -227,7 +227,6 @@ final class TooltipOverlayController {
     }
 
     // ---------------------------------------------------------------------
-
     // MARK: TooltipWindow
 
     /// ---------------------------------------------------------------------

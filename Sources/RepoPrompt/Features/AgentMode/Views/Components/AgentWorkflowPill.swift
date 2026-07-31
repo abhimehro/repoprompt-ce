@@ -24,7 +24,7 @@ struct AgentWorkflowPill: View {
 
     var body: some View {
         #if DEBUG
-            _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.workflow")
+            let _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.workflow")
         #endif
         let cornerRadius = AgentPillMetrics.cornerRadius()
         let height = AgentPillMetrics.height()

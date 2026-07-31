@@ -45,7 +45,7 @@ struct ToolScrollableMarkdownTextView: View {
         max(Double(fontScale.preset.rawValue) - 2, 9)
     }
 
-    var textKitView: TextKitView {
+    var body: some View {
         TextKitView(
             text: .constant(text),
             isEditable: false,
@@ -56,11 +56,7 @@ struct ToolScrollableMarkdownTextView: View {
             autohidesScrollers: true,
             scrollerStyle: .overlay
         )
-    }
-
-    var body: some View {
-        textKitView
-            .frame(height: maxHeight, alignment: .topLeading)
+        .frame(height: maxHeight, alignment: .topLeading)
     }
 }
 

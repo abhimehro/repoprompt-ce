@@ -9,7 +9,7 @@ import SystemPackage
 // MARK: - Version Constants
 
 /// Update this when releasing new versions
-let CLI_VERSION = "1.1.2"
+let CLI_VERSION = "1.1.0"
 
 /// CLI verbose mode - controls debug output (enabled by --verbose flag)
 var cliVerboseMode = false
@@ -3400,7 +3400,7 @@ func launchRepoPromptApp() {
         .deletingLastPathComponent() // Contents
         .deletingLastPathComponent() // RepoPrompt.app
 
-    let targetPath: String = if appURL.pathExtension == "app", FileManager.default.fileExists(atPath: appURL.path) {
+    let targetPath: String = if appURL.pathExtension == "app" && FileManager.default.fileExists(atPath: appURL.path) {
         appURL.path
     } else {
         "-b \(repoPromptCEBundleIdentifier)"
