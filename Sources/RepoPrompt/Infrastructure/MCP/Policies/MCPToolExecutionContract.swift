@@ -80,7 +80,6 @@ enum MCPToolExecutionContractCatalog {
         )
         var result = Dictionary(uniqueKeysWithValues: orderedAdvertisedToolNames.map { ($0, bounded) })
         for toolName in [
-            MCPWindowToolName.fileActions,
             MCPWindowToolName.getCodeStructure,
             MCPWindowToolName.readFile,
             MCPWindowToolName.getFileTree
@@ -139,17 +138,6 @@ enum MCPToolExecutionContractCatalog {
         arguments: [String: Value]
     ) -> MCPToolExecutionContract? {
         guard let baseContract = contract(for: toolName) else { return nil }
-        if toolName == MCPWindowToolName.fileActions,
-           arguments["action"]?.stringValue?
-           .trimmingCharacters(in: .whitespacesAndNewlines)
-           .lowercased() == "delete"
-        {
-            return .bounded(
-                deadline: MCPTimeoutPolicy.fileActionTrashExecutionDeadline,
-                cancellationGrace: MCPTimeoutPolicy.boundedToolCancellationCleanupGrace,
-                cleanupDisposition: .detachAndSettle
-            )
-        }
         guard toolName == MCPGlobalToolName.manageWorkspaces else { return baseContract }
         guard let rawAction = arguments["action"]?.stringValue else {
             return baseContract
