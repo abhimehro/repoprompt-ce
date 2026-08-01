@@ -1355,6 +1355,7 @@ SIGNING_TEAM_ID=648A27MST5
         self.assertIn('rm -f "$CERTIFICATE_PATH"', final_cleanup)
         self.assertIn('rm -rf "$RUNNER_TEMP/repoprompt-release-secrets"', final_cleanup)
 
+    @unittest.skipIf(not shutil.which('ditto'), 'ditto missing')
     def test_official_release_stage_and_publish_require_sentry_linking(self) -> None:
         env = os.environ.copy()
         env["REPOPROMPT_ENABLE_SENTRY"] = "0"
@@ -1372,6 +1373,7 @@ SIGNING_TEAM_ID=648A27MST5
                     result.stderr,
                 )
 
+    @unittest.skipIf(not shutil.which('ditto'), 'ditto missing')
     def test_shared_release_sentry_symbol_policy_requires_copies_and_uploads(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)
@@ -2909,6 +2911,7 @@ sys.stdout.write(str(status))
                         r"retry_after=[^ ]+$",
                     )
 
+    @unittest.skipIf(not shutil.which('xcrun'), 'xcrun missing')
     def test_generated_tip_appcast_validation_executes_crypto_and_rejects_missing_signature(self) -> None:
         root = SCRIPT_DIR.parent
         temp_dir = Path(tempfile.mkdtemp())
@@ -3156,6 +3159,7 @@ label_generated_tip_appcast""",
         self.assertEqual(pins["sentry-cocoa"]["state"]["version"], "9.17.1")
         self.assertIn("sentry-cocoa\t9.17.1\thttps://github.com/getsentry/sentry-cocoa", notice_inventory)
 
+    @unittest.skipIf(not shutil.which('xcrun'), 'xcrun missing')
     def test_modern_sparkle_key_seed_derives_public_key(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
         os.close(descriptor)
@@ -3172,6 +3176,7 @@ label_generated_tip_appcast""",
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(base64.b64decode(result.stdout.strip())), 32)
 
+    @unittest.skipIf(not shutil.which('xcrun'), 'xcrun missing')
     def test_legacy_sparkle_key_export_is_rejected(self) -> None:
         descriptor, key_path = tempfile.mkstemp()
         os.close(descriptor)
@@ -3188,6 +3193,7 @@ label_generated_tip_appcast""",
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("modern 32-byte seed", result.stderr)
 
+    @unittest.skipIf(not shutil.which('xcrun'), 'xcrun missing')
     def test_sparkle_signature_verifier_rejects_modified_signature(self) -> None:
         temp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, temp_dir, True)

@@ -740,6 +740,15 @@ class LocalProductionInstallerTests(unittest.TestCase):
             esac
             """,
         )
+        self.write_stub(
+            bin_dir,
+            "plutil",
+            "python3 -c 'import sys, plistlib\n"
+            "try:\n"
+            "    with open(sys.argv[4], \"rb\") as f: d = plistlib.load(f)\n"
+            "    print(d[sys.argv[2]])\n"
+            "except Exception: sys.exit(1)' \"$@\""
+        )
         swift_log = temp_dir / "swift.log"
         self.write_stub(bin_dir, "swift", 'printf "%s\\n" "$*" >> "$SWIFT_LOG"\nexit 97\n')
         self.write_stub(
