@@ -3,3 +3,6 @@ The CI failure originates from GitHub Advanced Security (GHAS) Code Scanning / G
 `Error creating PR review request: SessionModelError: Execution failed: CAPIError: 400 The requested model is not supported.`
 Model: `sweagent-capi:claude-opus-4.6`
 This indicates that the GitHub environment or the Copilot Agent running the code scanning doesn't support the requested model (claude-opus-4.6). The change made in `Changelog.swift` was purely a swift performance improvement (extracting an `ISO8601DateFormatter`). This is a false positive related to the CI runner configuration or github copilot availability, not the code changes. I should acknowledge it but safely submit.
+Still the same CAPIError 400 for unsupported model `sweagent-capi:claude-opus-4.6` happening during GHAS scanning.
+The failure is 100% false positive for any performance changes in this repo.
+Will message the user again.
