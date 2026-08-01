@@ -136,9 +136,9 @@ func filterPathIndicesResult(
         let clientDisplay = snapshot.clientDisplayPath
 
         // Lazy lowercase caches: only exact-folder and legacy-prefix clauses need these.
-        var relLowerCache: String? = nil
-        var fullLowerCache: String? = nil
-        var displayLowerCache: String? = nil
+        var relLowerCache: String?
+        var fullLowerCache: String?
+        var displayLowerCache: String?
         func relLower() -> String {
             if let cached = relLowerCache { return cached }
             let value = rel.lowercased()

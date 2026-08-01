@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET_PID="${1:-}"
+TARGET_PID="${1-}"
 WAIT_SECONDS="${REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_WAIT:-3}"
 OPEN_CLOSE_CYCLES="${REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_CYCLES:-3}"
 
 fail() {
-    printf 'ERROR: %s\n' "$*" >&2
-    exit 1
+	printf 'ERROR: %s\n' "$*" >&2
+	exit 1
 }
 
-[[ "$TARGET_PID" =~ ^[1-9][0-9]*$ ]] || fail "Target RepoPrompt debug PID must be a positive integer: $TARGET_PID"
-[[ "$WAIT_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "Wait must be a non-negative number: $WAIT_SECONDS"
-[[ "$OPEN_CLOSE_CYCLES" =~ ^[1-9][0-9]*$ ]] || fail "Cycle count must be a positive integer: $OPEN_CLOSE_CYCLES"
+[[ $TARGET_PID =~ ^[1-9][0-9]*$ ]] || fail "Target RepoPrompt debug PID must be a positive integer: $TARGET_PID"
+[[ $WAIT_SECONDS =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "Wait must be a non-negative number: $WAIT_SECONDS"
+[[ $OPEN_CLOSE_CYCLES =~ ^[1-9][0-9]*$ ]] || fail "Cycle count must be a positive integer: $OPEN_CLOSE_CYCLES"
 
 exec osascript - "$TARGET_PID" "$WAIT_SECONDS" "$OPEN_CLOSE_CYCLES" <<'APPLESCRIPT'
 on accessibilityPermissionPreflight()

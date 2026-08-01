@@ -127,7 +127,7 @@ public final class WorkspaceApprovalManager: ObservableObject {
         }
 
         // If always-allow was selected, update the policy
-        if allow && alwaysAllow {
+        if allow, alwaysAllow {
             addAutoApproval(clientID: request.clientID, operation: request.operation)
         }
 

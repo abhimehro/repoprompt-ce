@@ -39,9 +39,13 @@ TIMEOUT_EXIT_CODE = 124
 XCTEST_BUNDLE_GLOB = "*.xctest"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LEDGER = REPO_ROOT / "Scripts" / "Fixtures" / "test-suite-contract-ledger.tsv"
-DEFAULT_SERIAL_GROUP_POLICY = REPO_ROOT / "Scripts" / "Fixtures" / "ci-test-serial-groups.json"
+DEFAULT_SERIAL_GROUP_POLICY = (
+    REPO_ROOT / "Scripts" / "Fixtures" / "ci-test-serial-groups.json"
+)
 SERIAL_GROUP_POLICY_VERSION = 1
-HEAVY_EXECUTION_TIERS = frozenset({"codemap_e2e", "scale", "diagnostic", "live_smoke", "release"})
+HEAVY_EXECUTION_TIERS = frozenset(
+    {"codemap_e2e", "scale", "diagnostic", "live_smoke", "release"}
+)
 TAG_SPLIT_RE = re.compile(r"[,; ]+")
 
 
@@ -150,11 +154,17 @@ class SuitePlan:
 
     @property
     def pinned_serial(self) -> list[PlannedSuite]:
-        return [suite for suite in self.suites if suite.classification == "pinned_serial"]
+        return [
+            suite for suite in self.suites if suite.classification == "pinned_serial"
+        ]
 
     @property
     def parallel_eligible(self) -> list[PlannedSuite]:
-        return [suite for suite in self.suites if suite.classification == "parallel_eligible"]
+        return [
+            suite
+            for suite in self.suites
+            if suite.classification == "parallel_eligible"
+        ]
 
     def suite_names(self) -> list[str]:
         return [suite.suite for suite in self.suites]
@@ -166,8 +176,12 @@ class SuitePlan:
                 "pinned_serial": len(self.pinned_serial),
                 "parallel_eligible": len(self.parallel_eligible),
             },
-            "pinned_serial": [planned_suite_payload(suite) for suite in self.pinned_serial],
-            "parallel_eligible": [planned_suite_payload(suite) for suite in self.parallel_eligible],
+            "pinned_serial": [
+                planned_suite_payload(suite) for suite in self.pinned_serial
+            ],
+            "parallel_eligible": [
+                planned_suite_payload(suite) for suite in self.parallel_eligible
+            ],
         }
 
 
@@ -193,7 +207,9 @@ def parse_suites(list_output: str) -> list[str]:
 
 
 def split_tags(value: str) -> frozenset[str]:
-    return frozenset(tag.strip() for tag in TAG_SPLIT_RE.split(value or "") if tag.strip())
+    return frozenset(
+        tag.strip() for tag in TAG_SPLIT_RE.split(value or "") if tag.strip()
+    )
 
 
 def parse_runtime_seconds(value: str) -> float:
@@ -215,7 +231,9 @@ def load_serial_group_policy(path: Path) -> dict[str, SerialGroup]:
     except FileNotFoundError as exc:
         raise ValueError(f"serial group policy file does not exist: {path}") from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f"serial group policy file is not valid JSON: {path}: {exc}") from exc
+        raise ValueError(
+            f"serial group policy file is not valid JSON: {path}: {exc}"
+        ) from exc
 
     if not isinstance(payload, dict):
         raise ValueError("serial group policy must be a JSON object")
@@ -239,9 +257,13 @@ def load_serial_group_policy(path: Path) -> dict[str, SerialGroup]:
         lane = group.get("lane")
         reason = group.get("reason")
         if not isinstance(lane, str) or not lane:
-            raise ValueError(f"serial group policy group {tag!r} must define a non-empty lane")
+            raise ValueError(
+                f"serial group policy group {tag!r} must define a non-empty lane"
+            )
         if not isinstance(reason, str) or not reason:
-            raise ValueError(f"serial group policy group {tag!r} must define a non-empty reason")
+            raise ValueError(
+                f"serial group policy group {tag!r} must define a non-empty reason"
+            )
         policy[tag] = SerialGroup(tag=tag, lane=lane, reason=reason)
     return policy
 
@@ -275,8 +297,12 @@ def read_ledger_suites(path: Path) -> dict[str, LedgerSuite]:
             suite = str(row.get("suite") or "")
             if not suite:
                 raise ValueError(f"ledger row {row_number} is missing suite")
-            shared_state_tags[suite].update(split_tags(str(row.get("shared_state_tags") or "")))
-            resource_cost_tags[suite].update(split_tags(str(row.get("resource_cost_tags") or "")))
+            shared_state_tags[suite].update(
+                split_tags(str(row.get("shared_state_tags") or ""))
+            )
+            resource_cost_tags[suite].update(
+                split_tags(str(row.get("resource_cost_tags") or ""))
+            )
             tier = str(row.get("execution_tier") or "")
             if tier:
                 execution_tiers[suite].add(tier)
@@ -320,7 +346,9 @@ def build_suite_plan(
                 method_count=0,
             ),
         )
-        policy_tags = ledger_suite.shared_state_tags.union(ledger_suite.resource_cost_tags)
+        policy_tags = ledger_suite.shared_state_tags.union(
+            ledger_suite.resource_cost_tags
+        )
         matched = sorted(tag for tag in policy_tags if tag in serial_policy)
         lanes = tuple(sorted({serial_policy[tag].lane for tag in matched}))
         classification = "pinned_serial" if matched else "parallel_eligible"
@@ -335,7 +363,10 @@ def build_suite_plan(
                 execution_tiers=ledger_suite.execution_tiers,
                 estimated_runtime_seconds=ledger_suite.estimated_runtime_seconds,
                 method_count=ledger_suite.method_count,
-                heavy_tier_present=any(tier in HEAVY_EXECUTION_TIERS for tier in ledger_suite.execution_tiers),
+                heavy_tier_present=any(
+                    tier in HEAVY_EXECUTION_TIERS
+                    for tier in ledger_suite.execution_tiers
+                ),
             )
         )
     return SuitePlan(suites=tuple(planned))
@@ -400,8 +431,12 @@ def discover_test_bundle(
         return None
     candidates = sorted(bin_path.glob(XCTEST_BUNDLE_GLOB))
     if bundle_name:
-        requested = bundle_name if bundle_name.endswith(".xctest") else f"{bundle_name}.xctest"
-        candidates = [candidate for candidate in candidates if candidate.name == requested]
+        requested = (
+            bundle_name if bundle_name.endswith(".xctest") else f"{bundle_name}.xctest"
+        )
+        candidates = [
+            candidate for candidate in candidates if candidate.name == requested
+        ]
     if not candidates:
         return None
     if len(candidates) > 1:
@@ -436,23 +471,25 @@ def discover_test_bundles(swift_binary: str, cwd: Path | None) -> dict[str, Path
 def package_test_bundle(discovered: dict[str, Path]) -> Path | None:
     """Return SwiftPM's combined package XCTest bundle when it is unambiguous."""
     package_bundles = [
-        path
-        for name, path in discovered.items()
-        if name.endswith("PackageTests")
+        path for name, path in discovered.items() if name.endswith("PackageTests")
     ]
     if len(package_bundles) == 1:
         return package_bundles[0]
     return None
 
 
-def target_bundles_for_suites(discovered: dict[str, Path], suites: Sequence[str]) -> dict[str, Path] | None:
+def target_bundles_for_suites(
+    discovered: dict[str, Path], suites: Sequence[str]
+) -> dict[str, Path] | None:
     """Return exact target bundles when every selected suite target is covered.
 
     Stale bundles from restored SwiftPM caches are ignored; only bundle names
     matching the currently selected suite targets are routed per-target.
     """
     targets = {test_target_for_suite(suite) for suite in suites}
-    matching = {target: discovered[target] for target in sorted(targets) if target in discovered}
+    matching = {
+        target: discovered[target] for target in sorted(targets) if target in discovered
+    }
     if targets and set(matching) == targets:
         return matching
     return None
@@ -552,7 +589,9 @@ def live_process_groups(groups: Iterable[int]) -> set[int]:
     return live
 
 
-def process_groups_for_cleanup(root_pid: int, descendant_groups: Iterable[int]) -> set[int]:
+def process_groups_for_cleanup(
+    root_pid: int, descendant_groups: Iterable[int]
+) -> set[int]:
     own_group = os.getpgrp()
     groups = set(descendant_groups)
     try:
@@ -566,7 +605,9 @@ def process_groups_for_cleanup(root_pid: int, descendant_groups: Iterable[int]) 
 
 
 def stop_process_tree(process: subprocess.Popen[str]) -> None:
-    groups = process_groups_for_cleanup(process.pid, descendant_process_groups(process.pid))
+    groups = process_groups_for_cleanup(
+        process.pid, descendant_process_groups(process.pid)
+    )
     signal_process_groups(groups, signal.SIGTERM)
 
     deadline = time.monotonic() + 10
@@ -598,7 +639,9 @@ def create_suite_process(
     xctest_binary: list[str] | None = None,
 ) -> subprocess.Popen[str]:
     if test_bundle is not None:
-        xctest_prefix = xctest_binary if xctest_binary is not None else ["xcrun", "xctest"]
+        xctest_prefix = (
+            xctest_binary if xctest_binary is not None else ["xcrun", "xctest"]
+        )
         return subprocess.Popen(
             [*xctest_prefix, "-XCTest", suite, str(test_bundle)],
             cwd=cwd,
@@ -646,7 +689,9 @@ def create_suite_group_process(
             xctest_binary=xctest_binary,
         )
     if test_bundle is not None:
-        xctest_prefix = xctest_binary if xctest_binary is not None else ["xcrun", "xctest"]
+        xctest_prefix = (
+            xctest_binary if xctest_binary is not None else ["xcrun", "xctest"]
+        )
         filter_list = ",".join(suites)
         return subprocess.Popen(
             [*xctest_prefix, "-XCTest", filter_list, str(test_bundle)],
@@ -668,8 +713,9 @@ def create_suite_group_process(
     )
 
 
-
-def relay_output(process: subprocess.Popen[str], state: OutputState, output: TextIO) -> None:
+def relay_output(
+    process: subprocess.Popen[str], state: OutputState, output: TextIO
+) -> None:
     stream = process.stdout
     if stream is None:
         return
@@ -693,10 +739,14 @@ def run_suite_attempt(
 ) -> SuiteRunResult:
     start = time.monotonic()
     deadline = start + timeout_seconds
-    silent_deadline = start + silent_startup_seconds if silent_startup_seconds is not None else None
+    silent_deadline = (
+        start + silent_startup_seconds if silent_startup_seconds is not None else None
+    )
     state = OutputState()
     process = process_factory(suite)
-    relay = threading.Thread(target=relay_output, args=(process, state, output), daemon=True)
+    relay = threading.Thread(
+        target=relay_output, args=(process, state, output), daemon=True
+    )
     relay.start()
 
     while True:
@@ -830,9 +880,15 @@ def run_suite(
             silent_startup_seconds=silent_startup_seconds,
             cancellation_event=cancellation_event,
         )
-        if result.state == "timed_out" and not result.output_seen and attempt < max_attempts:
+        if (
+            result.state == "timed_out"
+            and not result.output_seen
+            and attempt < max_attempts
+        ):
             silent_seconds = (
-                silent_startup_seconds if silent_startup_seconds is not None else timeout_seconds
+                silent_startup_seconds
+                if silent_startup_seconds is not None
+                else timeout_seconds
             )
             print(
                 f"::warning::{suite} produced no output for {silent_seconds:g}s; "
@@ -853,7 +909,11 @@ def format_last_started(last_started_test: str | None) -> str:
 def report_suite_result(result: SuiteRunResult, output: TextIO) -> None:
     if result.state == "passed":
         retry_note = f" after {result.attempts} attempts" if result.attempts > 1 else ""
-        print(f"{result.suite} passed in {result.elapsed_seconds:.1f}s{retry_note}", flush=True, file=output)
+        print(
+            f"{result.suite} passed in {result.elapsed_seconds:.1f}s{retry_note}",
+            flush=True,
+            file=output,
+        )
         return
 
     if result.state == "timed_out":
@@ -885,7 +945,9 @@ def report_suite_result(result: SuiteRunResult, output: TextIO) -> None:
             flush=True,
             file=output,
         )
-        print(f"First XCTest issue: {result.first_failure_line}", flush=True, file=output)
+        print(
+            f"First XCTest issue: {result.first_failure_line}", flush=True, file=output
+        )
         return
 
     print(
@@ -923,7 +985,11 @@ def run_suite_group_and_report(
     cancellation_event: threading.Event | None = None,
 ) -> SuiteRunResult:
     suite = group.label
-    selected_bundle = test_bundle if test_bundle is not None else bundle_for_suite(group.suites[0], test_bundles)
+    selected_bundle = (
+        test_bundle
+        if test_bundle is not None
+        else bundle_for_suite(group.suites[0], test_bundles)
+    )
     if test_bundles is not None and selected_bundle is None:
         print(
             f"::error::No XCTest bundle found for suite target {test_target_for_suite(group.suites[0])} "
@@ -1020,10 +1086,7 @@ def run_suite_buffered(
         xctest_binary=xctest_binary,
         cancellation_event=cancellation_event,
     )
-    if (
-        cancellation_event is not None
-        and result.state not in {"passed", "cancelled"}
-    ):
+    if cancellation_event is not None and result.state not in {"passed", "cancelled"}:
         cancellation_event.set()
     return result, output.getvalue()
 
@@ -1075,7 +1138,10 @@ def plan_selected_suites(
                 "shared_state_tags": [],
                 "batch_eligible": False,
             }
-            shard = min(plan["shards"], key=lambda item: (item["estimated_seconds"], item["index"]))
+            shard = min(
+                plan["shards"],
+                key=lambda item: (item["estimated_seconds"], item["index"]),
+            )
             shard["estimated_seconds"] += entry["estimated_seconds"]
             shard["suites"].append(entry)
             shard["suite_count"] = len(shard["suites"])
@@ -1088,7 +1154,9 @@ def plan_selected_suites(
                 batch_eligible=bool(entry["batch_eligible"]),
             )
     selected_shard = plan["shards"][shard_index - 1]
-    selected = [entries_by_suite[str(entry["suite"])] for entry in selected_shard["suites"]]
+    selected = [
+        entries_by_suite[str(entry["suite"])] for entry in selected_shard["suites"]
+    ]
     if slow_first:
         selected.sort(key=lambda entry: (-entry.estimated_seconds, entry.suite))
     else:
@@ -1130,13 +1198,11 @@ def batch_suite_entries(
             flush()
             groups.append(SuiteGroup((entry.suite,), entry.estimated_seconds))
             continue
-        if (
-            pending
-            and (
-                len(pending) >= batch_max_suites
-                or sum(item.estimated_seconds for item in pending) + entry.estimated_seconds > batch_max_seconds
-                or selected_bundle != pending_bundle
-            )
+        if pending and (
+            len(pending) >= batch_max_suites
+            or sum(item.estimated_seconds for item in pending) + entry.estimated_seconds
+            > batch_max_seconds
+            or selected_bundle != pending_bundle
         ):
             flush()
         pending.append(entry)
@@ -1189,7 +1255,9 @@ def run_all_suites(
             file=output,
         )
     strict_ledger = effective_strict_ledger(strict_ledger, workers)
-    serial_plan = suite_plan or build_suite_plan(suite_list, ledger_suites={}, serial_policy={})
+    serial_plan = suite_plan or build_suite_plan(
+        suite_list, ledger_suites={}, serial_policy={}
+    )
     if test_bundle is not None:
         print(
             f"Using xcrun xctest bundle: {test_bundle}",
@@ -1220,14 +1288,20 @@ def run_all_suites(
             batch_max_suites=batch_max_suites,
             batch_max_seconds=batch_max_seconds,
             bundle_selector=lambda suite: (
-                test_bundle if test_bundle is not None else bundle_for_suite(suite, test_bundles)
+                test_bundle
+                if test_bundle is not None
+                else bundle_for_suite(suite, test_bundles)
             ),
         )
     except (OptimizerError, ValueError) as error:
         print(f"::error::{error}", flush=True, file=output)
         return 1
     if ledger is not None:
-        total = shard_plan["shards"][shard_index - 1]["estimated_seconds"] if shard_plan is not None else 0.0
+        total = (
+            shard_plan["shards"][shard_index - 1]["estimated_seconds"]
+            if shard_plan is not None
+            else 0.0
+        )
         print(
             f"Selected app test shard {shard_index}/{shard_count}: "
             f"{len(selected_entries)} suites, estimated {total:.1f}s, {len(groups)} process groups",
@@ -1236,7 +1310,9 @@ def run_all_suites(
         )
     selected_names = {entry.suite for entry in selected_entries}
     selected_serial_plan = SuitePlan(
-        suites=tuple(planned for planned in serial_plan.suites if planned.suite in selected_names)
+        suites=tuple(
+            planned for planned in serial_plan.suites if planned.suite in selected_names
+        )
     )
     print_suite_plan_summary(selected_serial_plan, workers, output)
     pinned_names = {suite.suite for suite in selected_serial_plan.pinned_serial}
@@ -1259,8 +1335,16 @@ def run_all_suites(
                 return result.exit_code
             passed_results.append(result)
     else:
-        pinned_groups = [group for group in groups if any(suite in pinned_names for suite in group.suites)]
-        eligible_groups = [group for group in groups if not any(suite in pinned_names for suite in group.suites)]
+        pinned_groups = [
+            group
+            for group in groups
+            if any(suite in pinned_names for suite in group.suites)
+        ]
+        eligible_groups = [
+            group
+            for group in groups
+            if not any(suite in pinned_names for suite in group.suites)
+        ]
         pending_eligible = iter(eligible_groups)
         cancellation_event = threading.Event()
         futures: dict[Future[tuple[SuiteRunResult, str]], str] = {}
@@ -1297,7 +1381,9 @@ def run_all_suites(
                     break
 
             pinned_index = 0
-            while futures or (pinned_index < len(pinned_groups) and first_failure is None):
+            while futures or (
+                pinned_index < len(pinned_groups) and first_failure is None
+            ):
                 if first_failure is None and pinned_index < len(pinned_groups):
                     result = run_suite_group_and_report(
                         pinned_groups[pinned_index],
@@ -1356,15 +1442,29 @@ def run_all_suites(
 
     if passed_results:
         print("Slowest app test suites:", flush=True, file=output)
-        for result in sorted(passed_results, key=lambda candidate: candidate.elapsed_seconds, reverse=True)[:10]:
-            print(f"  {result.elapsed_seconds:6.1f}s  {result.suite}", flush=True, file=output)
+        for result in sorted(
+            passed_results,
+            key=lambda candidate: candidate.elapsed_seconds,
+            reverse=True,
+        )[:10]:
+            print(
+                f"  {result.elapsed_seconds:6.1f}s  {result.suite}",
+                flush=True,
+                file=output,
+            )
     return 0
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run RepoPrompt CE app XCTest suites for hosted CI.")
-    parser.add_argument("--suite-timeout-seconds", type=float, default=DEFAULT_SUITE_TIMEOUT_SECONDS)
-    parser.add_argument("--silent-timeout-retries", type=int, default=DEFAULT_SILENT_TIMEOUT_RETRIES)
+    parser = argparse.ArgumentParser(
+        description="Run RepoPrompt CE app XCTest suites for hosted CI."
+    )
+    parser.add_argument(
+        "--suite-timeout-seconds", type=float, default=DEFAULT_SUITE_TIMEOUT_SECONDS
+    )
+    parser.add_argument(
+        "--silent-timeout-retries", type=int, default=DEFAULT_SILENT_TIMEOUT_RETRIES
+    )
     parser.add_argument(
         "--silent-startup-seconds",
         type=float,
@@ -1403,7 +1503,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--batch-fast-suites", action="store_true", default=False)
     parser.add_argument("--batch-max-suites", type=int, default=4)
     parser.add_argument("--batch-max-seconds", type=float, default=5.0)
-    parser.add_argument("--require-runtime-for-batching", action="store_true", default=False)
+    parser.add_argument(
+        "--require-runtime-for-batching", action="store_true", default=False
+    )
     parser.add_argument(
         "--no-xctest-bundle",
         action="store_true",
@@ -1445,7 +1547,10 @@ def main(argv: list[str]) -> int:
     try:
         suites = list_suites(args.swift_binary, args.cwd)
     except subprocess.CalledProcessError as error:
-        print(f"::error::swift test list failed with status {error.returncode}", flush=True)
+        print(
+            f"::error::swift test list failed with status {error.returncode}",
+            flush=True,
+        )
         if error.stdout:
             print(error.stdout, end="")
         if error.stderr:
@@ -1455,7 +1560,9 @@ def main(argv: list[str]) -> int:
     try:
         ledger_suites = read_ledger_suites(args.ledger)
         serial_policy = load_serial_group_policy(args.serial_group_policy)
-        suite_plan = build_suite_plan(suites, ledger_suites=ledger_suites, serial_policy=serial_policy)
+        suite_plan = build_suite_plan(
+            suites, ledger_suites=ledger_suites, serial_policy=serial_policy
+        )
         if args.print_suite_plan_json and strict_ledger:
             plan_selected_suites(
                 suites,
@@ -1474,7 +1581,10 @@ def main(argv: list[str]) -> int:
         return 1
 
     if args.print_suite_plan_json:
-        print(json.dumps(suite_plan.to_json_payload(), indent=2, sort_keys=True), flush=True)
+        print(
+            json.dumps(suite_plan.to_json_payload(), indent=2, sort_keys=True),
+            flush=True,
+        )
         return 0
 
     test_bundle = args.test_bundle
@@ -1482,7 +1592,11 @@ def main(argv: list[str]) -> int:
     if test_bundle is None and not args.no_xctest_bundle:
         if args.test_bundle_name:
             requested_target = args.test_bundle_name.removesuffix(".xctest")
-            mismatched = [suite for suite in suites if test_target_for_suite(suite) != requested_target]
+            mismatched = [
+                suite
+                for suite in suites
+                if test_target_for_suite(suite) != requested_target
+            ]
             if mismatched:
                 print(
                     f"::error::--test-bundle-name {args.test_bundle_name} cannot run suites "
@@ -1490,7 +1604,9 @@ def main(argv: list[str]) -> int:
                     flush=True,
                 )
                 return 1
-            test_bundle = discover_test_bundle(args.swift_binary, args.cwd, args.test_bundle_name)
+            test_bundle = discover_test_bundle(
+                args.swift_binary, args.cwd, args.test_bundle_name
+            )
             if test_bundle is None:
                 print(
                     f"::error::--test-bundle-name {args.test_bundle_name} did not match any built XCTest bundle",
@@ -1513,7 +1629,9 @@ def main(argv: list[str]) -> int:
                     test_bundles = target_bundles_for_suites(discovered, suites)
                 if test_bundle is None and test_bundles is None:
                     test_bundles = discovered
-    xctest_binary = xctest_binary_path() if test_bundle is not None or test_bundles else None
+    xctest_binary = (
+        xctest_binary_path() if test_bundle is not None or test_bundles else None
+    )
 
     return run_all_suites(
         suites,
@@ -1536,7 +1654,8 @@ def main(argv: list[str]) -> int:
         batch_fast_suites=args.batch_fast_suites,
         batch_max_suites=args.batch_max_suites,
         batch_max_seconds=args.batch_max_seconds,
-        require_runtime_for_batching=args.require_runtime_for_batching or args.batch_fast_suites,
+        require_runtime_for_batching=args.require_runtime_for_batching
+        or args.batch_fast_suites,
     )
 
 

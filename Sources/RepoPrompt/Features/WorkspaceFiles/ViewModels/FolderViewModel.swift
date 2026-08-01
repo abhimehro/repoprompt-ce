@@ -784,6 +784,7 @@ class FolderViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, 
     }
 
     // ------------------------------------------------------------------
+
     // MARK: Mention support
 
     // ------------------------------------------------------------------

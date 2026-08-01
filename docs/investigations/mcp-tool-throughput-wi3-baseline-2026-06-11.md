@@ -12,38 +12,38 @@ This is the Phase 0 / WI-3 baseline for the five WI-2 workload matrices. It reco
 
 ## Current admission and ownership baseline
 
-| Resource | Current behavior |
-|---|---|
-| Per-connection ordinary MCP lane | Capacity 1; ordinary calls are FIFO/serialized. |
-| Per-connection `file_search` lane | Capacity 4, separate from the ordinary lane. |
-| Per-store search lane | Capacity 4; shared by connections targeting the same window/store. |
-| Window ownership | Each window owns its own store, search service, projection, crawl, watcher, and freshness-flight state. |
-| Git execution | One `/usr/bin/git` process per command; no process queue, so recorded process-queue wait is currently zero. |
-| `read_file` content reuse | No interactive decoded-content cache; successful reads report `cache_hit=false` and read/decode the full file before returning a range. |
+| Resource                          | Current behavior                                                                                                                        |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-connection ordinary MCP lane  | Capacity 1; ordinary calls are FIFO/serialized.                                                                                         |
+| Per-connection `file_search` lane | Capacity 4, separate from the ordinary lane.                                                                                            |
+| Per-store search lane             | Capacity 4; shared by connections targeting the same window/store.                                                                      |
+| Window ownership                  | Each window owns its own store, search service, projection, crawl, watcher, and freshness-flight state.                                 |
+| Git execution                     | One `/usr/bin/git` process per command; no process queue, so recorded process-queue wait is currently zero.                             |
+| `read_file` content reuse         | No interactive decoded-content cache; successful reads report `cache_hit=false` and read/decode the full file before returning a range. |
 
 ## WI-2 workload matrices
 
 These rows are the reproducible pre-optimization baseline. Live latency columns remain deferred until a CE debug app is already running; the work-count and concurrency expectations are enforced by source/runtime guard tests.
 
-| Matrix | Baseline concurrency/duplication | Expected diagnostic signature | Live latency |
-|---|---|---|---|
-| Same connection, ordinary burst | One active ordinary request; remaining requests queue FIFO on that connection. | `ordinary.limit=1`; permit queue/acquire/release events share the request identity; no ordinary overlap. | Deferred — no running app. |
-| Same connection, mixed ordinary/search | Up to one ordinary request and four `file_search` requests can be admitted independently. | Separate `ordinary` and `file_search` limiter timelines; store search lane caps active search leases at four. | Deferred — no running app. |
-| Distinct connections, one window | Each connection has its own 1+4 limiter, while all searches converge on one window/store search lane of four. | Distinct connection identities; one window ID/store; aggregate store admission remains four. | Deferred — no running app. |
-| Distinct windows on one physical root | Each window independently crawls, watches, indexes, invalidates, and runs freshness flights for the same root. | `physical_root_duplication` reports `window_count=N`, watcher count up to N, cumulative crawl count at least N, and per-window freshness-flight counters. | Deferred — no running app. |
+| Matrix                                  | Baseline concurrency/duplication                                                                                                                                 | Expected diagnostic signature                                                                                                                                               | Live latency                               |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Same connection, ordinary burst         | One active ordinary request; remaining requests queue FIFO on that connection.                                                                                   | `ordinary.limit=1`; permit queue/acquire/release events share the request identity; no ordinary overlap.                                                                    | Deferred — no running app.                 |
+| Same connection, mixed ordinary/search  | Up to one ordinary request and four `file_search` requests can be admitted independently.                                                                        | Separate `ordinary` and `file_search` limiter timelines; store search lane caps active search leases at four.                                                               | Deferred — no running app.                 |
+| Distinct connections, one window        | Each connection has its own 1+4 limiter, while all searches converge on one window/store search lane of four.                                                    | Distinct connection identities; one window ID/store; aggregate store admission remains four.                                                                                | Deferred — no running app.                 |
+| Distinct windows on one physical root   | Each window independently crawls, watches, indexes, invalidates, and runs freshness flights for the same root.                                                   | `physical_root_duplication` reports `window_count=N`, watcher count up to N, cumulative crawl count at least N, and per-window freshness-flight counters.                   | Deferred — no running app.                 |
 | Short versus long Agent Mode transcript | Tool admission is unchanged, but observer correlation reports scanned-item counts and callback durations, exposing transcript-length-dependent permit-held work. | Same request identity across provider, observer, result, terminal barrier, encode, write, and proxy commit; compare observer scan/duration fields between transcript sizes. | Deferred — no provider-backed running app. |
 
 ## Deterministic Git process-count baseline
 
 Fixture: one repository on `main`, no upstream, one modified tracked file, and one untracked file (`U=1`). Counts include every Git process executed inside one captured invocation.
 
-| Operation | Current command count | Assertion |
-|---|---:|---|
-| Warm status prelude (`branch` + upstream probe + porcelain status) | 3 | Exact |
-| Uncommitted summary diff inputs | 6 | Exact |
-| Quick artifact publication | 7 | Exact |
-| Standard artifact publication | 15 (`14+U`) | Exact |
-| Deep artifact publication | 15 (`14+U`) | Exact |
+| Operation                                                          | Current command count | Assertion |
+| ------------------------------------------------------------------ | --------------------: | --------- |
+| Warm status prelude (`branch` + upstream probe + porcelain status) |                     3 | Exact     |
+| Uncommitted summary diff inputs                                    |                     6 | Exact     |
+| Quick artifact publication                                         |                     7 | Exact     |
+| Standard artifact publication                                      |           15 (`14+U`) | Exact     |
+| Deep artifact publication                                          |           15 (`14+U`) | Exact     |
 
 The standard/deep count is intentionally redundant: six commands build summary inputs, `7+U` build full inputs, and one builds the commit graph. WI-5/WI-9 are expected to update these assertions deliberately.
 

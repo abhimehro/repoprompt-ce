@@ -174,8 +174,8 @@ struct AgentToolCardRenderSummary: Codable, Equatable {
               !lowered.contains("unmappedpaths"),
               !lowered.contains("\"content\""),
               !lowered.contains("content:"),
-              !label.contains("{") && !label.contains("}") && !label.contains("[") && !label.contains("]"),
-              !label.hasPrefix("/") && !label.hasPrefix("~"),
+              !label.contains("{"), !label.contains("}"), !label.contains("["), !label.contains("]"),
+              !label.hasPrefix("/"), !label.hasPrefix("~"),
               !label.contains("\\")
         else { return false }
         let pathPart = label.hasPrefix("…/") ? String(label.dropFirst(2)) : label

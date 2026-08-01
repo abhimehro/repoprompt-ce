@@ -48,7 +48,7 @@ struct CodexModelSpecifier: Equatable {
             ("-low", .low, false)
         ]
         var base = raw
-        var effort: ReasoningEffort? = nil
+        var effort: ReasoningEffort?
         let lowered = raw.lowercased()
         for (suffix, candidateEffort, requiresKnownFamilySupport) in suffixes where lowered.hasSuffix(suffix) {
             let candidate = String(raw.dropLast(suffix.count))
@@ -63,7 +63,7 @@ struct CodexModelSpecifier: Equatable {
 
         // Then check for a service tier infix (e.g. "gpt-5.4-fast" → base "gpt-5.4", tier "fast")
         let knownTiers = [CodexServiceTierVariantCatalog.fastServiceTier]
-        var tier: String? = nil
+        var tier: String?
         let baseLowered = base.lowercased()
         for knownTier in knownTiers {
             let tierSuffix = "-\(knownTier)"

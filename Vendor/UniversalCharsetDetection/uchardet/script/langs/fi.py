@@ -42,19 +42,25 @@ import re
 
 ## Mandatory Properties ##
 
-name = 'Finnish'
-code = 'fi'
+name = "Finnish"
+code = "fi"
 use_ascii = True
-charsets = ['ISO-8859-1', 'ISO-8859-4', 'ISO-8859-9',
-            'ISO-8859-13', 'ISO-8859-15', 'WINDOWS-1252']
+charsets = [
+    "ISO-8859-1",
+    "ISO-8859-4",
+    "ISO-8859-9",
+    "ISO-8859-13",
+    "ISO-8859-15",
+    "WINDOWS-1252",
+]
 
 ## Optional Properties ##
 
 # Alphabet characters.
 # 'å' (Swedish o), 'š' and 'ž' are rare enough that I don't want to include them
 # here.
-alphabet = 'äö'
+alphabet = "äö"
 # Some random high quality page found on the Finnish home page.
-start_pages = ['Yhdistynyt kuningaskunta']
+start_pages = ["Yhdistynyt kuningaskunta"]
 wikipedia_code = code
 case_mapping = True

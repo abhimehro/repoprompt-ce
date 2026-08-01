@@ -763,7 +763,7 @@ directory must contain at least two listed individual fixtures:
 {
   "schema_version": 1,
   "individuals": [
-    {"path": "Sources/Large/A.swift", "marker": "CodemapGateA"}
+    { "path": "Sources/Large/A.swift", "marker": "CodemapGateA" }
   ],
   "directories": [
     {

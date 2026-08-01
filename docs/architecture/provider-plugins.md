@@ -101,26 +101,26 @@ The remote-by-default policy avoids breaking checkouts that do not have a siblin
 
 ## Core vs plugin ownership
 
-| Concern | Owner |
-| --- | --- |
-| `AgentProviderKind`, `AgentProviderBindingID`, runtime kind strings | core |
-| Persisted settings (`UserDefaults`, secure store, `.claude` documents) | core |
-| `ClaudeAgentToolPreferences`, `ClaudeCodeCompatibleBackendConfig`, `ClaudeCodeCompatibleBackendStore` | core |
-| MCP permission policies, RepoPrompt MCP auto-approval, tool tracking | core |
-| Agent Mode transcript mutation, tool-card UI, run-state ownership | core |
-| Native process control (`ClaudeNativeProcessSessionController`) | core (this wave) |
-| Provider-neutral runtime contract (`NativeAgentRuntimeControlling`) | core |
-| Provider-neutral RepoPrompt workflow prompt catalog and renderers (`Infrastructure/AI/Prompts/Workflows`) | core |
-| Headless wrapper (`ClaudeCodeAgentProvider`) | core (delegates pure rules to package) |
-| `AgentModel` raw values, option DTOs, defaults | core (adapter forwards plugin DTOs back to these) |
-| Plugin IDs (`ClaudeCompatibleProviderPluginID`), runtime variants, backend IDs | package DTOs |
-| Claude SDK protocol codec and NDJSON translator | package |
-| Prompt delivery rules (XML wrapping, system-prompt overrides) | package |
-| Compatible-backend environment builder, removed env keys, no-model raw values | package |
-| Launch-environment resolver (slot mapping, model normalization, GLM legacy aliases) | package |
-| Headless CLI argument construction | package |
-| Model catalog snapshot (string options, default raws, supported effort levels) | package |
-| Stream-result DTO (`ClaudeProviderStreamResult`, `ClaudeProviderJSONValue`) | package |
+| Concern                                                                                                   | Owner                                             |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `AgentProviderKind`, `AgentProviderBindingID`, runtime kind strings                                       | core                                              |
+| Persisted settings (`UserDefaults`, secure store, `.claude` documents)                                    | core                                              |
+| `ClaudeAgentToolPreferences`, `ClaudeCodeCompatibleBackendConfig`, `ClaudeCodeCompatibleBackendStore`     | core                                              |
+| MCP permission policies, RepoPrompt MCP auto-approval, tool tracking                                      | core                                              |
+| Agent Mode transcript mutation, tool-card UI, run-state ownership                                         | core                                              |
+| Native process control (`ClaudeNativeProcessSessionController`)                                           | core (this wave)                                  |
+| Provider-neutral runtime contract (`NativeAgentRuntimeControlling`)                                       | core                                              |
+| Provider-neutral RepoPrompt workflow prompt catalog and renderers (`Infrastructure/AI/Prompts/Workflows`) | core                                              |
+| Headless wrapper (`ClaudeCodeAgentProvider`)                                                              | core (delegates pure rules to package)            |
+| `AgentModel` raw values, option DTOs, defaults                                                            | core (adapter forwards plugin DTOs back to these) |
+| Plugin IDs (`ClaudeCompatibleProviderPluginID`), runtime variants, backend IDs                            | package DTOs                                      |
+| Claude SDK protocol codec and NDJSON translator                                                           | package                                           |
+| Prompt delivery rules (XML wrapping, system-prompt overrides)                                             | package                                           |
+| Compatible-backend environment builder, removed env keys, no-model raw values                             | package                                           |
+| Launch-environment resolver (slot mapping, model normalization, GLM legacy aliases)                       | package                                           |
+| Headless CLI argument construction                                                                        | package                                           |
+| Model catalog snapshot (string options, default raws, supported effort levels)                            | package                                           |
+| Stream-result DTO (`ClaudeProviderStreamResult`, `ClaudeProviderJSONValue`)                               | package                                           |
 
 The package never touches `UserDefaults`, `Keychain`, or `AgentPermissionSecureStore`. Secrets and persisted backend configs are read in core, sanitized into plugin DTOs (`ClaudeCompatibleBackendConfig`, `ClaudeCompatibleLaunchEnvironment`), and handed to the package at launch/catalog time through bridge functions and provider closures.
 

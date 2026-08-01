@@ -101,13 +101,13 @@ enum PathMatcher {
                     // Copy/lower/strip while validating ASCII (byte < 0x80)
                     for byte in a.utf8 {
                         if byte >= 0x80 { return unicodeSimilarityScore(a, b, threshold: t, caseSensitive: caseSensitive, stripSeparators: stripSeparators) }
-                        if stripSeparators && (byte == 0x2D || byte == 0x5F) { continue } // '-' or '_'
+                        if stripSeparators, byte == 0x2D || byte == 0x5F { continue } // '-' or '_'
                         aTmp[aLen] = caseSensitive ? byte : PathCharPolicy.toLowerASCII(byte)
                         aLen += 1
                     }
                     for byte in b.utf8 {
                         if byte >= 0x80 { return unicodeSimilarityScore(a, b, threshold: t, caseSensitive: caseSensitive, stripSeparators: stripSeparators) }
-                        if stripSeparators && (byte == 0x2D || byte == 0x5F) { continue }
+                        if stripSeparators, byte == 0x2D || byte == 0x5F { continue }
                         bTmp[bLen] = caseSensitive ? byte : PathCharPolicy.toLowerASCII(byte)
                         bLen += 1
                     }

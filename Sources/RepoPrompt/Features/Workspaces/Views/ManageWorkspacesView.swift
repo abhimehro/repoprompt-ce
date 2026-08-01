@@ -364,7 +364,7 @@ struct ManageWorkspacesView: View {
 
         let backupNote = result.backupURL.map { "\n\nBackup saved at:\n\($0.path)" } ?? ""
 
-        if result.groupsConsolidated == result.groupsDetected && result.skipped.isEmpty {
+        if result.groupsConsolidated == result.groupsDetected, result.skipped.isEmpty {
             return "Successfully consolidated \(result.groupsConsolidated) duplicate workspace \(result.groupsConsolidated == 1 ? "group" : "groups").\(backupNote)"
         }
 

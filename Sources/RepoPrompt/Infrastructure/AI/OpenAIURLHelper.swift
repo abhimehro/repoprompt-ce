@@ -27,7 +27,7 @@ enum OpenAIURLHelper {
             path.removeLast()
         }
 
-        var detectedVersion: String? = nil
+        var detectedVersion: String?
         if let last = path.split(separator: "/").last {
             let lastStr = String(last)
             // Match v{digits} optionally followed by alnum/._- (e.g., v1, v4, v1-beta)

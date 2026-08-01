@@ -62,7 +62,7 @@ private struct IndentCache {
 }
 
 /// A utility for re-indenting snippets to match existing code blocks, optimized to reduce repeated computations.
-class IndentCorrectionUtility {
+enum IndentCorrectionUtility {
     // MARK: - Config Constants
 
     private static let MAX_SHIFT = IndentationConfig.maxAllowedShift
