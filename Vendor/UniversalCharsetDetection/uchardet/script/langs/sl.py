@@ -42,17 +42,18 @@ import re
 
 ## Mandatory Properties ##
 
-name = "Slovene"
-code = "sl"
+name = 'Slovene'
+code = 'sl'
 use_ascii = True
-charsets = ["ISO-8859-2", "ISO-8859-16", "Windows-1250", "IBM852", "MAC-CENTRALEUROPE"]
+charsets = ['ISO-8859-2', 'ISO-8859-16',
+            'Windows-1250', 'IBM852', 'MAC-CENTRALEUROPE']
 
 ## Optional Properties ##
 
 # Alphabet characters.
-alphabet = "čšž"
+alphabet = 'čšž'
 # The starred page which was rewarded on the main page when I created
 # the data.
-start_pages = ["XCOM: Enemy Unknown"]
+start_pages = ['XCOM: Enemy Unknown']
 wikipedia_code = code
 case_mapping = True

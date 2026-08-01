@@ -16,9 +16,9 @@ extension MCPServerViewModel {
             || include.contains("tree")
             || include.contains("tokens")
 
-        var collections: SelectionReplyAssembler.SelectionCollections?
-        var selectionReply: ToolResultDTOs.SelectedFilesReply?
-        var preparedTokenAccounting: MCPPreparedTokenAccounting?
+        var collections: SelectionReplyAssembler.SelectionCollections? = nil
+        var selectionReply: ToolResultDTOs.SelectedFilesReply? = nil
+        var preparedTokenAccounting: MCPPreparedTokenAccounting? = nil
         let lookupContext = await lookupContext(for: context)
         let effectiveSelection = lookupContext.physicalizeSelection(context.selection)
         let emitsFilesystemIdentity = includeSelection
@@ -88,7 +88,7 @@ extension MCPServerViewModel {
 
         let selectionDTO = includeSelection ? selectionReply : nil
 
-        var fileBlocks: [String]?
+        var fileBlocks: [String]? = nil
         if include.contains("files") {
             if let coll = collections {
                 fileBlocks = await SelectionReplyAssembler.generateBlocks(
@@ -101,13 +101,13 @@ extension MCPServerViewModel {
             }
         }
 
-        var codeStructDTO: ToolResultDTOs.SelectedCodeStructureDTO?
+        var codeStructDTO: ToolResultDTOs.SelectedCodeStructureDTO? = nil
         if include.contains("code"), !promptVM.codeMapsGloballyDisabled, let coll = collections {
             let builder = CodeStructureBuilder(owner: self, lookupContext: lookupContext)
             codeStructDTO = await builder.build(for: coll)
         }
 
-        var fileTreeDTO: ToolResultDTOs.FileTreeDTO?
+        var fileTreeDTO: ToolResultDTOs.FileTreeDTO? = nil
         if include.contains("tree") {
             let treePresentation = await promptVM.workspaceFileContextStore.makeFileTreePresentation(
                 selection: effectiveSelection,
@@ -145,9 +145,9 @@ extension MCPServerViewModel {
             }
         }
 
-        var tokenStatsDTO: ToolResultDTOs.TokenStats?
-        var userTokenStatsDTO: ToolResultDTOs.TokenStats?
-        var tokenStatsNote: String?
+        var tokenStatsDTO: ToolResultDTOs.TokenStats? = nil
+        var userTokenStatsDTO: ToolResultDTOs.TokenStats? = nil
+        var tokenStatsNote: String? = nil
         if include.contains("tokens") {
             let fileTokens = selectionReply?.totalTokens ?? 0
             let filesContentTokens = (selectionReply?.summary?.fullTokens ?? 0) + (selectionReply?.summary?.sliceTokens ?? 0)

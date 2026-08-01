@@ -334,13 +334,13 @@ struct AgentModeSidebarSessionBuilder {
         liveSession: TabSession?,
         entry: AgentSessionIndexEntry?
     ) -> AgentWorktreeIndicator? {
-        let summaries: [AgentSessionWorktreeBindingSummary] =
-            if let liveSession, !liveSession.worktreeBindings.isEmpty
-        {
-            liveSession.worktreeBindings.worktreeBindingSummaries
-        } else {
-            entry?.worktreeBindingSummaries ?? []
-        }
+        let summaries: [AgentSessionWorktreeBindingSummary] = {
+            if let liveSession, !liveSession.worktreeBindings.isEmpty {
+                return liveSession.worktreeBindings.worktreeBindingSummaries
+            } else {
+                return entry?.worktreeBindingSummaries ?? []
+            }
+        }()
         guard let representative = summaries.first else { return nil }
         return AgentWorktreeIndicatorResolver.indicator(for: representative)
     }

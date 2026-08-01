@@ -29,9 +29,7 @@ import conductor  # noqa: E402
 
 
 class LifecycleTestCase(unittest.TestCase):
-    def make_state(
-        self,
-    ) -> tuple[tempfile.TemporaryDirectory[str], conductor.DaemonState]:
+    def make_state(self) -> tuple[tempfile.TemporaryDirectory[str], conductor.DaemonState]:
         tmp = tempfile.TemporaryDirectory()
         root = Path(tmp.name)
         jobs_dir = root / "jobs"
@@ -94,9 +92,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         new_payload = {"protocolVersion": conductor.PROTOCOL_VERSION}
         requests: list[dict] = []
 
-        def fake_request(
-            _paths: conductor.Paths, message: dict, timeout: float = 1.0
-        ) -> dict:
+        def fake_request(_paths: conductor.Paths, message: dict, timeout: float = 1.0) -> dict:
             requests.append(message)
             if message["type"] == "status" and len(requests) == 1:
                 return old_payload
@@ -108,33 +104,23 @@ class LifecycleQueueTests(LifecycleTestCase):
                 return new_payload
             raise AssertionError(f"unexpected daemon request: {message}")
 
-        with mock.patch.object(
-            conductor, "request_daemon", side_effect=fake_request
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "request_daemon", side_effect=fake_request), mock.patch.object(
             conductor, "wait_until_stopped", return_value=True
-        ) as wait, mock.patch.object(
-            conductor.subprocess, "Popen", return_value=fake_proc
-        ) as popen:
+        ) as wait, mock.patch.object(conductor.subprocess, "Popen", return_value=fake_proc) as popen:
             payload = conductor.ensure_daemon(state.paths)
 
         self.assertEqual(payload, new_payload)
         self.assertEqual(requests[0], {"type": "status"})
         self.assertEqual(requests[1], {"type": "stop", "force": False})
-        wait.assert_called_once_with(
-            state.paths, timeout=conductor.TERMINATE_GRACE_SECONDS + 5.0
-        )
+        wait.assert_called_once_with(state.paths, timeout=conductor.TERMINATE_GRACE_SECONDS + 5.0)
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
-    def test_ensure_daemon_refuses_mismatched_replacement_when_work_appears_before_stop(
-        self,
-    ) -> None:
+    def test_ensure_daemon_refuses_mismatched_replacement_when_work_appears_before_stop(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         requests: list[dict] = []
 
-        def fake_request(
-            _paths: conductor.Paths, message: dict, timeout: float = 1.0
-        ) -> dict:
+        def fake_request(_paths: conductor.Paths, message: dict, timeout: float = 1.0) -> dict:
             requests.append(message)
             if message["type"] == "status":
                 return {
@@ -146,16 +132,10 @@ class LifecycleQueueTests(LifecycleTestCase):
                 raise conductor.ConductorError("daemon has active or queued jobs")
             raise AssertionError(f"unexpected daemon request: {message}")
 
-        with mock.patch.object(
-            conductor, "request_daemon", side_effect=fake_request
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "request_daemon", side_effect=fake_request), mock.patch.object(
             conductor, "wait_until_stopped"
-        ) as wait, mock.patch.object(
-            conductor.subprocess, "Popen"
-        ) as popen:
-            with self.assertRaisesRegex(
-                conductor.ConductorError, "jobs may have become active"
-            ):
+        ) as wait, mock.patch.object(conductor.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(conductor.ConductorError, "jobs may have become active"):
                 conductor.ensure_daemon(state.paths)
 
         self.assertEqual(
@@ -168,16 +148,12 @@ class LifecycleQueueTests(LifecycleTestCase):
         wait.assert_not_called()
         popen.assert_not_called()
 
-    def test_ensure_daemon_raises_for_locked_protocol_mismatch_with_active_jobs(
-        self,
-    ) -> None:
+    def test_ensure_daemon_raises_for_locked_protocol_mismatch_with_active_jobs(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         requests: list[dict] = []
 
-        def fake_request(
-            _paths: conductor.Paths, message: dict, timeout: float = 1.0
-        ) -> dict:
+        def fake_request(_paths: conductor.Paths, message: dict, timeout: float = 1.0) -> dict:
             requests.append(message)
             if len(requests) == 1:
                 raise conductor.ConductorError("down before start lock")
@@ -187,13 +163,9 @@ class LifecycleQueueTests(LifecycleTestCase):
                 "queuedJobs": [],
             }
 
-        with mock.patch.object(
-            conductor, "request_daemon", side_effect=fake_request
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "request_daemon", side_effect=fake_request), mock.patch.object(
             conductor, "wait_until_stopped"
-        ) as wait, mock.patch.object(
-            conductor.subprocess, "Popen"
-        ) as popen:
+        ) as wait, mock.patch.object(conductor.subprocess, "Popen") as popen:
             with self.assertRaisesRegex(conductor.ConductorError, "protocol mismatch"):
                 conductor.ensure_daemon(state.paths)
 
@@ -204,53 +176,27 @@ class LifecycleQueueTests(LifecycleTestCase):
     def test_app_relaunch_cli_requires_delimiter_and_forwards_arguments(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue:
-            code = conductor.handle_real_operation(
-                state.paths, "app", ["relaunch", "--", "--demo"]
-            )
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
+            code = conductor.handle_real_operation(state.paths, "app", ["relaunch", "--", "--demo"])
 
         self.assertEqual(code, 0)
         self.assertEqual(enqueue.call_args.args[1], "app")
-        self.assertEqual(
-            enqueue.call_args.args[2], {"subcommand": "relaunch", "appArgs": ["--demo"]}
-        )
+        self.assertEqual(enqueue.call_args.args[2], {"subcommand": "relaunch", "appArgs": ["--demo"]})
         with self.assertRaises(conductor.ConductorError):
             conductor.handle_real_operation(state.paths, "app", ["relaunch", "--demo"])
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue_launch:
-            code = conductor.handle_real_operation(
-                state.paths, "app", ["launch-existing", "--", "--demo"]
-            )
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue_launch:
+            code = conductor.handle_real_operation(state.paths, "app", ["launch-existing", "--", "--demo"])
         self.assertEqual(code, 0)
-        self.assertEqual(
-            enqueue_launch.call_args.args[2],
-            {"subcommand": "launch-existing", "appArgs": ["--demo"]},
-        )
+        self.assertEqual(enqueue_launch.call_args.args[2], {"subcommand": "launch-existing", "appArgs": ["--demo"]})
 
-    def test_app_relaunch_delegates_split_internal_runner_with_live_lane_and_timeout(
-        self,
-    ) -> None:
+    def test_app_relaunch_delegates_split_internal_runner_with_live_lane_and_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             argv, lanes, _cwd, _env, timeout = registry.prepare(
-                {
-                    "operation": "app",
-                    "args": {"subcommand": "relaunch", "appArgs": ["--demo"]},
-                }
+                {"operation": "app", "args": {"subcommand": "relaunch", "appArgs": ["--demo"]}}
             )
-            launch_existing_argv, launch_existing_lanes, _cwd, _env, _timeout = (
-                registry.prepare(
-                    {
-                        "operation": "app",
-                        "args": {
-                            "subcommand": "launch-existing",
-                            "appArgs": ["--demo"],
-                        },
-                    }
-                )
+            launch_existing_argv, launch_existing_lanes, _cwd, _env, _timeout = registry.prepare(
+                {"operation": "app", "args": {"subcommand": "launch-existing", "appArgs": ["--demo"]}}
             )
 
         self.assertIn("__operation_runner", argv)
@@ -259,18 +205,13 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(timeout, conductor.MEDIUM_TIMEOUT_SECONDS)
         self.assertIn("app_launch_existing", launch_existing_argv[-1])
         self.assertEqual(launch_existing_lanes, ["liveApp"])
-        self.assertEqual(
-            conductor.operation_display_name("app", {"subcommand": "relaunch"}),
-            "app relaunch",
-        )
+        self.assertEqual(conductor.operation_display_name("app", {"subcommand": "relaunch"}), "app relaunch")
 
     def test_guardrails_delegates_aggregator_without_lanes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             registry = conductor.OperationRegistry(repo_root)
-            argv, lanes, cwd, _env, _timeout = registry.prepare(
-                {"operation": "guardrails", "args": {}}
-            )
+            argv, lanes, cwd, _env, _timeout = registry.prepare({"operation": "guardrails", "args": {}})
 
         self.assertEqual(Path(argv[0]).name, "guardrails.sh")
         self.assertEqual(Path(argv[0]).parent.name, "Scripts")
@@ -291,20 +232,14 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(cwd, repo_root)
         self.assertEqual(timeout, conductor.SHORT_TIMEOUT_SECONDS)
 
-    def test_release_artifact_delegates_release_script_with_release_lanes_and_extended_timeout(
-        self,
-    ) -> None:
+    def test_release_artifact_delegates_release_script_with_release_lanes_and_extended_timeout(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue:
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
             code = conductor.handle_real_operation(state.paths, "release", ["artifact"])
 
         registry = conductor.OperationRegistry(state.paths.repo_root)
-        argv, lanes, _cwd, _env, timeout = registry.prepare(
-            {"operation": "release", "args": {"subcommand": "artifact"}}
-        )
+        argv, lanes, _cwd, _env, timeout = registry.prepare({"operation": "release", "args": {"subcommand": "artifact"}})
 
         self.assertEqual(code, 0)
         self.assertEqual(enqueue.call_args.args[2], {"subcommand": "artifact"})
@@ -313,27 +248,16 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(lanes, ["build", "debugArtifact", "release"])
         self.assertEqual(timeout, conductor.RELEASE_ARTIFACT_TIMEOUT_SECONDS)
 
-    def test_release_artifact_timeout_is_distinct_from_other_release_packaging(
-        self,
-    ) -> None:
+    def test_release_artifact_timeout_is_distinct_from_other_release_packaging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             _argv, _lanes, _cwd, _env, artifact_timeout = registry.prepare(
                 {"operation": "release", "args": {"subcommand": "artifact"}}
             )
             normal_release_requests = {
-                "package release": {
-                    "operation": "package",
-                    "args": {"config": "release"},
-                },
-                "release package": {
-                    "operation": "release",
-                    "args": {"subcommand": "package"},
-                },
-                "release local-install": {
-                    "operation": "release",
-                    "args": {"subcommand": "local-install"},
-                },
+                "package release": {"operation": "package", "args": {"config": "release"}},
+                "release package": {"operation": "release", "args": {"subcommand": "package"}},
+                "release local-install": {"operation": "release", "args": {"subcommand": "local-install"}},
             }
             normal_timeouts = {
                 label: registry.prepare(request)[4]
@@ -351,10 +275,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             argv, lanes, _cwd, _env, _timeout = registry.prepare(
-                {
-                    "operation": "smoke",
-                    "args": {"packagedApp": "/tmp/RepoPrompt CE.app"},
-                }
+                {"operation": "smoke", "args": {"packagedApp": "/tmp/RepoPrompt CE.app"}}
             )
 
         self.assertEqual(lanes, ["liveApp"])
@@ -364,26 +285,17 @@ class LifecycleQueueTests(LifecycleTestCase):
     def test_diagnostics_build_cache_delegates_read_only_without_lanes(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue:
-            code = conductor.handle_real_operation(
-                state.paths, "diagnostics", ["build-cache", "--limit", "3"]
-            )
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
+            code = conductor.handle_real_operation(state.paths, "diagnostics", ["build-cache", "--limit", "3"])
 
         registry = conductor.OperationRegistry(state.paths.repo_root)
         argv, lanes, cwd, _env, timeout = registry.prepare(
-            {
-                "operation": "diagnostics",
-                "args": {"subcommand": "build-cache", "limit": 3},
-            }
+            {"operation": "diagnostics", "args": {"subcommand": "build-cache", "limit": 3}}
         )
 
         self.assertEqual(code, 0)
         self.assertEqual(enqueue.call_args.args[1], "diagnostics")
-        self.assertEqual(
-            enqueue.call_args.args[2], {"subcommand": "build-cache", "limit": 3}
-        )
+        self.assertEqual(enqueue.call_args.args[2], {"subcommand": "build-cache", "limit": 3})
         self.assertEqual(lanes, [])
         self.assertEqual(cwd, state.paths.repo_root)
         self.assertEqual(timeout, conductor.SHORT_TIMEOUT_SECONDS)
@@ -402,9 +314,7 @@ class LifecycleQueueTests(LifecycleTestCase):
 
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = conductor.operation_diagnostics_build_cache(
-                    repo_root, {"limit": 1}
-                )
+                code = conductor.operation_diagnostics_build_cache(repo_root, {"limit": 1})
 
         text = output.getvalue()
         self.assertEqual(code, 0)
@@ -415,9 +325,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertIn("Top .build directories:", text)
         self.assertIn("wt-b", text)
 
-    def test_release_local_install_delegates_installer_with_release_lanes_and_confirmation(
-        self,
-    ) -> None:
+    def test_release_local_install_delegates_installer_with_release_lanes_and_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             argv, lanes, _cwd, env, timeout = registry.prepare(
@@ -448,29 +356,19 @@ class LifecycleQueueTests(LifecycleTestCase):
         with mock.patch.object(
             conductor,
             "request_daemon",
-            side_effect=[
-                down_before_start,
-                down_before_spawn,
-                {"protocolVersion": conductor.PROTOCOL_VERSION},
-            ],
-        ), mock.patch.object(
-            conductor.subprocess, "Popen", return_value=fake_proc
-        ) as popen:
+            side_effect=[down_before_start, down_before_spawn, {"protocolVersion": conductor.PROTOCOL_VERSION}],
+        ), mock.patch.object(conductor.subprocess, "Popen", return_value=fake_proc) as popen:
             payload = conductor.ensure_daemon(state.paths)
 
         self.assertEqual(payload["protocolVersion"], conductor.PROTOCOL_VERSION)
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
-        self.assertEqual(
-            popen.call_args.kwargs["stdout"].name, str(state.paths.daemon_log_path)
-        )
+        self.assertEqual(popen.call_args.kwargs["stdout"].name, str(state.paths.daemon_log_path))
         self.assertEqual(popen.call_args.kwargs["stderr"], subprocess.STDOUT)
 
     def test_daemon_run_job_launches_process_with_devnull_stdin(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        job = self.make_job(
-            state, "job-devnull", "build", {}, ["build"], job_state="running"
-        )
+        job = self.make_job(state, "job-devnull", "build", {}, ["build"], job_state="running")
         state.jobs[job.ticket] = job
         fake_stdout = mock.Mock()
         fake_stdout.readline.side_effect = [b""]
@@ -479,38 +377,22 @@ class LifecycleQueueTests(LifecycleTestCase):
         fake_process.stdout = fake_stdout
         fake_process.wait.return_value = 0
 
-        with mock.patch.object(
-            conductor, "operation_requires_global_heavy_slot", return_value=False
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False), mock.patch.object(
             conductor.subprocess, "Popen", return_value=fake_process
         ) as popen, mock.patch.object(
-            conductor,
-            "process_table_snapshot",
-            return_value={os.getpid(): (os.getppid(), "fixture-start")},
-        ), mock.patch.object(
-            state, "_schedule_locked"
-        ), mock.patch.object(
-            state, "_refresh_output_summary"
-        ):
+            conductor, "process_table_snapshot", return_value={os.getpid(): (os.getppid(), "fixture-start")}
+        ), mock.patch.object(state, "_schedule_locked"), mock.patch.object(state, "_refresh_output_summary"):
             state._run_job(job.ticket)
 
-        job_launch = next(
-            call
-            for call in popen.call_args_list
-            if call.kwargs.get("stdin") == subprocess.DEVNULL
-        )
+        job_launch = next(call for call in popen.call_args_list if call.kwargs.get("stdin") == subprocess.DEVNULL)
         self.assertEqual(job_launch.kwargs["stdout"], subprocess.PIPE)
         self.assertEqual(job_launch.kwargs["stderr"], subprocess.STDOUT)
         self.assertEqual(state.jobs[job.ticket].state, "completed")
 
-    def test_daemon_timeout_preserves_timeout_result_when_root_resists_sigkill(
-        self,
-    ) -> None:
+    def test_daemon_timeout_preserves_timeout_result_when_root_resists_sigkill(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        job = self.make_job(
-            state, "job-timeout-sigkill", "build", {}, ["build"], job_state="running"
-        )
+        job = self.make_job(state, "job-timeout-sigkill", "build", {}, ["build"], job_state="running")
         state.jobs[job.ticket] = job
         fake_stdout = mock.Mock()
         fake_stdout.readline.side_effect = [b""]
@@ -523,17 +405,11 @@ class LifecycleQueueTests(LifecycleTestCase):
             subprocess.TimeoutExpired(["fixture"], conductor.KILL_GRACE_SECONDS),
         ]
 
-        with mock.patch.object(
-            conductor, "operation_requires_global_heavy_slot", return_value=False
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False), mock.patch.object(
             conductor.subprocess, "Popen", return_value=fake_process
         ), mock.patch.object(
-            conductor,
-            "process_table_snapshot",
-            return_value={os.getpid(): (os.getppid(), "fixture-start")},
-        ), mock.patch.object(
-            state, "_terminate_process_group_locked"
-        ), mock.patch.object(
+            conductor, "process_table_snapshot", return_value={os.getpid(): (os.getppid(), "fixture-start")}
+        ), mock.patch.object(state, "_terminate_process_group_locked"), mock.patch.object(
             state, "_kill_process_group_locked"
         ), mock.patch.object(
             state, "_wait_for_process_tree_exit_locked", side_effect=[False, True]
@@ -547,17 +423,13 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(job.state, "failed")
         self.assertEqual(job.exit_code, 124)
         self.assertTrue(job.timed_out)
-        self.assertIn(
-            "job processes remained alive after SIGKILL escalation", job.error or ""
-        )
+        self.assertIn("job processes remained alive after SIGKILL escalation", job.error or "")
         self.assertNotIn("daemon runner error", job.result_summary or "")
 
     def test_process_group_signal_requires_verified_job_identity(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        job = self.make_job(
-            state, "job-pgid-unverified", "fixture", {}, ["build"], job_state="running"
-        )
+        job = self.make_job(state, "job-pgid-unverified", "fixture", {}, ["build"], job_state="running")
         job.process_pgid = 123456
         state.jobs[job.ticket] = job
 
@@ -568,9 +440,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         killpg.assert_not_called()
         self.assertFalse(job.process_group_identity_confirmed)
         self.assertIn("terminating process tree: unverified group", "".join(job.tail))
-        self.assertNotIn(
-            "terminating process group: unverified group", "".join(job.tail)
-        )
+        self.assertNotIn("terminating process group: unverified group", "".join(job.tail))
 
     def test_cancel_signals_process_group_for_reparented_descendant(self) -> None:
         tmp, state = self.make_state()
@@ -578,13 +448,12 @@ class LifecycleQueueTests(LifecycleTestCase):
         root = Path(tmp.name)
         grandchild_pid_path = root / "grandchild.pid"
         grandchild_ready_path = root / "grandchild.ready"
-        job = self.make_job(
-            state, "job-pgid-orphan", "fixture", {}, ["build"], job_state="running"
-        )
+        job = self.make_job(state, "job-pgid-orphan", "fixture", {}, ["build"], job_state="running")
         state.jobs[job.ticket] = job
         state.active_lanes = {"build": job.ticket}
 
-        grandchild_code = textwrap.dedent("""
+        grandchild_code = textwrap.dedent(
+            """
             import os
             import signal
             import sys
@@ -599,8 +468,10 @@ class LifecycleQueueTests(LifecycleTestCase):
                 handle.write(f"{os.getpid()} {os.getppid()} {os.getpgid(0)}")
             while True:
                 time.sleep(1)
-            """)
-        intermediate_code = textwrap.dedent("""
+            """
+        )
+        intermediate_code = textwrap.dedent(
+            """
             import subprocess
             import sys
 
@@ -611,8 +482,10 @@ class LifecycleQueueTests(LifecycleTestCase):
                 stderr=subprocess.DEVNULL,
                 start_new_session=False,
             )
-            """)
-        root_code = textwrap.dedent("""
+            """
+        )
+        root_code = textwrap.dedent(
+            """
             import os
             import subprocess
             import sys
@@ -631,7 +504,8 @@ class LifecycleQueueTests(LifecycleTestCase):
             print("ROOT_READY", flush=True)
             while True:
                 time.sleep(1)
-            """)
+            """
+        )
         argv = [
             sys.executable,
             "-u",
@@ -647,23 +521,15 @@ class LifecycleQueueTests(LifecycleTestCase):
         def cleanup_grandchild() -> None:
             if not grandchild_pid_path.exists() or not grandchild_ready_path.exists():
                 return
-            with contextlib.suppress(
-                ValueError, ProcessLookupError, PermissionError, OSError
-            ):
+            with contextlib.suppress(ValueError, ProcessLookupError, PermissionError, OSError):
                 grandchild_pid = int(grandchild_pid_path.read_text(encoding="utf-8"))
-                grandchild_pgid = int(
-                    grandchild_ready_path.read_text(encoding="utf-8").split()[2]
-                )
+                grandchild_pgid = int(grandchild_ready_path.read_text(encoding="utf-8").split()[2])
                 if os.getpgid(grandchild_pid) == grandchild_pgid:
                     os.kill(grandchild_pid, signal.SIGKILL)
 
         self.addCleanup(cleanup_grandchild)
-        with mock.patch.object(
-            conductor, "operation_requires_global_heavy_slot", return_value=False
-        ):
-            worker = threading.Thread(
-                target=state._run_job, args=(job.ticket,), daemon=True
-            )
+        with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False):
+            worker = threading.Thread(target=state._run_job, args=(job.ticket,), daemon=True)
             worker.start()
             deadline = time.time() + 5.0
             while time.time() < deadline:
@@ -695,12 +561,8 @@ class LifecycleQueueTests(LifecycleTestCase):
 
     def test_run_operation_command_uses_devnull_stdin(self) -> None:
         completed = subprocess.CompletedProcess(["echo", "ok"], 0, "ok\n", "")
-        with mock.patch.object(
-            conductor.subprocess, "run", return_value=completed
-        ) as run, contextlib.redirect_stdout(io.StringIO()):
-            code, stdout, stderr = conductor.run_operation_command(
-                "fixture", ["echo", "ok"], Path.cwd()
-            )
+        with mock.patch.object(conductor.subprocess, "run", return_value=completed) as run, contextlib.redirect_stdout(io.StringIO()):
+            code, stdout, stderr = conductor.run_operation_command("fixture", ["echo", "ok"], Path.cwd())
 
         self.assertEqual((code, stdout, stderr), (0, "ok\n", ""))
         self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
@@ -708,7 +570,8 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertTrue(run.call_args.kwargs["text"])
 
     def test_release_local_install_job_succeeds_with_closed_parent_fd0(self) -> None:
-        child_code = textwrap.dedent(f"""
+        child_code = textwrap.dedent(
+            f"""
             import os
             import sys
             import tempfile
@@ -773,7 +636,8 @@ class LifecycleQueueTests(LifecycleTestCase):
                 sys.exit(1)
             print("CLOSED_FD_REGRESSION_OK")
             tmp.cleanup()
-            """)
+            """
+        )
 
         result = subprocess.run(
             [sys.executable, "-c", child_code],
@@ -789,17 +653,13 @@ class LifecycleQueueTests(LifecycleTestCase):
     def test_app_stop_supersedes_queued_live_app_but_not_build_only_work(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        old_run = self.make_job(
-            state, "old-run", "run", {}, ["build", "debugArtifact", "liveApp"]
-        )
+        old_run = self.make_job(state, "old-run", "run", {}, ["build", "debugArtifact", "liveApp"])
         build = self.make_job(state, "build", "build", {}, ["build"])
         state.jobs = {old_run.ticket: old_run, build.ticket: build}
         state.queue = [old_run.ticket, build.ticket]
 
         with mock.patch.object(state, "_schedule_locked"):
-            payload = state.enqueue(
-                {"operation": "app", "args": {"subcommand": "stop"}}
-            )
+            payload = state.enqueue({"operation": "app", "args": {"subcommand": "stop"}})
 
         self.assertEqual(old_run.state, "canceled")
         self.assertEqual(old_run.exit_code, 130)
@@ -810,46 +670,29 @@ class LifecycleQueueTests(LifecycleTestCase):
     def test_app_relaunch_supersedes_queued_run(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        old_run = self.make_job(
-            state, "old-run", "run", {}, ["build", "debugArtifact", "liveApp"]
-        )
+        old_run = self.make_job(state, "old-run", "run", {}, ["build", "debugArtifact", "liveApp"])
         state.jobs[old_run.ticket] = old_run
         state.queue.append(old_run.ticket)
 
         with mock.patch.object(state, "_schedule_locked"):
-            payload = state.enqueue(
-                {"operation": "app", "args": {"subcommand": "relaunch", "appArgs": []}}
-            )
+            payload = state.enqueue({"operation": "app", "args": {"subcommand": "relaunch", "appArgs": []}})
 
         self.assertEqual(old_run.state, "canceled")
         self.assertEqual(old_run.superseded_by_operation, "app relaunch")
         self.assertEqual(payload["operationLabel"], "app relaunch")
 
-    def test_running_launch_is_cancellation_requested_and_retains_lane_for_stop(
-        self,
-    ) -> None:
+    def test_running_launch_is_cancellation_requested_and_retains_lane_for_stop(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        old_run = self.make_job(
-            state,
-            "running-run",
-            "run",
-            {},
-            ["build", "debugArtifact", "liveApp"],
-            "running",
-        )
+        old_run = self.make_job(state, "running-run", "run", {}, ["build", "debugArtifact", "liveApp"], "running")
         old_run.process_pid = 123
         state.jobs[old_run.ticket] = old_run
         state.active_lanes = {lane: old_run.ticket for lane in old_run.lanes}
 
-        with mock.patch.object(
-            state, "_terminate_process_group_locked"
-        ) as terminate, mock.patch.object(state, "_schedule_locked"), mock.patch.object(
-            conductor.threading, "Thread"
-        ):
-            payload = state.enqueue(
-                {"operation": "app", "args": {"subcommand": "stop"}}
-            )
+        with mock.patch.object(state, "_terminate_process_group_locked") as terminate, mock.patch.object(
+            state, "_schedule_locked"
+        ), mock.patch.object(conductor.threading, "Thread"):
+            payload = state.enqueue({"operation": "app", "args": {"subcommand": "stop"}})
 
         stop = state.jobs[payload["ticket"]]
         self.assertTrue(old_run.cancel_requested)
@@ -858,36 +701,21 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertTrue(stop.args["guardDelayedLaunch"])
         terminate.assert_called_once()
 
-    def test_superseded_job_without_pid_is_signaled_after_delayed_assignment_then_escalated(
-        self,
-    ) -> None:
+    def test_superseded_job_without_pid_is_signaled_after_delayed_assignment_then_escalated(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        old_run = self.make_job(
-            state,
-            "delayed-pid-run",
-            "run",
-            {},
-            ["build", "debugArtifact", "liveApp"],
-            "running",
-        )
+        old_run = self.make_job(state, "delayed-pid-run", "run", {}, ["build", "debugArtifact", "liveApp"], "running")
         state.jobs[old_run.ticket] = old_run
         state.active_lanes = {lane: old_run.ticket for lane in old_run.lanes}
         real_thread = threading.Thread
 
-        with mock.patch.object(
-            state, "_terminate_process_group_locked"
-        ) as terminate, mock.patch.object(
+        with mock.patch.object(state, "_terminate_process_group_locked") as terminate, mock.patch.object(
             state, "_kill_process_group_locked"
         ) as kill, mock.patch.object(
             state, "_wait_for_process_tree_exit_locked", side_effect=[True, False]
-        ), mock.patch.object(
-            state, "_schedule_locked"
-        ), mock.patch.object(
+        ), mock.patch.object(state, "_schedule_locked"), mock.patch.object(
             conductor, "TERMINATE_GRACE_SECONDS", 0.01
-        ), mock.patch.object(
-            conductor.threading, "Thread"
-        ) as thread_factory:
+        ), mock.patch.object(conductor.threading, "Thread") as thread_factory:
             state.enqueue({"operation": "app", "args": {"subcommand": "stop"}})
             terminate.assert_not_called()
             target = thread_factory.call_args.kwargs["target"]
@@ -909,9 +737,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         kill.assert_called_once()
         self.assertIs(kill.call_args.args[0], old_run)
 
-    def test_outstanding_launch_guard_propagates_to_newer_lifecycle_intents(
-        self,
-    ) -> None:
+    def test_outstanding_launch_guard_propagates_to_newer_lifecycle_intents(self) -> None:
         for subcommand in ["stop", "relaunch"]:
             with self.subTest(subcommand=subcommand):
                 tmp, state = self.make_state()
@@ -932,16 +758,12 @@ class LifecycleQueueTests(LifecycleTestCase):
                 with mock.patch.object(state, "_schedule_locked"):
                     payload = state.enqueue({"operation": "app", "args": args})
 
-                self.assertTrue(
-                    state.jobs[payload["ticket"]].args["guardDelayedLaunch"]
-                )
+                self.assertTrue(state.jobs[payload["ticket"]].args["guardDelayedLaunch"])
 
     def test_ordinary_run_remains_fifo_and_does_not_supersede(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        prior = self.make_job(
-            state, "prior", "run", {}, ["build", "debugArtifact", "liveApp"]
-        )
+        prior = self.make_job(state, "prior", "run", {}, ["build", "debugArtifact", "liveApp"])
         state.jobs[prior.ticket] = prior
         state.queue.append(prior.ticket)
 
@@ -955,11 +777,7 @@ class LifecycleQueueTests(LifecycleTestCase):
     def test_request_key_reuse_is_checked_before_supersession(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        request = {
-            "operation": "app",
-            "args": {"subcommand": "relaunch", "appArgs": []},
-            "requestKey": "interactive",
-        }
+        request = {"operation": "app", "args": {"subcommand": "relaunch", "appArgs": []}, "requestKey": "interactive"}
         fingerprint = state.registry.fingerprint(request)
         existing = self.make_job(
             state,
@@ -970,9 +788,7 @@ class LifecycleQueueTests(LifecycleTestCase):
             request_key="interactive",
             fingerprint=fingerprint,
         )
-        victim = self.make_job(
-            state, "victim", "run", {}, ["build", "debugArtifact", "liveApp"]
-        )
+        victim = self.make_job(state, "victim", "run", {}, ["build", "debugArtifact", "liveApp"])
         state.jobs = {existing.ticket: existing, victim.ticket: victim}
         state.queue = [existing.ticket, victim.ticket]
         state.request_keys["interactive"] = existing.ticket
@@ -985,30 +801,14 @@ class LifecycleQueueTests(LifecycleTestCase):
     def test_request_key_mismatch_has_no_supersession_side_effect(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        existing = self.make_job(
-            state,
-            "keyed",
-            "build",
-            {},
-            ["build"],
-            request_key="interactive",
-            fingerprint="other",
-        )
-        victim = self.make_job(
-            state, "victim", "run", {}, ["build", "debugArtifact", "liveApp"]
-        )
+        existing = self.make_job(state, "keyed", "build", {}, ["build"], request_key="interactive", fingerprint="other")
+        victim = self.make_job(state, "victim", "run", {}, ["build", "debugArtifact", "liveApp"])
         state.jobs = {existing.ticket: existing, victim.ticket: victim}
         state.queue = [existing.ticket, victim.ticket]
         state.request_keys["interactive"] = existing.ticket
 
         with self.assertRaises(conductor.ConductorError):
-            state.enqueue(
-                {
-                    "operation": "app",
-                    "args": {"subcommand": "stop"},
-                    "requestKey": "interactive",
-                }
-            )
+            state.enqueue({"operation": "app", "args": {"subcommand": "stop"}, "requestKey": "interactive"})
 
         self.assertFalse(victim.cancel_requested)
         self.assertEqual(victim.state, "queued")
@@ -1017,13 +817,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         active = self.make_job(state, "build-active", "build", {}, ["build"], "running")
-        waiting = self.make_job(
-            state,
-            "relaunch",
-            "app",
-            {"subcommand": "relaunch"},
-            ["build", "debugArtifact", "liveApp"],
-        )
+        waiting = self.make_job(state, "relaunch", "app", {"subcommand": "relaunch"}, ["build", "debugArtifact", "liveApp"])
         state.jobs = {active.ticket: active, waiting.ticket: waiting}
         state.active_lanes = {"build": active.ticket}
         state.queue = [waiting.ticket]
@@ -1033,9 +827,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(payload["blockedBy"][0]["ticket"], active.ticket)
         self.assertEqual(payload["blockedBy"][0]["conflictingLanes"], ["build"])
 
-    def wait_for_terminal_job(
-        self, state: conductor.DaemonState, ticket: str, timeout: float = 5.0
-    ) -> conductor.Job:
+    def wait_for_terminal_job(self, state: conductor.DaemonState, ticket: str, timeout: float = 5.0) -> conductor.Job:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with state.condition:
@@ -1075,35 +867,23 @@ class LifecycleQueueTests(LifecycleTestCase):
         root = Path(tmp.name)
         shared_socket_parent = root / "shared"
         shared_socket_parent.mkdir()
-        state_a = self.make_state_for_global_slot(
-            root, "daemon-a", shared_socket_parent
-        )
-        state_b = self.make_state_for_global_slot(
-            root, "daemon-b", shared_socket_parent
-        )
+        state_a = self.make_state_for_global_slot(root, "daemon-a", shared_socket_parent)
+        state_b = self.make_state_for_global_slot(root, "daemon-b", shared_socket_parent)
 
         lock_root = root / "machine-locks"
-        with mock.patch.object(
-            conductor, "GLOBAL_HEAVY_SLOT_POLL_SECONDS", 0.01
-        ), mock.patch.object(conductor, "machine_lock_dir", return_value=lock_root):
+        with mock.patch.object(conductor, "GLOBAL_HEAVY_SLOT_POLL_SECONDS", 0.01), mock.patch.object(
+            conductor, "machine_lock_dir", return_value=lock_root
+        ):
             payload_a = state_a.enqueue(
                 {
                     "operation": "fake-sleep",
-                    "args": {
-                        "seconds": 0.25,
-                        "lanes": ["build"],
-                        "message": "daemon-a",
-                    },
+                    "args": {"seconds": 0.25, "lanes": ["build"], "message": "daemon-a"},
                 }
             )
             payload_b = state_b.enqueue(
                 {
                     "operation": "fake-sleep",
-                    "args": {
-                        "seconds": 0.25,
-                        "lanes": ["build"],
-                        "message": "daemon-b",
-                    },
+                    "args": {"seconds": 0.25, "lanes": ["build"], "message": "daemon-b"},
                 }
             )
             job_a = self.wait_for_terminal_job(state_a, payload_a["ticket"])
@@ -1111,30 +891,16 @@ class LifecycleQueueTests(LifecycleTestCase):
 
         self.assertEqual(job_a.state, "completed", job_a.result_summary)
         self.assertEqual(job_b.state, "completed", job_b.result_summary)
-        self.assertEqual(
-            job_a.global_heavy_slot_path, str(lock_root / "global-heavy-0.lock")
-        )
-        self.assertEqual(
-            job_b.global_heavy_slot_path, str(lock_root / "global-heavy-0.lock")
-        )
+        self.assertEqual(job_a.global_heavy_slot_path, str(lock_root / "global-heavy-0.lock"))
+        self.assertEqual(job_b.global_heavy_slot_path, str(lock_root / "global-heavy-0.lock"))
         self.assertIsNotNone(job_a.process_started_at)
         self.assertIsNotNone(job_a.process_finished_at)
         self.assertIsNotNone(job_b.process_started_at)
         self.assertIsNotNone(job_b.process_finished_at)
 
-        first, second = sorted(
-            [job_a, job_b], key=lambda job: job.process_started_at or 0
-        )
-        self.assertGreaterEqual(
-            second.process_started_at or 0, first.process_finished_at or 0
-        )
-        self.assertGreater(
-            max(
-                job_a.global_heavy_slot_wait_seconds or 0,
-                job_b.global_heavy_slot_wait_seconds or 0,
-            ),
-            0.05,
-        )
+        first, second = sorted([job_a, job_b], key=lambda job: job.process_started_at or 0)
+        self.assertGreaterEqual(second.process_started_at or 0, first.process_finished_at or 0)
+        self.assertGreater(max(job_a.global_heavy_slot_wait_seconds or 0, job_b.global_heavy_slot_wait_seconds or 0), 0.05)
 
     def test_cancel_waiting_for_global_heavy_slot_does_not_spawn_process(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -1144,9 +910,9 @@ class LifecycleQueueTests(LifecycleTestCase):
         shared_socket_parent.mkdir()
         state = self.make_state_for_global_slot(root, "daemon", shared_socket_parent)
         lock_root = root / "machine-locks"
-        with mock.patch.object(
-            conductor, "GLOBAL_HEAVY_SLOT_POLL_SECONDS", 0.01
-        ), mock.patch.object(conductor, "machine_lock_dir", return_value=lock_root):
+        with mock.patch.object(conductor, "GLOBAL_HEAVY_SLOT_POLL_SECONDS", 0.01), mock.patch.object(
+            conductor, "machine_lock_dir", return_value=lock_root
+        ):
             lock_path = lock_root / "global-heavy-0.lock"
             lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
             lock_file = lock_path.open("a+", encoding="utf-8")
@@ -1189,12 +955,8 @@ class LifecycleQueueTests(LifecycleTestCase):
         lock_root = root / "machine-locks"
 
         with mock.patch.object(conductor, "machine_lock_dir", return_value=lock_root):
-            self.assertEqual(
-                state_a._global_heavy_slot_paths(), [lock_root / "global-heavy-0.lock"]
-            )
-            self.assertEqual(
-                state_b._global_heavy_slot_paths(), [lock_root / "global-heavy-0.lock"]
-            )
+            self.assertEqual(state_a._global_heavy_slot_paths(), [lock_root / "global-heavy-0.lock"])
+            self.assertEqual(state_b._global_heavy_slot_paths(), [lock_root / "global-heavy-0.lock"])
 
     def test_configured_global_heavy_slots_allow_two_cross_daemon_builds(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -1204,31 +966,21 @@ class LifecycleQueueTests(LifecycleTestCase):
         state_b = self.make_state_for_global_slot(root, "daemon-b", root / "socket-b")
         lock_root = root / "machine-locks"
 
-        with mock.patch.object(
-            conductor, "machine_lock_dir", return_value=lock_root
-        ), mock.patch.dict(
+        with mock.patch.object(conductor, "machine_lock_dir", return_value=lock_root), mock.patch.dict(
             os.environ,
             {"REPOPROMPT_DEV_HEAVY_SLOTS": "2"},
         ):
             payload_a = state_a.enqueue(
                 {
                     "operation": "fake-sleep",
-                    "args": {
-                        "seconds": 0.25,
-                        "lanes": ["build"],
-                        "message": "daemon-a",
-                    },
+                    "args": {"seconds": 0.25, "lanes": ["build"], "message": "daemon-a"},
                     "env": {"REPOPROMPT_DEV_HEAVY_SLOTS": "2"},
                 }
             )
             payload_b = state_b.enqueue(
                 {
                     "operation": "fake-sleep",
-                    "args": {
-                        "seconds": 0.25,
-                        "lanes": ["build"],
-                        "message": "daemon-b",
-                    },
+                    "args": {"seconds": 0.25, "lanes": ["build"], "message": "daemon-b"},
                     "env": {"REPOPROMPT_DEV_HEAVY_SLOTS": "2"},
                 }
             )
@@ -1239,9 +991,7 @@ class LifecycleQueueTests(LifecycleTestCase):
         self.assertEqual(job_b.state, "completed", job_b.result_summary)
         self.assertNotEqual(job_a.global_heavy_slot_path, job_b.global_heavy_slot_path)
         latest_start = max(job_a.process_started_at or 0, job_b.process_started_at or 0)
-        earliest_finish = min(
-            job_a.process_finished_at or 0, job_b.process_finished_at or 0
-        )
+        earliest_finish = min(job_a.process_finished_at or 0, job_b.process_finished_at or 0)
         self.assertLess(latest_start, earliest_finish)
 
     def test_live_app_lock_serializes_across_processes_without_gui_launch(self) -> None:
@@ -1250,7 +1000,8 @@ class LifecycleQueueTests(LifecycleTestCase):
             lock_root = root / "machine-locks"
             events = root / "events.log"
             ready = root / "ready-a"
-            child = textwrap.dedent("""\
+            child = textwrap.dedent(
+                """\
                 import sys, time
                 from pathlib import Path
                 sys.path.insert(0, sys.argv[1])
@@ -1275,18 +1026,10 @@ class LifecycleQueueTests(LifecycleTestCase):
                     time.sleep(0.25)
                     with events.open('a', encoding='utf-8') as handle:
                         handle.write(f'end {label} {time.time()}\\n')
-                """)
+                """
+            )
             proc_a = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    child,
-                    str(SCRIPT_DIR),
-                    str(lock_root),
-                    "a",
-                    str(events),
-                    str(ready),
-                ],
+                [sys.executable, "-c", child, str(SCRIPT_DIR), str(lock_root), "a", str(events), str(ready)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1296,16 +1039,7 @@ class LifecycleQueueTests(LifecycleTestCase):
                 time.sleep(0.01)
             self.assertTrue(ready.exists())
             proc_b = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    child,
-                    str(SCRIPT_DIR),
-                    str(lock_root),
-                    "b",
-                    str(events),
-                    "-",
-                ],
+                [sys.executable, "-c", child, str(SCRIPT_DIR), str(lock_root), "b", str(events), "-"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1316,10 +1050,7 @@ class LifecycleQueueTests(LifecycleTestCase):
             self.assertEqual(proc_b.returncode, 0, stdout_b + stderr_b)
             rows = events.read_text(encoding="utf-8").splitlines()
 
-        self.assertEqual(
-            [row.split()[0:2] for row in rows],
-            [["start", "a"], ["end", "a"], ["start", "b"], ["end", "b"]],
-        )
+        self.assertEqual([row.split()[0:2] for row in rows], [["start", "a"], ["end", "a"], ["start", "b"], ["end", "b"]])
 
 
 class XCTestStallWatchdogTests(LifecycleTestCase):
@@ -1332,9 +1063,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         args: dict[str, object] = {"xctestStallSeconds": 5.0}
         if wake_probe:
             args["xctestStallWakeProbe"] = True
-        job = self.make_job(
-            state, "xctest-watchdog", "test", args, ["build"], job_state="running"
-        )
+        job = self.make_job(state, "xctest-watchdog", "test", args, ["build"], job_state="running")
         state.jobs[job.ticket] = job
         return job
 
@@ -1343,9 +1072,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             with self.assertRaises(OSError):
                 os.fstat(fd)
 
-    def test_output_transport_selection_is_pty_only_for_watchdog_non_list_tests(
-        self,
-    ) -> None:
+    def test_output_transport_selection_is_pty_only_for_watchdog_non_list_tests(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         jobs = [
@@ -1360,18 +1087,14 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
 
         for index, (operation, args, expected) in enumerate(jobs):
             with self.subTest(operation=operation, args=args):
-                job = self.make_job(
-                    state, f"transport-{index}", operation, args, ["build"], "running"
-                )
+                job = self.make_job(state, f"transport-{index}", operation, args, ["build"], "running")
                 transport = state._create_process_output_transport(job)
                 try:
                     self.assertEqual(transport.kind, expected)
                 finally:
                     transport.close_all()
 
-    def test_process_output_transport_closes_native_pty_descriptors_idempotently(
-        self,
-    ) -> None:
+    def test_process_output_transport_closes_native_pty_descriptors_idempotently(self) -> None:
         transport = conductor.ProcessOutputTransport.create("pty")
         fds = [transport.master_fd, transport.slave_fd]
         self.assertTrue(all(isinstance(fd, int) for fd in fds))
@@ -1387,17 +1110,13 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         transport = conductor.ProcessOutputTransport(kind="pty", master_fd=123)
         process = mock.Mock()
 
-        with mock.patch.object(
-            conductor.os, "read", side_effect=OSError(errno.EIO, "fixture EIO")
-        ):
+        with mock.patch.object(conductor.os, "read", side_effect=OSError(errno.EIO, "fixture EIO")):
             self.assertEqual(transport.read_chunk(process), b"")
 
         process.poll.assert_not_called()
         transport.master_fd = None
 
-    def test_output_relay_frames_split_multiple_crlf_unterminated_and_sgr_markers(
-        self,
-    ) -> None:
+    def test_output_relay_frames_split_multiple_crlf_unterminated_and_sgr_markers(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         job = self.make_watchdog_job(state)
@@ -1412,7 +1131,8 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 "Test Case '-[RepoPromptTests.ExampleTests test"
             ).encode(),
             (
-                "Two]' started.\n" f"Test Case '{second}' skipped (0.001 seconds)."
+                "Two]' started.\n"
+                f"Test Case '{second}' skipped (0.001 seconds)."
             ).encode(),
             b"",
         ]
@@ -1453,15 +1173,11 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             observed_at=16.0,
         )
 
-        with mock.patch.object(
-            state, "_xctest_process_snapshot_locked", return_value=(None, [])
-        ), mock.patch.object(
+        with mock.patch.object(state, "_xctest_process_snapshot_locked", return_value=(None, [])), mock.patch.object(
             state,
             "_capture_xctest_stall_diagnostics",
             side_effect=lambda _job, diagnostic, _identity: diagnostic,
-        ), mock.patch.object(
-            state, "_terminate_xctest_stalled_job"
-        ):
+        ), mock.patch.object(state, "_terminate_xctest_stalled_job"):
             state._handle_xctest_stall(job.ticket, claim)
 
         diagnostic = job.diagnostics[-1]
@@ -1476,18 +1192,18 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.assertEqual(job.xctest_last_progress_action, "passed")
         self.assertIsNone(job.xctest_current_test)
 
-    def test_buffered_xctest_marker_streams_on_pty_before_watchdog_capture(
-        self,
-    ) -> None:
+    def test_buffered_xctest_marker_streams_on_pty_before_watchdog_capture(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         root = state.paths.repo_root
         test_name = "-[RepoPromptTests.BufferedTests testStreamsBeforeStall]"
-        child_code = textwrap.dedent(f"""\
+        child_code = textwrap.dedent(
+            f"""\
             import time
             print("Test Case {test_name!r} started.")
             time.sleep(30)
-            """)
+            """
+        )
         argv = [sys.executable, "-c", child_code]
         job = self.make_job(
             state,
@@ -1508,14 +1224,10 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             opened_fds.extend(pair)
             return pair
 
-        def prepare(
-            _request: dict,
-        ) -> tuple[list[str], list[str], Path, dict[str, str], float]:
+        def prepare(_request: dict) -> tuple[list[str], list[str], Path, dict[str, str], float]:
             return argv, ["build"], root, os.environ.copy(), 5.0
 
-        with mock.patch.object(
-            conductor, "operation_requires_global_heavy_slot", return_value=False
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False), mock.patch.object(
             state.registry, "prepare", side_effect=prepare
         ), mock.patch.object(
             conductor.os, "openpty", side_effect=tracking_openpty
@@ -1556,28 +1268,20 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             opened_fds.extend(pair)
             return pair
 
-        with mock.patch.object(
-            conductor, "operation_requires_global_heavy_slot", return_value=False
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False), mock.patch.object(
             conductor.os, "openpty", side_effect=tracking_openpty
         ), mock.patch.object(
             conductor.subprocess,
             "Popen",
             side_effect=OSError("fixture launch failure"),
-        ), mock.patch.object(
-            state, "_schedule_locked"
-        ), mock.patch.object(
-            state, "_refresh_output_summary"
-        ):
+        ), mock.patch.object(state, "_schedule_locked"), mock.patch.object(state, "_refresh_output_summary"):
             state._run_job(job.ticket)
 
         self.assertEqual(job.state, "failed")
         self.assertIn("fixture launch failure", job.error or "")
         self.assert_fds_closed(opened_fds)
 
-    def test_output_transport_cleanup_runs_for_success_timeout_and_cancellation(
-        self,
-    ) -> None:
+    def test_output_transport_cleanup_runs_for_success_timeout_and_cancellation(self) -> None:
         for terminal_path in ["success", "timeout", "cancellation"]:
             with self.subTest(terminal_path=terminal_path):
                 tmp, state = self.make_state()
@@ -1602,18 +1306,13 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                         0,
                     ]
                 else:
-
                     def cancel_then_exit(*_args: object, **_kwargs: object) -> int:
                         job.cancel_requested = True
                         return 0
 
                     fake_process.wait.side_effect = cancel_then_exit
 
-                with mock.patch.object(
-                    conductor,
-                    "operation_requires_global_heavy_slot",
-                    return_value=False,
-                ), mock.patch.object(
+                with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False), mock.patch.object(
                     state, "_create_process_output_transport", return_value=transport
                 ), mock.patch.object(
                     conductor.subprocess,
@@ -1637,9 +1336,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                     state,
                     "_wait_for_process_tree_exit_locked",
                     return_value=False,
-                ), mock.patch.object(
-                    state, "_schedule_locked"
-                ), mock.patch.object(
+                ), mock.patch.object(state, "_schedule_locked"), mock.patch.object(
                     state,
                     "_refresh_output_summary",
                 ):
@@ -1692,9 +1389,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.assertFalse(job.measurement_invalid)
         kill.assert_not_called()
 
-    def test_only_xctest_progress_markers_reset_after_first_started_marker(
-        self,
-    ) -> None:
+    def test_only_xctest_progress_markers_reset_after_first_started_marker(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         job = self.make_watchdog_job(state)
@@ -1769,9 +1464,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             conductor,
             "process_table_snapshot",
             return_value={4321: (1, "reused-pid-token")},
-        ), mock.patch.object(
-            conductor.os, "kill"
-        ) as kill, mock.patch.object(
+        ), mock.patch.object(conductor.os, "kill") as kill, mock.patch.object(
             state,
             "_terminate_xctest_stalled_job",
         ) as terminate:
@@ -1810,21 +1503,15 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             state,
             "_wait_for_xctest_progress_after_probe",
             return_value=True,
-        ), mock.patch.object(
-            state, "_terminate_xctest_stalled_job"
-        ) as terminate, mock.patch.object(
+        ), mock.patch.object(state, "_terminate_xctest_stalled_job") as terminate, mock.patch.object(
             conductor.time,
             "sleep",
         ):
             state._handle_xctest_stall(job.ticket, claim)
 
         state._finalize_process_exit_locked(job, 0)
-        self.assertEqual(
-            signal_identity.call_args_list[0].args[2], conductor.signal.SIGSTOP
-        )
-        self.assertEqual(
-            signal_identity.call_args_list[1].args[2], conductor.signal.SIGCONT
-        )
+        self.assertEqual(signal_identity.call_args_list[0].args[2], conductor.signal.SIGSTOP)
+        self.assertEqual(signal_identity.call_args_list[1].args[2], conductor.signal.SIGCONT)
         self.assertEqual(signal_identity.call_count, 2)
         terminate.assert_called_once_with(job)
         self.assertTrue(job.diagnostics[-1]["progressResumed"])
@@ -1838,15 +1525,18 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         root = state.paths.repo_root
         fake_xctest = root / "ControlledTests.xctest"
         fake_xctest.symlink_to(sys.executable)
-        child_code = textwrap.dedent("""\
+        child_code = textwrap.dedent(
+            """\
             import time
 
             test_name = "-[RepoPromptTests.ControlledTests testWakeProbe]"
             print(f"Test Case '{test_name}' started.", flush=True)
             time.sleep(1)
             print(f"Test Case '{test_name}' passed (0.001 seconds).", flush=True)
-            """)
-        parent_code = textwrap.dedent(f"""\
+            """
+        )
+        parent_code = textwrap.dedent(
+            f"""\
             import subprocess
             import sys
             child = subprocess.Popen(
@@ -1856,7 +1546,8 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 stderr=sys.stderr,
             )
             sys.exit(child.wait())
-            """)
+            """
+        )
         argv = [sys.executable, "-u", "-c", parent_code]
         job = self.make_job(
             state,
@@ -1870,9 +1561,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         state.jobs[job.ticket] = job
         state.active_lanes = {"build": job.ticket}
 
-        def prepare(
-            _request: dict,
-        ) -> tuple[list[str], list[str], Path, dict[str, str], float]:
+        def prepare(_request: dict) -> tuple[list[str], list[str], Path, dict[str, str], float]:
             return argv, ["build"], root, os.environ.copy(), 5.0
 
         def controlled_commands(pids: object) -> dict[int, str]:
@@ -1891,9 +1580,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 "command": str(fake_xctest),
             }
         ]
-        with mock.patch.object(
-            conductor, "operation_requires_global_heavy_slot", return_value=False
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False), mock.patch.object(
             state.registry, "prepare", side_effect=prepare
         ), mock.patch.object(
             state,
@@ -1903,13 +1590,9 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             state,
             "_xctest_process_snapshot_locked",
             return_value=((os.getpid(), "fixture-start"), fake_tree),
-        ), mock.patch.object(
-            state, "_signal_process_identity", return_value=True
-        ), mock.patch.object(
+        ), mock.patch.object(state, "_signal_process_identity", return_value=True), mock.patch.object(
             state, "_wait_for_xctest_progress_after_probe", return_value=True
-        ), mock.patch.object(
-            conductor, "process_command_snapshot", side_effect=controlled_commands
-        ):
+        ), mock.patch.object(conductor, "process_command_snapshot", side_effect=controlled_commands):
             state._run_job(job.ticket)
 
         self.assertEqual(job.state, "failed")
@@ -1926,26 +1609,17 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.addCleanup(tmp.cleanup)
         job = self.make_watchdog_job(state)
 
-        with mock.patch.object(
-            state, "_terminate_process_group_locked"
-        ) as terminate, mock.patch.object(
+        with mock.patch.object(state, "_terminate_process_group_locked") as terminate, mock.patch.object(
             state,
             "_wait_for_process_tree_exit_locked",
             side_effect=[True, True],
-        ) as wait_for_exit, mock.patch.object(
-            state, "_kill_process_group_locked"
-        ) as kill:
+        ) as wait_for_exit, mock.patch.object(state, "_kill_process_group_locked") as kill:
             state._terminate_xctest_stalled_job(job)
 
-        terminate.assert_called_once_with(
-            job, reason="XCTest progress stall measurement invalid"
-        )
+        terminate.assert_called_once_with(job, reason="XCTest progress stall measurement invalid")
         kill.assert_called_once()
         self.assertEqual(wait_for_exit.call_count, 2)
-        self.assertIn(
-            "could not confirm descendant exit",
-            job.log_path.read_text(encoding="utf-8"),
-        )
+        self.assertIn("could not confirm descendant exit", job.log_path.read_text(encoding="utf-8"))
 
     def test_stall_diagnostic_file_is_bounded(self) -> None:
         tmp, state = self.make_state()
@@ -1962,18 +1636,12 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
     def test_default_test_cli_and_jobs_leave_watchdog_disabled(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue:
-            code = conductor.handle_real_operation(
-                state.paths, "test", ["--filter", "ExampleTests"]
-            )
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
+            code = conductor.handle_real_operation(state.paths, "test", ["--filter", "ExampleTests"])
 
         self.assertEqual(code, 0)
         self.assertEqual(enqueue.call_args.args[2], {"filter": "ExampleTests"})
-        job = self.make_job(
-            state, "default-test", "test", {}, ["build"], job_state="running"
-        )
+        job = self.make_job(state, "default-test", "test", {}, ["build"], job_state="running")
         self.assertFalse(state._xctest_watchdog_enabled(job))
         self.assertFalse(
             state._record_xctest_progress_locked(
@@ -1987,18 +1655,11 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
     def test_test_cli_forwards_test_product_for_focused_split_targets(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue:
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
             code = conductor.handle_real_operation(
                 state.paths,
                 "test",
-                [
-                    "--test-product",
-                    "RepoPromptWorkspaceTests",
-                    "--filter",
-                    "WorkspaceTests",
-                ],
+                ["--test-product", "RepoPromptWorkspaceTests", "--filter", "WorkspaceTests"],
             )
 
         self.assertEqual(code, 0)
@@ -2011,23 +1672,13 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         root_argv, root_lanes, root_cwd, _env, _timeout = registry.prepare(
             {
                 "operation": "test",
-                "args": {
-                    "filter": "WorkspaceTests",
-                    "testProduct": "RepoPromptWorkspaceTests",
-                },
+                "args": {"filter": "WorkspaceTests", "testProduct": "RepoPromptWorkspaceTests"},
             }
         )
 
         self.assertEqual(
             root_argv,
-            [
-                "swift",
-                "test",
-                "--test-product",
-                "RepoPromptWorkspaceTests",
-                "--filter",
-                "WorkspaceTests",
-            ],
+            ["swift", "test", "--test-product", "RepoPromptWorkspaceTests", "--filter", "WorkspaceTests"],
         )
         self.assertEqual(root_lanes, ["build"])
         self.assertEqual(root_cwd, state.paths.repo_root)
@@ -2035,9 +1686,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
     def test_test_list_cli_preserves_build_lane_and_package_roots(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue:
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
             code = conductor.handle_real_operation(state.paths, "test", ["--list"])
 
         self.assertEqual(code, 0)
@@ -2065,9 +1714,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            conductor.handle_real_operation(
-                state.paths, "test", ["--list", "--filter", "ExampleTests"]
-            )
+            conductor.handle_real_operation(state.paths, "test", ["--list", "--filter", "ExampleTests"])
         with self.assertRaisesRegex(conductor.ConductorError, "cannot be combined"):
             conductor.handle_real_operation(
                 state.paths,
@@ -2082,18 +1729,14 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             )
 
         registry = conductor.OperationRegistry(state.paths.repo_root)
-        with self.assertRaisesRegex(
-            conductor.ConductorError, "cannot be combined with a filter"
-        ):
+        with self.assertRaisesRegex(conductor.ConductorError, "cannot be combined with a filter"):
             registry.prepare(
                 {
                     "operation": "test",
                     "args": {"list": True, "filter": "ExampleTests"},
                 }
             )
-        with self.assertRaisesRegex(
-            conductor.ConductorError, "cannot be combined with --test-product"
-        ):
+        with self.assertRaisesRegex(conductor.ConductorError, "cannot be combined with --test-product"):
             registry.prepare(
                 {
                     "operation": "test",
@@ -2101,9 +1744,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 }
             )
 
-    def test_codex_packaging_environment_survives_client_snapshot_and_build_prepare(
-        self,
-    ) -> None:
+    def test_codex_packaging_environment_survives_client_snapshot_and_build_prepare(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             with mock.patch.dict(
@@ -2159,9 +1800,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.assertEqual(env["REPOPROMPT_CODEX_ARCH"], "all")
         self.assertEqual(env["REPOPROMPT_CODEX_CACHE_ROOT"], "/tmp/release-codex-cache")
 
-    def test_test_gate_environment_survives_client_snapshot_and_job_prepare(
-        self,
-    ) -> None:
+    def test_test_gate_environment_survives_client_snapshot_and_job_prepare(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry = conductor.OperationRegistry(Path(tmp))
             with mock.patch.dict(
@@ -2189,24 +1828,12 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
             self.assertEqual(snapshot["RPCE_RUN_SCALE_TESTS"], "1")
             self.assertEqual(snapshot["RP_RUN_SWIFT_CODEMAP_PIPELINE_BENCHMARK"], "1")
             self.assertEqual(snapshot["RP_RUN_TYPESCRIPT_CODEMAP_REFERENCE"], "1")
-            self.assertEqual(
-                snapshot["RP_TYPESCRIPT_CODEMAP_REFERENCE_MODE"], "compare"
-            )
-            self.assertEqual(
-                snapshot["RP_TYPESCRIPT_CODEMAP_TS_REFERENCE_PATH"],
-                "/tmp/typescript-reference.json",
-            )
-            self.assertEqual(
-                snapshot["RP_TYPESCRIPT_CODEMAP_TSX_REFERENCE_PATH"],
-                "/tmp/tsx-reference.json",
-            )
-            self.assertEqual(
-                snapshot["RP_SWIFT_CODEMAP_ALLOWED_REMOVED_CAPTURES"], "type.class"
-            )
+            self.assertEqual(snapshot["RP_TYPESCRIPT_CODEMAP_REFERENCE_MODE"], "compare")
+            self.assertEqual(snapshot["RP_TYPESCRIPT_CODEMAP_TS_REFERENCE_PATH"], "/tmp/typescript-reference.json")
+            self.assertEqual(snapshot["RP_TYPESCRIPT_CODEMAP_TSX_REFERENCE_PATH"], "/tmp/tsx-reference.json")
+            self.assertEqual(snapshot["RP_SWIFT_CODEMAP_ALLOWED_REMOVED_CAPTURES"], "type.class")
             self.assertEqual(snapshot["RP_SWIFT_CODEMAP_REFERENCE_MODE"], "compare")
-            self.assertEqual(
-                snapshot["RP_SWIFT_CODEMAP_REFERENCE_PATH"], "/tmp/reference.json"
-            )
+            self.assertEqual(snapshot["RP_SWIFT_CODEMAP_REFERENCE_PATH"], "/tmp/reference.json")
             self.assertNotIn("RPCE_UNRELATED_TEST_GATE", snapshot)
 
             _argv, _lanes, _cwd, env, _timeout = registry.prepare(
@@ -2223,13 +1850,8 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
         self.assertEqual(env["RP_RUN_SWIFT_CODEMAP_PIPELINE_BENCHMARK"], "1")
         self.assertEqual(env["RP_RUN_TYPESCRIPT_CODEMAP_REFERENCE"], "1")
         self.assertEqual(env["RP_TYPESCRIPT_CODEMAP_REFERENCE_MODE"], "compare")
-        self.assertEqual(
-            env["RP_TYPESCRIPT_CODEMAP_TS_REFERENCE_PATH"],
-            "/tmp/typescript-reference.json",
-        )
-        self.assertEqual(
-            env["RP_TYPESCRIPT_CODEMAP_TSX_REFERENCE_PATH"], "/tmp/tsx-reference.json"
-        )
+        self.assertEqual(env["RP_TYPESCRIPT_CODEMAP_TS_REFERENCE_PATH"], "/tmp/typescript-reference.json")
+        self.assertEqual(env["RP_TYPESCRIPT_CODEMAP_TSX_REFERENCE_PATH"], "/tmp/tsx-reference.json")
         self.assertEqual(env["RP_SWIFT_CODEMAP_ALLOWED_REMOVED_CAPTURES"], "type.class")
         self.assertEqual(env["RP_SWIFT_CODEMAP_REFERENCE_MODE"], "compare")
         self.assertEqual(env["RP_SWIFT_CODEMAP_REFERENCE_PATH"], "/tmp/reference.json")
@@ -2238,9 +1860,7 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
     def test_test_cli_forwards_watchdog_options_and_requires_threshold(self) -> None:
         tmp, state = self.make_state()
         self.addCleanup(tmp.cleanup)
-        with mock.patch.object(
-            conductor, "enqueue_and_maybe_wait", return_value=0
-        ) as enqueue:
+        with mock.patch.object(conductor, "enqueue_and_maybe_wait", return_value=0) as enqueue:
             code = conductor.handle_real_operation(
                 state.paths,
                 "test",
@@ -2262,12 +1882,8 @@ class XCTestStallWatchdogTests(LifecycleTestCase):
                 "xctestStallWakeProbe": True,
             },
         )
-        with self.assertRaisesRegex(
-            conductor.ConductorError, "requires --xctest-stall-seconds"
-        ):
-            conductor.handle_real_operation(
-                state.paths, "test", ["--xctest-stall-wake-probe"]
-            )
+        with self.assertRaisesRegex(conductor.ConductorError, "requires --xctest-stall-seconds"):
+            conductor.handle_real_operation(state.paths, "test", ["--xctest-stall-wake-probe"])
 
 
 class ProcessTreeCancellationTests(LifecycleTestCase):
@@ -2289,7 +1905,8 @@ class ProcessTreeCancellationTests(LifecycleTestCase):
         root = state.paths.repo_root
         parent_path = root / f"{termination}-parent.json"
         child_path = root / f"{termination}-child.json"
-        child_code = textwrap.dedent("""\
+        child_code = textwrap.dedent(
+            """\
             import json
             import os
             import signal
@@ -2307,8 +1924,10 @@ class ProcessTreeCancellationTests(LifecycleTestCase):
             }), encoding="utf-8")
             while True:
                 time.sleep(0.1)
-            """)
-        parent_code = textwrap.dedent(f"""\
+            """
+        )
+        parent_code = textwrap.dedent(
+            f"""\
             import json
             import os
             import subprocess
@@ -2334,18 +1953,10 @@ class ProcessTreeCancellationTests(LifecycleTestCase):
             }}), encoding="utf-8")
             while True:
                 time.sleep(0.1)
-            """)
-        argv = [
-            sys.executable,
-            "-u",
-            "-c",
-            parent_code,
-            str(parent_path),
-            str(child_path),
-        ]
-        job = self.make_job(
-            state, f"tree-{termination}", "test", {}, ["build"], job_state="running"
+            """
         )
+        argv = [sys.executable, "-u", "-c", parent_code, str(parent_path), str(child_path)]
+        job = self.make_job(state, f"tree-{termination}", "test", {}, ["build"], job_state="running")
         job.timeout = 0.25 if termination == "timeout" else 30.0
         state.jobs[job.ticket] = job
         state.active_lanes = {"build": job.ticket}
@@ -2368,14 +1979,10 @@ class ProcessTreeCancellationTests(LifecycleTestCase):
 
         self.addCleanup(cleanup_unrelated)
 
-        def prepare(
-            _request: dict,
-        ) -> tuple[list[str], list[str], Path, dict[str, str], float]:
+        def prepare(_request: dict) -> tuple[list[str], list[str], Path, dict[str, str], float]:
             return argv, ["build"], root, os.environ.copy(), float(job.timeout or 30.0)
 
-        with mock.patch.object(
-            conductor, "operation_requires_global_heavy_slot", return_value=False
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "operation_requires_global_heavy_slot", return_value=False), mock.patch.object(
             state.registry, "prepare", side_effect=prepare
         ), mock.patch.multiple(
             conductor,
@@ -2385,10 +1992,7 @@ class ProcessTreeCancellationTests(LifecycleTestCase):
         ):
             runner = threading.Thread(target=state._run_job, args=(job.ticket,))
             runner.start()
-            self.assertTrue(
-                self.wait_until(lambda: parent_path.exists() and child_path.exists()),
-                "fixture did not publish process identities",
-            )
+            self.assertTrue(self.wait_until(lambda: parent_path.exists() and child_path.exists()), "fixture did not publish process identities")
             parent = json.loads(parent_path.read_text(encoding="utf-8"))
             child = json.loads(child_path.read_text(encoding="utf-8"))
             parent_pid = int(parent["pid"])
@@ -2407,32 +2011,15 @@ class ProcessTreeCancellationTests(LifecycleTestCase):
                 self.assertTrue(payload["cancelRequested"])
             runner.join(timeout=5.0)
 
-        self.assertFalse(
-            runner.is_alive(), "job runner did not finish after bounded escalation"
-        )
-        self.assertTrue(
-            self.wait_until(
-                lambda: not self.process_identity_alive(parent_pid, str(parent_start))
-            )
-        )
-        self.assertTrue(
-            self.wait_until(
-                lambda: not self.process_identity_alive(child_pid, str(child_start))
-            )
-        )
+        self.assertFalse(runner.is_alive(), "job runner did not finish after bounded escalation")
+        self.assertTrue(self.wait_until(lambda: not self.process_identity_alive(parent_pid, str(parent_start))))
+        self.assertTrue(self.wait_until(lambda: not self.process_identity_alive(child_pid, str(child_start))))
         final_snapshot = conductor.process_table_snapshot()
         child_record = final_snapshot.get(child_pid)
-        self.assertFalse(
-            child_record is not None
-            and child_record[1] == child_start
-            and child_record[0] == 1,
-            "descendant survived orphaned under PID 1",
-        )
+        self.assertFalse(child_record is not None and child_record[1] == child_start and child_record[0] == 1, "descendant survived orphaned under PID 1")
         self.assertIsNone(unrelated.poll(), "unrelated process was signaled")
         self.assertNotIn(unrelated.pid, job.tracked_processes)
-        registry = json.loads(
-            state.paths.running_processes_path.read_text(encoding="utf-8")
-        )
+        registry = json.loads(state.paths.running_processes_path.read_text(encoding="utf-8"))
         self.assertEqual(registry["processes"], [])
         self.assertNotIn("build", state.active_lanes)
         if termination == "cancel":
@@ -2451,27 +2038,16 @@ class ProcessTreeCancellationTests(LifecycleTestCase):
 
 
 class SmokeOperationTests(unittest.TestCase):
-    def test_execution_location_ui_smoke_resolves_process_by_numeric_pid_without_name_fallback(
-        self,
-    ) -> None:
-        source = (SCRIPT_DIR / "smoke_agent_execution_location_popover.sh").read_text(
-            encoding="utf-8"
-        )
+    def test_execution_location_ui_smoke_resolves_process_by_numeric_pid_without_name_fallback(self) -> None:
+        source = (SCRIPT_DIR / "smoke_agent_execution_location_popover.sh").read_text(encoding="utf-8")
 
         self.assertIn("repeat with candidateProcess in application processes", source)
-        self.assertIn(
-            "set candidatePID to (unix id of candidateProcess) as integer", source
-        )
+        self.assertIn("set candidatePID to (unix id of candidateProcess) as integer", source)
         self.assertIn("if candidatePID is targetPID then", source)
-        self.assertIn(
-            "if ((unix id of candidateProcess) as integer) is targetPID then return",
-            source,
-        )
+        self.assertIn("if ((unix id of candidateProcess) as integer) is targetPID then return", source)
         self.assertIn("set frontmost to true", source)
         self.assertIn("key code 53", source)
-        self.assertIn(
-            "entire contents of window windowIndex whose value of attribute", source
-        )
+        self.assertIn("entire contents of window windowIndex whose value of attribute", source)
         self.assertIn("repeat with windowIndex from 1 to 1", source)
         self.assertNotIn("first application process whose unix id is targetPID", source)
         self.assertNotIn("process appProcessName", source)
@@ -2479,49 +2055,26 @@ class SmokeOperationTests(unittest.TestCase):
         self.assertNotIn("my targetPID", source)
         self.assertNotIn("on firstElementWithIdentifier", source)
 
-    def test_manage_worktree_list_stage_runs_after_tree_roots_before_agent_manage(
-        self,
-    ) -> None:
+    def test_manage_worktree_list_stage_runs_after_tree_roots_before_agent_manage(self) -> None:
         calls: list[tuple[str, list[str]]] = []
 
-        def record_command(
-            name: str, argv: list[str], *_args: object, **_kwargs: object
-        ) -> tuple[int, str, str]:
+        def record_command(name: str, argv: list[str], *_args: object, **_kwargs: object) -> tuple[int, str, str]:
             calls.append((name, argv))
             return 0, "", ""
 
-        with mock.patch.object(
-            conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
             conductor, "run_operation_command", side_effect=record_command
         ):
-            code = conductor.operation_smoke(
-                Path.cwd(), {"windowId": "7", "workspace": "test-workspace"}
-            )
+            code = conductor.operation_smoke(Path.cwd(), {"windowId": "7", "workspace": "test-workspace"})
 
         self.assertEqual(code, 0)
         self.assertEqual(
             calls,
             [
                 ("windows", ["/tmp/rpce-cli-debug", "-e", "windows"]),
-                (
-                    "workspace switch",
-                    [
-                        "/tmp/rpce-cli-debug",
-                        "-w",
-                        "7",
-                        "-e",
-                        "workspace switch test-workspace",
-                    ],
-                ),
-                (
-                    "tree roots",
-                    ["/tmp/rpce-cli-debug", "-w", "7", "-e", "tree --type roots"],
-                ),
-                (
-                    "manage_worktree list",
-                    ["/tmp/rpce-cli-debug", "-w", "7", "-e", "manage_worktree op=list"],
-                ),
+                ("workspace switch", ["/tmp/rpce-cli-debug", "-w", "7", "-e", "workspace switch test-workspace"]),
+                ("tree roots", ["/tmp/rpce-cli-debug", "-w", "7", "-e", "tree --type roots"]),
+                ("manage_worktree list", ["/tmp/rpce-cli-debug", "-w", "7", "-e", "manage_worktree op=list"]),
                 (
                     "agent_manage roles",
                     [
@@ -2537,20 +2090,14 @@ class SmokeOperationTests(unittest.TestCase):
             ],
         )
 
-    def test_execution_location_ui_smoke_runs_after_worktree_readiness_stages(
-        self,
-    ) -> None:
+    def test_execution_location_ui_smoke_runs_after_worktree_readiness_stages(self) -> None:
         calls: list[tuple[str, list[str], dict[str, object]]] = []
 
-        def record_command(
-            name: str, argv: list[str], *_args: object, **kwargs: object
-        ) -> tuple[int, str, str]:
+        def record_command(name: str, argv: list[str], *_args: object, **kwargs: object) -> tuple[int, str, str]:
             calls.append((name, argv, kwargs))
             return 0, "", ""
 
-        with mock.patch.object(
-            conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
             conductor, "find_debug_app_pids", return_value=["4242"]
         ), mock.patch.dict(
             os.environ,
@@ -2564,11 +2111,7 @@ class SmokeOperationTests(unittest.TestCase):
         ):
             code = conductor.operation_smoke(
                 Path("/tmp/repo"),
-                {
-                    "windowId": "7",
-                    "workspace": "test-workspace",
-                    "executionLocationUI": True,
-                },
+                {"windowId": "7", "workspace": "test-workspace", "executionLocationUI": True},
             )
 
         self.assertEqual(code, 0)
@@ -2590,39 +2133,28 @@ class SmokeOperationTests(unittest.TestCase):
         self.assertEqual(calls[-1][2]["timeout"], 184.0)
 
     def test_execution_location_ui_smoke_requires_one_exact_debug_app(self) -> None:
-        with mock.patch.object(
-            conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "require_debug_cli", return_value="/tmp/rpce-cli-debug"), mock.patch.object(
             conductor, "find_debug_app_pids", return_value=[]
-        ), mock.patch.object(
-            conductor, "run_operation_command", return_value=(0, "", "")
-        ) as run_command, contextlib.redirect_stdout(
+        ), mock.patch.object(conductor, "run_operation_command", return_value=(0, "", "")) as run_command, contextlib.redirect_stdout(
             io.StringIO()
         ) as output:
             code = conductor.operation_smoke(
                 Path("/tmp/repo"),
-                {
-                    "windowId": "7",
-                    "workspace": "test-workspace",
-                    "executionLocationUI": True,
-                },
+                {"windowId": "7", "workspace": "test-workspace", "executionLocationUI": True},
             )
 
         self.assertEqual(code, 1)
         self.assertEqual(run_command.call_count, 5)
-        self.assertIn(
-            "requires exactly one running RepoPrompt debug app", output.getvalue()
-        )
+        self.assertIn("requires exactly one running RepoPrompt debug app", output.getvalue())
 
-    def test_structured_smoke_calls_route_to_requested_window_with_fake_cli(
-        self,
-    ) -> None:
+    def test_structured_smoke_calls_route_to_requested_window_with_fake_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             log_path = root / "cli-calls.jsonl"
             fake_cli = root / "rpce-cli-debug"
             fake_cli.write_text(
-                textwrap.dedent("""\
+                textwrap.dedent(
+                    """\
                     #!/usr/bin/env python3
                     import json
                     import os
@@ -2635,30 +2167,21 @@ class SmokeOperationTests(unittest.TestCase):
                         payload = json.loads(args[args.index("-j") + 1])
                         if payload["op"] == "start":
                             print(json.dumps({"session_id": "smoke-session"}))
-                    """),
+                    """
+                ),
                 encoding="utf-8",
             )
             fake_cli.chmod(0o755)
 
-            with mock.patch.dict(
-                os.environ, {"FAKE_CLI_LOG": str(log_path)}
-            ), mock.patch.object(
+            with mock.patch.dict(os.environ, {"FAKE_CLI_LOG": str(log_path)}), mock.patch.object(
                 conductor, "require_debug_cli", return_value=str(fake_cli)
             ):
                 code = conductor.operation_smoke(
                     root,
-                    {
-                        "windowId": 7,
-                        "workspace": "test-workspace",
-                        "agentRun": True,
-                        "agentTimeout": 5,
-                    },
+                    {"windowId": 7, "workspace": "test-workspace", "agentRun": True, "agentTimeout": 5},
                 )
 
-            calls = [
-                json.loads(line)
-                for line in log_path.read_text(encoding="utf-8").splitlines()
-            ]
+            calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(code, 0)
         self.assertEqual(
@@ -2672,27 +2195,15 @@ class SmokeOperationTests(unittest.TestCase):
         )
         structured_calls = calls[4:]
         self.assertEqual(
-            [
-                (
-                    call[call.index("-c") + 1],
-                    json.loads(call[call.index("-j") + 1])["op"],
-                )
-                for call in structured_calls
-            ],
-            [
-                ("agent_manage", "list_agents"),
-                ("agent_run", "start"),
-                ("agent_run", "wait"),
-            ],
+            [(call[call.index("-c") + 1], json.loads(call[call.index("-j") + 1])["op"]) for call in structured_calls],
+            [("agent_manage", "list_agents"), ("agent_run", "start"), ("agent_run", "wait")],
         )
         for call in structured_calls:
             self.assertEqual(call[:3], ["-w", "7", "-c"])
             payload = json.loads(call[call.index("-j") + 1])
             self.assertEqual(payload["_windowID"], 7)
 
-    def test_launch_smoke_uses_exact_embedded_helper_and_ignores_other_resolvers(
-        self,
-    ) -> None:
+    def test_launch_smoke_uses_exact_embedded_helper_and_ignores_other_resolvers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = Path(tmp) / "RepoPrompt.app"
             helper = app / "Contents" / "MacOS" / "repoprompt-mcp"
@@ -2701,24 +2212,16 @@ class SmokeOperationTests(unittest.TestCase):
             helper.chmod(0o755)
             calls: list[tuple[str, list[str]]] = []
 
-            def record_command(
-                name: str, argv: list[str], *_args: object, **_kwargs: object
-            ) -> tuple[int, str, str]:
+            def record_command(name: str, argv: list[str], *_args: object, **_kwargs: object) -> tuple[int, str, str]:
                 calls.append((name, argv))
                 return 0, "", ""
 
-            with mock.patch.object(
-                conductor, "debug_app_bundle_path", return_value=app
-            ), mock.patch.object(
+            with mock.patch.object(conductor, "debug_app_bundle_path", return_value=app), mock.patch.object(
                 conductor, "require_debug_cli"
             ) as fallback, mock.patch.object(
                 conductor, "operation_debug_app_build_then_launch", return_value=0
-            ) as launch, mock.patch.object(
-                conductor, "run_operation_command", side_effect=record_command
-            ):
-                code = conductor.operation_smoke(
-                    Path(tmp), {"launch": True, "windowId": 1, "workspace": "fixture"}
-                )
+            ) as launch, mock.patch.object(conductor, "run_operation_command", side_effect=record_command):
+                code = conductor.operation_smoke(Path(tmp), {"launch": True, "windowId": 1, "workspace": "fixture"})
 
         self.assertEqual(code, 0)
         fallback.assert_not_called()
@@ -2740,18 +2243,13 @@ class SmokeOperationTests(unittest.TestCase):
             with self.assertRaises(conductor.ConductorError):
                 conductor.resolve_embedded_helper(app)
 
-    def test_packaged_app_smoke_delegates_to_roundtrip_script_without_launch_resolution(
-        self,
-    ) -> None:
-        with mock.patch.object(
-            conductor, "run_operation_command", return_value=(0, "", "")
-        ) as run, mock.patch.object(conductor, "require_debug_cli") as fallback:
+    def test_packaged_app_smoke_delegates_to_roundtrip_script_without_launch_resolution(self) -> None:
+        with mock.patch.object(conductor, "run_operation_command", return_value=(0, "", "")) as run, mock.patch.object(
+            conductor, "require_debug_cli"
+        ) as fallback:
             code = conductor.operation_smoke(
                 Path("/tmp/repo"),
-                {
-                    "packagedApp": "/tmp/App.app",
-                    "artifactManifest": "/tmp/manifest.json",
-                },
+                {"packagedApp": "/tmp/App.app", "artifactManifest": "/tmp/manifest.json"},
             )
 
         self.assertEqual(code, 0)
@@ -2762,9 +2260,7 @@ class SmokeOperationTests(unittest.TestCase):
 
 
 class RunScriptTransitionTests(unittest.TestCase):
-    def test_guarded_failed_relaunch_does_not_inspect_or_stop_before_packaging_succeeds(
-        self,
-    ) -> None:
+    def test_guarded_failed_relaunch_does_not_inspect_or_stop_before_packaging_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             scripts = root / "Scripts"
@@ -2774,14 +2270,13 @@ class RunScriptTransitionTests(unittest.TestCase):
             shutil.copy2(SCRIPT_DIR / "conductor.py", scripts / "conductor.py")
             run_script.chmod(0o755)
             package_script = scripts / "package_app.sh"
-            package_script.write_text(
-                "#!/usr/bin/env bash\necho package failed\nexit 23\n", encoding="utf-8"
-            )
+            package_script.write_text("#!/usr/bin/env bash\necho package failed\nexit 23\n", encoding="utf-8")
             package_script.chmod(0o755)
             marker = root / "process-helper-invoked"
             helper = scripts / "debug_app_process.py"
             helper.write_text(
-                textwrap.dedent("""\
+                textwrap.dedent(
+                    """\
                     from pathlib import Path
                     import os
 
@@ -2795,7 +2290,8 @@ class RunScriptTransitionTests(unittest.TestCase):
                     def terminate_matching_processes(_executable):
                         Path(os.environ['PROCESS_HELPER_MARKER']).write_text('invoked')
                         return []
-                    """),
+                    """
+                ),
                 encoding="utf-8",
             )
             env = os.environ.copy()
@@ -2807,25 +2303,15 @@ class RunScriptTransitionTests(unittest.TestCase):
                 }
             )
 
-            result = subprocess.run(
-                ["bash", str(run_script)],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=10,
-            )
+            result = subprocess.run(["bash", str(run_script)], env=env, text=True, capture_output=True, timeout=10)
             helper_invoked = marker.exists()
 
         self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
         self.assertIn("package staged debug app", result.stdout)
-        self.assertNotIn(
-            "Stopping existing RepoPrompt CE debug app instance", result.stdout
-        )
+        self.assertNotIn("Stopping existing RepoPrompt CE debug app instance", result.stdout)
         self.assertFalse(helper_invoked)
 
-    def test_direct_run_packages_before_waiting_for_live_lock_then_activates(
-        self,
-    ) -> None:
+    def test_direct_run_packages_before_waiting_for_live_lock_then_activates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             scripts = root / "Scripts"
@@ -2839,20 +2325,23 @@ class RunScriptTransitionTests(unittest.TestCase):
             app_bundle = root / "DebugApps" / "RepoPrompt.app"
             package_script = scripts / "package_app.sh"
             package_script.write_text(
-                textwrap.dedent("""\
+                textwrap.dedent(
+                    """\
                     #!/usr/bin/env bash
                     set -e
                     echo package:$REPOPROMPT_DEBUG_APP_BUNDLE >> "$EVENT_LOG"
                     mkdir -p "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS"
                     printf binary > "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
                     chmod +x "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
-                    """),
+                    """
+                ),
                 encoding="utf-8",
             )
             package_script.chmod(0o755)
             helper = scripts / "debug_app_process.py"
             helper.write_text(
-                textwrap.dedent("""\
+                textwrap.dedent(
+                    """\
                     import os
                     from pathlib import Path
 
@@ -2873,19 +2362,16 @@ class RunScriptTransitionTests(unittest.TestCase):
                     def terminate_matching_processes(executable):
                         _log("terminate", executable)
                         return []
-                    """),
+                    """
+                ),
                 encoding="utf-8",
             )
             bin_dir = root / "bin"
             bin_dir.mkdir()
-            (bin_dir / "codesign").write_text(
-                "#!/usr/bin/env bash\necho TeamIdentifier=TEST >&2\n", encoding="utf-8"
-            )
-            (bin_dir / "plutil").write_text(
-                "#!/usr/bin/env bash\necho memory\n", encoding="utf-8"
-            )
+            (bin_dir / "codesign").write_text("#!/usr/bin/env bash\necho TeamIdentifier=TEST >&2\n", encoding="utf-8")
+            (bin_dir / "plutil").write_text("#!/usr/bin/env bash\necho memory\n", encoding="utf-8")
             (bin_dir / "open").write_text(
-                '#!/usr/bin/env bash\necho open >> "$EVENT_LOG"\ntouch "$LAUNCHED_MARKER"\n',
+                "#!/usr/bin/env bash\necho open >> \"$EVENT_LOG\"\ntouch \"$LAUNCHED_MARKER\"\n",
                 encoding="utf-8",
             )
             for command in ["codesign", "plutil", "open"]:
@@ -2911,9 +2397,7 @@ class RunScriptTransitionTests(unittest.TestCase):
                     operation_label="test live lock",
                     repo_root=root,
                 )
-                with conductor.machine_exclusive_lock(
-                    conductor.live_app_lock_path(), metadata, "live-app lock"
-                ):
+                with conductor.machine_exclusive_lock(conductor.live_app_lock_path(), metadata, "live-app lock"):
                     with event_log.open("a", encoding="utf-8") as handle:
                         handle.write("lock-start\n")
                     lock_ready.set()
@@ -2924,35 +2408,16 @@ class RunScriptTransitionTests(unittest.TestCase):
             holder = threading.Thread(target=hold_live_lock, daemon=True)
             holder.start()
             self.assertTrue(lock_ready.wait(timeout=2.0))
-            proc = subprocess.Popen(
-                ["bash", str(run_script)],
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            proc = subprocess.Popen(["bash", str(run_script)], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                rows = (
-                    event_log.read_text(encoding="utf-8").splitlines()
-                    if event_log.exists()
-                    else []
-                )
+                rows = event_log.read_text(encoding="utf-8").splitlines() if event_log.exists() else []
                 if any(row.startswith("package:") for row in rows):
                     break
                 time.sleep(0.02)
             rows_before_release = event_log.read_text(encoding="utf-8").splitlines()
-            self.assertTrue(
-                any(row.startswith("package:") for row in rows_before_release),
-                rows_before_release,
-            )
-            self.assertFalse(
-                any(
-                    row.startswith(("list:", "terminate:"))
-                    for row in rows_before_release
-                ),
-                rows_before_release,
-            )
+            self.assertTrue(any(row.startswith("package:") for row in rows_before_release), rows_before_release)
+            self.assertFalse(any(row.startswith(("list:", "terminate:")) for row in rows_before_release), rows_before_release)
             release_lock.set()
             stdout, stderr = proc.communicate(timeout=10)
             holder.join(timeout=2.0)
@@ -2961,17 +2426,11 @@ class RunScriptTransitionTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, stdout + stderr)
         self.assertLess(
             rows.index("lock-release"),
-            next(
-                index
-                for index, row in enumerate(rows)
-                if row.startswith(("list:", "terminate:"))
-            ),
+            next(index for index, row in enumerate(rows) if row.startswith(("list:", "terminate:"))),
         )
         self.assertIn("Activated staged debug app bundle", stdout)
 
-    def test_successful_relaunch_uses_debug_executable_for_stop_and_readiness(
-        self,
-    ) -> None:
+    def test_successful_relaunch_uses_debug_executable_for_stop_and_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             scripts = root / "Scripts"
@@ -2986,20 +2445,23 @@ class RunScriptTransitionTests(unittest.TestCase):
             app_executable = app_bundle / "Contents" / "MacOS" / "RepoPrompt"
             package_script = scripts / "package_app.sh"
             package_script.write_text(
-                textwrap.dedent("""\
+                textwrap.dedent(
+                    """\
                     #!/usr/bin/env bash
                     set -e
                     echo package:$REPOPROMPT_DEBUG_APP_BUNDLE >> "$EVENT_LOG"
                     mkdir -p "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS"
                     printf binary > "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
                     chmod +x "$REPOPROMPT_DEBUG_APP_BUNDLE/Contents/MacOS/RepoPrompt"
-                    """),
+                    """
+                ),
                 encoding="utf-8",
             )
             package_script.chmod(0o755)
             helper = scripts / "debug_app_process.py"
             helper.write_text(
-                textwrap.dedent("""\
+                textwrap.dedent(
+                    """\
                     import os
                     from pathlib import Path
 
@@ -3020,19 +2482,16 @@ class RunScriptTransitionTests(unittest.TestCase):
                     def terminate_matching_processes(executable):
                         _log("terminate", executable)
                         return []
-                    """),
+                    """
+                ),
                 encoding="utf-8",
             )
             bin_dir = root / "bin"
             bin_dir.mkdir()
-            (bin_dir / "codesign").write_text(
-                "#!/usr/bin/env bash\necho TeamIdentifier=TEST >&2\n", encoding="utf-8"
-            )
-            (bin_dir / "plutil").write_text(
-                "#!/usr/bin/env bash\necho memory\n", encoding="utf-8"
-            )
+            (bin_dir / "codesign").write_text("#!/usr/bin/env bash\necho TeamIdentifier=TEST >&2\n", encoding="utf-8")
+            (bin_dir / "plutil").write_text("#!/usr/bin/env bash\necho memory\n", encoding="utf-8")
             (bin_dir / "open").write_text(
-                '#!/usr/bin/env bash\necho open >> "$EVENT_LOG"\ntouch "$LAUNCHED_MARKER"\n',
+                "#!/usr/bin/env bash\necho open >> \"$EVENT_LOG\"\ntouch \"$LAUNCHED_MARKER\"\n",
                 encoding="utf-8",
             )
             for command in ["codesign", "plutil", "open"]:
@@ -3048,13 +2507,7 @@ class RunScriptTransitionTests(unittest.TestCase):
                 }
             )
 
-            result = subprocess.run(
-                ["bash", str(run_script), "--demo"],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=20,
-            )
+            result = subprocess.run(["bash", str(run_script), "--demo"], env=env, text=True, capture_output=True, timeout=20)
             events = event_log.read_text(encoding="utf-8").splitlines()
             activated_executable_exists = app_executable.exists()
 
@@ -3065,27 +2518,13 @@ class RunScriptTransitionTests(unittest.TestCase):
         self.assertNotIn(str(app_bundle), events[0])
         open_index = events.index("open")
         self.assertGreater(open_index, 1, events)
-        self.assertTrue(
-            all(
-                event == f"list:stopped:{app_executable}"
-                for event in events[1:open_index]
-            ),
-            events,
-        )
+        self.assertTrue(all(event == f"list:stopped:{app_executable}" for event in events[1:open_index]), events)
         self.assertEqual(events[open_index + 1], f"list:launched:{app_executable}")
-        self.assertTrue(
-            all(
-                event.endswith(expected_suffix)
-                for event in events
-                if event.startswith(("list:", "terminate:"))
-            )
-        )
+        self.assertTrue(all(event.endswith(expected_suffix) for event in events if event.startswith(("list:", "terminate:"))))
         source = (SCRIPT_DIR / "run.sh").read_text(encoding="utf-8")
         self.assertTrue(activated_executable_exists)
         self.assertIn("Activated staged debug app bundle", result.stdout)
-        self.assertIn(
-            "Observed launched RepoPrompt CE debug PID(s): 4242", result.stdout
-        )
+        self.assertIn("Observed launched RepoPrompt CE debug PID(s): 4242", result.stdout)
         self.assertNotIn("pgrep", source)
         self.assertNotIn("pkill", source)
 
@@ -3097,9 +2536,7 @@ class AppStatusIdentityTests(unittest.TestCase):
         executable.write_text(marker, encoding="utf-8")
         executable.chmod(0o755)
 
-    def test_activate_staged_debug_bundle_replaces_live_and_cleans_staging(
-        self,
-    ) -> None:
+    def test_activate_staged_debug_bundle_replaces_live_and_cleans_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             live = root / "DebugApps" / "RepoPrompt.app"
@@ -3109,12 +2546,7 @@ class AppStatusIdentityTests(unittest.TestCase):
 
             conductor.activate_staged_debug_bundle(staged, live)
 
-            self.assertEqual(
-                (live / "Contents" / "MacOS" / "RepoPrompt").read_text(
-                    encoding="utf-8"
-                ),
-                "new",
-            )
+            self.assertEqual((live / "Contents" / "MacOS" / "RepoPrompt").read_text(encoding="utf-8"), "new")
             self.assertFalse(staged.parent.exists())
             self.assertFalse(any(live.parent.glob(".RepoPrompt.app.previous.*")))
 
@@ -3125,26 +2557,13 @@ class AppStatusIdentityTests(unittest.TestCase):
             staged = root / "DebugApps" / ".staging" / "token" / "RepoPrompt.app"
             self.make_bundle(live, "old")
             self.make_bundle(staged, "new")
-            with mock.patch.dict(
-                os.environ, {"REPOPROMPT_DEBUG_APP_BUNDLE": str(live)}
-            ), mock.patch.object(
+            with mock.patch.dict(os.environ, {"REPOPROMPT_DEBUG_APP_BUNDLE": str(live)}), mock.patch.object(
                 conductor, "_operation_app_stop_unlocked", return_value=7
-            ), mock.patch.object(
-                conductor, "run_operation_command"
-            ) as run, contextlib.redirect_stdout(
-                io.StringIO()
-            ):
-                code = conductor.operation_app_launch_existing(
-                    root, {"stagedBundle": str(staged), "appArgs": []}
-                )
+            ), mock.patch.object(conductor, "run_operation_command") as run, contextlib.redirect_stdout(io.StringIO()):
+                code = conductor.operation_app_launch_existing(root, {"stagedBundle": str(staged), "appArgs": []})
 
             self.assertEqual(code, 7)
-            self.assertEqual(
-                (live / "Contents" / "MacOS" / "RepoPrompt").read_text(
-                    encoding="utf-8"
-                ),
-                "old",
-            )
+            self.assertEqual((live / "Contents" / "MacOS" / "RepoPrompt").read_text(encoding="utf-8"), "old")
             self.assertFalse(staged.parent.exists())
             run.assert_not_called()
 
@@ -3152,16 +2571,8 @@ class AppStatusIdentityTests(unittest.TestCase):
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,
-            {
-                "REPOPROMPT_DEBUG_APP_BUNDLE": str(
-                    Path(tmp) / "missing" / "RepoPrompt.app"
-                )
-            },
-        ), mock.patch.object(
-            conductor, "package_debug_app_under_heavy"
-        ) as package, contextlib.redirect_stdout(
-            output
-        ):
+            {"REPOPROMPT_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "RepoPrompt.app")},
+        ), mock.patch.object(conductor, "package_debug_app_under_heavy") as package, contextlib.redirect_stdout(output):
             code = conductor.operation_app_launch_existing(Path(tmp), {"appArgs": []})
 
         self.assertEqual(code, 1)
@@ -3169,38 +2580,22 @@ class AppStatusIdentityTests(unittest.TestCase):
         self.assertIn("existing debug app bundle is not launchable", output.getvalue())
 
     def test_split_build_failure_performs_no_lifecycle_action(self) -> None:
-        with mock.patch.object(
-            conductor, "package_debug_app_under_heavy", return_value=(23, None)
-        ) as package, mock.patch.object(
+        with mock.patch.object(conductor, "package_debug_app_under_heavy", return_value=(23, None)) as package, mock.patch.object(
             conductor, "operation_app_launch_existing"
-        ) as launch, contextlib.redirect_stdout(
-            io.StringIO()
-        ) as output:
-            code = conductor.operation_debug_app_build_then_launch(
-                Path("/tmp/repo"), {"appArgs": []}
-            )
+        ) as launch, contextlib.redirect_stdout(io.StringIO()) as output:
+            code = conductor.operation_debug_app_build_then_launch(Path("/tmp/repo"), {"appArgs": []})
 
         self.assertEqual(code, 23)
         package.assert_called_once()
         launch.assert_not_called()
-        self.assertIn(
-            "no live bundle or stop/launch lifecycle action", output.getvalue()
-        )
+        self.assertIn("no live bundle or stop/launch lifecycle action", output.getvalue())
 
     def test_status_treats_missing_debug_executable_as_not_installed(self) -> None:
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,
-            {
-                "REPOPROMPT_DEBUG_APP_BUNDLE": str(
-                    Path(tmp) / "missing" / "RepoPrompt.app"
-                )
-            },
-        ), mock.patch.object(
-            conductor, "run_operation_command", return_value=(0, "", "")
-        ), contextlib.redirect_stdout(
-            output
-        ):
+            {"REPOPROMPT_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "RepoPrompt.app")},
+        ), mock.patch.object(conductor, "run_operation_command", return_value=(0, "", "")), contextlib.redirect_stdout(output):
             code = conductor.operation_app_status(Path("/tmp/repo"))
 
         self.assertEqual(code, 0)
@@ -3209,14 +2604,9 @@ class AppStatusIdentityTests(unittest.TestCase):
 
     def test_status_reports_only_path_validated_debug_pids(self) -> None:
         output = io.StringIO()
-        with mock.patch.object(
-            conductor, "find_debug_app_pids", return_value=["501"]
-        ), mock.patch.object(
+        with mock.patch.object(conductor, "find_debug_app_pids", return_value=["501"]), mock.patch.object(
             conductor, "run_operation_command", return_value=(0, "", "")
-        ), mock.patch.dict(
-            os.environ,
-            {"REPOPROMPT_DEBUG_APP_BUNDLE": "/tmp/missing-debug/RepoPrompt.app"},
-        ), contextlib.redirect_stdout(
+        ), mock.patch.dict(os.environ, {"REPOPROMPT_DEBUG_APP_BUNDLE": "/tmp/missing-debug/RepoPrompt.app"}), contextlib.redirect_stdout(
             output
         ):
             code = conductor.operation_app_status(Path("/tmp/repo"))
@@ -3230,11 +2620,7 @@ class AppStatusIdentityTests(unittest.TestCase):
             conductor,
             "find_debug_app_pids",
             side_effect=conductor.ProcessIdentityError("identity unavailable"),
-        ), mock.patch.object(
-            conductor, "run_operation_command"
-        ) as cli_status, contextlib.redirect_stdout(
-            output
-        ):
+        ), mock.patch.object(conductor, "run_operation_command") as cli_status, contextlib.redirect_stdout(output):
             code = conductor.operation_app_status(Path("/tmp/repo"))
 
         self.assertEqual(code, 1)
@@ -3245,10 +2631,7 @@ class AppStatusIdentityTests(unittest.TestCase):
 class StopConfirmationTests(unittest.TestCase):
     def test_delayed_guard_exceeds_run_launch_observation_window(self) -> None:
         self.assertGreater(conductor.APP_STOP_DELAYED_LAUNCH_GUARD_SECONDS, 10.0)
-        self.assertGreater(
-            conductor.APP_STOP_DELAYED_LAUNCH_CONFIRM_TIMEOUT_SECONDS,
-            conductor.APP_STOP_DELAYED_LAUNCH_GUARD_SECONDS,
-        )
+        self.assertGreater(conductor.APP_STOP_DELAYED_LAUNCH_CONFIRM_TIMEOUT_SECONDS, conductor.APP_STOP_DELAYED_LAUNCH_GUARD_SECONDS)
 
     @contextlib.contextmanager
     def patched_timing(self):
@@ -3275,27 +2658,17 @@ class StopConfirmationTests(unittest.TestCase):
     def test_missing_debug_executable_is_confirmed_already_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, self.patched_timing(), mock.patch.dict(
             os.environ,
-            {
-                "REPOPROMPT_DEBUG_APP_BUNDLE": str(
-                    Path(tmp) / "missing" / "RepoPrompt.app"
-                )
-            },
-        ), contextlib.redirect_stdout(
-            io.StringIO()
-        ) as output:
+            {"REPOPROMPT_DEBUG_APP_BUNDLE": str(Path(tmp) / "missing" / "RepoPrompt.app")},
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
             code = conductor.operation_app_stop(Path.cwd(), {})
 
         self.assertEqual(code, 0)
         self.assertIn("already stopped", output.getvalue())
 
     def test_already_stopped_is_confirmed_without_termination(self) -> None:
-        with self.patched_timing(), mock.patch.object(
-            conductor, "find_debug_app_pids", return_value=[]
-        ), mock.patch.object(
+        with self.patched_timing(), mock.patch.object(conductor, "find_debug_app_pids", return_value=[]), mock.patch.object(
             conductor, "terminate_debug_app_processes"
-        ) as terminate, contextlib.redirect_stdout(
-            io.StringIO()
-        ):
+        ) as terminate, contextlib.redirect_stdout(io.StringIO()):
             code = conductor.operation_app_stop(Path.cwd(), {})
 
         self.assertEqual(code, 0)
@@ -3303,13 +2676,9 @@ class StopConfirmationTests(unittest.TestCase):
 
     def test_running_process_is_terminated_then_confirmed_absent(self) -> None:
         probes = iter([["101"], [], [], [], []])
-        with self.patched_timing(), mock.patch.object(
-            conductor, "find_debug_app_pids", side_effect=lambda: next(probes, [])
-        ), mock.patch.object(
+        with self.patched_timing(), mock.patch.object(conductor, "find_debug_app_pids", side_effect=lambda: next(probes, [])), mock.patch.object(
             conductor, "terminate_debug_app_processes", return_value=["101"]
-        ) as terminate, contextlib.redirect_stdout(
-            io.StringIO()
-        ):
+        ) as terminate, contextlib.redirect_stdout(io.StringIO()):
             code = conductor.operation_app_stop(Path.cwd(), {})
 
         self.assertEqual(code, 0)
@@ -3323,16 +2692,10 @@ class StopConfirmationTests(unittest.TestCase):
             calls += 1
             return ["202"] if calls == 2 else []
 
-        with self.patched_timing(), mock.patch.object(
-            conductor, "find_debug_app_pids", side_effect=probe
-        ), mock.patch.object(
+        with self.patched_timing(), mock.patch.object(conductor, "find_debug_app_pids", side_effect=probe), mock.patch.object(
             conductor, "terminate_debug_app_processes", return_value=["202"]
-        ) as terminate, contextlib.redirect_stdout(
-            io.StringIO()
-        ):
-            code = conductor.operation_app_stop(
-                Path.cwd(), {"guardDelayedLaunch": True}
-            )
+        ) as terminate, contextlib.redirect_stdout(io.StringIO()):
+            code = conductor.operation_app_stop(Path.cwd(), {"guardDelayedLaunch": True})
 
         self.assertEqual(code, 0)
         terminate.assert_called_once_with()
@@ -3342,24 +2705,16 @@ class StopConfirmationTests(unittest.TestCase):
             conductor,
             "find_debug_app_pids",
             side_effect=conductor.ProcessIdentityError("identity unavailable"),
-        ), mock.patch.object(
-            conductor, "terminate_debug_app_processes"
-        ) as terminate, contextlib.redirect_stdout(
-            io.StringIO()
-        ):
+        ), mock.patch.object(conductor, "terminate_debug_app_processes") as terminate, contextlib.redirect_stdout(io.StringIO()):
             code = conductor.operation_app_stop(Path.cwd(), {})
 
         self.assertEqual(code, 1)
         terminate.assert_not_called()
 
     def test_persistent_process_fails_confirmation_without_force_kill(self) -> None:
-        with self.patched_timing(), mock.patch.object(
-            conductor, "find_debug_app_pids", return_value=["303"]
-        ), mock.patch.object(
+        with self.patched_timing(), mock.patch.object(conductor, "find_debug_app_pids", return_value=["303"]), mock.patch.object(
             conductor, "terminate_debug_app_processes", return_value=["303"]
-        ) as terminate, contextlib.redirect_stdout(
-            io.StringIO()
-        ):
+        ) as terminate, contextlib.redirect_stdout(io.StringIO()):
             code = conductor.operation_app_stop(Path.cwd(), {})
 
         self.assertEqual(code, 1)

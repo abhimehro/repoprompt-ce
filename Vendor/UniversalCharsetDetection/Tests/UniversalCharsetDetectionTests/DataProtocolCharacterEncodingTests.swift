@@ -26,20 +26,20 @@ import Foundation
 import XCTest
 
 final class DataProtocolCharacterEncodingTests: XCTestCase {
-    // MARK: - Tests
+   // MARK: - Tests
 
-    func testNoData() {
-        let characterEncoding = Data().detectedCharacterEncoding
+   func testNoData() {
+      let characterEncoding = Data().detectedCharacterEncoding
 
-        XCTAssertNil(characterEncoding)
-    }
+      XCTAssertNil(characterEncoding)
+   }
 
-    func testDetection() {
-        let nonASCIIText = "こんにちは世界！"
-        let shiftJISBytes = nonASCIIText.data(using: .shiftJIS)!
+   func testDetection() {
+      let nonASCIIText = "こんにちは世界！"
+      let shiftJISBytes = nonASCIIText.data(using: .shiftJIS)!
 
-        let characterEncoding = shiftJISBytes.detectedCharacterEncoding
+      let characterEncoding = shiftJISBytes.detectedCharacterEncoding
 
-        XCTAssertEqual(characterEncoding, "SHIFT_JIS")
-    }
+      XCTAssertEqual(characterEncoding, "SHIFT_JIS")
+   }
 }

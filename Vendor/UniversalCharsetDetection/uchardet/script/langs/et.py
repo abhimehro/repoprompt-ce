@@ -42,15 +42,16 @@ import re
 
 ## Mandatory Properties ##
 
-name = "Estonian"
-code = "et"
+name = 'Estonian'
+code = 'et'
 use_ascii = True
-charsets = ["ISO-8859-4", "ISO-8859-13", "ISO-8859-15", "WINDOWS-1252", "WINDOWS-1257"]
+charsets = ['ISO-8859-4', 'ISO-8859-13', 'ISO-8859-15',
+            'WINDOWS-1252', 'WINDOWS-1257']
 
 ## Optional Properties ##
 
 # Alphabet characters.
-alphabet = "äöüõšž"
-start_pages = ["Harilik pohl"]
+alphabet = 'äöüõšž'
+start_pages = ['Harilik pohl']
 wikipedia_code = code
 case_mapping = True

@@ -17,7 +17,7 @@ enum WorkspaceFileTreePresentationRenderer {
             : snapshot.roots
         guard !effectiveRoots.isEmpty else { return "" }
 
-        var cachedSelectedFolderIDs: Set<UUID>?
+        var cachedSelectedFolderIDs: Set<UUID>? = nil
         func selectedFolderIDs() -> Set<UUID> {
             if let cachedSelectedFolderIDs { return cachedSelectedFolderIDs }
             guard !snapshot.selectedFileIDs.isEmpty else {

@@ -3,29 +3,29 @@ name: Xcode Workspace Validation
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 9 * * 1"
+    - cron: '17 9 * * 1'
   push:
     branches:
       - main
     paths:
-      - "Package.swift"
-      - "Package.resolved"
-      - "Makefile"
-      - "Scripts/generate_xcode_workspace.py"
-      - "Scripts/xcode_developer_workflow.sh"
-      - "Scripts/test_xcode_workspace_generator.py"
-      - ".github/workflows/xcode-workspace.yml"
-      - "docs/architecture/xcode-workspace.md"
+      - 'Package.swift'
+      - 'Package.resolved'
+      - 'Makefile'
+      - 'Scripts/generate_xcode_workspace.py'
+      - 'Scripts/xcode_developer_workflow.sh'
+      - 'Scripts/test_xcode_workspace_generator.py'
+      - '.github/workflows/xcode-workspace.yml'
+      - 'docs/architecture/xcode-workspace.md'
   pull_request:
     paths:
-      - "Package.swift"
-      - "Package.resolved"
-      - "Makefile"
-      - "Scripts/generate_xcode_workspace.py"
-      - "Scripts/xcode_developer_workflow.sh"
-      - "Scripts/test_xcode_workspace_generator.py"
-      - ".github/workflows/xcode-workspace.yml"
-      - "docs/architecture/xcode-workspace.md"
+      - 'Package.swift'
+      - 'Package.resolved'
+      - 'Makefile'
+      - 'Scripts/generate_xcode_workspace.py'
+      - 'Scripts/xcode_developer_workflow.sh'
+      - 'Scripts/test_xcode_workspace_generator.py'
+      - '.github/workflows/xcode-workspace.yml'
+      - 'docs/architecture/xcode-workspace.md'
 
 permissions:
   contents: read

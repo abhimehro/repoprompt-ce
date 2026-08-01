@@ -2076,11 +2076,11 @@ struct AgentModeChatDetailView: View {
                     }
                 }
                 #if DEBUG
-                    .onReceive(NotificationCenter.default.publisher(for: AgentChatStressHarness.forceDetachRequestedNotification)) { notification in
-                        guard let stressHarness,
-                              notification.object as AnyObject === stressHarness else { return }
-                        handleStressForceDetach(proxy: proxy)
-                    }
+                .onReceive(NotificationCenter.default.publisher(for: AgentChatStressHarness.forceDetachRequestedNotification)) { notification in
+                    guard let stressHarness,
+                          notification.object as AnyObject === stressHarness else { return }
+                    handleStressForceDetach(proxy: proxy)
+                }
                 #endif
                     .onChange(of: currentTabID) { oldTabID, newTabID in
                         debugLog("onChange currentTabID", details: "old=\(debugShortID(oldTabID)) new=\(debugShortID(newTabID))")

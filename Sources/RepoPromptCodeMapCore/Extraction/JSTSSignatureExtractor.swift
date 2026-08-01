@@ -80,13 +80,13 @@ enum JSTSSignatureExtractor {
         var bracketDepth = 0 // Track [ ] nesting
         var braceDepth = 0 // Track { } nesting (for type literals in return type)
 
-        var lastTopLevelCloseParen: String.Index?
-        var arrowIndex: String.Index?
-        var firstArrowAnyDepth: String.Index?
-        var colonAfterParamIndex: String.Index?
-        var bodyBraceIndex: String.Index?
+        var lastTopLevelCloseParen: String.Index? = nil
+        var arrowIndex: String.Index? = nil
+        var firstArrowAnyDepth: String.Index? = nil
+        var colonAfterParamIndex: String.Index? = nil
+        var bodyBraceIndex: String.Index? = nil
         var inReturnType = false
-        var returnTypeStartsWithBrace: Bool?
+        var returnTypeStartsWithBrace: Bool? = nil
         var hasTopLevelAssignment = false
 
         var inSingleQuote = false

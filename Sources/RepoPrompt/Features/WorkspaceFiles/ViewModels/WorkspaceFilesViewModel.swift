@@ -447,11 +447,9 @@ class WorkspaceFilesViewModel: ObservableObject {
     private var deferredReplayRoutingVersion: UInt64 = 0
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: ‑ Deferred replay routing
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - Root-keyed storage (stable string keys instead of URL to avoid key instability)
 
     private typealias RootKey = String
@@ -484,7 +482,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     private var deltaReplayRunID: UUID?
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - Child insertion coalescer (same-tick batching)
 
     /// ─────────────────────────────────────────────────────────────
@@ -3498,7 +3495,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ------------------------------------------------------------------
-
     // MARK: Mention support
 
     /// ------------------------------------------------------------------
@@ -3518,7 +3514,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ------------------------------------------------------------------
-
     // MARK: Explicit helpers for mention tokens (add / remove)
 
     /// ------------------------------------------------------------------
@@ -4651,7 +4646,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - Insert batching helpers
 
     /// ─────────────────────────────────────────────────────────────
@@ -4829,7 +4823,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ============================================================
-
     // MARK: - File insertion
 
     /// ============================================================
@@ -5345,7 +5338,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-
     // MARK: – Helpers for expanding relative paths into absolute candidates
 
     /// ─────────────────────────────────────────────────────────────────────────────
@@ -5370,7 +5362,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-
     // MARK: - Selection Management Helpers
 
     /// ─────────────────────────────────────────────────────────────────────────────
@@ -5454,7 +5445,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-
     // MARK: – FileSystemService lookup by user path
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -5963,7 +5953,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     }
 
     // Helper to replay queued deltas once the app regains focus
-
     // MARK: – Window-focus replay
 
     @MainActor
@@ -8720,7 +8709,7 @@ class WorkspaceFilesViewModel: ObservableObject {
             .split(separator: "/")
             .map(String.init)
 
-        var currentFolder: FolderViewModel?
+        var currentFolder: FolderViewModel? = nil
         for root in rootFolders {
             if standardizedPath.hasPrefix(root.standardizedFullPath) || root.name == pathComponents.first {
                 currentFolder = root
@@ -9152,7 +9141,6 @@ class WorkspaceFilesViewModel: ObservableObject {
     @MainActor private var cachedSearchFolderSuffixIndexByScope: [LookupRootScope: (generation: UInt64, index: SearchFolderSuffixIndex<FolderViewModel>)] = [:]
 
     // ------------------------------------------------------------------
-
     // MARK: Unified bulk path selection helpers (files and folders)
 
     // ------------------------------------------------------------------

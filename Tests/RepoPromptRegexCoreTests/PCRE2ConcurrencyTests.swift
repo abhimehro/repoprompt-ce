@@ -10,14 +10,14 @@ final class PCRE2ConcurrencyTests: XCTestCase {
             of: Bool.self,
             returning: [Bool].self
         ) { group in
-            for index in 0 ..< iterations {
+            for index in 0..<iterations {
                 group.addTask {
                     let subject = "item-\(index)"
                     guard let match = try regex.firstMatch(in: subject) else {
                         return false
                     }
-                    return match.byteRange == 0 ..< subject.utf8.count
-                        && match.captureByteRanges[1] == 5 ..< subject.utf8.count
+                    return match.byteRange == 0..<subject.utf8.count
+                        && match.captureByteRanges[1] == 5..<subject.utf8.count
                 }
             }
 

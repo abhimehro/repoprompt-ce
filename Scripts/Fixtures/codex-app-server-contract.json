@@ -18,8 +18,12 @@
     {
       "union": "ClientRequest.json",
       "method": "model/list",
-      "alwaysSent": ["limit"],
-      "maySend": ["cursor"],
+      "alwaysSent": [
+        "limit"
+      ],
+      "maySend": [
+        "cursor"
+      ],
       "responseSchema": "v2/ModelListResponse.json",
       "consumedResponse": [
         {
@@ -82,8 +86,18 @@
     {
       "union": "ClientRequest.json",
       "method": "thread/start",
-      "alwaysSent": ["approvalPolicy", "approvalsReviewer", "sandbox"],
-      "maySend": ["baseInstructions", "config", "cwd", "model", "serviceTier"],
+      "alwaysSent": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "sandbox"
+      ],
+      "maySend": [
+        "baseInstructions",
+        "config",
+        "cwd",
+        "model",
+        "serviceTier"
+      ],
       "responseSchema": "v2/ThreadStartResponse.json",
       "consumedResponse": [
         {
@@ -132,7 +146,12 @@
         "approvalsReviewer",
         "sandbox"
       ],
-      "maySend": ["config", "cwd", "model", "serviceTier"],
+      "maySend": [
+        "config",
+        "cwd",
+        "model",
+        "serviceTier"
+      ],
       "responseSchema": "v2/ThreadResumeResponse.json",
       "consumedResponse": [
         {
@@ -175,7 +194,10 @@
     {
       "union": "ClientRequest.json",
       "method": "thread/read",
-      "alwaysSent": ["threadId", "includeTurns"],
+      "alwaysSent": [
+        "threadId",
+        "includeTurns"
+      ],
       "responseSchema": "v2/ThreadReadResponse.json",
       "consumedResponse": [
         {
@@ -250,7 +272,11 @@
         }
       ],
       "consumedEnumValues": {
-        "thread.turns[].itemsView": ["full", "notLoaded", "summary"],
+        "thread.turns[].itemsView": [
+          "full",
+          "notLoaded",
+          "summary"
+        ],
         "thread.turns[].items[].status": [
           "completed",
           "declined",
@@ -262,12 +288,17 @@
     {
       "union": "ClientRequest.json",
       "method": "thread/name/set",
-      "alwaysSent": ["threadId", "name"]
+      "alwaysSent": [
+        "threadId",
+        "name"
+      ]
     },
     {
       "union": "ClientRequest.json",
       "method": "thread/goal/get",
-      "alwaysSent": ["threadId"],
+      "alwaysSent": [
+        "threadId"
+      ],
       "responseSchema": "v2/ThreadGoalGetResponse.json",
       "consumedResponse": [
         {
@@ -330,8 +361,13 @@
     {
       "union": "ClientRequest.json",
       "method": "thread/goal/set",
-      "alwaysSent": ["threadId"],
-      "maySend": ["objective", "status"],
+      "alwaysSent": [
+        "threadId"
+      ],
+      "maySend": [
+        "objective",
+        "status"
+      ],
       "enumValues": {
         "status": [
           "active",
@@ -404,7 +440,9 @@
     {
       "union": "ClientRequest.json",
       "method": "thread/goal/clear",
-      "alwaysSent": ["threadId"],
+      "alwaysSent": [
+        "threadId"
+      ],
       "responseSchema": "v2/ThreadGoalClearResponse.json",
       "consumedResponse": [
         {
@@ -424,7 +462,12 @@
         "approvalsReviewer",
         "sandboxPolicy"
       ],
-      "maySend": ["cwd", "effort", "model", "serviceTier"],
+      "maySend": [
+        "cwd",
+        "effort",
+        "model",
+        "serviceTier"
+      ],
       "responseSchema": "v2/TurnStartResponse.json",
       "consumedResponse": [
         {
@@ -443,45 +486,68 @@
           "path": "input[]",
           "discriminator": "type",
           "value": "text",
-          "alwaysSent": ["type", "text", "text_elements"]
+          "alwaysSent": [
+            "type",
+            "text",
+            "text_elements"
+          ]
         },
         {
           "path": "input[]",
           "discriminator": "type",
           "value": "image",
-          "alwaysSent": ["type", "url"]
+          "alwaysSent": [
+            "type",
+            "url"
+          ]
         },
         {
           "path": "input[]",
           "discriminator": "type",
           "value": "localImage",
-          "alwaysSent": ["type", "path"]
+          "alwaysSent": [
+            "type",
+            "path"
+          ]
         },
         {
           "path": "sandboxPolicy",
           "discriminator": "type",
           "value": "readOnly",
-          "alwaysSent": ["type"]
+          "alwaysSent": [
+            "type"
+          ]
         },
         {
           "path": "sandboxPolicy",
           "discriminator": "type",
           "value": "dangerFullAccess",
-          "alwaysSent": ["type"]
+          "alwaysSent": [
+            "type"
+          ]
         },
         {
           "path": "sandboxPolicy",
           "discriminator": "type",
           "value": "workspaceWrite",
-          "alwaysSent": ["type", "networkAccess"],
-          "maySend": ["writableRoots"]
+          "alwaysSent": [
+            "type",
+            "networkAccess"
+          ],
+          "maySend": [
+            "writableRoots"
+          ]
         }
       ]
     },
     {
       "union": "ClientRequest.json",
       "method": "turn/steer",
-      "alwaysSent": ["threadId", "input", "expectedTurnId"],
+      "alwaysSent": [
+        "threadId",
+        "input",
+        "expectedTurnId"
+      ],
       "responseSchema": "v2/TurnSteerResponse.json",
       "consumedResponse": [
         {
@@ -495,31 +561,46 @@
           "path": "input[]",
           "discriminator": "type",
           "value": "text",
-          "alwaysSent": ["type", "text", "text_elements"]
+          "alwaysSent": [
+            "type",
+            "text",
+            "text_elements"
+          ]
         },
         {
           "path": "input[]",
           "discriminator": "type",
           "value": "image",
-          "alwaysSent": ["type", "url"]
+          "alwaysSent": [
+            "type",
+            "url"
+          ]
         },
         {
           "path": "input[]",
           "discriminator": "type",
           "value": "localImage",
-          "alwaysSent": ["type", "path"]
+          "alwaysSent": [
+            "type",
+            "path"
+          ]
         }
       ]
     },
     {
       "union": "ClientRequest.json",
       "method": "turn/interrupt",
-      "alwaysSent": ["threadId", "turnId"]
+      "alwaysSent": [
+        "threadId",
+        "turnId"
+      ]
     },
     {
       "union": "ClientRequest.json",
       "method": "thread/compact/start",
-      "alwaysSent": ["threadId"]
+      "alwaysSent": [
+        "threadId"
+      ]
     },
     {
       "union": "ClientNotification.json",
@@ -1107,7 +1188,9 @@
         }
       ],
       "responseSchema": "ToolRequestUserInputResponse.json",
-      "alwaysSentResponse": ["answers"]
+      "alwaysSentResponse": [
+        "answers"
+      ]
     },
     {
       "union": "ServerRequest.json",
@@ -1125,8 +1208,13 @@
         }
       ],
       "responseSchema": "ChatgptAuthTokensRefreshResponse.json",
-      "alwaysSentResponse": ["accessToken", "chatgptAccountId"],
-      "maySendResponse": ["chatgptPlanType"]
+      "alwaysSentResponse": [
+        "accessToken",
+        "chatgptAccountId"
+      ],
+      "maySendResponse": [
+        "chatgptPlanType"
+      ]
     },
     {
       "union": "ServerRequest.json",
@@ -1149,10 +1237,19 @@
         }
       ],
       "responseSchema": "McpServerElicitationRequestResponse.json",
-      "alwaysSentResponse": ["action"],
-      "maySendResponse": ["content", "_meta"],
+      "alwaysSentResponse": [
+        "action"
+      ],
+      "maySendResponse": [
+        "content",
+        "_meta"
+      ],
       "responseEnumValues": {
-        "action": ["accept", "decline", "cancel"]
+        "action": [
+          "accept",
+          "decline",
+          "cancel"
+        ]
       }
     },
     {
@@ -1186,9 +1283,16 @@
         }
       ],
       "responseSchema": "PermissionsRequestApprovalResponse.json",
-      "alwaysSentResponse": ["permissions", "scope", "strictAutoReview"],
+      "alwaysSentResponse": [
+        "permissions",
+        "scope",
+        "strictAutoReview"
+      ],
       "responseEnumValues": {
-        "scope": ["turn", "session"]
+        "scope": [
+          "turn",
+          "session"
+        ]
       }
     },
     {
@@ -1243,9 +1347,16 @@
         }
       ],
       "responseSchema": "CommandExecutionRequestApprovalResponse.json",
-      "alwaysSentResponse": ["decision"],
+      "alwaysSentResponse": [
+        "decision"
+      ],
       "responseEnumValues": {
-        "decision": ["accept", "acceptForSession", "decline", "cancel"]
+        "decision": [
+          "accept",
+          "acceptForSession",
+          "decline",
+          "cancel"
+        ]
       }
     },
     {
@@ -1269,9 +1380,16 @@
         }
       ],
       "responseSchema": "FileChangeRequestApprovalResponse.json",
-      "alwaysSentResponse": ["decision"],
+      "alwaysSentResponse": [
+        "decision"
+      ],
       "responseEnumValues": {
-        "decision": ["accept", "acceptForSession", "decline", "cancel"]
+        "decision": [
+          "accept",
+          "acceptForSession",
+          "decline",
+          "cancel"
+        ]
       }
     }
   ]

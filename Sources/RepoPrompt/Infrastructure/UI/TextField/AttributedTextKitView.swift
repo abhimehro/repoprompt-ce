@@ -5,7 +5,6 @@ import SwiftUI
 /// A drop-in replacement for `TextKitView` that supports "@" mentions.
 struct AttributedTextKitView: NSViewRepresentable {
     // ------------------------------------------------------------
-
     // MARK: – Cached resources (shared across all instances)
 
     /// ------------------------------------------------------------
@@ -596,7 +595,7 @@ struct AttributedTextKitView: NSViewRepresentable {
                     // Resolve kind only once per distinct path
                     let resolvedKind: MentionKind? = {
                         if let cached = kindCache[rawPath] { return cached }
-                        var kind: MentionKind?
+                        var kind: MentionKind? = nil
                         if fm.findFolderByRelativePath(rawPath) != nil {
                             kind = .folder
                         } else if fm.findFileByRelativePath(rawPath) != nil {

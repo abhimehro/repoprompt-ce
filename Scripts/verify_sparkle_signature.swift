@@ -11,7 +11,6 @@ let archive = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[3]
 guard let publicKeyData = Data(base64Encoded: encodedPublicKey) else {
     fatalError("Sparkle public key is not valid base64")
 }
-
 guard let signature = Data(base64Encoded: encodedSignature) else {
     fatalError("Sparkle signature is not valid base64")
 }

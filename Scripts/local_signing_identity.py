@@ -54,26 +54,18 @@ class RegistryRecord:
 
 
 def normalize_fingerprint(value: str, length: int = 64) -> str:
-    normalized = "".join(
-        character for character in value.upper() if character in "0123456789ABCDEF"
-    )
+    normalized = "".join(character for character in value.upper() if character in "0123456789ABCDEF")
     expected = FINGERPRINT_PATTERN if length == 64 else SHA1_PATTERN
     if not expected.fullmatch(normalized):
-        raise IdentityError(
-            f"Expected a {length}-character hexadecimal certificate fingerprint."
-        )
+        raise IdentityError(f"Expected a {length}-character hexadecimal certificate fingerprint.")
     return normalized
 
 
 def run_command(arguments: list[str], *, input_data: bytes | None = None) -> bytes:
-    result = subprocess.run(
-        arguments, input=input_data, capture_output=True, check=False
-    )
+    result = subprocess.run(arguments, input=input_data, capture_output=True, check=False)
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        raise IdentityError(
-            f"Command failed ({' '.join(arguments)}): {stderr or 'no diagnostic output'}"
-        )
+        raise IdentityError(f"Command failed ({' '.join(arguments)}): {stderr or 'no diagnostic output'}")
     return result.stdout
 
 
@@ -105,16 +97,12 @@ def parse_fingerprint(output: str, length: int) -> str:
 def parse_not_after(output: str) -> datetime:
     value = output.split("=", 1)[-1].strip()
     try:
-        return datetime.strptime(value, "%b %d %H:%M:%S %Y %Z").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(value, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
     except ValueError as error:
         raise IdentityError(f"Could not parse certificate expiry '{value}'.") from error
 
 
-def inventory_from_commands(
-    certificate_name: str, keychain: str, evaluated_at: datetime
-) -> dict[str, Any]:
+def inventory_from_commands(certificate_name: str, keychain: str, evaluated_at: datetime) -> dict[str, Any]:
     identity_output = run_command(
         ["security", "find-identity", "-v", "-p", "codesigning", keychain]
     ).decode("utf-8", errors="replace")
@@ -128,8 +116,7 @@ def inventory_from_commands(
     if certificate_result.returncode not in (0, 44):
         stderr = certificate_result.stderr.decode("utf-8", errors="replace").strip()
         raise IdentityError(
-            "Command failed (security find-certificate): "
-            + (stderr or "no diagnostic output")
+            "Command failed (security find-certificate): " + (stderr or "no diagnostic output")
         )
     certificate_output = certificate_result.stdout
     records: list[CertificateRecord] = []
@@ -152,9 +139,7 @@ def inventory_from_commands(
                 certificateName=common_name,
                 sha1=sha1,
                 sha256=sha256,
-                notAfter=not_after.astimezone(timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                notAfter=not_after.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
                 hasPrivateKey=has_private_key,
                 isExpired=not_after <= evaluated_at,
             )
@@ -163,19 +148,14 @@ def inventory_from_commands(
     missing_certificates = sorted(identity_hashes - matched_identity_hashes)
     if missing_certificates:
         raise IdentityError(
-            "Could not export certificates for exact-name identities: "
-            + ", ".join(missing_certificates)
+            "Could not export certificates for exact-name identities: " + ", ".join(missing_certificates)
         )
     return make_inventory(certificate_name, records, evaluated_at)
 
 
-def inventory_from_fixture(
-    path: Path, certificate_name: str, evaluated_at: datetime
-) -> dict[str, Any]:
+def inventory_from_fixture(path: Path, certificate_name: str, evaluated_at: datetime) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    records = [
-        CertificateRecord(**record) for record in payload.get("certificates", [])
-    ]
+    records = [CertificateRecord(**record) for record in payload.get("certificates", [])]
     return make_inventory(certificate_name, records, evaluated_at)
 
 
@@ -184,9 +164,7 @@ def make_inventory(
     records: list[CertificateRecord],
     evaluated_at: datetime,
 ) -> dict[str, Any]:
-    matching = [
-        record for record in records if record.certificateName == certificate_name
-    ]
+    matching = [record for record in records if record.certificateName == certificate_name]
     candidates_by_fingerprint: dict[str, CertificateRecord] = {}
     normalized_records: list[CertificateRecord] = []
     for record in matching:
@@ -195,16 +173,12 @@ def make_inventory(
         try:
             not_after = datetime.fromisoformat(record.notAfter.replace("Z", "+00:00"))
         except ValueError as error:
-            raise IdentityError(
-                f"Could not parse fixture expiry '{record.notAfter}'."
-            ) from error
+            raise IdentityError(f"Could not parse fixture expiry '{record.notAfter}'.") from error
         normalized = CertificateRecord(
             certificateName=record.certificateName,
             sha1=sha1,
             sha256=sha256,
-            notAfter=not_after.astimezone(timezone.utc)
-            .isoformat()
-            .replace("+00:00", "Z"),
+            notAfter=not_after.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             hasPrivateKey=bool(record.hasPrivateKey),
             isExpired=bool(record.isExpired or not_after <= evaluated_at),
         )
@@ -212,16 +186,12 @@ def make_inventory(
         if normalized.hasPrivateKey and not normalized.isExpired:
             candidates_by_fingerprint[sha256] = normalized
 
-    candidates = sorted(
-        candidates_by_fingerprint.values(), key=lambda item: item.sha256
-    )
+    candidates = sorted(candidates_by_fingerprint.values(), key=lambda item: item.sha256)
     normalized_records.sort(key=lambda item: (item.sha256, item.sha1))
     return {
         "schemaVersion": SCHEMA_VERSION,
         "certificateName": certificate_name,
-        "evaluatedAt": evaluated_at.astimezone(timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z"),
+        "evaluatedAt": evaluated_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "candidates": [asdict(record) for record in candidates],
         "matchingCertificates": [asdict(record) for record in normalized_records],
     }
@@ -233,47 +203,31 @@ def read_registry(path: Path) -> RegistryRecord | None:
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(details.st_mode):
-        raise IdentityError(
-            f"Local signing identity registry is not a regular file: {path}"
-        )
+        raise IdentityError(f"Local signing identity registry is not a regular file: {path}")
     if details.st_uid != os.getuid():
-        raise IdentityError(
-            f"Local signing identity registry is not owned by the current user: {path}"
-        )
+        raise IdentityError(f"Local signing identity registry is not owned by the current user: {path}")
     if stat.S_IMODE(details.st_mode) & 0o077:
-        raise IdentityError(
-            f"Local signing identity registry must have owner-only permissions (0600): {path}"
-        )
+        raise IdentityError(f"Local signing identity registry must have owner-only permissions (0600): {path}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         record = RegistryRecord(**payload)
     except (OSError, TypeError, json.JSONDecodeError) as error:
-        raise IdentityError(
-            f"Local signing identity registry is invalid: {path}"
-        ) from error
+        raise IdentityError(f"Local signing identity registry is invalid: {path}") from error
     if record.schemaVersion != SCHEMA_VERSION:
-        raise IdentityError(
-            f"Unsupported local signing identity registry version: {record.schemaVersion}"
-        )
+        raise IdentityError(f"Unsupported local signing identity registry version: {record.schemaVersion}")
     normalize_fingerprint(record.certificateSHA256)
     if not record.certificateName or record.serviceGeneration < 1:
-        raise IdentityError(
-            f"Local signing identity registry has invalid fields: {path}"
-        )
+        raise IdentityError(f"Local signing identity registry has invalid fields: {path}")
     return record
 
 
 def write_registry(path: Path, record: RegistryRecord) -> None:
     if record.schemaVersion != SCHEMA_VERSION or record.serviceGeneration < 1:
-        raise IdentityError(
-            "Refusing to write an invalid local signing identity registry record."
-        )
+        raise IdentityError("Refusing to write an invalid local signing identity registry record.")
     normalize_fingerprint(record.certificateSHA256)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent
-    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
@@ -307,14 +261,10 @@ def normalized_candidates(inventory: dict[str, Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
-            raise IdentityError(
-                "Local signing identity inventory contains an invalid candidate."
-            )
+            raise IdentityError("Local signing identity inventory contains an invalid candidate.")
         normalized = dict(candidate)
         normalized["sha1"] = normalize_fingerprint(str(candidate.get("sha1", "")), 40)
-        normalized["sha256"] = normalize_fingerprint(
-            str(candidate.get("sha256", "")), 64
-        )
+        normalized["sha256"] = normalize_fingerprint(str(candidate.get("sha256", "")), 64)
         result.append(normalized)
     return sorted(result, key=lambda item: item["sha256"])
 
@@ -332,14 +282,10 @@ def resolve_plan(
     certificate_name = str(inventory.get("certificateName", ""))
     candidates = normalized_candidates(inventory)
     by_fingerprint = {candidate["sha256"]: candidate for candidate in candidates}
-    selected = (
-        normalize_fingerprint(selected_fingerprint) if selected_fingerprint else None
-    )
+    selected = normalize_fingerprint(selected_fingerprint) if selected_fingerprint else None
 
     if registry is not None and registry.certificateName != certificate_name:
-        raise IdentityError(
-            "Registered local signing certificate name does not match installer policy."
-        )
+        raise IdentityError("Registered local signing certificate name does not match installer policy.")
 
     if registry is not None and not rotate:
         registered = normalize_fingerprint(registry.certificateSHA256)
@@ -351,9 +297,7 @@ def resolve_plan(
         candidate = by_fingerprint.get(registered)
         if candidate is None:
             matching = inventory.get("matchingCertificates", [])
-            known = next(
-                (item for item in matching if item.get("sha256") == registered), None
-            )
+            known = next((item for item in matching if item.get("sha256") == registered), None)
             if known and known.get("isExpired"):
                 reason = "expired"
             elif known and not known.get("hasPrivateKey"):
@@ -375,14 +319,10 @@ def resolve_plan(
         registered = normalize_fingerprint(registry.certificateSHA256)
         if selected:
             if selected == registered:
-                raise IdentityError(
-                    "Rotation requires a different certificate fingerprint."
-                )
+                raise IdentityError("Rotation requires a different certificate fingerprint.")
             candidate = by_fingerprint.get(selected)
             if candidate is None:
-                raise IdentityError(
-                    f"Selected rotation fingerprint is not a valid exact-name identity: {selected}"
-                )
+                raise IdentityError(f"Selected rotation fingerprint is not a valid exact-name identity: {selected}")
             return {
                 "action": "rotate",
                 "candidate": candidate,
@@ -399,16 +339,12 @@ def resolve_plan(
         }
 
     if rotate:
-        raise IdentityError(
-            "No local signing identity is registered; rotation is not applicable on first use."
-        )
+        raise IdentityError("No local signing identity is registered; rotation is not applicable on first use.")
     initial_generation = new_service_generation()
     if selected:
         candidate = by_fingerprint.get(selected)
         if candidate is None:
-            raise IdentityError(
-                f"Selected fingerprint is not a valid exact-name identity: {selected}"
-            )
+            raise IdentityError(f"Selected fingerprint is not a valid exact-name identity: {selected}")
         return {
             "action": "adopt",
             "candidate": candidate,
@@ -437,22 +373,12 @@ def resolve_plan(
     )
 
 
-def select_new_candidate(
-    before: dict[str, Any], after: dict[str, Any]
-) -> dict[str, Any]:
-    before_fingerprints = {
-        candidate["sha256"] for candidate in normalized_candidates(before)
-    }
-    added = [
-        candidate
-        for candidate in normalized_candidates(after)
-        if candidate["sha256"] not in before_fingerprints
-    ]
+def select_new_candidate(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_fingerprints = {candidate["sha256"] for candidate in normalized_candidates(before)}
+    added = [candidate for candidate in normalized_candidates(after) if candidate["sha256"] not in before_fingerprints]
     if len(added) != 1:
         fingerprints = ", ".join(candidate["sha256"] for candidate in added) or "none"
-        raise IdentityError(
-            f"Expected exactly one newly minted valid identity, found: {fingerprints}"
-        )
+        raise IdentityError(f"Expected exactly one newly minted valid identity, found: {fingerprints}")
     return added[0]
 
 
@@ -505,13 +431,9 @@ def main() -> int:
         if arguments.command == "inventory":
             at = evaluation_time(arguments.at)
             if arguments.fixture:
-                payload = inventory_from_fixture(
-                    Path(arguments.fixture), arguments.certificate_name, at
-                )
+                payload = inventory_from_fixture(Path(arguments.fixture), arguments.certificate_name, at)
             else:
-                payload = inventory_from_commands(
-                    arguments.certificate_name, arguments.keychain, at
-                )
+                payload = inventory_from_commands(arguments.certificate_name, arguments.keychain, at)
             emit(payload)
         elif arguments.command == "plan":
             payload = resolve_plan(
@@ -522,12 +444,7 @@ def main() -> int:
             )
             emit(payload)
         elif arguments.command == "select-new":
-            emit(
-                select_new_candidate(
-                    load_inventory(Path(arguments.before)),
-                    load_inventory(Path(arguments.after)),
-                )
-            )
+            emit(select_new_candidate(load_inventory(Path(arguments.before)), load_inventory(Path(arguments.after))))
         elif arguments.command == "write-registry":
             record = RegistryRecord(
                 schemaVersion=SCHEMA_VERSION,
@@ -540,9 +457,7 @@ def main() -> int:
         elif arguments.command == "read-registry":
             record = read_registry(Path(arguments.path))
             if record is None:
-                raise IdentityError(
-                    f"Local signing identity registry does not exist: {arguments.path}"
-                )
+                raise IdentityError(f"Local signing identity registry does not exist: {arguments.path}")
             emit(asdict(record))
     except (IdentityError, OSError, json.JSONDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

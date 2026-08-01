@@ -3,23 +3,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${REPOPROMPT_RELEASE_SOURCE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-APPROVED_SOURCE_ROOT="${REPOPROMPT_APPROVED_SOURCE_ROOT-}"
+APPROVED_SOURCE_ROOT="${REPOPROMPT_APPROVED_SOURCE_ROOT:-}"
 
 fail() {
-	printf 'ERROR: %s\n' "$*" >&2
-	exit 1
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
 }
 
-[[ -n $APPROVED_SOURCE_ROOT ]] ||
-	fail "Missing required environment variable: REPOPROMPT_APPROVED_SOURCE_ROOT"
-[[ -n ${RELEASE_COMMIT-} ]] ||
-	fail "Missing required environment variable: RELEASE_COMMIT"
+[[ -n "$APPROVED_SOURCE_ROOT" ]] ||
+    fail "Missing required environment variable: REPOPROMPT_APPROVED_SOURCE_ROOT"
+[[ -n "${RELEASE_COMMIT:-}" ]] ||
+    fail "Missing required environment variable: RELEASE_COMMIT"
 
-if [[ -n ${REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE-} ]]; then
-	[[ $REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE =~ ^[0-9]{1,4}(\.[0-9]{1,2}){0,2}$ ]] ||
-		fail "REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE must be a valid numeric build version"
-	python3 - "$ROOT_DIR/version.env" "$APPROVED_SOURCE_ROOT/version.env" \
-		"$REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE" <<'PYTHON'
+if [[ -n "${REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE:-}" ]]; then
+    [[ "$REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE" =~ ^[0-9]{1,4}(\.[0-9]{1,2}){0,2}$ ]] ||
+        fail "REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE must be a valid numeric build version"
+    python3 - "$ROOT_DIR/version.env" "$APPROVED_SOURCE_ROOT/version.env" \
+        "$REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE" <<'PYTHON'
 import sys
 from pathlib import Path
 
@@ -49,13 +49,13 @@ if staged != expected:
     raise SystemExit(f"ERROR: staged version.env does not match approved source plus build override: {detail}")
 PYTHON
 else
-	cmp "$ROOT_DIR/version.env" "$APPROVED_SOURCE_ROOT/version.env" ||
-		fail "Staged version.env does not match approved source"
+    cmp "$ROOT_DIR/version.env" "$APPROVED_SOURCE_ROOT/version.env" ||
+        fail "Staged version.env does not match approved source"
 fi
 source "$SCRIPT_DIR/load_release_metadata.sh"
 load_release_metadata "$APPROVED_SOURCE_ROOT"
-if [[ -n ${REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE-} ]]; then
-	BUILD_NUMBER="$REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE"
+if [[ -n "${REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE:-}" ]]; then
+    BUILD_NUMBER="$REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE"
 fi
 
 APP_BUNDLE="$ROOT_DIR/.build/release/$APP_NAME.app"
@@ -144,27 +144,27 @@ PYTHON
 "$SCRIPT_DIR/validate_embedded_mcp_helper_layout.sh" "$APP_BUNDLE" "Staged app MCP helper layout"
 "$SCRIPT_DIR/validate_app_architectures.sh" "$APP_BUNDLE" "arm64,x86_64" "Staged public app"
 python3 "$SCRIPT_DIR/codex_runtime_artifact.py" \
-	--manifest "$APPROVED_SOURCE_ROOT/Vendor/Codex/manifest.json" verify-bundle \
-	--arch all \
-	--bundle "$APP_BUNDLE/Contents/Resources/BundledRuntimes/Codex"
+    --manifest "$APPROVED_SOURCE_ROOT/Vendor/Codex/manifest.json" verify-bundle \
+    --arch all \
+    --bundle "$APP_BUNDLE/Contents/Resources/BundledRuntimes/Codex"
 "$SCRIPT_DIR/write_app_artifact_manifest.py" verify \
-	--app "$APP_BUNDLE" \
-	--manifest "$ROOT_DIR/.build/release/$APP_NAME-artifact-manifest.json" \
-	--expected-architectures "arm64,x86_64"
+    --app "$APP_BUNDLE" \
+    --manifest "$ROOT_DIR/.build/release/$APP_NAME-artifact-manifest.json" \
+    --expected-architectures "arm64,x86_64"
 
 [[ "$(cat "$ROOT_DIR/RELEASE_COMMIT")" == "$RELEASE_COMMIT" ]] ||
-	fail "Staged release commit does not match approved commit"
+    fail "Staged release commit does not match approved commit"
 cmp "$ROOT_DIR/LICENSE" "$APPROVED_SOURCE_ROOT/LICENSE" ||
-	fail "Staged LICENSE does not match approved source"
+    fail "Staged LICENSE does not match approved source"
 cmp "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$APPROVED_SOURCE_ROOT/THIRD_PARTY_NOTICES.md" ||
-	fail "Staged third-party notices do not match approved source"
+    fail "Staged third-party notices do not match approved source"
 diff -qr "$ROOT_DIR/ThirdPartyLicenses" "$APPROVED_SOURCE_ROOT/ThirdPartyLicenses" ||
-	fail "Staged third-party licenses do not match approved source"
+    fail "Staged third-party licenses do not match approved source"
 REPOPROMPT_RELEASE_SOURCE_ROOT="$APPROVED_SOURCE_ROOT" \
-	"$SCRIPT_DIR/validate_packaged_legal.sh" "$APP_BUNDLE"
+    "$SCRIPT_DIR/validate_packaged_legal.sh" "$APP_BUNDLE"
 
 python3 - "$APPROVED_SOURCE_ROOT/AppBundle/Info.plist.template" "$APP_BUNDLE/Contents/Info.plist" \
-	"$APP_NAME" "$DISPLAY_NAME" "$BUNDLE_ID" "$MARKETING_VERSION" "$BUILD_NUMBER" <<'PYTHON'
+    "$APP_NAME" "$DISPLAY_NAME" "$BUNDLE_ID" "$MARKETING_VERSION" "$BUILD_NUMBER" <<'PYTHON'
 import plistlib
 import sys
 from pathlib import Path

@@ -40,11 +40,7 @@ SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 
 
 def utc_now() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def monotonic_ns() -> int:
@@ -141,8 +137,7 @@ def start_state(artifact_dir: Path, head_commit: Optional[str]) -> Path:
         "internal_version": 1,
         "artifact_dir": str(artifact_dir),
         "run_id": run_id,
-        "filename_utc": started_at.replace("-", "").replace(":", "").split(".", 1)[0]
-        + "Z",
+        "filename_utc": started_at.replace("-", "").replace(":", "").split(".", 1)[0] + "Z",
         "started_at": started_at,
         "started_monotonic_ns": monotonic_ns(),
         "active_phase": None,
@@ -199,9 +194,7 @@ def pass_phase(state_path: Path, phase_id: str) -> None:
         {
             "status": "passed",
             "finished_at": utc_now(),
-            "elapsed_seconds": elapsed_seconds(
-                phase.pop("started_monotonic_ns"), finish_ns
-            ),
+            "elapsed_seconds": elapsed_seconds(phase.pop("started_monotonic_ns"), finish_ns),
         }
     )
     state["active_phase"] = None
@@ -220,14 +213,10 @@ def record_provenance(state_path: Path, base_kind: str, outgoing_count: int) -> 
     save_state(state_path, state)
 
 
-def record_selection(
-    state_path: Path, changed_path_count: int, lane_ids: list[str]
-) -> None:
+def record_selection(state_path: Path, changed_path_count: int, lane_ids: list[str]) -> None:
     if changed_path_count < 0:
         raise ValueError("changed path count cannot be negative")
-    if len(lane_ids) != len(set(lane_ids)) or any(
-        lane_id not in LANE_IDS for lane_id in lane_ids
-    ):
+    if len(lane_ids) != len(set(lane_ids)) or any(lane_id not in LANE_IDS for lane_id in lane_ids):
         raise ValueError("invalid selected lane ids")
     ordered_lane_ids = [lane_id for lane_id in LANE_IDS if lane_id in lane_ids]
     state = load_state(state_path)
@@ -275,9 +264,7 @@ def finish_state(state_path: Path, exit_code: int) -> str:
             "run_id": state["run_id"],
             "started_at": state["started_at"],
             "finished_at": finished_at,
-            "elapsed_seconds": elapsed_seconds(
-                state["started_monotonic_ns"], finish_ns
-            ),
+            "elapsed_seconds": elapsed_seconds(state["started_monotonic_ns"], finish_ns),
             "status": status,
             "exit_code": exit_code,
             "signal": None,
@@ -325,9 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     provenance = subparsers.add_parser("provenance")
     provenance.add_argument("--state", type=Path, required=True)
     provenance.add_argument(
-        "--base-kind",
-        choices=["configured_upstream", "origin_main_fallback"],
-        required=True,
+        "--base-kind", choices=["configured_upstream", "origin_main_fallback"], required=True
     )
     provenance.add_argument("--outgoing-count", type=int, required=True)
 

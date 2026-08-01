@@ -428,7 +428,7 @@ extension FileSystemService {
     /// Reads a directory using `scandir(3)`, skipping "." and "..".
     /// Mark it static so it doesn't require an instance of `self`.
     private static func scandirListDirectory(_ path: String) throws -> [DirEntry] {
-        var namelist: UnsafeMutablePointer<UnsafeMutablePointer<dirent>?>?
+        var namelist: UnsafeMutablePointer<UnsafeMutablePointer<dirent>?>? = nil
 
         let count = scandir(path, &namelist, nil, nil)
         guard count >= 0 else {

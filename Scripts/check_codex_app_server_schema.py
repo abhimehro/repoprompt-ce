@@ -25,12 +25,7 @@ PLAIN_VERSION_PATTERN = re.compile(
     r"\s*(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?\s*"
 )
 PRESENCE_VALUES = {"required", "optional", "conditional"}
-TOP_LEVEL_KEYS = {
-    "schemaVersion",
-    "minimumCodexVersion",
-    "experimental",
-    "methodChecks",
-}
+TOP_LEVEL_KEYS = {"schemaVersion", "minimumCodexVersion", "experimental", "methodChecks"}
 METHOD_CHECK_KEYS = {
     "union",
     "method",
@@ -132,9 +127,7 @@ def run_command(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 def installed_codex_version(codex: str) -> tuple[SemanticVersion, str]:
     result = run_command([codex, "--version"])
-    output = "\n".join(
-        part.strip() for part in (result.stdout, result.stderr) if part.strip()
-    )
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
     if result.returncode != 0:
         raise GateError(
             f"{codex} --version failed with exit code {result.returncode}:\n{output or '<no output>'}"
@@ -150,9 +143,7 @@ def generate_schema_bundle(codex: str, output_dir: Path, *, experimental: bool) 
     result = run_command(argv)
     if result.returncode == 0:
         return
-    details = "\n".join(
-        part.strip() for part in (result.stdout, result.stderr) if part.strip()
-    )
+    details = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
     raise GateError(
         "Codex app-server schema generation failed "
         f"(exit {result.returncode}): {' '.join(argv)}\n{details or '<no output>'}"
@@ -185,19 +176,13 @@ def constraint_variants(
     if node is False or not isinstance(node, dict):
         return []
 
-    base = {
-        key: value
-        for key, value in node.items()
-        if key not in {"allOf", "anyOf", "oneOf", "$ref"}
-    }
+    base = {key: value for key, value in node.items() if key not in {"allOf", "anyOf", "oneOf", "$ref"}}
     variants: list[list[Mapping[str, Any]]] = [[base]]
     all_of = node.get("allOf")
     if isinstance(all_of, list):
         for child in all_of:
             child_variants = constraint_variants(document, child)
-            variants = [
-                left + right for left, right in product(variants, child_variants)
-            ]
+            variants = [left + right for left, right in product(variants, child_variants)]
 
     alternatives: list[list[Mapping[str, Any]]] | None = None
     for keyword in ("anyOf", "oneOf"):
@@ -208,11 +193,9 @@ def constraint_variants(
                 for alternative in raw_alternatives
                 for constraints in constraint_variants(document, alternative)
             ]
-            alternatives = (
-                expanded
-                if alternatives is None
-                else [left + right for left, right in product(alternatives, expanded)]
-            )
+            alternatives = expanded if alternatives is None else [
+                left + right for left, right in product(alternatives, expanded)
+            ]
     if alternatives is not None:
         variants = [left + right for left, right in product(variants, alternatives)]
     return variants
@@ -246,9 +229,7 @@ def property_options(
             if isinstance(required_names, list) and name in required_names:
                 required = True
         options.append(
-            PropertyOption(
-                bool(schemas), required, combined_schema(schemas) if schemas else None
-            )
+            PropertyOption(bool(schemas), required, combined_schema(schemas) if schemas else None)
         )
     return options
 
@@ -256,9 +237,7 @@ def property_options(
 def item_options(document: Mapping[str, Any], node: Any) -> list[Any | None]:
     options: list[Any | None] = []
     for constraints in constraint_variants(document, node):
-        schemas = [
-            constraint["items"] for constraint in constraints if "items" in constraint
-        ]
+        schemas = [constraint["items"] for constraint in constraints if "items" in constraint]
         options.append(combined_schema(schemas) if schemas else None)
     return options
 
@@ -283,10 +262,7 @@ def schema_allows_null(document: Mapping[str, Any], node: Any) -> bool:
     if node is False:
         return False
     variants = constraint_variants(document, node)
-    return any(
-        all(direct_constraint_allows_null(part) for part in variant)
-        for variant in variants
-    )
+    return any(all(direct_constraint_allows_null(part) for part in variant) for variant in variants)
 
 
 def literal_values(document: Mapping[str, Any], node: Any) -> set[Any]:
@@ -326,9 +302,7 @@ def nodes_at_path(document: Mapping[str, Any], node: Any, path: str) -> list[Any
                     continue
                 if is_array:
                     next_candidates.extend(
-                        item
-                        for item in item_options(document, option.schema)
-                        if item is not None
+                        item for item in item_options(document, option.schema) if item is not None
                     )
                 else:
                     next_candidates.append(option.schema)
@@ -361,10 +335,7 @@ def analyze_path(document: Mapping[str, Any], node: Any, path: str) -> PathAnaly
                     continue
                 nullable = schema_allows_null(document, option.schema)
                 conditional = (
-                    ancestor_conditional
-                    or alternative_missing
-                    or not option.required
-                    or nullable
+                    ancestor_conditional or alternative_missing or not option.required or nullable
                 )
                 if is_array:
                     items = item_options(document, option.schema)
@@ -373,13 +344,7 @@ def analyze_path(document: Mapping[str, Any], node: Any, path: str) -> PathAnaly
                         if item is not None:
                             next_states.append((item, conditional or item_missing))
                 elif index == len(segments) - 1:
-                    terminal.append(
-                        (
-                            option.required,
-                            ancestor_conditional or alternative_missing,
-                            nullable,
-                        )
-                    )
+                    terminal.append((option.required, ancestor_conditional or alternative_missing, nullable))
                 else:
                     next_states.append((option.schema, conditional))
         if index != len(segments) - 1:
@@ -395,9 +360,7 @@ def analyze_path(document: Mapping[str, Any], node: Any, path: str) -> PathAnaly
         presence = "conditional"
     else:
         presence = "required"
-    return PathAnalysis(
-        True, presence, any(nullable for _required, _conditional, nullable in terminal)
-    )
+    return PathAnalysis(True, presence, any(nullable for _required, _conditional, nullable in terminal))
 
 
 def enum_values_at_path(document: Mapping[str, Any], node: Any, path: str) -> set[Any]:
@@ -407,9 +370,7 @@ def enum_values_at_path(document: Mapping[str, Any], node: Any, path: str) -> se
     return values
 
 
-def method_branches(
-    document: Mapping[str, Any], filename: str
-) -> dict[str, Mapping[str, Any]]:
+def method_branches(document: Mapping[str, Any], filename: str) -> dict[str, Mapping[str, Any]]:
     branches: dict[str, Mapping[str, Any]] = {}
     for constraints in constraint_variants(document, document):
         branch: Mapping[str, Any] = {"allOf": constraints}
@@ -427,9 +388,7 @@ def method_branches(
     return branches
 
 
-def param_schema(
-    document: Mapping[str, Any], branch: Mapping[str, Any]
-) -> Mapping[str, Any] | None:
+def param_schema(document: Mapping[str, Any], branch: Mapping[str, Any]) -> Mapping[str, Any] | None:
     schemas = nodes_at_path(document, branch, "params")
     if not schemas:
         return None
@@ -446,9 +405,7 @@ def string_list(value: Any, *, label: str) -> list[str]:
     return list(value)
 
 
-def reject_unknown_keys(
-    value: Mapping[str, Any], allowed: set[str], *, label: str
-) -> None:
+def reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], *, label: str) -> None:
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise GateError(f"{label} contains unknown keys: {', '.join(unknown)}")
@@ -484,15 +441,11 @@ def validate_variant_entries(value: Any, *, label: str, direction: str) -> None:
             string_list(entry.get("alwaysSent"), label=f"{entry_label}.alwaysSent")
             string_list(entry.get("maySend"), label=f"{entry_label}.maySend")
             if "consumed" in entry:
-                raise GateError(
-                    f"{entry_label}.consumed is not valid for a sent variant"
-                )
+                raise GateError(f"{entry_label}.consumed is not valid for a sent variant")
         else:
             if "consumed" not in entry:
                 raise GateError(f"{entry_label} requires consumed")
-            validate_consumed_paths(
-                entry.get("consumed"), label=f"{entry_label}.consumed"
-            )
+            validate_consumed_paths(entry.get("consumed"), label=f"{entry_label}.consumed")
             if "alwaysSent" in entry or "maySend" in entry:
                 raise GateError(f"{entry_label} cannot declare sent fields")
 
@@ -567,18 +520,14 @@ def validate_contract(contract: Mapping[str, Any]) -> None:
         ):
             validate_enum_map(check.get(key), label=f"{label}.{key}")
         validate_variant_entries(
-            check.get("sentParamVariants"),
-            label=f"{label}.sentParamVariants",
-            direction="sent",
+            check.get("sentParamVariants"), label=f"{label}.sentParamVariants", direction="sent"
         )
         validate_variant_entries(
             check.get("consumedParamVariants"),
             label=f"{label}.consumedParamVariants",
             direction="consumed",
         )
-        validate_consumed_paths(
-            check.get("consumedParams"), label=f"{label}.consumedParams"
-        )
+        validate_consumed_paths(check.get("consumedParams"), label=f"{label}.consumedParams")
         validate_consumed_paths(
             check.get("consumedResponse"), label=f"{label}.consumedResponse"
         )
@@ -595,13 +544,8 @@ def validate_contract(contract: Mapping[str, Any]) -> None:
             "consumedEnumValues",
         }
         if any(key in check for key in response_keys):
-            if (
-                not isinstance(check.get("responseSchema"), str)
-                or not check["responseSchema"]
-            ):
-                raise GateError(
-                    f"{label} declares response checks but has no responseSchema"
-                )
+            if not isinstance(check.get("responseSchema"), str) or not check["responseSchema"]:
+                raise GateError(f"{label} declares response checks but has no responseSchema")
 
 
 def required_property_names(document: Mapping[str, Any], node: Any) -> set[str]:
@@ -712,9 +656,7 @@ def validate_param_variants(
         )
         variant_label = f"{label} {path} {discriminator}={value!r}"
         if variant is None:
-            errors.append(
-                f"{variant_label}: discriminated variant is no longer declared"
-            )
+            errors.append(f"{variant_label}: discriminated variant is no longer declared")
             continue
         if direction == "sent":
             fields = string_list(
@@ -727,12 +669,8 @@ def validate_param_variants(
                         f"{variant_label}: RPCE sends field {field!r}, "
                         "but the schema does not declare it"
                     )
-            always = string_list(
-                entry.get("alwaysSent"), label=f"{variant_label}.alwaysSent"
-            )
-            missing_required = sorted(
-                required_property_names(document, variant) - set(always)
-            )
+            always = string_list(entry.get("alwaysSent"), label=f"{variant_label}.alwaysSent")
+            missing_required = sorted(required_property_names(document, variant) - set(always))
             for field in missing_required:
                 errors.append(
                     f"{variant_label}: schema now requires field {field!r}, "
@@ -782,9 +720,7 @@ def validate_method_check(
     )
     parameter_count = len(declared_params)
     if (declared_params or variant_entries) and params is None:
-        errors.append(
-            f"{label}: contract expects params, but the method schema has none"
-        )
+        errors.append(f"{label}: contract expects params, but the method schema has none")
     elif params is not None:
         for path in always_sent + may_send:
             if not nodes_at_path(document, params, path):
@@ -849,9 +785,7 @@ def validate_method_check(
     may_send_response = string_list(
         check.get("maySendResponse"), label=f"{label}.maySendResponse"
     )
-    declared_response = (
-        consumed_response_paths + always_sent_response + may_send_response
-    )
+    declared_response = consumed_response_paths + always_sent_response + may_send_response
     response_schema = check.get("responseSchema")
     if (
         declared_response
@@ -898,9 +832,7 @@ def validate_method_check(
                     "but RPCE does not declare it as always sent"
                 )
 
-        for path, expected_values in sorted(
-            (check.get("responseEnumValues") or {}).items()
-        ):
+        for path, expected_values in sorted((check.get("responseEnumValues") or {}).items()):
             expected = string_list(
                 expected_values, label=f"{label}.responseEnumValues.{path}"
             )
@@ -912,9 +844,7 @@ def validate_method_check(
                         f"but {response_schema} allows {sorted(actual)!r}"
                     )
 
-        for path, expected_values in sorted(
-            (check.get("consumedEnumValues") or {}).items()
-        ):
+        for path, expected_values in sorted((check.get("consumedEnumValues") or {}).items()):
             expected = set(
                 string_list(expected_values, label=f"{label}.consumedEnumValues.{path}")
             )
@@ -928,9 +858,7 @@ def validate_method_check(
     return errors, parameter_count, len(declared_response)
 
 
-def validate_bundle(
-    schema_dir: Path, contract: Mapping[str, Any]
-) -> tuple[list[str], dict[str, int]]:
+def validate_bundle(schema_dir: Path, contract: Mapping[str, Any]) -> tuple[list[str], dict[str, int]]:
     validate_contract(contract)
     checks = contract["methodChecks"]
 
@@ -990,9 +918,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"contract floor {format_version(minimum_version)}. Install "
                     f"@openai/codex@{format_version(minimum_version)} or newer."
                 )
-            generated_context = tempfile.TemporaryDirectory(
-                prefix="rpce-codex-app-server-schema-"
-            )
+            generated_context = tempfile.TemporaryDirectory(prefix="rpce-codex-app-server-schema-")
             schema_dir = Path(generated_context.name)
             generate_schema_bundle(args.codex, schema_dir, experimental=experimental)
 

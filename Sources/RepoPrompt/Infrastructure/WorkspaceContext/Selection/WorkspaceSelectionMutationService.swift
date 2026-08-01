@@ -387,7 +387,7 @@ struct WorkspaceSelectionMutationService {
                 guard let file = resolveEntry(entry, at: index) else { continue }
                 let full = file.standardizedFullPath
                 let baseRanges = slices[full] ?? []
-                if baseRanges.isEmpty, entry.ranges.isEmpty {
+                if baseRanges.isEmpty && entry.ranges.isEmpty {
                     slices.removeValue(forKey: full)
                     continue
                 }

@@ -125,13 +125,9 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
         }
 
         self.assertEqual(len(checks), 38)
-        self.assertEqual(
-            {(check["union"], check["method"]) for check in checks}, expected
-        )
+        self.assertEqual({(check["union"], check["method"]) for check in checks}, expected)
 
-    def test_bundle_validation_accepts_declared_fields_nested_paths_and_enum(
-        self,
-    ) -> None:
+    def test_bundle_validation_accepts_declared_fields_nested_paths_and_enum(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             union = method_union(
@@ -154,35 +150,27 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
                     }
                 },
             )
-            (root / "ClientRequest.json").write_text(
-                json.dumps(union), encoding="utf-8"
-            )
+            (root / "ClientRequest.json").write_text(json.dumps(union), encoding="utf-8")
             (root / "Response.json").write_text(json.dumps(response), encoding="utf-8")
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/example",
-                        "alwaysSent": ["threadId", "mode"],
-                        "enumValues": {"mode": ["disabled"]},
-                        "responseSchema": "Response.json",
-                        "consumedResponse": [
-                            response_path("thread.id", "required", False),
-                        ],
-                    }
-                ]
-            )
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/example",
+                    "alwaysSent": ["threadId", "mode"],
+                    "enumValues": {"mode": ["disabled"]},
+                    "responseSchema": "Response.json",
+                    "consumedResponse": [
+                        response_path("thread.id", "required", False),
+                    ],
+                }
+            ])
 
             errors, counts = gate.validate_bundle(root, fixture)
 
             self.assertEqual(errors, [])
-            self.assertEqual(
-                counts, {"methods": 1, "parameterPaths": 2, "responsePaths": 1}
-            )
+            self.assertEqual(counts, {"methods": 1, "parameterPaths": 2, "responsePaths": 1})
 
-    def test_response_presence_nullability_and_conditional_drift_are_explicit(
-        self,
-    ) -> None:
+    def test_response_presence_nullability_and_conditional_drift_are_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "ClientRequest.json").write_text(
@@ -210,42 +198,31 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
             }
             response_path_file = root / "Response.json"
             response_path_file.write_text(json.dumps(response), encoding="utf-8")
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/goal/get",
-                        "responseSchema": "Response.json",
-                        "consumedResponse": [
-                            response_path("goal", "optional", True),
-                            response_path("goal.id", "conditional", False),
-                            response_path("goal.status", "conditional", False),
-                        ],
-                    }
-                ]
-            )
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/goal/get",
+                    "responseSchema": "Response.json",
+                    "consumedResponse": [
+                        response_path("goal", "optional", True),
+                        response_path("goal.id", "conditional", False),
+                        response_path("goal.status", "conditional", False),
+                    ],
+                }
+            ])
             self.assertEqual(gate.validate_bundle(root, fixture)[0], [])
 
             optional_status = copy.deepcopy(response)
             optional_status["definitions"]["Goal"]["required"].remove("status")
             response_path_file.write_text(json.dumps(optional_status), encoding="utf-8")
             errors, _ = gate.validate_bundle(root, fixture)
-            self.assertTrue(
-                any(
-                    "presence changed from 'conditional' to 'optional'" in e
-                    for e in errors
-                )
-            )
+            self.assertTrue(any("presence changed from 'conditional' to 'optional'" in e for e in errors))
 
             nonnullable_goal = copy.deepcopy(response)
             nonnullable_goal["properties"]["goal"] = {"$ref": "#/definitions/Goal"}
-            response_path_file.write_text(
-                json.dumps(nonnullable_goal), encoding="utf-8"
-            )
+            response_path_file.write_text(json.dumps(nonnullable_goal), encoding="utf-8")
             errors, _ = gate.validate_bundle(root, fixture)
-            self.assertTrue(
-                any("nullability changed from True to False" in e for e in errors)
-            )
+            self.assertTrue(any("nullability changed from True to False" in e for e in errors))
 
     def test_response_enum_only_check_loads_response_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,22 +237,18 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
                 },
             )
             (root / "Response.json").write_text(json.dumps(response), encoding="utf-8")
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/example",
-                        "responseSchema": "Response.json",
-                        "responseEnumValues": {"status": ["blocked"]},
-                    }
-                ]
-            )
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/example",
+                    "responseSchema": "Response.json",
+                    "responseEnumValues": {"status": ["blocked"]},
+                }
+            ])
 
             errors, _ = gate.validate_bundle(root, fixture)
 
-            self.assertTrue(
-                any("sends response enum value 'blocked'" in e for e in errors)
-            )
+            self.assertTrue(any("sends response enum value 'blocked'" in e for e in errors))
 
     def test_nested_required_response_field_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,16 +269,14 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
                 },
             )
             (root / "Response.json").write_text(json.dumps(response), encoding="utf-8")
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/example",
-                        "responseSchema": "Response.json",
-                        "alwaysSentResponse": ["result", "result.existing"],
-                    }
-                ]
-            )
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/example",
+                    "responseSchema": "Response.json",
+                    "alwaysSentResponse": ["result", "result.existing"],
+                }
+            ])
 
             errors, _ = gate.validate_bundle(root, fixture)
 
@@ -313,9 +284,7 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
                 any("requires response field 'result.newRequired'" in e for e in errors)
             )
 
-    def test_discriminated_nested_sent_and_consumed_shapes_are_mutation_checked(
-        self,
-    ) -> None:
+    def test_discriminated_nested_sent_and_consumed_shapes_are_mutation_checked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             params = object_schema(
@@ -331,10 +300,7 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
                                     properties={
                                         "type": {"const": "text"},
                                         "text": {"type": "string"},
-                                        "text_elements": {
-                                            "type": "array",
-                                            "items": True,
-                                        },
+                                        "text_elements": {"type": "array", "items": True},
                                     },
                                 ),
                                 object_schema(
@@ -365,43 +331,39 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
             schema_path.write_text(
                 json.dumps(method_union("turn/example", params)), encoding="utf-8"
             )
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "turn/example",
-                        "consumedParams": [
-                            response_path("eventId", "required", False),
-                        ],
-                        "sentParamVariants": [
-                            {
-                                "path": "input[]",
-                                "discriminator": "type",
-                                "value": "text",
-                                "alwaysSent": ["type", "text", "text_elements"],
-                            }
-                        ],
-                        "consumedParamVariants": [
-                            {
-                                "path": "item",
-                                "discriminator": "type",
-                                "value": "commandExecution",
-                                "consumed": [
-                                    response_path("type", "required", False),
-                                    response_path("id", "required", False),
-                                    response_path("command", "required", False),
-                                ],
-                            }
-                        ],
-                    }
-                ]
-            )
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "turn/example",
+                    "consumedParams": [
+                        response_path("eventId", "required", False),
+                    ],
+                    "sentParamVariants": [
+                        {
+                            "path": "input[]",
+                            "discriminator": "type",
+                            "value": "text",
+                            "alwaysSent": ["type", "text", "text_elements"],
+                        }
+                    ],
+                    "consumedParamVariants": [
+                        {
+                            "path": "item",
+                            "discriminator": "type",
+                            "value": "commandExecution",
+                            "consumed": [
+                                response_path("type", "required", False),
+                                response_path("id", "required", False),
+                                response_path("command", "required", False),
+                            ],
+                        }
+                    ],
+                }
+            ])
             self.assertEqual(gate.validate_bundle(root, fixture)[0], [])
 
             mutated = copy.deepcopy(params)
-            del mutated["properties"]["input"]["items"]["oneOf"][0]["properties"][
-                "text_elements"
-            ]
+            del mutated["properties"]["input"]["items"]["oneOf"][0]["properties"]["text_elements"]
             mutated["required"].remove("eventId")
             mutated["properties"]["eventId"]["type"] = ["string", "null"]
             command_variant = mutated["properties"]["item"]["oneOf"][0]
@@ -414,9 +376,7 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
             rendered = "\n".join(gate.validate_bundle(root, fixture)[0])
             self.assertIn("sends field 'text_elements'", rendered)
             self.assertIn("params: consumed path 'eventId' presence changed", rendered)
-            self.assertIn(
-                "params: consumed path 'eventId' nullability changed", rendered
-            )
+            self.assertIn("params: consumed path 'eventId' nullability changed", rendered)
             self.assertIn("consumed path 'id' presence changed", rendered)
             self.assertIn("consumed path 'id' nullability changed", rendered)
             self.assertIn("consumed path 'command' is no longer declared", rendered)
@@ -453,23 +413,17 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
                     ),
                 },
             }
-            (root / "ClientRequest.json").write_text(
-                json.dumps(union), encoding="utf-8"
-            )
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/refactored",
-                        "alwaysSent": ["threadId"],
-                    }
-                ]
-            )
+            (root / "ClientRequest.json").write_text(json.dumps(union), encoding="utf-8")
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/refactored",
+                    "alwaysSent": ["threadId"],
+                }
+            ])
             self.assertEqual(gate.validate_bundle(root, fixture)[0], [])
 
-    def test_literal_composition_intersects_allof_and_selects_discriminator_branch(
-        self,
-    ) -> None:
+    def test_literal_composition_intersects_allof_and_selects_discriminator_branch(self) -> None:
         document = {
             "definitions": {
                 "InputKind": {"type": "string", "enum": ["text", "image"]},
@@ -496,9 +450,7 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
 
         self.assertEqual(gate.literal_values(document, text_literal), {"text"})
         self.assertEqual(gate.literal_values(document, impossible_literal), set())
-        self.assertEqual(
-            gate.literal_values(document, union_literal), {"text", "image"}
-        )
+        self.assertEqual(gate.literal_values(document, union_literal), {"text", "image"})
 
         input_schema = {
             "oneOf": [
@@ -552,29 +504,23 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
             )
             response_file = root / "Response.json"
             response_file.write_text(json.dumps(response), encoding="utf-8")
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/goal/get",
-                        "responseSchema": "Response.json",
-                        "consumedResponse": [
-                            response_path("goal.status", "required", False),
-                        ],
-                        "consumedEnumValues": {"goal.status": ["active", "paused"]},
-                    }
-                ]
-            )
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/goal/get",
+                    "responseSchema": "Response.json",
+                    "consumedResponse": [
+                        response_path("goal.status", "required", False),
+                    ],
+                    "consumedEnumValues": {"goal.status": ["active", "paused"]},
+                }
+            ])
             self.assertEqual(gate.validate_bundle(root, fixture)[0], [])
 
-            response["properties"]["goal"]["properties"]["status"]["enum"].append(
-                "blocked"
-            )
+            response["properties"]["goal"]["properties"]["status"]["enum"].append("blocked")
             response_file.write_text(json.dumps(response), encoding="utf-8")
             errors, _ = gate.validate_bundle(root, fixture)
-            self.assertTrue(
-                any("incoming enum 'goal.status' changed" in error for error in errors)
-            )
+            self.assertTrue(any("incoming enum 'goal.status' changed" in error for error in errors))
 
     def test_zero_sent_param_method_detects_new_required_param(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -583,15 +529,13 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
             schema_path.write_text(
                 json.dumps(method_union("initialized")), encoding="utf-8"
             )
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientNotification.json",
-                        "method": "initialized",
-                        "alwaysSent": [],
-                    }
-                ]
-            )
+            fixture = contract([
+                {
+                    "union": "ClientNotification.json",
+                    "method": "initialized",
+                    "alwaysSent": [],
+                }
+            ])
             self.assertEqual(gate.validate_bundle(root, fixture)[0], [])
 
             schema_path.write_text(
@@ -609,15 +553,10 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
             errors, _ = gate.validate_bundle(root, fixture)
 
             self.assertTrue(
-                any(
-                    "schema now requires param 'newRequired'" in error
-                    for error in errors
-                )
+                any("schema now requires param 'newRequired'" in error for error in errors)
             )
 
-    def test_bundle_validation_reports_removed_method_and_new_required_param(
-        self,
-    ) -> None:
+    def test_bundle_validation_reports_removed_method_and_new_required_param(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             union = method_union(
@@ -630,47 +569,31 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
                     },
                 ),
             )
-            (root / "ClientRequest.json").write_text(
-                json.dumps(union), encoding="utf-8"
-            )
-            fixture = contract(
-                [
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/present",
-                        "alwaysSent": ["threadId"],
-                    },
-                    {
-                        "union": "ClientRequest.json",
-                        "method": "thread/removed",
-                    },
-                ]
-            )
+            (root / "ClientRequest.json").write_text(json.dumps(union), encoding="utf-8")
+            fixture = contract([
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/present",
+                    "alwaysSent": ["threadId"],
+                },
+                {
+                    "union": "ClientRequest.json",
+                    "method": "thread/removed",
+                },
+            ])
 
             errors, _counts = gate.validate_bundle(root, fixture)
 
-            self.assertTrue(
-                any(
-                    "schema now requires param 'newRequired'" in error
-                    for error in errors
-                )
-            )
-            self.assertTrue(
-                any(
-                    "thread/removed: method is no longer declared" in error
-                    for error in errors
-                )
-            )
+            self.assertTrue(any("schema now requires param 'newRequired'" in error for error in errors))
+            self.assertTrue(any("thread/removed: method is no longer declared" in error for error in errors))
 
     def test_contract_validation_is_fail_closed(self) -> None:
-        base = contract(
-            [
-                {
-                    "union": "ClientRequest.json",
-                    "method": "initialize",
-                }
-            ]
-        )
+        base = contract([
+            {
+                "union": "ClientRequest.json",
+                "method": "initialize",
+            }
+        ])
         gate.validate_contract(base)
 
         mutations = [
@@ -713,9 +636,7 @@ class CodexAppServerSchemaGateTests(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(gate.GateError):
                 gate.validate_contract(mutation)
 
-    def test_main_invokes_codex_with_experimental_and_enforces_stable_floor(
-        self,
-    ) -> None:
+    def test_main_invokes_codex_with_experimental_and_enforces_stable_floor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             marker = root / "args.json"
@@ -748,9 +669,9 @@ out.mkdir(parents=True, exist_ok=True)
             contract_path = root / "contract.json"
             contract_path.write_text(
                 json.dumps(
-                    contract(
-                        [{"union": "ClientNotification.json", "method": "initialized"}]
-                    )
+                    contract([
+                        {"union": "ClientNotification.json", "method": "initialized"}
+                    ])
                 ),
                 encoding="utf-8",
             )

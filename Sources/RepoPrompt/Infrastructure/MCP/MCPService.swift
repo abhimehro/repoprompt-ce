@@ -23,7 +23,6 @@ import SwiftUI
 /// This actor ensures that no long-running network or file-system work ever executes on @MainActor.
 actor MCPService: Sendable {
     // ──────────────────────────────────────────────
-
     // MARK: - Public state that the UI may query
 
     /// ──────────────────────────────────────────────
@@ -74,7 +73,6 @@ actor MCPService: Sendable {
     }
 
     // ──────────────────────────────────────────────
-
     // MARK: - Private implementation objects
 
     /// ──────────────────────────────────────────────
@@ -84,7 +82,6 @@ actor MCPService: Sendable {
     private var participatingWindows = Set<Int>()
 
     // ──────────────────────────────────────────────
-
     // MARK: - Initialization
 
     /// ──────────────────────────────────────────────
@@ -102,7 +99,6 @@ actor MCPService: Sendable {
     }
 
     // ──────────────────────────────────────────────
-
     // MARK: - Commands called from the UI layer
 
     /// ──────────────────────────────────────────────
@@ -214,7 +210,6 @@ actor MCPService: Sendable {
     }
 
     // ──────────────────────────────────────────────
-
     // MARK: - Connection approval bridge
 
     /// ──────────────────────────────────────────────
@@ -238,7 +233,6 @@ actor MCPService: Sendable {
     }
 
     // ──────────────────────────────────────────────
-
     // MARK: - Dashboard API
 
     // ──────────────────────────────────────────────
@@ -353,7 +347,6 @@ actor MCPService: Sendable {
     }
 
     // ──────────────────────────────────────────────
-
     // MARK: - Dashboard Update Notifications
 
     // ──────────────────────────────────────────────

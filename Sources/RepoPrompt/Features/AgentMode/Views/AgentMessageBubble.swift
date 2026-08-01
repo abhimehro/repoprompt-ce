@@ -78,9 +78,9 @@ private struct MessageFooterStrip: View {
                     runtimeFooterText(runtimeFooter, now: timeline.date)
                 }
                 #if DEBUG
-                    .onAppear {
-                        AgentModePerfDiagnostics.increment("timeline.messageFooter.liveMount")
-                    }
+                .onAppear {
+                    AgentModePerfDiagnostics.increment("timeline.messageFooter.liveMount")
+                }
                 #endif
             } else {
                 #if DEBUG

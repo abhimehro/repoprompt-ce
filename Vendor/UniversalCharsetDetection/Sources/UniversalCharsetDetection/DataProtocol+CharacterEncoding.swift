@@ -22,16 +22,16 @@
 
 import Foundation
 
-public extension DataProtocol {
-    /**
-     The `iconv`-compatible identifier of the detected character encoding of the bytes in `self`,
-     or `nil` if detection failed.
+extension DataProtocol {
+   /**
+    The `iconv`-compatible identifier of the detected character encoding of the bytes in `self`,
+    or `nil` if detection failed.
 
-     - Complexity: O(*n*), where *n* is the number of the bytes.
-     */
-    var detectedCharacterEncoding: String? {
-        let characterEncodingDetector = CharacterEncodingDetector()
-        _ = characterEncodingDetector.analyzeNextChunk(self)
-        return characterEncodingDetector.finish()
-    }
+    - Complexity: O(*n*), where *n* is the number of the bytes.
+    */
+   public var detectedCharacterEncoding: String? {
+      let characterEncodingDetector = CharacterEncodingDetector()
+      _ = characterEncodingDetector.analyzeNextChunk(self)
+      return characterEncodingDetector.finish()
+   }
 }

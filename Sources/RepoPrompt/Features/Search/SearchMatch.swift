@@ -1165,7 +1165,7 @@ actor FileSearchActor {
         options: SearchOptions = SearchOptions(),
         in files: [FileViewModel]
     ) async throws -> [SearchMatch] {
-        var autoCorrected: Bool?
+        var autoCorrected: Bool? = nil
         return try await search(
             pattern: pattern,
             isRegex: isRegex,
@@ -1183,7 +1183,7 @@ actor FileSearchActor {
         rootsByID: [UUID: WorkspaceRootRecord],
         store: WorkspaceFileContextStore
     ) async throws -> [SearchMatch] {
-        var autoCorrected: Bool?
+        var autoCorrected: Bool? = nil
         return try await search(
             pattern: pattern,
             isRegex: isRegex,
@@ -1276,7 +1276,7 @@ actor FileSearchActor {
         in files: [SearchFileDescriptor]
     ) async throws -> SearchContentResult {
         // Treat empty/whitespace literal patterns as no-ops to avoid matching every line
-        if !isRegex, pattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !isRegex && pattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return SearchContentResult(matches: [], totalCount: 0, matchedFileCount: 0, perFileErrors: [])
         }
 
@@ -2298,7 +2298,7 @@ actor FileSearchActor {
         let hasWildcards = trimmed.contains("*") || trimmed.contains("?")
         let strongRegex = Self.containsRegexSyntax(trimmed)
         var useRegex = isRegex
-        if isRegex, hasWildcards, !strongRegex {
+        if isRegex && hasWildcards && !strongRegex {
             // Looks like a pure glob (e.g., "*.swift") → prefer glob
             useRegex = false
         }
@@ -2769,11 +2769,11 @@ actor FileSearchActor {
 
         var pathHits: [String] = []
         var contentHits: [SearchMatch] = []
-        var totalCount: Int?
-        var contentFileCount: Int?
+        var totalCount: Int? = nil
+        var contentFileCount: Int? = nil
         let searchedFileCount = filteredFiles.count
-        var pathError: RegexPatternFailure?
-        var contentError: RegexPatternFailure?
+        var pathError: RegexPatternFailure? = nil
+        var contentError: RegexPatternFailure? = nil
         var perFileErrors: [(String, RegexPatternFailure)] = []
 
         // 1) Path search when requested
@@ -2908,7 +2908,7 @@ actor FileSearchActor {
     ) async throws -> SearchResults {
         // Entry point for MCP tool integration
 
-        var autoCorrected: Bool?
+        var autoCorrected: Bool? = nil
         return try await searchUnified(
             pattern: pattern,
             isRegex: isRegex,
@@ -2928,7 +2928,7 @@ actor FileSearchActor {
         store: WorkspaceFileContextStore,
         aliasByRootPath: [String: String]? = nil
     ) async throws -> SearchResults {
-        var autoCorrected: Bool?
+        var autoCorrected: Bool? = nil
         return try await searchUnified(
             pattern: pattern,
             isRegex: isRegex,

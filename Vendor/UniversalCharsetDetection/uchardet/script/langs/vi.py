@@ -42,8 +42,8 @@ import re
 
 ## Mandatory Properties ##
 
-name = "Vietnamese"
-code = "vi"
+name = 'Vietnamese'
+code = 'vi'
 # It actually uses ASCII, but not all of it.
 use_ascii = False
 # From Wikipedia:
@@ -54,11 +54,11 @@ use_ascii = False
 # Quoted-Readable (VIQR) or VSCII Mnemonic (VSCII-MNEM),[4] though usage of either
 # variable-width scheme has declined dramatically following the adoption of
 # Unicode on the World Wide Web.
-charsets = ["WINDOWS-1258", "VISCII"]
+charsets = ['WINDOWS-1258', 'VISCII']
 
 ## Optional Properties ##
 
-alphabet = "aăâbcdđeêghiklmnoôơpqrstuưvxy"
-start_pages = ["Chữ_Quốc_ngữ"]
+alphabet = 'aăâbcdđeêghiklmnoôơpqrstuưvxy'
+start_pages = ['Chữ_Quốc_ngữ']
 wikipedia_code = code
 case_mapping = True

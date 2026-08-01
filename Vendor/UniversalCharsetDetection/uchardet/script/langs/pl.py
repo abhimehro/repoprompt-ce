@@ -43,21 +43,15 @@ import re
 ## Mandatory Properties ##
 
 # The human name for the language, in English.
-name = "Polish"
+name = 'Polish'
 # Use 2-letter ISO 639-1 if possible, 3-letter ISO code otherwise,
 # or use another catalog as a last resort.
-code = "pl"
+code = 'pl'
 # ASCII characters are also used in French.
 use_ascii = True
 # The charsets we want to support and create data for.
-charsets = [
-    "ISO-8859-2",
-    "ISO-8859-13",
-    "ISO-8859-16",
-    "Windows-1250",
-    "IBM852",
-    "MAC-CENTRALEUROPE",
-]
+charsets = ['ISO-8859-2', 'ISO-8859-13', 'ISO-8859-16',
+            'Windows-1250', 'IBM852', 'MAC-CENTRALEUROPE']
 
 ## Optional Properties ##
 
@@ -65,17 +59,16 @@ charsets = [
 # If use_ascii=True, there is no need to add any ASCII characters.
 # If case_mapping=True, there is no need to add several cases of a same
 # character (provided Python algorithms know the right cases).
-alphabet = "ąćęłńóśźż"
+alphabet = 'ąćęłńóśźż'
 # The starred page which was rewarded on the main page when I created
 # the data.
-start_pages = ["Krasnyj Krym"]
+start_pages = ['Krasnyj Krym']
 # give possibility to select another code for the Wikipedia URL.
 wikipedia_code = code
 # 'a' and 'A' will be considered the same character, and so on.
 # This uses Python algorithm to determine upper/lower-case of a given
 # character.
 case_mapping = True
-
 
 # A function to clean content returned by the `wikipedia` python lib,
 # in case some unwanted data has been overlooked.

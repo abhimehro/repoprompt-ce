@@ -180,7 +180,7 @@ enum REPLInputParser {
         var inSingle = false
         var inDouble = false
         var escaped = false
-        var result: String.Index?
+        var result: String.Index? = nil
 
         var idx = line.startIndex
         while idx < line.endIndex {

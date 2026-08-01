@@ -830,7 +830,7 @@ actor GitWorkspaceStateAuthority {
                 pending.waiters[waiterID] = continuation
                 pendingUncachedPrefixControlFlights[key] = pending
                 if Task.isCancelled {
-                    Task { await self.cancelUncachedPrefixControlWaiter(
+                    Task { self.cancelUncachedPrefixControlWaiter(
                         key: key,
                         flightID: flightID,
                         waiterID: waiterID
@@ -838,7 +838,7 @@ actor GitWorkspaceStateAuthority {
                 }
             }
         } onCancel: {
-            Task { await self.cancelUncachedPrefixControlWaiter(
+            Task { self.cancelUncachedPrefixControlWaiter(
                 key: key,
                 flightID: flightID,
                 waiterID: waiterID
