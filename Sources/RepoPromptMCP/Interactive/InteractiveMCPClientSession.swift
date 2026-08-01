@@ -1129,7 +1129,7 @@ actor InteractiveMCPClientSession {
     func listWindows() async throws -> CallTool.Result {
         if toolListFetched, !hasTool(named: "bind_context") {
             return CallTool.Result(
-                content: [.text(singleWindowInfoMessage())],
+                content: [.text(text: singleWindowInfoMessage())],
                 isError: false
             )
         }
@@ -1139,7 +1139,7 @@ actor InteractiveMCPClientSession {
         ], timeout: .seconds(20))
         if isToolNotFoundResult(result, toolName: "bind_context") {
             return CallTool.Result(
-                content: [.text(singleWindowInfoMessage())],
+                content: [.text(text: singleWindowInfoMessage())],
                 isError: false
             )
         }
@@ -1150,7 +1150,7 @@ actor InteractiveMCPClientSession {
     func selectWindow(windowID: Int) async throws -> CallTool.Result {
         if toolListFetched, !hasTool(named: "bind_context") {
             return CallTool.Result(
-                content: [.text(singleWindowInfoMessage())],
+                content: [.text(text: singleWindowInfoMessage())],
                 isError: false
             )
         }
@@ -1164,7 +1164,7 @@ actor InteractiveMCPClientSession {
             selectedWindowID = windowID
             selectedContextID = nil
             return CallTool.Result(
-                content: [.text("Selected window \(windowID) locally; subsequent tool calls will include _windowID=\(windowID).")],
+                content: [.text(text: "Selected window \(windowID) locally; subsequent tool calls will include _windowID=\(windowID).")],
                 isError: false
             )
         }
@@ -1184,7 +1184,7 @@ actor InteractiveMCPClientSession {
         selectedContextID = nil
         // Return a synthetic success result — unbind was removed server-side
         // because the routing system always re-establishes affinity on the next call.
-        return CallTool.Result(content: [.text("Local window/context selection cleared.")], isError: false)
+        return CallTool.Result(content: [.text(text: "Local window/context selection cleared.")], isError: false)
     }
 
     func bindContextID(_ contextID: String, windowID: Int? = nil) async throws -> CallTool.Result {
