@@ -1,3 +1,6 @@
 ## 2024-05-19 - Expensive DateFormatter Instantiation in Swift
 **Learning:** Instantiating `ISO8601DateFormatter` (or `DateFormatter`) in Swift is an expensive operation. In `Changelog.swift`, an `ISO8601DateFormatter` is being instantiated 216 times statically when the application loads, causing unnecessary overhead. On macOS 10.9+, `ISO8601DateFormatter` is thread-safe, making it safe to extract and share a single static instance.
 **Action:** Extract repeated instantiations of `DateFormatter` and `ISO8601DateFormatter` into static shared properties, especially when the formatting style is constant.
+## 2024-08-01 - GHAS CI Runner Model Failure
+**Learning:** The GitHub Advanced Security (GHAS) Code Scanning CI workflow can fail with `CAPIError: 400 The requested model is not supported` if the backend Copilot Agent running the analysis uses an unsupported model (e.g., `sweagent-capi:claude-opus-4.6`). This is an infrastructure/runner issue, entirely unrelated to codebase performance or Swift code changes.
+**Action:** When encountering a 400 error for unsupported models in the `github-advanced-security` check logs during unrelated performance optimizations, ignore the CI failure as it is outside the scope of code optimization and proceed with submitting the optimization.
