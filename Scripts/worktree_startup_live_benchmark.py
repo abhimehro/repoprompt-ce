@@ -5,18 +5,15 @@ The live subcommands require an already-running RepoPrompt CE DEBUG app and
 rpce-cli-debug. This script never builds, installs, launches, stops, or
 relaunches the app. Run ``plan`` and ``aggregate`` without contacting the app.
 """
+
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import html
 import json
 import math
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
@@ -27,8 +24,11 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
-
 
 SCHEMA_VERSION = 1
 DIAGNOSTIC_SCHEMA_VERSION = 6
@@ -40,9 +40,24 @@ BENCHMARK_GATE_KEY = "agent_mode.worktree_startup_benchmark_diagnostics_enabled"
 OWNERSHIP_MARKER_NAME = ".rpce-worktree-startup-benchmark.json"
 TERMINAL_STATES = {"completed", "failed", "cancelled", "canceled", "stopped", "expired"}
 ROUTES = {
-    "baseline": {"observe": False, "serve": False, "force_full": False, "expected": "fullCrawl"},
-    "forced-full": {"observe": False, "serve": False, "force_full": True, "expected": "forcedFullCrawl"},
-    "projected": {"observe": True, "serve": True, "force_full": False, "expected": "diffSeedServing"},
+    "baseline": {
+        "observe": False,
+        "serve": False,
+        "force_full": False,
+        "expected": "fullCrawl",
+    },
+    "forced-full": {
+        "observe": False,
+        "serve": False,
+        "force_full": True,
+        "expected": "forcedFullCrawl",
+    },
+    "projected": {
+        "observe": True,
+        "serve": True,
+        "force_full": False,
+        "expected": "diffSeedServing",
+    },
 }
 EXPECTED_ACTUAL_ROUTE_COUNTS = {
     "baseline": {"fullCrawl": 1},
@@ -107,21 +122,40 @@ POLICY_CANONICALIZATION_CLASSIFICATIONS = {
     "incoherent",
 }
 REQUIRED_GIT_FIELDS = {
-    "available", "command_count", "families", "priorities", "queue_wait_us",
-    "duration_us", "output_bytes", "cancelled_count",
+    "available",
+    "command_count",
+    "families",
+    "priorities",
+    "queue_wait_us",
+    "duration_us",
+    "output_bytes",
+    "cancelled_count",
 }
 REQUIRED_FILESYSTEM_FIELDS = {
-    "available", "operation_count", "duration_us", "item_count",
+    "available",
+    "operation_count",
+    "duration_us",
+    "item_count",
 }
 REQUIRED_RESOURCE_FIELDS = {
-    "baseline_resident_mb", "peak_resident_mb", "final_resident_mb",
-    "peak_resident_delta_mb", "retained_resident_delta_mb",
-    "baseline_physical_footprint_mb", "peak_physical_footprint_mb",
-    "final_physical_footprint_mb", "peak_physical_footprint_delta_mb",
-    "retained_physical_footprint_delta_mb", "physical_footprint_available",
-    "session_cpu_ms", "session_user_cpu_ms", "session_system_cpu_ms",
-    "average_core_utilization_percent", "peak_interval_core_utilization_percent",
-    "sample_count", "duration_seconds",
+    "baseline_resident_mb",
+    "peak_resident_mb",
+    "final_resident_mb",
+    "peak_resident_delta_mb",
+    "retained_resident_delta_mb",
+    "baseline_physical_footprint_mb",
+    "peak_physical_footprint_mb",
+    "final_physical_footprint_mb",
+    "peak_physical_footprint_delta_mb",
+    "retained_physical_footprint_delta_mb",
+    "physical_footprint_available",
+    "session_cpu_ms",
+    "session_user_cpu_ms",
+    "session_system_cpu_ms",
+    "average_core_utilization_percent",
+    "peak_interval_core_utilization_percent",
+    "sample_count",
+    "duration_seconds",
 }
 AUTOMATED_SCENARIOS = [
     "linked-worktree",
@@ -149,36 +183,67 @@ METRICS = (
     "materialize_to_first_read",
     "interactive_readiness_us",
 )
-TOOL_METRICS = ("first_search", "first_read", "first_codemap", "warm_codemap", "passive_tree", "selection")
+TOOL_METRICS = (
+    "first_search",
+    "first_read",
+    "first_codemap",
+    "warm_codemap",
+    "passive_tree",
+    "selection",
+)
 ALL_METRICS = METRICS + TOOL_METRICS
-DURATION_METRICS = tuple(metric for metric in ALL_METRICS if metric != "interactive_readiness_us")
+DURATION_METRICS = tuple(
+    metric for metric in ALL_METRICS if metric != "interactive_readiness_us"
+)
 REQUIRED_BOUNDARY_KEYS = (
-    "bindingTransitionStarted", "rootReady",
-    "firstBenchmarkSearchStarted", "firstBenchmarkSearchCompleted",
-    "firstBenchmarkReadStarted", "firstBenchmarkReadCompleted",
-    "firstBenchmarkCodemapStarted", "firstBenchmarkCodemapCompleted",
-    "warmBenchmarkCodemapStarted", "warmBenchmarkCodemapCompleted",
-    "passiveBenchmarkTreeStarted", "passiveBenchmarkTreeCompleted",
-    "benchmarkSelectionStarted", "benchmarkSelectionCompleted",
+    "bindingTransitionStarted",
+    "rootReady",
+    "firstBenchmarkSearchStarted",
+    "firstBenchmarkSearchCompleted",
+    "firstBenchmarkReadStarted",
+    "firstBenchmarkReadCompleted",
+    "firstBenchmarkCodemapStarted",
+    "firstBenchmarkCodemapCompleted",
+    "warmBenchmarkCodemapStarted",
+    "warmBenchmarkCodemapCompleted",
+    "passiveBenchmarkTreeStarted",
+    "passiveBenchmarkTreeCompleted",
+    "benchmarkSelectionStarted",
+    "benchmarkSelectionCompleted",
 )
 PRIMARY_BOUNDARY_KEYS = (
-    "bindingTransitionStarted", "rootReady",
-    "firstBenchmarkSearchStarted", "firstBenchmarkSearchCompleted",
-    "firstBenchmarkReadStarted", "firstBenchmarkReadCompleted",
+    "bindingTransitionStarted",
+    "rootReady",
+    "firstBenchmarkSearchStarted",
+    "firstBenchmarkSearchCompleted",
+    "firstBenchmarkReadStarted",
+    "firstBenchmarkReadCompleted",
 )
 PRIMARY_DURATION_METRICS = (
-    "materialize_to_root_ready", "materialize_to_first_search",
-    "materialize_to_first_read", "first_search", "first_read",
+    "materialize_to_root_ready",
+    "materialize_to_first_search",
+    "materialize_to_first_read",
+    "first_search",
+    "first_read",
 )
 FOLLOW_ON_OPERATION_ORDER = (
-    "first_codemap", "warm_codemap", "passive_tree", "selection",
+    "first_codemap",
+    "warm_codemap",
+    "passive_tree",
+    "selection",
 )
 FOLLOW_ON_FAILURE_TYPES = {"timeout", "malformed", "transport_error", "mark_error"}
 RECEIPT_TERMINAL_STAGE = "consumption"
 BOUNDARY_DURATION_PAIRS = {
     "materialize_to_root_ready": ("bindingTransitionStarted", "rootReady"),
-    "materialize_to_first_search": ("bindingTransitionStarted", "firstBenchmarkSearchCompleted"),
-    "materialize_to_first_read": ("bindingTransitionStarted", "firstBenchmarkReadCompleted"),
+    "materialize_to_first_search": (
+        "bindingTransitionStarted",
+        "firstBenchmarkSearchCompleted",
+    ),
+    "materialize_to_first_read": (
+        "bindingTransitionStarted",
+        "firstBenchmarkReadCompleted",
+    ),
     "first_search": ("firstBenchmarkSearchStarted", "firstBenchmarkSearchCompleted"),
     "first_read": ("firstBenchmarkReadStarted", "firstBenchmarkReadCompleted"),
     "first_codemap": ("firstBenchmarkCodemapStarted", "firstBenchmarkCodemapCompleted"),
@@ -199,11 +264,18 @@ CODEMAP_GATE_SENTINEL = "RPCE_CODEMAP_GATE_OK"
 CODEMAP_TEMP_OWNERSHIP_MARKER = ".rpce-codemap-gate-owned.json"
 CODEMAP_BASELINE_LEDGER_KIND = "codemap-gate-baseline-ledger"
 CODEMAP_REQUIRED_METRICS = (
-    "cold_individual_structure", "warm_individual_structure",
-    "cold_directory_structure", "warm_directory_structure",
-    "tree_marker_availability", "first_search", "first_read",
-    "root_readiness", "queue_wait", "operation_duration",
-    "memory_peak_resident_delta_mb", "memory_retained_resident_delta_mb",
+    "cold_individual_structure",
+    "warm_individual_structure",
+    "cold_directory_structure",
+    "warm_directory_structure",
+    "tree_marker_availability",
+    "first_search",
+    "first_read",
+    "root_readiness",
+    "queue_wait",
+    "operation_duration",
+    "memory_peak_resident_delta_mb",
+    "memory_retained_resident_delta_mb",
     "memory_peak_physical_footprint_delta_mb",
     "memory_retained_physical_footprint_delta_mb",
 )
@@ -219,8 +291,11 @@ CODEMAP_REQUIRED_GATES = (
     "owner-only raw artifacts and privacy scan",
 )
 CODEMAP_PRIVACY_KEYS = {
-    "ok", "scanned_file_count", "failure_codes",
-    "allowlisted_root_sha256", "allowlisted_prompt_sha256",
+    "ok",
+    "scanned_file_count",
+    "failure_codes",
+    "allowlisted_root_sha256",
+    "allowlisted_prompt_sha256",
 }
 
 
@@ -272,11 +347,20 @@ def secure_write(path: Path, data: bytes, *, exclusive: bool = False) -> None:
 
 
 def save_json(path: Path, value: Any, *, exclusive: bool = False) -> None:
-    secure_write(path, (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(), exclusive=exclusive)
+    secure_write(
+        path,
+        (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(),
+        exclusive=exclusive,
+    )
 
 
 _CLEANUP_PROOF_SENSITIVE_KEYS = {
-    "path", "session_id", "context_id", "worktree_id", "branch", "head",
+    "path",
+    "session_id",
+    "context_id",
+    "worktree_id",
+    "branch",
+    "head",
 }
 
 
@@ -364,30 +448,43 @@ def attribute_result_path(
     attributed_root: str | None = None
     relative = candidate
     if explicit_root_path is not None:
-        attributed_root = str(Path(explicit_root_path).expanduser().resolve(strict=False))
+        attributed_root = str(
+            Path(explicit_root_path).expanduser().resolve(strict=False)
+        )
         if roots and attributed_root not in roots:
-            raise BenchmarkError("result file root attribution was not present in the atomic binding")
+            raise BenchmarkError(
+                "result file root attribution was not present in the atomic binding"
+            )
     elif candidate.is_absolute():
         matches = [
-            root for root in roots
+            root
+            for root in roots
             if Path(root) == candidate or Path(root) in candidate.parents
         ]
         if len(matches) != 1:
-            raise BenchmarkError("absolute result path did not resolve to exactly one bound root")
+            raise BenchmarkError(
+                "absolute result path did not resolve to exactly one bound root"
+            )
         attributed_root = matches[0]
     else:
         prefix_matches = [
-            root for root in roots if candidate.parts and Path(root).name == candidate.parts[0]
+            root
+            for root in roots
+            if candidate.parts and Path(root).name == candidate.parts[0]
         ]
         if len(prefix_matches) == 1:
             attributed_root = prefix_matches[0]
             relative = Path(*candidate.parts[1:])
         elif len(prefix_matches) > 1:
-            raise BenchmarkError("relative result path matched multiple bound roots with the same name")
+            raise BenchmarkError(
+                "relative result path matched multiple bound roots with the same name"
+            )
         elif len(roots) == 1:
             attributed_root = roots[0]
         else:
-            raise BenchmarkError("relative result path lacked unambiguous bound-root attribution")
+            raise BenchmarkError(
+                "relative result path lacked unambiguous bound-root attribution"
+            )
     if attributed_root is None:
         raise BenchmarkError("result path omitted root attribution")
     canonical = (
@@ -418,7 +515,9 @@ def benchmark_binding(value: Any) -> dict[str, Any] | None:
     ):
         raise BenchmarkError("CLI call omitted exact atomic context binding evidence")
     if binding.get("context_id") != value.get("_benchmark_requested_context_id"):
-        raise BenchmarkError("CLI call binding context did not match the requested context")
+        raise BenchmarkError(
+            "CLI call binding context did not match the requested context"
+        )
     return binding
 
 
@@ -453,24 +552,32 @@ def validate_worktree_scope(
         or scope.get("display_identity") != "logical_canonical_root"
         or scope.get("effective_identity") != "bound_worktree_root"
     ):
-        raise BenchmarkError("tool response reported the wrong worktree_scope identities")
+        raise BenchmarkError(
+            "tool response reported the wrong worktree_scope identities"
+        )
     mappings = scope.get("root_mappings")
     if not isinstance(mappings, list):
         raise BenchmarkError("tool response omitted worktree_scope root mappings")
     logical_root = Path(expected_logical_root_path).expanduser().resolve(strict=False)
     logical_labels = {logical_root.name, str(logical_root)}
     matches = [
-        item for item in mappings
+        item
+        for item in mappings
         if isinstance(item, dict)
         and item.get("worktree_id") == expected_worktree_id
         and item.get("logical_root_path") in logical_labels
-        and item.get("effective_root_path") in {
+        and item.get("effective_root_path")
+        in {
             "session-bound",
-            str(Path(expected_physical_worktree_path).expanduser().resolve(strict=False)),
+            str(
+                Path(expected_physical_worktree_path).expanduser().resolve(strict=False)
+            ),
         }
     ]
     if len(matches) != 1:
-        raise BenchmarkError("tool worktree_scope did not match the exact physical binding")
+        raise BenchmarkError(
+            "tool worktree_scope did not match the exact physical binding"
+        )
     return {
         "worktree_id": expected_worktree_id,
         "physical_worktree_path": str(
@@ -509,7 +616,9 @@ def tool_payload(value: Any, tool: str) -> dict[str, Any]:
             current.append(candidate)
     candidates = declared or current
     if len(candidates) != 1:
-        raise BenchmarkError(f"{tool} response requires exactly one recognizable tool payload")
+        raise BenchmarkError(
+            f"{tool} response requires exactly one recognizable tool payload"
+        )
     return candidates[0]
 
 
@@ -524,12 +633,16 @@ def structured_mcp_record(
     expected_physical_worktree_path: str | None = None,
 ) -> dict[str, Any]:
     record = tool_payload(value, tool)
-    canonical_root_path = str(Path(expected_root_path).expanduser().resolve(strict=False))
+    canonical_root_path = str(
+        Path(expected_root_path).expanduser().resolve(strict=False)
+    )
     bound_paths = binding_root_paths(value)
     if bound_paths is not None and canonical_root_path not in bound_paths:
         raise BenchmarkError(f"{tool} binding did not include the expected root")
     if (expected_worktree_id is None) != (expected_physical_worktree_path is None):
-        raise BenchmarkError("worktree_scope validation requires ID and physical path together")
+        raise BenchmarkError(
+            "worktree_scope validation requires ID and physical path together"
+        )
     worktree_scope: dict[str, Any] | None = None
     if expected_worktree_id is not None and expected_physical_worktree_path is not None:
         worktree_scope = validate_worktree_scope(
@@ -549,7 +662,9 @@ def structured_mcp_record(
         root_id = enriched_root.get("id") or enriched_root.get("root_id")
         root_path = enriched_root.get("path") or enriched_root.get("root_path")
         root_type = enriched_root.get("type") or enriched_root.get("root_type")
-        if not all(isinstance(item, str) and item for item in (root_id, root_path, root_type)):
+        if not all(
+            isinstance(item, str) and item for item in (root_id, root_path, root_type)
+        ):
             raise BenchmarkError(f"{tool} structured root identity was incomplete")
         actual_root = {
             "id": str(uuid.UUID(root_id)).upper(),
@@ -572,22 +687,30 @@ def structured_mcp_record(
             content = "\n".join(
                 line.get("line_text", "") for line in lines if isinstance(line, dict)
             )
-            files_raw.append({"path": group["path"], "type": "file", "content": content})
+            files_raw.append(
+                {"path": group["path"], "type": "file", "content": content}
+            )
     elif tool == "file_search":
         raw = record.get("matches")
         files_raw = raw if isinstance(raw, list) else []
     elif tool == "read_file" and isinstance(record.get("display_path"), str):
-        files_raw = [{
-            "path": record["display_path"], "type": "file", "content": record.get("content"),
-        }]
+        files_raw = [
+            {
+                "path": record["display_path"],
+                "type": "file",
+                "content": record.get("content"),
+            }
+        ]
     elif tool == "read_file":
         raw = record.get("files")
         if not isinstance(raw, list) and isinstance(record.get("path"), str):
-            raw = [{
-                "path": record["path"],
-                "type": record.get("file_type") or record.get("type") or "file",
-                "content": record.get("content"),
-            }]
+            raw = [
+                {
+                    "path": record["path"],
+                    "type": record.get("file_type") or record.get("type") or "file",
+                    "content": record.get("content"),
+                }
+            ]
         files_raw = raw if isinstance(raw, list) else []
     else:
         raw = record.get("files")
@@ -610,13 +733,19 @@ def structured_mcp_record(
         )
         file_type = file.get("type") or file.get("file_type") or file.get("kind")
         if not isinstance(file_type, str) or not file_type:
-            file_type = Path(raw_path).suffix.lstrip(".") if tool == "get_code_structure" else "file"
-        files.append({
-            "path": canonical_path,
-            "root_path": attributed_root,
-            "type": file_type,
-            "content": file.get("content") or file.get("text") or file.get("code"),
-        })
+            file_type = (
+                Path(raw_path).suffix.lstrip(".")
+                if tool == "get_code_structure"
+                else "file"
+            )
+        files.append(
+            {
+                "path": canonical_path,
+                "root_path": attributed_root,
+                "type": file_type,
+                "content": file.get("content") or file.get("text") or file.get("code"),
+            }
+        )
     result = dict(record)
     result["status"] = record.get("status") or "success"
     result["root"] = expected_root
@@ -642,26 +771,38 @@ def request_path_evidence(
     if tool == "file_search":
         filters = payload.get("filter")
         paths = filters.get("paths") if isinstance(filters, dict) else None
-        raw_paths = paths if isinstance(paths, list) and all(isinstance(path, str) for path in paths) else []
+        raw_paths = (
+            paths
+            if isinstance(paths, list) and all(isinstance(path, str) for path in paths)
+            else []
+        )
     elif tool == "read_file":
         raw_paths = [payload["path"]] if isinstance(payload.get("path"), str) else []
     elif tool == "get_code_structure":
         paths = payload.get("paths")
         if paths is None:
             return
-        raw_paths = paths if isinstance(paths, list) and all(isinstance(path, str) for path in paths) else []
+        raw_paths = (
+            paths
+            if isinstance(paths, list) and all(isinstance(path, str) for path in paths)
+            else []
+        )
     else:
         return
     if not raw_paths:
         raise BenchmarkError(f"{tool} call omitted explicit path routing")
     root = Path(expected_root_path).resolve(strict=False)
-    canonical_paths = [Path(canonicalize_evidence_path(path, str(root))) for path in raw_paths]
+    canonical_paths = [
+        Path(canonicalize_evidence_path(path, str(root))) for path in raw_paths
+    ]
     if any(path != root and root not in path.parents for path in canonical_paths):
         raise BenchmarkError(f"{tool} request escaped the expected root")
     if expected_file_path is not None:
         expected = Path(canonicalize_evidence_path(expected_file_path, str(root)))
         if tool == "read_file" and canonical_paths != [expected]:
-            raise BenchmarkError("read_file request did not target the exact expected file")
+            raise BenchmarkError(
+                "read_file request did not target the exact expected file"
+            )
         if tool in {"file_search", "get_code_structure"} and not any(
             path == expected or path in expected.parents for path in canonical_paths
         ):
@@ -686,11 +827,17 @@ def require_structured_success(
     if not call_succeeded(value):
         raise BenchmarkError(f"{tool} transport/tool call failed")
     request_path_evidence(
-        value, tool, expected_root_path=expected_root_path, expected_file_path=expected_file_path
+        value,
+        tool,
+        expected_root_path=expected_root_path,
+        expected_file_path=expected_file_path,
     )
     record = structured_mcp_record(
-        value, tool, expected_root_id=expected_root_id,
-        expected_root_path=expected_root_path, expected_root_type=expected_root_type,
+        value,
+        tool,
+        expected_root_id=expected_root_id,
+        expected_root_path=expected_root_path,
+        expected_root_type=expected_root_type,
         expected_worktree_id=expected_worktree_id,
         expected_physical_worktree_path=expected_physical_worktree_path,
     )
@@ -705,7 +852,8 @@ def require_structured_success(
         raise BenchmarkError(f"{tool} returned the wrong canonical root")
     expected_path = canonicalize_evidence_path(expected_file_path, expected_root_path)
     matches = [
-        file for file in record["files"]
+        file
+        for file in record["files"]
         if file["path"] == expected_path
         and file.get("root_path") in (None, expected_root["path"])
     ]
@@ -714,12 +862,15 @@ def require_structured_success(
     if require_only_file and len(record["files"]) != 1:
         raise BenchmarkError(f"{tool} returned cross-root or extra files")
     if not allow_other_roots and any(
-        file.get("root_path") not in (None, expected_root["path"]) for file in record["files"]
+        file.get("root_path") not in (None, expected_root["path"])
+        for file in record["files"]
     ):
         raise BenchmarkError(f"{tool} returned files from another bound root")
     if matches[0]["type"] != expected_file_type:
         raise BenchmarkError(f"{tool} returned the wrong file type")
-    if expected_content is not None and expected_content not in str(matches[0].get("content") or ""):
+    if expected_content is not None and expected_content not in str(
+        matches[0].get("content") or ""
+    ):
         raise BenchmarkError(f"{tool} expected file content missing")
     if tool == "file_search":
         count = record.get("total_matches")
@@ -739,11 +890,18 @@ def require_structured_removed(
     require_absent_bound_root: bool = False,
 ) -> dict[str, Any]:
     request_path_evidence(
-        value, tool, expected_root_path=expected_root_path, expected_file_path=expected_file_path
+        value,
+        tool,
+        expected_root_path=expected_root_path,
+        expected_file_path=expected_file_path,
     )
     bound_paths = binding_root_paths(value)
     canonical_root = str(Path(expected_root_path).resolve(strict=False))
-    payload = tool_payload(value, tool) if tool != "read_file" or call_succeeded(value) else None
+    payload = (
+        tool_payload(value, tool)
+        if tool != "read_file" or call_succeeded(value)
+        else None
+    )
     if isinstance(payload, dict) and isinstance(payload.get("root"), dict):
         if require_absent_bound_root and (
             bound_paths is None or canonical_root in bound_paths
@@ -755,10 +913,17 @@ def require_structured_removed(
         raw_root_id = enriched_root.get("id") or enriched_root.get("root_id")
         raw_root_path = enriched_root.get("path") or enriched_root.get("root_path")
         raw_root_type = enriched_root.get("type") or enriched_root.get("root_type")
-        if not all(isinstance(item, str) and item for item in (
-            raw_root_id, raw_root_path, raw_root_type,
-        )):
-            raise BenchmarkError(f"{tool} enriched removed-root identity was incomplete")
+        if not all(
+            isinstance(item, str) and item
+            for item in (
+                raw_root_id,
+                raw_root_path,
+                raw_root_type,
+            )
+        ):
+            raise BenchmarkError(
+                f"{tool} enriched removed-root identity was incomplete"
+            )
         expected_root = {
             "id": str(uuid.UUID(expected_root_id)).upper(),
             "path": canonical_root,
@@ -769,16 +934,25 @@ def require_structured_removed(
             "path": str(Path(raw_root_path).resolve(strict=False)),
             "type": raw_root_type,
         }
-        raw_files = payload.get("matches") if tool == "file_search" else payload.get("files")
+        raw_files = (
+            payload.get("matches") if tool == "file_search" else payload.get("files")
+        )
         record = dict(payload)
         record["root"] = actual_root
         record["files"] = raw_files if isinstance(raw_files, list) else []
         issue = record.get("issue")
-        issue_code = issue.get("code") if isinstance(issue, dict) else record.get("issue_code")
+        issue_code = (
+            issue.get("code") if isinstance(issue, dict) else record.get("issue_code")
+        )
         allowed_issue_codes = (
             {"root_not_found", "root_removed", "root_unavailable", "path_not_found"}
-            if require_absent_bound_root else
-            {"root_not_found", "root_removed", "root_unavailable", "git_root_unavailable"}
+            if require_absent_bound_root
+            else {
+                "root_not_found",
+                "root_removed",
+                "root_unavailable",
+                "git_root_unavailable",
+            }
         )
         if (
             call_succeeded(value)
@@ -790,8 +964,14 @@ def require_structured_removed(
             return record
         raise BenchmarkError(f"{tool} enriched removed-root evidence was invalid")
     if tool == "file_search":
-        if not call_succeeded(value) or bound_paths is None or canonical_root in bound_paths:
-            raise BenchmarkError("file_search removal check lacked successful absent-root binding")
+        if (
+            not call_succeeded(value)
+            or bound_paths is None
+            or canonical_root in bound_paths
+        ):
+            raise BenchmarkError(
+                "file_search removal check lacked successful absent-root binding"
+            )
         if (
             payload.get("total_matches") != 0
             or payload.get("matched_files") != 0
@@ -800,18 +980,24 @@ def require_structured_removed(
         ):
             raise BenchmarkError("file_search removal check returned stale matches")
         return {
-            "status": "removed", "root": {
-                "id": str(uuid.UUID(expected_root_id)).upper(), "path": canonical_root,
+            "status": "removed",
+            "root": {
+                "id": str(uuid.UUID(expected_root_id)).upper(),
+                "path": canonical_root,
                 "type": expected_root_type,
-            }, "files": [], "issue": {"code": "root_removed"},
+            },
+            "files": [],
+            "issue": {"code": "root_removed"},
         }
     if tool == "get_code_structure":
         if not call_succeeded(value) or not isinstance(payload, dict):
             raise BenchmarkError("get_code_structure unavailable check failed")
         issues = payload.get("issues")
-        codes = {
-            issue.get("code") for issue in issues if isinstance(issue, dict)
-        } if isinstance(issues, list) else set()
+        codes = (
+            {issue.get("code") for issue in issues if isinstance(issue, dict)}
+            if isinstance(issues, list)
+            else set()
+        )
         root_present = bound_paths is not None and canonical_root in bound_paths
         if require_absent_bound_root:
             if bound_paths is None or root_present:
@@ -825,17 +1011,29 @@ def require_structured_removed(
                     "non-Git structure check required the current root in atomic binding"
                 )
             allowed_codes = {"git_root_unavailable"}
-        if payload.get("status") != "unavailable" or payload.get("files") or not (codes & allowed_codes):
-            raise BenchmarkError("get_code_structure unavailable check lacked exact issue/root evidence")
+        if (
+            payload.get("status") != "unavailable"
+            or payload.get("files")
+            or not (codes & allowed_codes)
+        ):
+            raise BenchmarkError(
+                "get_code_structure unavailable check lacked exact issue/root evidence"
+            )
         return {
-            "status": "unavailable", "root": {
-                "id": str(uuid.UUID(expected_root_id)).upper(), "path": canonical_root,
+            "status": "unavailable",
+            "root": {
+                "id": str(uuid.UUID(expected_root_id)).upper(),
+                "path": canonical_root,
                 "type": expected_root_type,
-            }, "files": [], "issue": {"code": sorted(codes & allowed_codes)[0]},
+            },
+            "files": [],
+            "issue": {"code": sorted(codes & allowed_codes)[0]},
         }
     if tool == "read_file":
         stderr = value.get("_benchmark_stderr") if isinstance(value, dict) else None
-        expected_path = canonicalize_evidence_path(expected_file_path or "", canonical_root)
+        expected_path = canonicalize_evidence_path(
+            expected_file_path or "", canonical_root
+        )
         if (
             call_succeeded(value)
             or bound_paths is None
@@ -844,17 +1042,25 @@ def require_structured_removed(
             or expected_path not in stderr
             or "not inside any loaded folder" not in stderr
         ):
-            raise BenchmarkError("read_file removal check lacked exact absent-root path rejection")
+            raise BenchmarkError(
+                "read_file removal check lacked exact absent-root path rejection"
+            )
         return {
-            "status": "removed", "root": {
-                "id": str(uuid.UUID(expected_root_id)).upper(), "path": canonical_root,
+            "status": "removed",
+            "root": {
+                "id": str(uuid.UUID(expected_root_id)).upper(),
+                "path": canonical_root,
                 "type": expected_root_type,
-            }, "files": [], "issue": {"code": "root_removed"},
+            },
+            "files": [],
+            "issue": {"code": "root_removed"},
         }
     raise BenchmarkError(f"unsupported removed-root tool {tool}")
 
 
-def structured_success_evidence(value: Any, tool: str, **expected: Any) -> dict[str, Any]:
+def structured_success_evidence(
+    value: Any, tool: str, **expected: Any
+) -> dict[str, Any]:
     try:
         record = require_structured_success(value, tool, **expected)
         return {
@@ -868,10 +1074,17 @@ def structured_success_evidence(value: Any, tool: str, **expected: Any) -> dict[
         return {"ok": False, "error": str(error)}
 
 
-def structured_removed_evidence(value: Any, tool: str, **expected: Any) -> dict[str, Any]:
+def structured_removed_evidence(
+    value: Any, tool: str, **expected: Any
+) -> dict[str, Any]:
     try:
         record = require_structured_removed(value, tool, **expected)
-        return {"ok": True, "status": record["status"], "root": record["root"], "issue": record.get("issue")}
+        return {
+            "ok": True,
+            "status": record["status"],
+            "root": record["root"],
+            "issue": record.get("issue"),
+        }
     except BenchmarkError as error:
         return {"ok": False, "error": str(error)}
 
@@ -888,13 +1101,22 @@ def structured_empty_success_evidence(
         if not call_succeeded(value):
             raise BenchmarkError(f"{tool} transport/tool call failed")
         record = structured_mcp_record(
-            value, tool, expected_root_id=expected_root_id,
-            expected_root_path=expected_root_path, expected_root_type=expected_root_type,
+            value,
+            tool,
+            expected_root_id=expected_root_id,
+            expected_root_path=expected_root_path,
+            expected_root_type=expected_root_type,
         )
         request_path_evidence(
             value, tool, expected_root_path=expected_root_path, expected_file_path=None
         )
-        if record.get("status") not in {"ok", "complete", "completed", "ready", "success"}:
+        if record.get("status") not in {
+            "ok",
+            "complete",
+            "completed",
+            "ready",
+            "success",
+        }:
             raise BenchmarkError(f"{tool} returned non-success status")
         expected_root = {
             "id": str(uuid.UUID(expected_root_id)).upper(),
@@ -962,7 +1184,9 @@ def response_worktree_paths(value: Any) -> list[str]:
     for candidate in walk_json(value):
         if not isinstance(candidate, dict):
             continue
-        if any(key in candidate for key in ("worktree_id", "worktree_path", "worktree")):
+        if any(
+            key in candidate for key in ("worktree_id", "worktree_path", "worktree")
+        ):
             for key in ("path", "worktree_path", "worktree_root_path"):
                 path = candidate.get(key)
                 if isinstance(path, str) and path.startswith("/"):
@@ -985,9 +1209,13 @@ def response_worktree_binding_set(value: Any) -> set[tuple[str, str]]:
 
 def exact_response_worktree_binding(value: Any, expected_path: Path) -> tuple[str, str]:
     canonical = str(expected_path.expanduser().resolve(strict=False))
-    matches = [item for item in response_worktree_binding_set(value) if item[1] == canonical]
+    matches = [
+        item for item in response_worktree_binding_set(value) if item[1] == canonical
+    ]
     if len(matches) != 1:
-        raise BenchmarkError("agent response omitted one exact physical worktree binding")
+        raise BenchmarkError(
+            "agent response omitted one exact physical worktree binding"
+        )
     return matches[0]
 
 
@@ -1028,7 +1256,9 @@ def git_work_records(value: Any) -> list[dict[str, Any]]:
     return [record for record in records if isinstance(record, dict)]
 
 
-def new_records(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def new_records(
+    before: list[dict[str, Any]], after: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     remaining = [canonical_json(record) for record in before]
     result: list[dict[str, Any]] = []
     for record in after:
@@ -1046,17 +1276,29 @@ def runtime_root_identity(value: Any, expected_path: str) -> dict[str, str]:
     for candidate in structured_json_objects(value):
         raw_path = candidate.get("root_path") or candidate.get("path")
         raw_id = candidate.get("root_id") or candidate.get("id")
-        raw_type = candidate.get("root_kind") or candidate.get("root_type") or candidate.get("type")
-        if not all(isinstance(item, str) and item for item in (raw_path, raw_id, raw_type)):
+        raw_type = (
+            candidate.get("root_kind")
+            or candidate.get("root_type")
+            or candidate.get("type")
+        )
+        if not all(
+            isinstance(item, str) and item for item in (raw_path, raw_id, raw_type)
+        ):
             continue
         if str(Path(raw_path).resolve(strict=False)) != canonical:
             continue
-        matches.append({
-            "id": str(uuid.UUID(raw_id)).upper(), "path": canonical, "type": raw_type,
-        })
+        matches.append(
+            {
+                "id": str(uuid.UUID(raw_id)).upper(),
+                "path": canonical,
+                "type": raw_type,
+            }
+        )
     unique = {canonical_json(match) for match in matches}
     if len(unique) != 1:
-        raise BenchmarkError(f"runtime snapshot did not contain exactly one root identity for {canonical}")
+        raise BenchmarkError(
+            f"runtime snapshot did not contain exactly one root identity for {canonical}"
+        )
     return json.loads(next(iter(unique)))
 
 
@@ -1100,33 +1342,61 @@ def stats(
         "p95": nearest_rank(ordered, 0.95),
         "variance": variance,
         "cv": cv,
-        "reliability": "high" if cv is not None and cv <= 0.10 else "moderate" if cv is not None and cv <= 0.20 else "low",
+        "reliability": (
+            "high"
+            if cv is not None and cv <= 0.10
+            else "moderate" if cv is not None and cv <= 0.20 else "low"
+        ),
         "min": ordered[0],
         "max": ordered[-1],
     }
 
 
-def comparison_direction(control_p95: float, candidate_p95: float, minimum_improvement: float) -> str:
+def comparison_direction(
+    control_p95: float, candidate_p95: float, minimum_improvement: float
+) -> str:
     control = strict_telemetry_number(control_p95, positive=True, label="control p95")
-    candidate = strict_telemetry_number(candidate_p95, positive=True, label="candidate p95")
+    candidate = strict_telemetry_number(
+        candidate_p95, positive=True, label="candidate p95"
+    )
     improvement = (control - candidate) / control
     return "pass" if improvement >= minimum_improvement else "fail"
 
 
 def confirmation_policy(
-    primary: dict[str, Any], confirmation: dict[str, Any] | None, *, minimum_improvement: float
+    primary: dict[str, Any],
+    confirmation: dict[str, Any] | None,
+    *,
+    minimum_improvement: float,
 ) -> dict[str, Any]:
-    direction = comparison_direction(primary["control_p95"], primary["candidate_p95"], minimum_improvement)
-    high_variance = max(float(primary["control_cv"]), float(primary["candidate_cv"])) > PRIMARY_CV_CONFIRMATION_THRESHOLD
+    direction = comparison_direction(
+        primary["control_p95"], primary["candidate_p95"], minimum_improvement
+    )
+    high_variance = (
+        max(float(primary["control_cv"]), float(primary["candidate_cv"]))
+        > PRIMARY_CV_CONFIRMATION_THRESHOLD
+    )
     if not high_variance:
-        return {"status": direction, "direction": direction, "confirmation_required": False}
+        return {
+            "status": direction,
+            "direction": direction,
+            "confirmation_required": False,
+        }
     if confirmation is None:
-        return {"status": "high-variance/inconclusive", "direction": direction, "confirmation_required": True}
+        return {
+            "status": "high-variance/inconclusive",
+            "direction": direction,
+            "confirmation_required": True,
+        }
     confirmation_direction = comparison_direction(
         confirmation["control_p95"], confirmation["candidate_p95"], minimum_improvement
     )
     return {
-        "status": direction if direction == confirmation_direction else "high-variance/inconclusive",
+        "status": (
+            direction
+            if direction == confirmation_direction
+            else "high-variance/inconclusive"
+        ),
         "direction": direction,
         "confirmation_direction": confirmation_direction,
         "confirmation_required": True,
@@ -1139,7 +1409,9 @@ def register_unique(value: Any, seen: set[Any], label: str) -> None:
     seen.add(value)
 
 
-def validate_sample_ordinals(samples: list[dict[str, Any]], expected_count: int) -> None:
+def validate_sample_ordinals(
+    samples: list[dict[str, Any]], expected_count: int
+) -> None:
     if not positive_integer(expected_count):
         raise BenchmarkError("expected sample count must be a positive integer")
     raw_ordinals = [sample.get("ordinal") for sample in samples]
@@ -1162,7 +1434,9 @@ def cohort_accounting_valid(
     )
 
 
-def run_local(command: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_local(
+    command: list[str], cwd: Path, *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     process = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
     if check and process.returncode:
         raise BenchmarkError(f"{' '.join(command)} failed: {process.stderr.strip()}")
@@ -1207,7 +1481,9 @@ def validate_tracked_read_fixture(
 ) -> str:
     relative = Path(read_path)
     if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-        raise BenchmarkError("read-path must be root-relative and remain inside the root")
+        raise BenchmarkError(
+            "read-path must be root-relative and remain inside the root"
+        )
     object_name = f"{base_ref}:{relative.as_posix()}"
     exists = run_local(["git", "cat-file", "-e", object_name], root, check=False)
     if exists.returncode:
@@ -1219,7 +1495,9 @@ def validate_tracked_read_fixture(
         raise BenchmarkError(
             f"read-path {relative.as_posix()!r} is not a readable blob in exact base-ref {base_ref!r}"
         )
-    missing = [marker for marker in (search_marker, read_marker) if marker not in blob.stdout]
+    missing = [
+        marker for marker in (search_marker, read_marker) if marker not in blob.stdout
+    ]
     if missing:
         raise BenchmarkError(
             f"tracked read-path blob in {base_ref!r} omitted required marker(s): {missing}"
@@ -1232,7 +1510,10 @@ def resolve_cli(raw: str | None) -> Path:
         raw,
         os.environ.get("REPOPROMPT_DEBUG_CLI_INSTALL_PATH"),
         shutil.which("rpce-cli-debug"),
-        str(Path.home() / "Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug"),
+        str(
+            Path.home()
+            / "Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug"
+        ),
     ]
     for candidate in candidates:
         if candidate:
@@ -1246,7 +1527,9 @@ def exact_live_build_identity(cli: Path, plan: dict[str, Any]) -> dict[str, str]
     resolved_cli = cli.resolve(strict=True)
     app_executable = resolved_cli.parent / "RepoPrompt"
     if not app_executable.is_file() or not os.access(app_executable, os.X_OK):
-        raise BenchmarkError("resolved CE CLI did not identify the exact RepoPrompt app executable")
+        raise BenchmarkError(
+            "resolved CE CLI did not identify the exact RepoPrompt app executable"
+        )
     source = Path(__file__).resolve(strict=True)
     return {
         "cli_sha256": sha256_bytes(resolved_cli.read_bytes()),
@@ -1275,7 +1558,10 @@ def create_marker_command(args: argparse.Namespace) -> int:
     root = Path(args.root_path).expanduser().resolve(strict=True)
     real_repository = root == repository_root().resolve()
     if real_repository:
-        if not args.confirm_real_repository_benchmark or not args.confirm_dedicated_workspace:
+        if (
+            not args.confirm_real_repository_benchmark
+            or not args.confirm_dedicated_workspace
+        ):
             raise BenchmarkError(
                 "marking the real repository requires --confirm-real-repository-benchmark "
                 "and --confirm-dedicated-workspace"
@@ -1287,7 +1573,9 @@ def create_marker_command(args: argparse.Namespace) -> int:
         "schema_version": SCHEMA_VERSION,
         "purpose": "rpce-worktree-startup-live-benchmark",
         "disposable": not real_repository,
-        "target_kind": "real-repository-dedicated" if real_repository else "disposable-fixture",
+        "target_kind": (
+            "real-repository-dedicated" if real_repository else "disposable-fixture"
+        ),
         "workspace_id": validate_uuid(args.workspace_id, "workspace-id"),
         "root_id": validate_uuid(args.root_id, "root-id"),
         "canonical_root": str(root),
@@ -1319,13 +1607,17 @@ def validate_ownership_marker(
 ) -> tuple[Path, dict[str, Any], str]:
     real_repository = root.resolve() == repository_root().resolve()
     if real_repository and not allow_real_repository:
-        raise BenchmarkError("the development checkout is not a disposable benchmark target")
+        raise BenchmarkError(
+            "the development checkout is not a disposable benchmark target"
+        )
     marker_path, marker, digest = load_ownership_marker(root)
     expected = {
         "schema_version": SCHEMA_VERSION,
         "purpose": "rpce-worktree-startup-live-benchmark",
         "disposable": not real_repository,
-        "target_kind": "real-repository-dedicated" if real_repository else "disposable-fixture",
+        "target_kind": (
+            "real-repository-dedicated" if real_repository else "disposable-fixture"
+        ),
         "workspace_id": workspace_id,
         "root_id": root_id,
         "canonical_root": str(root.resolve()),
@@ -1334,7 +1626,10 @@ def validate_ownership_marker(
         if str(marker.get(key)).upper() != str(value).upper():
             raise BenchmarkError(f"benchmark ownership marker mismatch for {key}")
     validate_uuid(str(marker.get("owner_token") or ""), "marker owner-token")
-    if owner_token is not None and str(marker.get("owner_token")).upper() != owner_token.upper():
+    if (
+        owner_token is not None
+        and str(marker.get("owner_token")).upper() != owner_token.upper()
+    ):
         raise BenchmarkError("benchmark ownership marker owner token mismatch")
     if expected_sha256 is not None and digest != expected_sha256:
         raise BenchmarkError("benchmark ownership marker digest changed")
@@ -1385,19 +1680,33 @@ def parse_atomic_cli_output(
     expected_window_id: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     raw_documents = stdout.strip().split("\n\n---\n\n")
-    if len(raw_documents) != 2 or any(not document.strip() for document in raw_documents):
-        raise BenchmarkError("atomic CLI output must contain exactly binding then tool-result JSON")
+    if len(raw_documents) != 2 or any(
+        not document.strip() for document in raw_documents
+    ):
+        raise BenchmarkError(
+            "atomic CLI output must contain exactly binding then tool-result JSON"
+        )
     documents: list[Any] = []
     for raw_document in raw_documents:
         try:
             documents.append(json.loads(raw_document))
         except json.JSONDecodeError as error:
-            raise BenchmarkError("atomic CLI output contained non-JSON content") from error
+            raise BenchmarkError(
+                "atomic CLI output contained non-JSON content"
+            ) from error
     binding_document, final_response = documents
-    if not isinstance(binding_document, dict) or not isinstance(binding_document.get("binding"), dict):
-        raise BenchmarkError("atomic CLI output first document was not a binding result")
-    if not isinstance(final_response, dict) or isinstance(final_response.get("binding"), dict):
-        raise BenchmarkError("atomic CLI output second document was not the tool result")
+    if not isinstance(binding_document, dict) or not isinstance(
+        binding_document.get("binding"), dict
+    ):
+        raise BenchmarkError(
+            "atomic CLI output first document was not a binding result"
+        )
+    if not isinstance(final_response, dict) or isinstance(
+        final_response.get("binding"), dict
+    ):
+        raise BenchmarkError(
+            "atomic CLI output second document was not the tool result"
+        )
     binding = binding_document["binding"]
     binding_context = binding.get("context_id")
     if (
@@ -1405,13 +1714,20 @@ def parse_atomic_cli_output(
         or binding_context.upper() != expected_context_id.upper()
         or binding.get("window_id") != expected_window_id
     ):
-        raise BenchmarkError("atomic CLI binding did not match the requested context/window")
+        raise BenchmarkError(
+            "atomic CLI binding did not match the requested context/window"
+        )
     return binding, final_response
 
 
 class CLIRunner:
     def __init__(
-        self, cli: Path, window_id: int, context_id: str, cwd: Path, artifact: Path | None = None
+        self,
+        cli: Path,
+        window_id: int,
+        context_id: str,
+        cwd: Path,
+        artifact: Path | None = None,
     ) -> None:
         self.cli = cli
         self.window_id = window_id
@@ -1455,7 +1771,10 @@ class CLIRunner:
         routed.setdefault("_windowID", self.window_id)
         payload_context = routed.get("context_id")
         target_context = validate_uuid(
-            context_id or (payload_context if isinstance(payload_context, str) else self.context_id),
+            context_id
+            or (
+                payload_context if isinstance(payload_context, str) else self.context_id
+            ),
             "context-id",
         )
         payload_json = json.dumps(routed, separators=(",", ":"), sort_keys=True)
@@ -1464,18 +1783,29 @@ class CLIRunner:
             f"call {tool} {payload_json}"
         )
         command = [
-            str(self.cli), "--raw-json", "-w", str(self.window_id), "-e", command_text,
+            str(self.cli),
+            "--raw-json",
+            "-w",
+            str(self.window_id),
+            "-e",
+            command_text,
         ]
         started_ns = time.monotonic_ns()
         try:
-            process = subprocess.run(command, cwd=self.cwd, text=True, capture_output=True, timeout=timeout)
+            process = subprocess.run(
+                command, cwd=self.cwd, text=True, capture_output=True, timeout=timeout
+            )
         except subprocess.TimeoutExpired as error:
             finished_ns = time.monotonic_ns()
 
             def partial_text(value: str | bytes | None) -> str:
                 if value is None:
                     return ""
-                return value.decode(errors="replace") if isinstance(value, bytes) else value
+                return (
+                    value.decode(errors="replace")
+                    if isinstance(value, bytes)
+                    else value
+                )
 
             record = {
                 "label": label,
@@ -1495,7 +1825,9 @@ class CLIRunner:
                     ordinal = self.ordinal
                     self.ordinal += 1
                     save_json(
-                        self.artifact / "raw" / f"{ordinal:04d}-{safe_name(label)}.json",
+                        self.artifact
+                        / "raw"
+                        / f"{ordinal:04d}-{safe_name(label)}.json",
                         record,
                         exclusive=True,
                     )
@@ -1519,10 +1851,16 @@ class CLIRunner:
             with self.lock:
                 ordinal = self.ordinal
                 self.ordinal += 1
-                save_json(self.artifact / "raw" / f"{ordinal:04d}-{safe_name(label)}.json", record, exclusive=True)
+                save_json(
+                    self.artifact / "raw" / f"{ordinal:04d}-{safe_name(label)}.json",
+                    record,
+                    exclusive=True,
+                )
                 append_ndjson(self.artifact / "raw-cli-calls.ndjson", record)
         if check and process.returncode:
-            raise BenchmarkError(f"{label} failed ({process.returncode}): {process.stderr.strip()}")
+            raise BenchmarkError(
+                f"{label} failed ({process.returncode}): {process.stderr.strip()}"
+            )
         output_error: str | None = None
         try:
             binding, final_response = parse_atomic_cli_output(
@@ -1556,7 +1894,11 @@ class CLIRunner:
 
     def describe(self, tool: str) -> str:
         process = subprocess.run(
-            [str(self.cli), "describe", tool], cwd=self.cwd, text=True, capture_output=True, timeout=60
+            [str(self.cli), "describe", tool],
+            cwd=self.cwd,
+            text=True,
+            capture_output=True,
+            timeout=60,
         )
         if process.returncode:
             raise BenchmarkError(f"describe {tool} failed: {process.stderr.strip()}")
@@ -1575,7 +1917,9 @@ def plan_command(args: argparse.Namespace) -> int:
     root = Path(args.root_path).expanduser().resolve(strict=True)
     read_path = Path(args.read_path)
     if read_path.is_absolute() or ".." in read_path.parts:
-        raise BenchmarkError("read-path must be root-relative and remain inside the root")
+        raise BenchmarkError(
+            "read-path must be root-relative and remain inside the root"
+        )
     if not args.workspace_name.startswith(WORKSPACE_PREFIXES):
         allowed = ", ".join(repr(prefix) for prefix in WORKSPACE_PREFIXES)
         raise BenchmarkError(f"workspace-name must start with one of: {allowed}")
@@ -1591,7 +1935,9 @@ def plan_command(args: argparse.Namespace) -> int:
                 f"asserted-file-count must equal observed tracked count {tracked_files} for the real repository"
             )
     elif args.asserted_file_count < 100_000:
-        raise BenchmarkError("disposable large-workspace asserted-file-count must be at least 100000")
+        raise BenchmarkError(
+            "disposable large-workspace asserted-file-count must be at least 100000"
+        )
     if args.retained_samples != FIXED_RETAINED_SAMPLES:
         raise BenchmarkError("readiness plans require exactly five retained samples")
     if args.warmups != FIXED_WARMUPS:
@@ -1600,8 +1946,11 @@ def plan_command(args: argparse.Namespace) -> int:
         raise BenchmarkError("invocations-per-series must be at least 1")
     base_commit_oid = resolve_commit_oid(root, args.base_ref)
     read_blob_sha256 = validate_tracked_read_fixture(
-        root, base_ref=base_commit_oid, read_path=str(read_path),
-        search_marker=args.search_marker, read_marker=args.read_marker,
+        root,
+        base_ref=base_commit_oid,
+        read_path=str(read_path),
+        search_marker=args.search_marker,
+        read_marker=args.read_marker,
     )
     marker_path, marker, marker_sha256 = validate_ownership_marker(
         root,
@@ -1621,7 +1970,9 @@ def plan_command(args: argparse.Namespace) -> int:
             "context_id": validate_uuid(args.context_id, "context-id"),
             "root_id": validate_uuid(args.root_id, "root-id"),
             "root_path": str(root),
-            "target_kind": "real-repository-dedicated" if real_repository else "disposable-fixture",
+            "target_kind": (
+                "real-repository-dedicated" if real_repository else "disposable-fixture"
+            ),
             "explicit_real_repository_confirmation": real_repository,
             "ownership_marker": str(marker_path),
             "ownership_marker_sha256": marker_sha256,
@@ -1686,7 +2037,12 @@ def record_evidence_command(args: argparse.Namespace) -> int:
         raise BenchmarkError(f"scenario must be one of {sorted(required)}")
     details: dict[str, Any] = {}
     if args.details:
-        value = json.loads(Path(args.details).expanduser().resolve(strict=True).read_text(encoding="utf-8"))
+        value = json.loads(
+            Path(args.details)
+            .expanduser()
+            .resolve(strict=True)
+            .read_text(encoding="utf-8")
+        )
         if not isinstance(value, dict):
             raise BenchmarkError("details must contain one JSON object")
         details = value
@@ -1706,7 +2062,9 @@ def record_evidence_command(args: argparse.Namespace) -> int:
 
 def self_test_command(_args: argparse.Namespace) -> int:
     checks: dict[str, bool] = {}
-    with tempfile.TemporaryDirectory(prefix="rpce-worktree-benchmark-self-test-") as raw:
+    with tempfile.TemporaryDirectory(
+        prefix="rpce-worktree-benchmark-self-test-"
+    ) as raw:
         root = Path(raw).resolve()
         workspace_id = str(uuid.uuid4()).upper()
         root_id = str(uuid.uuid4()).upper()
@@ -1735,49 +2093,86 @@ def self_test_command(_args: argparse.Namespace) -> int:
         bad_fixture = root / "tracked-bad.swift"
         bad_fixture.write_text("// RPCE_TRACKED_SEARCH\n", encoding="utf-8")
         run_local(["git", "add", tracked_fixture.name, bad_fixture.name], root)
-        run_local([
-            "git", "-c", "user.name=RPCE Harness", "-c", "user.email=harness@example.invalid",
-            "commit", "-q", "-m", "self-test fixture",
-        ], root)
+        run_local(
+            [
+                "git",
+                "-c",
+                "user.name=RPCE Harness",
+                "-c",
+                "user.email=harness@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "self-test fixture",
+            ],
+            root,
+        )
         planned_oid = resolve_commit_oid(root, "HEAD")
         oid_plan = {"dataset": {"base_ref": "HEAD", "base_commit_oid": planned_oid}}
         checks["immutable_base_oid_resolved"] = (
             validate_planned_base_commit(oid_plan, root) == planned_oid
         )
         tracked_digest = validate_tracked_read_fixture(
-            root, base_ref="HEAD", read_path=tracked_fixture.name,
-            search_marker="RPCE_TRACKED_SEARCH", read_marker="RPCE_TRACKED_READ",
+            root,
+            base_ref="HEAD",
+            read_path=tracked_fixture.name,
+            search_marker="RPCE_TRACKED_SEARCH",
+            read_marker="RPCE_TRACKED_READ",
         )
-        tracked_fixture.write_text("working tree content is intentionally irrelevant\n", encoding="utf-8")
-        checks["tracked_fixture_exact_base_ref"] = tracked_digest == validate_tracked_read_fixture(
-            root, base_ref="HEAD", read_path=tracked_fixture.name,
-            search_marker="RPCE_TRACKED_SEARCH", read_marker="RPCE_TRACKED_READ",
+        tracked_fixture.write_text(
+            "working tree content is intentionally irrelevant\n", encoding="utf-8"
+        )
+        checks["tracked_fixture_exact_base_ref"] = (
+            tracked_digest
+            == validate_tracked_read_fixture(
+                root,
+                base_ref="HEAD",
+                read_path=tracked_fixture.name,
+                search_marker="RPCE_TRACKED_SEARCH",
+                read_marker="RPCE_TRACKED_READ",
+            )
         )
         (root / "untracked-marker.swift").write_text(
             "// RPCE_TRACKED_SEARCH\nlet RPCE_TRACKED_READ = true\n", encoding="utf-8"
         )
         try:
             validate_tracked_read_fixture(
-                root, base_ref="HEAD", read_path="untracked-marker.swift",
-                search_marker="RPCE_TRACKED_SEARCH", read_marker="RPCE_TRACKED_READ",
+                root,
+                base_ref="HEAD",
+                read_path="untracked-marker.swift",
+                search_marker="RPCE_TRACKED_SEARCH",
+                read_marker="RPCE_TRACKED_READ",
             )
             checks["untracked_fixture_rejected"] = False
         except BenchmarkError:
             checks["untracked_fixture_rejected"] = True
         try:
             validate_tracked_read_fixture(
-                root, base_ref="HEAD", read_path=bad_fixture.name,
-                search_marker="RPCE_TRACKED_SEARCH", read_marker="RPCE_TRACKED_READ",
+                root,
+                base_ref="HEAD",
+                read_path=bad_fixture.name,
+                search_marker="RPCE_TRACKED_SEARCH",
+                read_marker="RPCE_TRACKED_READ",
             )
             checks["tracked_fixture_missing_marker_rejected"] = False
         except BenchmarkError:
             checks["tracked_fixture_missing_marker_rejected"] = True
         (root / "drift.txt").write_text("drift\n", encoding="utf-8")
         run_local(["git", "add", "drift.txt"], root)
-        run_local([
-            "git", "-c", "user.name=RPCE Harness", "-c", "user.email=harness@example.invalid",
-            "commit", "-q", "-m", "move symbolic ref",
-        ], root)
+        run_local(
+            [
+                "git",
+                "-c",
+                "user.name=RPCE Harness",
+                "-c",
+                "user.email=harness@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "move symbolic ref",
+            ],
+            root,
+        )
         try:
             validate_planned_base_commit(oid_plan, root)
             checks["moving_symbolic_base_rejected"] = False
@@ -1791,42 +2186,66 @@ def self_test_command(_args: argparse.Namespace) -> int:
     fixture_file = fixture_root / "Fixture.swift"
     fixture_root_id = str(uuid.uuid4()).upper()
     fixture_root_record = {
-        "id": fixture_root_id, "path": str(fixture_root), "type": "linkedWorktree",
+        "id": fixture_root_id,
+        "path": str(fixture_root),
+        "type": "linkedWorktree",
     }
     marker = "RPCE_STRUCTURED_FIXTURE"
 
     def tool_record(tool: str, *, status: str = "ok") -> dict[str, Any]:
-        base: dict[str, Any] = {"tool": tool, "status": status, "root": fixture_root_record}
+        base: dict[str, Any] = {
+            "tool": tool,
+            "status": status,
+            "root": fixture_root_record,
+        }
         if tool == "file_search":
-            base.update({
-                "matches": [{"path": str(fixture_file), "type": "file", "content": marker}],
-                "total_matches": 1,
-            })
+            base.update(
+                {
+                    "matches": [
+                        {"path": str(fixture_file), "type": "file", "content": marker}
+                    ],
+                    "total_matches": 1,
+                }
+            )
         elif tool == "read_file":
-            base.update({"path": str(fixture_file), "file_type": "file", "content": marker})
+            base.update(
+                {"path": str(fixture_file), "file_type": "file", "content": marker}
+            )
         elif tool == "manage_selection":
             base["files"] = [{"path": str(fixture_file), "type": "file"}]
         else:
-            base["files"] = [{"path": str(fixture_file), "type": "swift", "content": marker}]
+            base["files"] = [
+                {"path": str(fixture_file), "type": "swift", "content": marker}
+            ]
         return base
 
     search_record = tool_record("file_search")
     read_record = tool_record("read_file")
-    transcript = "".join((
-        '<tool_call name="mcp__file_search">',
-        html.escape(json.dumps({
-            "pattern": marker, "regex": False,
-            "filter": {"paths": [str(fixture_file)]},
-        })),
-        "</tool_call>",
-        '<tool_result name="mcp__file_search"/>',
-        '<tool_call name="mcp__read_file">',
-        html.escape(json.dumps({"path": str(fixture_file)})), "</tool_call>",
-        '<tool_result name="mcp__read_file"/>',
-        "<assistant>RPCE_INHERITED_CHILD_OK</assistant>",
-    ))
+    transcript = "".join(
+        (
+            '<tool_call name="mcp__file_search">',
+            html.escape(
+                json.dumps(
+                    {
+                        "pattern": marker,
+                        "regex": False,
+                        "filter": {"paths": [str(fixture_file)]},
+                    }
+                )
+            ),
+            "</tool_call>",
+            '<tool_result name="mcp__file_search"/>',
+            '<tool_call name="mcp__read_file">',
+            html.escape(json.dumps({"path": str(fixture_file)})),
+            "</tool_call>",
+            '<tool_result name="mcp__read_file"/>',
+            "<assistant>RPCE_INHERITED_CHILD_OK</assistant>",
+        )
+    )
     transcript_evidence = verify_agent_file_tool_transcript(
-        transcript, expected_output="RPCE_INHERITED_CHILD_OK", expected_marker=marker,
+        transcript,
+        expected_output="RPCE_INHERITED_CHILD_OK",
+        expected_marker=marker,
         expected_file_path=str(fixture_file),
     )
     checks["nested_spartan_tool_events"] = (
@@ -1839,32 +2258,41 @@ def self_test_command(_args: argparse.Namespace) -> int:
         "kind": "session_bound_worktree",
         "display_identity": "logical_canonical_root",
         "effective_identity": "bound_worktree_root",
-        "root_mappings": [{
-            "worktree_id": fixture_worktree_id,
-            "logical_root_path": str(fixture_root),
-            "effective_root_path": str(fixture_worktree_path),
-        }],
+        "root_mappings": [
+            {
+                "worktree_id": fixture_worktree_id,
+                "logical_root_path": str(fixture_root),
+                "effective_root_path": str(fixture_worktree_path),
+            }
+        ],
     }
     structured_search_record = dict(search_record, worktree_scope=worktree_scope)
     structured_read_record = dict(read_record, worktree_scope=worktree_scope)
-    strict_transcript = "".join((
-        '<tool_call name="mcp__file_search">',
-        html.escape(json.dumps({
-            "pattern": marker, "regex": False,
-            "filter": {"paths": [str(fixture_file)]},
-        })),
-        "</tool_call>",
-        '<tool_result name="mcp__file_search">',
-        html.escape(json.dumps(structured_search_record)),
-        "</tool_result>",
-        '<tool_call name="mcp__read_file">',
-        html.escape(json.dumps({"path": str(fixture_file)})),
-        "</tool_call>",
-        '<tool_result name="mcp__read_file">',
-        html.escape(json.dumps(structured_read_record)),
-        "</tool_result>",
-        "<assistant>RPCE_STRICT_TRANSCRIPT_OK</assistant>",
-    ))
+    strict_transcript = "".join(
+        (
+            '<tool_call name="mcp__file_search">',
+            html.escape(
+                json.dumps(
+                    {
+                        "pattern": marker,
+                        "regex": False,
+                        "filter": {"paths": [str(fixture_file)]},
+                    }
+                )
+            ),
+            "</tool_call>",
+            '<tool_result name="mcp__file_search">',
+            html.escape(json.dumps(structured_search_record)),
+            "</tool_result>",
+            '<tool_call name="mcp__read_file">',
+            html.escape(json.dumps({"path": str(fixture_file)})),
+            "</tool_call>",
+            '<tool_result name="mcp__read_file">',
+            html.escape(json.dumps(structured_read_record)),
+            "</tool_result>",
+            "<assistant>RPCE_STRICT_TRANSCRIPT_OK</assistant>",
+        )
+    )
     strict_expectations = {
         "root_id": fixture_root_id,
         "root_path": str(fixture_root),
@@ -1894,24 +2322,40 @@ def self_test_command(_args: argparse.Namespace) -> int:
         checks["strict_transcript_spartan_results_rejected"] = False
     except BenchmarkError:
         checks["strict_transcript_spartan_results_rejected"] = True
-    parent_transcript = "".join([
-        "".join((
-            '<tool_call name="mcp__file_search">',
-            html.escape(json.dumps({
-                "pattern": marker, "regex": False,
-                "filter": {"paths": [str(fixture_file)]},
-            })),
-            "</tool_call>",
-            '<tool_result name="mcp__file_search"/>',
-            '<tool_call name="mcp__read_file">',
-            html.escape(json.dumps({"path": str(fixture_file)})), "</tool_call>",
-            '<tool_result name="mcp__read_file"/>',
-        ))
-        for _ in range(10)
-    ]) + "<assistant>RPCE_ACTIVE_PARENT_OK</assistant>"
+    parent_transcript = (
+        "".join(
+            [
+                "".join(
+                    (
+                        '<tool_call name="mcp__file_search">',
+                        html.escape(
+                            json.dumps(
+                                {
+                                    "pattern": marker,
+                                    "regex": False,
+                                    "filter": {"paths": [str(fixture_file)]},
+                                }
+                            )
+                        ),
+                        "</tool_call>",
+                        '<tool_result name="mcp__file_search"/>',
+                        '<tool_call name="mcp__read_file">',
+                        html.escape(json.dumps({"path": str(fixture_file)})),
+                        "</tool_call>",
+                        '<tool_result name="mcp__read_file"/>',
+                    )
+                )
+                for _ in range(10)
+            ]
+        )
+        + "<assistant>RPCE_ACTIVE_PARENT_OK</assistant>"
+    )
     parent_transcript_evidence = verify_agent_file_tool_transcript(
-        parent_transcript, expected_output="RPCE_ACTIVE_PARENT_OK", expected_marker=marker,
-        expected_file_path=str(fixture_file), expected_pairs=10,
+        parent_transcript,
+        expected_output="RPCE_ACTIVE_PARENT_OK",
+        expected_marker=marker,
+        expected_file_path=str(fixture_file),
+        expected_pairs=10,
     )
     checks["parent_exact_twenty_alternating_calls"] = (
         parent_transcript_evidence["call_count"] == 20
@@ -1923,8 +2367,10 @@ def self_test_command(_args: argparse.Namespace) -> int:
             parent_transcript.replace(
                 "<assistant>", '<tool_call name="Bash">{}</tool_call><assistant>', 1
             ),
-            expected_output="RPCE_ACTIVE_PARENT_OK", expected_marker=marker,
-            expected_file_path=str(fixture_file), expected_pairs=10,
+            expected_output="RPCE_ACTIVE_PARENT_OK",
+            expected_marker=marker,
+            expected_file_path=str(fixture_file),
+            expected_pairs=10,
         )
         checks["parent_substitute_tool_rejected"] = False
     except BenchmarkError:
@@ -1946,7 +2392,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
     try:
         verify_agent_file_tool_transcript(
             "<assistant>file_search read_file RPCE_INHERITED_CHILD_OK</assistant>",
-            expected_output="RPCE_INHERITED_CHILD_OK", expected_marker=marker,
+            expected_output="RPCE_INHERITED_CHILD_OK",
+            expected_marker=marker,
             expected_file_path=str(fixture_file),
         )
         checks["nested_prompt_text_rejected"] = False
@@ -1955,11 +2402,17 @@ def self_test_command(_args: argparse.Namespace) -> int:
 
     fixture_context = str(uuid.uuid4()).upper()
     atomic_binding_document = {
-        "binding": {"context_id": fixture_context, "window_id": 1, "repo_paths": [str(fixture_root)]}
+        "binding": {
+            "context_id": fixture_context,
+            "window_id": 1,
+            "repo_paths": [str(fixture_root)],
+        }
     }
     atomic_result_document = {"status": "ok"}
     atomic_stdout = (
-        json.dumps(atomic_binding_document) + "\n\n---\n\n" + json.dumps(atomic_result_document)
+        json.dumps(atomic_binding_document)
+        + "\n\n---\n\n"
+        + json.dumps(atomic_result_document)
     )
     parsed_binding, parsed_result = parse_atomic_cli_output(
         atomic_stdout, expected_context_id=fixture_context, expected_window_id=1
@@ -1971,7 +2424,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
     for name, stdout in {
         "atomic_extra_document_rejected": atomic_stdout + "\n\n---\n\n{}",
         "atomic_reordered_documents_rejected": (
-            json.dumps(atomic_result_document) + "\n\n---\n\n" + json.dumps(atomic_binding_document)
+            json.dumps(atomic_result_document)
+            + "\n\n---\n\n"
+            + json.dumps(atomic_binding_document)
         ),
         "atomic_missing_result_rejected": json.dumps(atomic_binding_document),
     }.items():
@@ -1985,7 +2440,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
     parent_context_fixture = str(uuid.uuid4()).upper()
     child_context_fixture = str(uuid.uuid4()).upper()
     worktree_binding_fixture = {
-        "worktree_id": "wt_fixture", "worktree_root_path": str(fixture_root),
+        "worktree_id": "wt_fixture",
+        "worktree_root_path": str(fixture_root),
     }
     parent_start_fixture = {
         "session": {"context_id": parent_context_fixture},
@@ -1996,20 +2452,26 @@ def self_test_command(_args: argparse.Namespace) -> int:
         "worktree_bindings": [worktree_binding_fixture],
     }
     checks["child_distinct_context_exact_binding_set"] = child_inheritance_evidence(
-        parent_start_fixture, child_start_fixture,
-        parent_context_id=parent_context_fixture, parent_worktree_path=str(fixture_root),
+        parent_start_fixture,
+        child_start_fixture,
+        parent_context_id=parent_context_fixture,
+        parent_worktree_path=str(fixture_root),
     )["ok"]
     same_context_child = json.loads(json.dumps(child_start_fixture))
     same_context_child["session"]["context_id"] = parent_context_fixture
     checks["child_same_context_rejected"] = not child_inheritance_evidence(
-        parent_start_fixture, same_context_child,
-        parent_context_id=parent_context_fixture, parent_worktree_path=str(fixture_root),
+        parent_start_fixture,
+        same_context_child,
+        parent_context_id=parent_context_fixture,
+        parent_worktree_path=str(fixture_root),
     )["ok"]
     different_binding_child = json.loads(json.dumps(child_start_fixture))
     different_binding_child["worktree_bindings"][0]["worktree_id"] = "wt_other"
     checks["child_binding_id_mismatch_rejected"] = not child_inheritance_evidence(
-        parent_start_fixture, different_binding_child,
-        parent_context_id=parent_context_fixture, parent_worktree_path=str(fixture_root),
+        parent_start_fixture,
+        different_binding_child,
+        parent_context_id=parent_context_fixture,
+        parent_worktree_path=str(fixture_root),
     )["ok"]
 
     def routed_response(
@@ -2023,7 +2485,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
         result: dict[str, Any] = {
             "_benchmark_response": response,
             "_benchmark_binding": {
-                "context_id": fixture_context, "window_id": 1,
+                "context_id": fixture_context,
+                "window_id": 1,
                 "repo_paths": roots if roots is not None else [str(fixture_root)],
             },
             "_benchmark_requested_context_id": fixture_context,
@@ -2038,100 +2501,174 @@ def self_test_command(_args: argparse.Namespace) -> int:
         return result
 
     workspace_fixture_id = str(uuid.uuid4()).upper()
-    workspace_wrapper = routed_response({
-        "workspaces": [{
-            "id": workspace_fixture_id, "name": "planned-workspace",
-            "repo_paths": [str(fixture_root)],
-        }],
-    })
+    workspace_wrapper = routed_response(
+        {
+            "workspaces": [
+                {
+                    "id": workspace_fixture_id,
+                    "name": "planned-workspace",
+                    "repo_paths": [str(fixture_root)],
+                }
+            ],
+        }
+    )
     workspace_wrapper["_benchmark_binding"]["workspace_id"] = workspace_fixture_id
     checks["workspace_inventory_ignores_atomic_binding"] = (
         workspace_inventory_record(workspace_wrapper, workspace_fixture_id).get("name")
         == "planned-workspace"
     )
-    scope_wrapper = routed_response({
-        "scope": {
-            "window_id": 1, "workspace_id": workspace_fixture_id,
-            "context_id": fixture_context, "root_id": fixture_root_id,
-        },
-    })
+    scope_wrapper = routed_response(
+        {
+            "scope": {
+                "window_id": 1,
+                "workspace_id": workspace_fixture_id,
+                "context_id": fixture_context,
+                "root_id": fixture_root_id,
+            },
+        }
+    )
     scope_wrapper["_benchmark_binding"]["root_id"] = str(uuid.uuid4()).upper()
     checks["scope_ignores_atomic_binding"] = (
         scope_response_record(scope_wrapper).get("root_id") == fixture_root_id
     )
 
-    actual_search = routed_response({
-        "total_matches": 1, "total_files": 1, "matched_files": 1,
-        "searched_files": 1, "content_matches": 1, "path_matches": 0,
-        "limit_hit": False, "content_match_groups": [{
-            "path": f"{fixture_root.name}/{fixture_file.name}",
-            "lines": [{"line_number": 1, "line_text": marker}],
-        }],
-    }, payload={
-        "pattern": marker, "regex": False,
-        "filter": {"paths": [str(fixture_file)]},
-    })
-    actual_read = routed_response({
-        "content": marker, "display_path": f"{fixture_root.name}/{fixture_file.name}",
-        "first_line": 1, "last_line": 1, "total_lines": 1,
-    }, payload={"path": str(fixture_file)})
-    actual_selection = routed_response({
-        "status": "ok", "total_tokens": 1, "files": [{
-            "path": f"{fixture_root.name}/{fixture_file.name}",
-            "root_path": str(fixture_root), "path_within_root": fixture_file.name,
-            "tokens": 1, "render_mode": "full",
-        }],
-    })
-    actual_structure = routed_response({
-        "status": "ok", "size": "medium", "roots": [], "files": [{
-            "path": f"{fixture_root.name}/{fixture_file.name}",
-            "content": marker, "role": "seed", "depth": 0, "reached_by": [], "tokens": 1,
-        }],
-        "summary": {"seeds": 1, "nodes": 1, "edges": 0, "files": 1, "tokens": 1},
-        "issues": [],
-    }, payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"})
-    budget_structure = routed_response({
-        "status": "partial", "size": "small", "files": [],
-        "roots": [{
-            "root": fixture_root.name, "status": "partial",
-            "truncated": {"reason": "size", "dropped_nodes": 3},
-            "issues": [{
-                "code": "graph_size_limit", "phase": "graph_traversal",
-                "retryable": False, "retry_after_ms": None,
-                "attempted": None, "limit": None,
-            }],
-        }],
-        "summary": {"seeds": 1, "nodes": 1, "edges": 0, "files": 0, "tokens": 0},
-        "issues": [],
-    }, payload={"paths": [str(fixture_root)], "signatures": False, "size": "small"})
+    actual_search = routed_response(
+        {
+            "total_matches": 1,
+            "total_files": 1,
+            "matched_files": 1,
+            "searched_files": 1,
+            "content_matches": 1,
+            "path_matches": 0,
+            "limit_hit": False,
+            "content_match_groups": [
+                {
+                    "path": f"{fixture_root.name}/{fixture_file.name}",
+                    "lines": [{"line_number": 1, "line_text": marker}],
+                }
+            ],
+        },
+        payload={
+            "pattern": marker,
+            "regex": False,
+            "filter": {"paths": [str(fixture_file)]},
+        },
+    )
+    actual_read = routed_response(
+        {
+            "content": marker,
+            "display_path": f"{fixture_root.name}/{fixture_file.name}",
+            "first_line": 1,
+            "last_line": 1,
+            "total_lines": 1,
+        },
+        payload={"path": str(fixture_file)},
+    )
+    actual_selection = routed_response(
+        {
+            "status": "ok",
+            "total_tokens": 1,
+            "files": [
+                {
+                    "path": f"{fixture_root.name}/{fixture_file.name}",
+                    "root_path": str(fixture_root),
+                    "path_within_root": fixture_file.name,
+                    "tokens": 1,
+                    "render_mode": "full",
+                }
+            ],
+        }
+    )
+    actual_structure = routed_response(
+        {
+            "status": "ok",
+            "size": "medium",
+            "roots": [],
+            "files": [
+                {
+                    "path": f"{fixture_root.name}/{fixture_file.name}",
+                    "content": marker,
+                    "role": "seed",
+                    "depth": 0,
+                    "reached_by": [],
+                    "tokens": 1,
+                }
+            ],
+            "summary": {"seeds": 1, "nodes": 1, "edges": 0, "files": 1, "tokens": 1},
+            "issues": [],
+        },
+        payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"},
+    )
+    budget_structure = routed_response(
+        {
+            "status": "partial",
+            "size": "small",
+            "files": [],
+            "roots": [
+                {
+                    "root": fixture_root.name,
+                    "status": "partial",
+                    "truncated": {"reason": "size", "dropped_nodes": 3},
+                    "issues": [
+                        {
+                            "code": "graph_size_limit",
+                            "phase": "graph_traversal",
+                            "retryable": False,
+                            "retry_after_ms": None,
+                            "attempted": None,
+                            "limit": None,
+                        }
+                    ],
+                }
+            ],
+            "summary": {"seeds": 1, "nodes": 1, "edges": 0, "files": 0, "tokens": 0},
+            "issues": [],
+        },
+        payload={"paths": [str(fixture_root)], "signatures": False, "size": "small"},
+    )
     checks["codemap_budget_nested_root_issue_accepted"] = (
         codemap_budget_evidence(budget_structure)["dropped_file_count"] == 3
     )
-    pending_structure = routed_response({
-        "status": "pending", "size": "large", "files": [],
-        "roots": [{
-            "root": fixture_root.name, "status": "pending",
-            "issues": [{
-                "code": "graph_indexing", "phase": "graph_snapshot",
-                "retryable": True, "retry_after_ms": 100,
-                "attempted": None, "limit": None,
-            }],
-        }],
-        "summary": {"seeds": 1, "nodes": 0, "edges": 0, "files": 0, "tokens": 0},
-        "issues": [],
-        "retry": {"retryable": True, "retry_after_ms": 100},
-    }, payload={"paths": [str(fixture_file)], "signatures": True, "size": "large"})
+    pending_structure = routed_response(
+        {
+            "status": "pending",
+            "size": "large",
+            "files": [],
+            "roots": [
+                {
+                    "root": fixture_root.name,
+                    "status": "pending",
+                    "issues": [
+                        {
+                            "code": "graph_indexing",
+                            "phase": "graph_snapshot",
+                            "retryable": True,
+                            "retry_after_ms": 100,
+                            "attempted": None,
+                            "limit": None,
+                        }
+                    ],
+                }
+            ],
+            "summary": {"seeds": 1, "nodes": 0, "edges": 0, "files": 0, "tokens": 0},
+            "issues": [],
+            "retry": {"retryable": True, "retry_after_ms": 100},
+        },
+        payload={"paths": [str(fixture_file)], "signatures": True, "size": "large"},
+    )
     checks["codemap_pending_nullable_retry_metadata_accepted"] = (
         codemap_retryable_pending_evidence(pending_structure)["issue_codes"]
         == ["graph_indexing"]
     )
     legacy_timeout_structure = json.loads(json.dumps(pending_structure))
     legacy_timeout_structure["_benchmark_response"]["status"] = "timeout"
-    legacy_timeout_structure["_benchmark_response"]["roots"][0]["issues"][0].update({
-        "code": "readiness_timeout",
-        "attempted": CODEMAP_GATE_WAIT_MILLISECONDS,
-        "limit": CODEMAP_GATE_WAIT_MILLISECONDS,
-    })
+    legacy_timeout_structure["_benchmark_response"]["roots"][0]["issues"][0].update(
+        {
+            "code": "readiness_timeout",
+            "attempted": CODEMAP_GATE_WAIT_MILLISECONDS,
+            "limit": CODEMAP_GATE_WAIT_MILLISECONDS,
+        }
+    )
     try:
         codemap_retryable_pending_evidence(legacy_timeout_structure)
         checks["codemap_legacy_timeout_contract_rejected"] = False
@@ -2139,202 +2676,342 @@ def self_test_command(_args: argparse.Namespace) -> int:
         checks["codemap_legacy_timeout_contract_rejected"] = True
 
     tree_fixture_text = (
-        f"{fixture_root.name}\n"
-        f"└── {fixture_file.name} +\n\n{CODEMAP_TREE_LEGEND}"
+        f"{fixture_root.name}\n" f"└── {fixture_file.name} +\n\n{CODEMAP_TREE_LEGEND}"
     )
-    actual_tree = routed_response({
-        "tree": tree_fixture_text, "text": tree_fixture_text,
-        "uses_legend": True, "was_truncated": False,
-    }, payload={"type": "files", "mode": "full", "path": ".", "max_depth": 1})
+    actual_tree = routed_response(
+        {
+            "tree": tree_fixture_text,
+            "text": tree_fixture_text,
+            "uses_legend": True,
+            "was_truncated": False,
+        },
+        payload={"type": "files", "mode": "full", "path": ".", "max_depth": 1},
+    )
     physical_worktree_fixture = Path("/tmp/rpce-app-managed/session-bound-worktree")
     worktree_scope_fixture = {
         "kind": "session_bound_worktree",
         "display_identity": "logical_canonical_root",
         "effective_identity": "bound_worktree_root",
-        "root_mappings": [{
-            "logical_root_name": fixture_root.name,
-            "logical_root_path": fixture_root.name,
-            "effective_root_name": physical_worktree_fixture.name,
-            "effective_root_path": "session-bound",
-            "worktree_id": "wt_exact_fixture",
-        }],
+        "root_mappings": [
+            {
+                "logical_root_name": fixture_root.name,
+                "logical_root_path": fixture_root.name,
+                "effective_root_name": physical_worktree_fixture.name,
+                "effective_root_path": "session-bound",
+                "worktree_id": "wt_exact_fixture",
+            }
+        ],
     }
     scoped_search = json.loads(json.dumps(actual_search))
     scoped_search["_benchmark_response"]["worktree_scope"] = worktree_scope_fixture
-    checks["logical_display_exact_physical_scope_accepted"] = structured_success_evidence(
-        scoped_search, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file", expected_content=marker,
-        expected_worktree_id="wt_exact_fixture",
-        expected_physical_worktree_path=str(physical_worktree_fixture),
-    )["ok"]
+    checks["logical_display_exact_physical_scope_accepted"] = (
+        structured_success_evidence(
+            scoped_search,
+            "file_search",
+            expected_root_id=fixture_root_id,
+            expected_root_path=str(fixture_root),
+            expected_root_type="linkedWorktree",
+            expected_file_path=str(fixture_file),
+            expected_file_type="file",
+            expected_content=marker,
+            expected_worktree_id="wt_exact_fixture",
+            expected_physical_worktree_path=str(physical_worktree_fixture),
+        )["ok"]
+    )
     wrong_scope = json.loads(json.dumps(scoped_search))
-    wrong_scope["_benchmark_response"]["worktree_scope"]["root_mappings"][0]["worktree_id"] = "wt_wrong"
-    checks["logical_display_wrong_physical_scope_rejected"] = not structured_success_evidence(
-        wrong_scope, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file", expected_content=marker,
-        expected_worktree_id="wt_exact_fixture",
-        expected_physical_worktree_path=str(physical_worktree_fixture),
-    )["ok"]
+    wrong_scope["_benchmark_response"]["worktree_scope"]["root_mappings"][0][
+        "worktree_id"
+    ] = "wt_wrong"
+    checks["logical_display_wrong_physical_scope_rejected"] = (
+        not structured_success_evidence(
+            wrong_scope,
+            "file_search",
+            expected_root_id=fixture_root_id,
+            expected_root_path=str(fixture_root),
+            expected_root_type="linkedWorktree",
+            expected_file_path=str(fixture_file),
+            expected_file_type="file",
+            expected_content=marker,
+            expected_worktree_id="wt_exact_fixture",
+            expected_physical_worktree_path=str(physical_worktree_fixture),
+        )["ok"]
+    )
     checks["tree_exact_context_parent_full_path"] = codemap_tree_marker_evidence(
-        actual_tree, expected_context_id=fixture_context,
-        expected_root_path=str(fixture_root), requested_parent=".",
+        actual_tree,
+        expected_context_id=fixture_context,
+        expected_root_path=str(fixture_root),
+        requested_parent=".",
         expected_file_path=fixture_file.name,
     )["marker_present"]
     wrong_parent_tree = json.loads(json.dumps(actual_tree))
     wrong_parent_tree["_benchmark_payload"]["path"] = "other-parent"
     try:
         codemap_tree_marker_evidence(
-            wrong_parent_tree, expected_context_id=fixture_context,
-            expected_root_path=str(fixture_root), requested_parent=".",
+            wrong_parent_tree,
+            expected_context_id=fixture_context,
+            expected_root_path=str(fixture_root),
+            requested_parent=".",
             expected_file_path=fixture_file.name,
         )
         checks["tree_same_basename_wrong_parent_rejected"] = False
     except BenchmarkError:
         checks["tree_same_basename_wrong_parent_rejected"] = True
     checks["actual_file_search_shape"] = structured_success_evidence(
-        actual_search, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file", expected_content=marker,
+        actual_search,
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="file",
+        expected_content=marker,
     )["ok"]
     checks["actual_read_file_shape"] = structured_success_evidence(
-        actual_read, "read_file", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file", expected_content=marker,
+        actual_read,
+        "read_file",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="file",
+        expected_content=marker,
     )["ok"]
     checks["actual_selection_shape"] = structured_success_evidence(
-        actual_selection, "manage_selection", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file",
+        actual_selection,
+        "manage_selection",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="file",
     )["ok"]
     checks["actual_code_structure_shape"] = structured_success_evidence(
-        actual_structure, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="swift", expected_content=marker,
+        actual_structure,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="swift",
+        expected_content=marker,
     )["ok"]
     selected_structure = dict(actual_structure)
     selected_structure["_benchmark_payload"] = {"signatures": True, "size": "medium"}
     checks["actual_selected_code_structure_shape"] = structured_success_evidence(
-        selected_structure, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="swift", expected_content=marker,
+        selected_structure,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="swift",
+        expected_content=marker,
     )["ok"]
     wrong_binding = dict(actual_search)
     wrong_binding["_benchmark_binding"] = dict(
         actual_search["_benchmark_binding"], repo_paths=["/tmp/another-root"]
     )
     checks["actual_cross_root_binding_rejected"] = not structured_success_evidence(
-        wrong_binding, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file", expected_content=marker,
+        wrong_binding,
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="file",
+        expected_content=marker,
     )["ok"]
     duplicate_name_root = Path("/var/tmp") / fixture_root.name
     ambiguous_search = json.loads(json.dumps(actual_search))
     ambiguous_search["_benchmark_binding"]["repo_paths"] = [
-        str(fixture_root), str(duplicate_name_root),
+        str(fixture_root),
+        str(duplicate_name_root),
     ]
     checks["ambiguous_same_basename_result_rejected"] = not structured_success_evidence(
-        ambiguous_search, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file", expected_content=marker,
+        ambiguous_search,
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="file",
+        expected_content=marker,
     )["ok"]
     unattributed_search = json.loads(json.dumps(actual_search))
     unattributed_search["_benchmark_binding"]["repo_paths"] = [
-        str(fixture_root), "/var/tmp/another-root",
+        str(fixture_root),
+        "/var/tmp/another-root",
     ]
-    unattributed_search["_benchmark_response"]["content_match_groups"][0]["path"] = fixture_file.name
+    unattributed_search["_benchmark_response"]["content_match_groups"][0][
+        "path"
+    ] = fixture_file.name
     checks["unattributed_relative_result_rejected"] = not structured_success_evidence(
-        unattributed_search, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="file", expected_content=marker,
+        unattributed_search,
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="file",
+        expected_content=marker,
     )["ok"]
-    actual_empty = routed_response({
-        "total_matches": 0, "total_files": 0, "matched_files": 0,
-        "searched_files": 1, "content_matches": 0, "path_matches": 0,
-        "limit_hit": False, "content_match_groups": [],
-    }, payload={"pattern": "OTHER_ROOT_MARKER", "regex": False,
-                "filter": {"paths": [str(fixture_root)]}})
+    actual_empty = routed_response(
+        {
+            "total_matches": 0,
+            "total_files": 0,
+            "matched_files": 0,
+            "searched_files": 1,
+            "content_matches": 0,
+            "path_matches": 0,
+            "limit_hit": False,
+            "content_match_groups": [],
+        },
+        payload={
+            "pattern": "OTHER_ROOT_MARKER",
+            "regex": False,
+            "filter": {"paths": [str(fixture_root)]},
+        },
+    )
     checks["actual_empty_cross_root_shape"] = structured_empty_success_evidence(
-        actual_empty, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
+        actual_empty,
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
     )["ok"]
 
     exact_selection = require_structured_success(
-        tool_record("manage_selection"), "manage_selection",
-        expected_root_id=fixture_root_id, expected_root_path=str(fixture_root),
-        expected_root_type="linkedWorktree", expected_file_path=str(fixture_file),
+        tool_record("manage_selection"),
+        "manage_selection",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
         expected_file_type="file",
     )
     checks["structured_exact_root"] = exact_selection["root"] == fixture_root_record
     wrong_root = tool_record("get_code_structure")
     wrong_root["root"] = dict(fixture_root_record, id=str(uuid.uuid4()).upper())
     checks["structured_cross_root_rejected"] = not structured_success_evidence(
-        wrong_root, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), expected_file_type="swift",
+        wrong_root,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        expected_file_type="swift",
         expected_content=marker,
     )["ok"]
     removed_record = {
-        "tool": "get_code_structure", "status": "unavailable", "root": fixture_root_record,
-        "files": [], "issue": {"code": "git_root_unavailable"},
+        "tool": "get_code_structure",
+        "status": "unavailable",
+        "root": fixture_root_record,
+        "files": [],
+        "issue": {"code": "git_root_unavailable"},
     }
     checks["structured_non_git_typed_status"] = structured_removed_evidence(
-        removed_record, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
+        removed_record,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
     )["ok"]
     removed_search = {
-        "tool": "file_search", "status": "removed", "root": fixture_root_record,
-        "matches": [], "total_matches": 0, "issue": {"code": "root_removed"},
+        "tool": "file_search",
+        "status": "removed",
+        "root": fixture_root_record,
+        "matches": [],
+        "total_matches": 0,
+        "issue": {"code": "root_removed"},
     }
     checks["removed_root_typed_success"] = structured_removed_evidence(
-        removed_search, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
+        removed_search,
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
     )["ok"]
     removed_read = {
-        "tool": "read_file", "status": "not_found", "root": fixture_root_record,
-        "files": [], "issue": {"code": "root_not_found"},
+        "tool": "read_file",
+        "status": "not_found",
+        "root": fixture_root_record,
+        "files": [],
+        "issue": {"code": "root_not_found"},
     }
     checks["removed_read_typed_success"] = structured_removed_evidence(
-        removed_read, "read_file", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
+        removed_read,
+        "read_file",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
     )["ok"]
     checks["removed_root_transport_failure_rejected"] = not structured_removed_evidence(
         {"_benchmark_cli_returncode": 1, "_benchmark_response": removed_search},
-        "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
     )["ok"]
-    removed_search_actual = routed_response({
-        "total_matches": 0, "total_files": 0, "matched_files": 0,
-        "searched_files": 0, "content_matches": 0, "path_matches": 0,
-        "limit_hit": False, "content_match_groups": [],
-    }, roots=[], payload={
-        "pattern": marker, "regex": False, "filter": {"paths": [str(fixture_file)]},
-    })
+    removed_search_actual = routed_response(
+        {
+            "total_matches": 0,
+            "total_files": 0,
+            "matched_files": 0,
+            "searched_files": 0,
+            "content_matches": 0,
+            "path_matches": 0,
+            "limit_hit": False,
+            "content_match_groups": [],
+        },
+        roots=[],
+        payload={
+            "pattern": marker,
+            "regex": False,
+            "filter": {"paths": [str(fixture_file)]},
+        },
+    )
     checks["actual_removed_search_shape"] = structured_removed_evidence(
-        removed_search_actual, "file_search", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), require_absent_bound_root=True,
+        removed_search_actual,
+        "file_search",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        require_absent_bound_root=True,
     )["ok"]
-    removed_structure_actual = routed_response({
-        "status": "unavailable", "files": [],
-        "issues": [{"code": "path_not_found", "phase": "seed_resolution"}],
-        "size": "medium", "roots": [],
-        "summary": {"seeds": 0, "nodes": 0, "edges": 0, "files": 0, "tokens": 0},
-    }, roots=[], payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"})
+    removed_structure_actual = routed_response(
+        {
+            "status": "unavailable",
+            "files": [],
+            "issues": [{"code": "path_not_found", "phase": "seed_resolution"}],
+            "size": "medium",
+            "roots": [],
+            "summary": {"seeds": 0, "nodes": 0, "edges": 0, "files": 0, "tokens": 0},
+        },
+        roots=[],
+        payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"},
+    )
     checks["actual_removed_structure_shape"] = structured_removed_evidence(
-        removed_structure_actual, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), require_absent_bound_root=True,
+        removed_structure_actual,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        require_absent_bound_root=True,
     )["ok"]
     removed_structure_bound = dict(removed_structure_actual)
     removed_structure_bound["_benchmark_binding"] = dict(
         removed_structure_actual["_benchmark_binding"], repo_paths=[str(fixture_root)]
     )
     checks["removed_structure_bound_root_rejected"] = not structured_removed_evidence(
-        removed_structure_bound, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), require_absent_bound_root=True,
+        removed_structure_bound,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        require_absent_bound_root=True,
     )["ok"]
     linked_active_fixture = {"ok": True, "status": "running"}
     checks["linked_root_active_then_revoked_terminal"] = linked_root_removal_evidence(
@@ -2343,72 +3020,132 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["linked_root_early_completion_rejected"] = not linked_root_removal_evidence(
         {"ok": False, "status": "completed"}, "completed", {"ok": True}
     )["ok"]
-    checks["linked_root_cross_root_fallback_rejected"] = not linked_root_removal_evidence(
-        linked_active_fixture, "failed", {"ok": False, "reason": "fallback_files"}
-    )["ok"]
-    enriched_removed_structure = routed_response({
-        "tool": "get_code_structure", "status": "unavailable",
-        "root": fixture_root_record, "files": [],
-        "issue": {"code": "path_not_found"},
-    }, roots=[], payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"})
+    checks["linked_root_cross_root_fallback_rejected"] = (
+        not linked_root_removal_evidence(
+            linked_active_fixture, "failed", {"ok": False, "reason": "fallback_files"}
+        )["ok"]
+    )
+    enriched_removed_structure = routed_response(
+        {
+            "tool": "get_code_structure",
+            "status": "unavailable",
+            "root": fixture_root_record,
+            "files": [],
+            "issue": {"code": "path_not_found"},
+        },
+        roots=[],
+        payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"},
+    )
     checks["enriched_removed_structure_absent_root"] = structured_removed_evidence(
-        enriched_removed_structure, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), require_absent_bound_root=True,
+        enriched_removed_structure,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        require_absent_bound_root=True,
     )["ok"]
     enriched_removed_bound = json.loads(json.dumps(enriched_removed_structure))
     enriched_removed_bound["_benchmark_binding"]["repo_paths"] = [str(fixture_root)]
-    checks["enriched_removed_structure_bound_root_rejected"] = not structured_removed_evidence(
-        enriched_removed_bound, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), require_absent_bound_root=True,
-    )["ok"]
+    checks["enriched_removed_structure_bound_root_rejected"] = (
+        not structured_removed_evidence(
+            enriched_removed_bound,
+            "get_code_structure",
+            expected_root_id=fixture_root_id,
+            expected_root_path=str(fixture_root),
+            expected_root_type="linkedWorktree",
+            expected_file_path=str(fixture_file),
+            require_absent_bound_root=True,
+        )["ok"]
+    )
     for tool, status, issue_code, files_key, request_payload in (
         (
-            "file_search", "removed", "root_removed", "matches",
-            {"pattern": marker, "regex": False, "filter": {"paths": [str(fixture_file)]}},
+            "file_search",
+            "removed",
+            "root_removed",
+            "matches",
+            {
+                "pattern": marker,
+                "regex": False,
+                "filter": {"paths": [str(fixture_file)]},
+            },
         ),
         (
-            "read_file", "not_found", "root_not_found", "files",
+            "read_file",
+            "not_found",
+            "root_not_found",
+            "files",
             {"path": str(fixture_file)},
         ),
     ):
-        enriched_removed = routed_response({
-            "tool": tool, "status": status, "root": fixture_root_record,
-            files_key: [], "issue": {"code": issue_code},
-        }, roots=[], payload=request_payload)
+        enriched_removed = routed_response(
+            {
+                "tool": tool,
+                "status": status,
+                "root": fixture_root_record,
+                files_key: [],
+                "issue": {"code": issue_code},
+            },
+            roots=[],
+            payload=request_payload,
+        )
         checks[f"enriched_removed_{tool}_absent_root"] = structured_removed_evidence(
-            enriched_removed, tool, expected_root_id=fixture_root_id,
-            expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-            expected_file_path=str(fixture_file), require_absent_bound_root=True,
+            enriched_removed,
+            tool,
+            expected_root_id=fixture_root_id,
+            expected_root_path=str(fixture_root),
+            expected_root_type="linkedWorktree",
+            expected_file_path=str(fixture_file),
+            require_absent_bound_root=True,
         )["ok"]
         enriched_removed["_benchmark_binding"]["repo_paths"] = [str(fixture_root)]
-        checks[f"enriched_removed_{tool}_bound_root_rejected"] = not structured_removed_evidence(
-            enriched_removed, tool, expected_root_id=fixture_root_id,
-            expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-            expected_file_path=str(fixture_file), require_absent_bound_root=True,
-        )["ok"]
+        checks[f"enriched_removed_{tool}_bound_root_rejected"] = (
+            not structured_removed_evidence(
+                enriched_removed,
+                tool,
+                expected_root_id=fixture_root_id,
+                expected_root_path=str(fixture_root),
+                expected_root_type="linkedWorktree",
+                expected_file_path=str(fixture_file),
+                require_absent_bound_root=True,
+            )["ok"]
+        )
     removed_read_actual = routed_response(
-        {}, roots=[], payload={"path": str(fixture_file)}, returncode=1,
+        {},
+        roots=[],
+        payload={"path": str(fixture_file)},
+        returncode=1,
         stderr=(
             f"Cannot read {str(fixture_file)!r}. The requested path {str(fixture_file)!r} "
             "is not inside any loaded folder in this window."
         ),
     )
     checks["actual_removed_read_shape"] = structured_removed_evidence(
-        removed_read_actual, "read_file", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
-        expected_file_path=str(fixture_file), require_absent_bound_root=True,
+        removed_read_actual,
+        "read_file",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
+        expected_file_path=str(fixture_file),
+        require_absent_bound_root=True,
     )["ok"]
-    non_git_structure_actual = routed_response({
-        "status": "unavailable", "files": [],
-        "issues": [{"code": "git_root_unavailable", "phase": "seed_resolution"}],
-        "size": "medium", "roots": [],
-        "summary": {"seeds": 0, "nodes": 0, "edges": 0, "files": 0, "tokens": 0},
-    }, payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"})
+    non_git_structure_actual = routed_response(
+        {
+            "status": "unavailable",
+            "files": [],
+            "issues": [{"code": "git_root_unavailable", "phase": "seed_resolution"}],
+            "size": "medium",
+            "roots": [],
+            "summary": {"seeds": 0, "nodes": 0, "edges": 0, "files": 0, "tokens": 0},
+        },
+        payload={"paths": [str(fixture_file)], "signatures": True, "size": "medium"},
+    )
     checks["actual_non_git_structure_shape"] = structured_removed_evidence(
-        non_git_structure_actual, "get_code_structure", expected_root_id=fixture_root_id,
-        expected_root_path=str(fixture_root), expected_root_type="linkedWorktree",
+        non_git_structure_actual,
+        "get_code_structure",
+        expected_root_id=fixture_root_id,
+        expected_root_path=str(fixture_root),
+        expected_root_type="linkedWorktree",
         expected_file_path=str(fixture_file),
     )["ok"]
 
@@ -2443,139 +3180,173 @@ def self_test_command(_args: argparse.Namespace) -> int:
             "consumption": consumption,
         }
         if route == "baseline":
-            consumption.update({
-                "selected_route": "fullCrawl",
-                "full_crawl_performed": True,
-                "initial_hint_observation": {"state": "disabled"},
-                "final_observation": {"state": "disabled"},
-            })
+            consumption.update(
+                {
+                    "selected_route": "fullCrawl",
+                    "full_crawl_performed": True,
+                    "initial_hint_observation": {"state": "disabled"},
+                    "final_observation": {"state": "disabled"},
+                }
+            )
         elif route == "forced-full":
-            consumption.update({
-                "selected_route": "fullCrawl",
-                "full_crawl_performed": True,
-                "initial_hint_observation": {
-                    "state": "fallback", "fallback_reason": "noReceipt",
-                },
-                "final_observation": {
-                    "state": "fallback", "fallback_reason": "noReceipt",
-                },
-            })
+            consumption.update(
+                {
+                    "selected_route": "fullCrawl",
+                    "full_crawl_performed": True,
+                    "initial_hint_observation": {
+                        "state": "fallback",
+                        "fallback_reason": "noReceipt",
+                    },
+                    "final_observation": {
+                        "state": "fallback",
+                        "fallback_reason": "noReceipt",
+                    },
+                }
+            )
         else:
-            decision.update({
-                "creation_attempt_count": 1,
-                "creation": {
-                    "source_layout_state": "mainCheckout",
-                    "destination_eligibility": "eligible",
-                    "source_authority_key_digest": "1" * 64,
-                    "source_common_directory_digest": "2" * 64,
-                    "repository_id_digest": "3" * 64,
-                    "repository_namespace_digest": "4" * 64,
-                    "requested_prefix_digest": "5" * 64,
-                    "current_lease_present": True,
-                    "current_lease_current_at_snapshot_lookup": True,
-                    "current_snapshot_present": True,
-                    "current_snapshot_content_address_valid": True,
-                    "current_snapshot_sha256": "6" * 64,
-                    "parent_lookup_route": "currentAlias",
-                    "parent_lookup_failure": "none",
-                    "parent_authority_key_match": "match",
-                    "parent_prefix_match": "match",
-                    "target_tree_resolution": "succeeded",
-                    "witness_requested": True,
-                    "witness_started": True,
-                    "witness_finished": True,
-                    "witness_start_event_id": 100,
-                    "witness_end_event_id": 110,
-                    "witness_start_event_id_valid": True,
-                    "witness_end_event_id_valid": True,
-                    "witness_stable_root_available_before_mutation": True,
-                    "witness_destination_absent_before_mutation": True,
-                    "witness_destination_strict_descendant": True,
-                    "witness_stable_root_unchanged_after_initialization": True,
-                    "witness_stream_creation_succeeded": True,
-                    "witness_activation_flush_completed": True,
-                    "witness_activation_callback_barrier_completed": True,
-                    "witness_ending_flush_completed": True,
-                    "witness_ending_callback_barrier_completed": True,
-                    "witness_start_accepted_callback_watermark": 10,
-                    "witness_end_accepted_callback_watermark": 12,
-                    "witness_accepted_callback_count": 12,
-                    # The producer counts every callback event, including events
-                    # beyond the closed semantic cut. Only the two classified
-                    # events below contribute to the interval evidence.
-                    "witness_accepted_event_count": 3,
-                    "witness_accepted_destination_event_count": 1,
-                    "witness_accepted_non_destination_event_count": 1,
-                    "witness_must_scan_sub_dirs": False,
-                    "witness_root_changed": False,
-                    "witness_user_dropped": False,
-                    "witness_kernel_dropped": False,
-                    "witness_event_ids_wrapped": False,
-                    "witness_event_id_regressed": False,
-                    "witness_lifetime_exceeded": False,
-                    "witness_gap": False,
-                    "witness_drop": False,
-                    "witness_overflow": False,
-                    "witness_proves_interval": True,
-                    "include_copy_requested": True,
-                    "include_copy_result_present": False,
-                    "include_copy_complete": True,
-                    "include_copy_had_failures": False,
-                    "target_layout_present": True,
-                    "target_layout_linked": True,
-                    "target_authority_capture": "succeeded",
-                    "common_directory_match": "match",
-                    "repository_id_match": "match",
-                    "repository_namespace_match": "match",
-                    "target_prefix_match": "match",
-                    "target_tree_authority_match": "match",
-                    "receipt_emitted": True,
-                    "outcome": "receiptEmitted",
-                    "receipt_fallback_reason": None,
-                    "initialization_fallback_reason": None,
-                },
-                "coordinator": {
-                    "create_result_receipt_count": 1,
-                    "hint_count": 1,
-                    "binding_count": 1,
-                    "hint_keyed_by_created_binding": "match",
-                    "creation_fallback_observed": None,
-                },
-                "projection": {
-                    "supplied_hint_count": 1,
-                    "matched_hint_count": 1,
-                    "all_hint_keys_matched_bindings": True,
-                    "validation_fallback": None,
-                },
-            })
-            consumption.update({
-                "selected_route": "diffSeedServing",
-                "full_crawl_performed": False,
-                "owner_generation_match": "match",
-                "hint_session_match": "match",
-                "hint_correlation_match": "match",
-                "hint_owner_match": "match",
-                "initial_hint_observation": {"state": "eligible"},
-                "pending_seeded_preparation_result": {"state": "eligible"},
-                "final_observation": {"state": "eligible"},
-            })
+            decision.update(
+                {
+                    "creation_attempt_count": 1,
+                    "creation": {
+                        "source_layout_state": "mainCheckout",
+                        "destination_eligibility": "eligible",
+                        "source_authority_key_digest": "1" * 64,
+                        "source_common_directory_digest": "2" * 64,
+                        "repository_id_digest": "3" * 64,
+                        "repository_namespace_digest": "4" * 64,
+                        "requested_prefix_digest": "5" * 64,
+                        "current_lease_present": True,
+                        "current_lease_current_at_snapshot_lookup": True,
+                        "current_snapshot_present": True,
+                        "current_snapshot_content_address_valid": True,
+                        "current_snapshot_sha256": "6" * 64,
+                        "parent_lookup_route": "currentAlias",
+                        "parent_lookup_failure": "none",
+                        "parent_authority_key_match": "match",
+                        "parent_prefix_match": "match",
+                        "target_tree_resolution": "succeeded",
+                        "witness_requested": True,
+                        "witness_started": True,
+                        "witness_finished": True,
+                        "witness_start_event_id": 100,
+                        "witness_end_event_id": 110,
+                        "witness_start_event_id_valid": True,
+                        "witness_end_event_id_valid": True,
+                        "witness_stable_root_available_before_mutation": True,
+                        "witness_destination_absent_before_mutation": True,
+                        "witness_destination_strict_descendant": True,
+                        "witness_stable_root_unchanged_after_initialization": True,
+                        "witness_stream_creation_succeeded": True,
+                        "witness_activation_flush_completed": True,
+                        "witness_activation_callback_barrier_completed": True,
+                        "witness_ending_flush_completed": True,
+                        "witness_ending_callback_barrier_completed": True,
+                        "witness_start_accepted_callback_watermark": 10,
+                        "witness_end_accepted_callback_watermark": 12,
+                        "witness_accepted_callback_count": 12,
+                        # The producer counts every callback event, including events
+                        # beyond the closed semantic cut. Only the two classified
+                        # events below contribute to the interval evidence.
+                        "witness_accepted_event_count": 3,
+                        "witness_accepted_destination_event_count": 1,
+                        "witness_accepted_non_destination_event_count": 1,
+                        "witness_must_scan_sub_dirs": False,
+                        "witness_root_changed": False,
+                        "witness_user_dropped": False,
+                        "witness_kernel_dropped": False,
+                        "witness_event_ids_wrapped": False,
+                        "witness_event_id_regressed": False,
+                        "witness_lifetime_exceeded": False,
+                        "witness_gap": False,
+                        "witness_drop": False,
+                        "witness_overflow": False,
+                        "witness_proves_interval": True,
+                        "include_copy_requested": True,
+                        "include_copy_result_present": False,
+                        "include_copy_complete": True,
+                        "include_copy_had_failures": False,
+                        "target_layout_present": True,
+                        "target_layout_linked": True,
+                        "target_authority_capture": "succeeded",
+                        "common_directory_match": "match",
+                        "repository_id_match": "match",
+                        "repository_namespace_match": "match",
+                        "target_prefix_match": "match",
+                        "target_tree_authority_match": "match",
+                        "receipt_emitted": True,
+                        "outcome": "receiptEmitted",
+                        "receipt_fallback_reason": None,
+                        "initialization_fallback_reason": None,
+                    },
+                    "coordinator": {
+                        "create_result_receipt_count": 1,
+                        "hint_count": 1,
+                        "binding_count": 1,
+                        "hint_keyed_by_created_binding": "match",
+                        "creation_fallback_observed": None,
+                    },
+                    "projection": {
+                        "supplied_hint_count": 1,
+                        "matched_hint_count": 1,
+                        "all_hint_keys_matched_bindings": True,
+                        "validation_fallback": None,
+                    },
+                }
+            )
+            consumption.update(
+                {
+                    "selected_route": "diffSeedServing",
+                    "full_crawl_performed": False,
+                    "owner_generation_match": "match",
+                    "hint_session_match": "match",
+                    "hint_correlation_match": "match",
+                    "hint_owner_match": "match",
+                    "initial_hint_observation": {"state": "eligible"},
+                    "pending_seeded_preparation_result": {"state": "eligible"},
+                    "final_observation": {"state": "eligible"},
+                }
+            )
         return decision
 
     def policy_canonicalization_fixture() -> dict[str, Any]:
         base_constituents: list[dict[str, Any]] = [
-            {"constituent": "rootNeutralPolicyConfig", "byte_count": 0, "sha256": "a" * 64},
-            {"constituent": "commonInfoExclude", "state": "missing", "digest": "b" * 64},
-            {"constituent": "canonicalIgnoreFooter", "digest": "c" * 64, "record_count": 4},
             {
-                "constituent": "externalExcludes", "state": "unset",
-                "identity_digest": "d" * 64, "byte_count": 0,
+                "constituent": "rootNeutralPolicyConfig",
+                "byte_count": 0,
+                "sha256": "a" * 64,
+            },
+            {
+                "constituent": "commonInfoExclude",
+                "state": "missing",
+                "digest": "b" * 64,
+            },
+            {
+                "constituent": "canonicalIgnoreFooter",
+                "digest": "c" * 64,
+                "record_count": 4,
+            },
+            {
+                "constituent": "externalExcludes",
+                "state": "unset",
+                "identity_digest": "d" * 64,
+                "byte_count": 0,
             },
             {"constituent": "configuredIgnorePolicy", "digest": "e" * 64},
-            {"constituent": "commonInfoAttributes", "state": "regular", "digest": "f" * 64},
-            {"constituent": "canonicalAttributeFooter", "digest": "1" * 64, "record_count": 1},
             {
-                "constituent": "externalAttributes", "state": "unset",
-                "identity_digest": "2" * 64, "byte_count": 0,
+                "constituent": "commonInfoAttributes",
+                "state": "regular",
+                "digest": "f" * 64,
+            },
+            {
+                "constituent": "canonicalAttributeFooter",
+                "digest": "1" * 64,
+                "record_count": 1,
+            },
+            {
+                "constituent": "externalAttributes",
+                "state": "unset",
+                "identity_digest": "2" * 64,
+                "byte_count": 0,
             },
             {"constituent": "attributePolicy", "digest": "3" * 64},
             {"constituent": "sparsePolicy", "digest": "4" * 64},
@@ -2587,15 +3358,18 @@ def self_test_command(_args: argparse.Namespace) -> int:
                 "completeness": "complete",
             },
             {
-                "constituent": "committedControls", "record_count": 5,
+                "constituent": "committedControls",
+                "record_count": 5,
                 "summary_sha256": "6" * 64,
             },
         ]
         target_constituents = json.loads(json.dumps(base_constituents))
-        target_constituents[-2].update({
-            "pruned_root_count": 0,
-            "pruned_root_summary_sha256": "7" * 64,
-        })
+        target_constituents[-2].update(
+            {
+                "pruned_root_count": 0,
+                "pruned_root_summary_sha256": "7" * 64,
+            }
+        )
         return {
             "classification": "canonicalEquivalentAfterReachabilityFiltering",
             "constituent_comparisons": [
@@ -2608,53 +3382,68 @@ def self_test_command(_args: argparse.Namespace) -> int:
 
     def export_fixture(route: str) -> dict[str, Any]:
         boundaries = {
-            "bindingTransitionStarted": 0, "rootReady": 100,
-            "firstBenchmarkSearchStarted": 110, "firstBenchmarkReadStarted": 120,
-            "firstBenchmarkSearchCompleted": 210, "firstBenchmarkReadCompleted": 220,
-            "firstBenchmarkCodemapStarted": 230, "firstBenchmarkCodemapCompleted": 330,
-            "warmBenchmarkCodemapStarted": 340, "warmBenchmarkCodemapCompleted": 440,
-            "passiveBenchmarkTreeStarted": 450, "passiveBenchmarkTreeCompleted": 550,
-            "benchmarkSelectionStarted": 560, "benchmarkSelectionCompleted": 660,
+            "bindingTransitionStarted": 0,
+            "rootReady": 100,
+            "firstBenchmarkSearchStarted": 110,
+            "firstBenchmarkReadStarted": 120,
+            "firstBenchmarkSearchCompleted": 210,
+            "firstBenchmarkReadCompleted": 220,
+            "firstBenchmarkCodemapStarted": 230,
+            "firstBenchmarkCodemapCompleted": 330,
+            "warmBenchmarkCodemapStarted": 340,
+            "warmBenchmarkCodemapCompleted": 440,
+            "passiveBenchmarkTreeStarted": 450,
+            "passiveBenchmarkTreeCompleted": 550,
+            "benchmarkSelectionStarted": 560,
+            "benchmarkSelectionCompleted": 660,
         }
         durations = {
             "materialize_to_root_ready": 100,
             "materialize_to_first_search": 210,
             "materialize_to_first_read": 220,
-            "first_search": 100, "first_read": 100, "first_codemap": 100,
-            "warm_codemap": 100, "passive_tree": 100, "selection": 100,
+            "first_search": 100,
+            "first_read": 100,
+            "first_codemap": 100,
+            "warm_codemap": 100,
+            "passive_tree": 100,
+            "selection": 100,
         }
         delta_evaluations: list[dict[str, Any]] = []
         if route == "projected":
             for source in ("hintEvaluator", "planner"):
-                delta_evaluations.append({
-                    "correlation_id": correlation,
-                    "source": source,
-                    "decision": "compatible",
-                    "field_evaluations": [
-                        {
-                            "field": field,
-                            "decision": "match",
-                            "base_digest": "a" * 64,
-                            "target_digest": "a" * 64,
-                        }
-                        for field in DELTA_COMPATIBILITY_FIELDS
-                    ],
-                    "mismatched_fields": [],
-                    "correction_rule_applied": "none",
-                    "tree_relation": "sameExcludedFromDeltaCompatibility",
-                    "exact_snapshot_lookup_reached": True,
-                    "exact_snapshot_lookup_passed": True,
-                    "target_authority_comparison_reached": True,
-                    "target_authority_comparison_passed": True,
-                    "current_search_abi_reached": source == "hintEvaluator",
-                    "current_search_abi_matched": True if source == "hintEvaluator" else None,
-                    "catalog_policy_comparison_reached": source == "planner",
-                    "catalog_policy_matched": True if source == "planner" else None,
-                    "terminal_fallback": None,
-                    "duplicate": False,
-                    "contradictory": False,
-                    "policy_canonicalization_comparison": policy_canonicalization_fixture(),
-                })
+                delta_evaluations.append(
+                    {
+                        "correlation_id": correlation,
+                        "source": source,
+                        "decision": "compatible",
+                        "field_evaluations": [
+                            {
+                                "field": field,
+                                "decision": "match",
+                                "base_digest": "a" * 64,
+                                "target_digest": "a" * 64,
+                            }
+                            for field in DELTA_COMPATIBILITY_FIELDS
+                        ],
+                        "mismatched_fields": [],
+                        "correction_rule_applied": "none",
+                        "tree_relation": "sameExcludedFromDeltaCompatibility",
+                        "exact_snapshot_lookup_reached": True,
+                        "exact_snapshot_lookup_passed": True,
+                        "target_authority_comparison_reached": True,
+                        "target_authority_comparison_passed": True,
+                        "current_search_abi_reached": source == "hintEvaluator",
+                        "current_search_abi_matched": (
+                            True if source == "hintEvaluator" else None
+                        ),
+                        "catalog_policy_comparison_reached": source == "planner",
+                        "catalog_policy_matched": True if source == "planner" else None,
+                        "terminal_fallback": None,
+                        "duplicate": False,
+                        "contradictory": False,
+                        "policy_canonicalization_comparison": policy_canonicalization_fixture(),
+                    }
+                )
         return {
             "schema_version": DIAGNOSTIC_SCHEMA_VERSION,
             "scope": {"context_id": context_id},
@@ -2687,45 +3476,82 @@ def self_test_command(_args: argparse.Namespace) -> int:
             "delta_compatibility_evaluation_contradictory": False,
             "delta_compatibility_evaluations": delta_evaluations,
             "git": {
-                "available": True, "command_count": 1, "families": {"test": 1},
-                "priorities": {"test": 1}, "queue_wait_us": 0, "duration_us": 1,
-                "output_bytes": 0, "cancelled_count": 0,
+                "available": True,
+                "command_count": 1,
+                "families": {"test": 1},
+                "priorities": {"test": 1},
+                "queue_wait_us": 0,
+                "duration_us": 1,
+                "output_bytes": 0,
+                "cancelled_count": 0,
             },
             "work": {
                 "filesystem": {
-                    "available": True, "operation_count": 1, "duration_us": 1,
+                    "available": True,
+                    "operation_count": 1,
+                    "duration_us": 1,
                     "item_count": 1,
                 },
                 "planner": {
                     phase: {"count": 1, "duration_us": 1, "item_count": 1}
-                    for phase in ("targetNamespace", "treeEvidence", "indexEvidence", "statusEvidence", "reconcile")
+                    for phase in (
+                        "targetNamespace",
+                        "treeEvidence",
+                        "indexEvidence",
+                        "statusEvidence",
+                        "reconcile",
+                    )
                 },
                 "mutation_lock": {
-                    "available": True, "count": 1, "queue_wait_us": 0, "held_us": 1,
-                    "mutation_us": 1, "post_mutation_finalization_us": 1,
+                    "available": True,
+                    "count": 1,
+                    "queue_wait_us": 0,
+                    "held_us": 1,
+                    "mutation_us": 1,
+                    "post_mutation_finalization_us": 1,
                 },
-                "passive_tree": {"available": True, "operation_count": 1, "duration_us": 100},
-                "marker_publications": [{
-                    "root_id": str(uuid.uuid4()), "root_lifetime_id": str(uuid.uuid4()),
-                    "revision": 1, "effective_change_count": 1,
-                    "source": "warmReplay", "timestamp_us": 550,
-                }],
+                "passive_tree": {
+                    "available": True,
+                    "operation_count": 1,
+                    "duration_us": 100,
+                },
+                "marker_publications": [
+                    {
+                        "root_id": str(uuid.uuid4()),
+                        "root_lifetime_id": str(uuid.uuid4()),
+                        "revision": 1,
+                        "effective_change_count": 1,
+                        "source": "warmReplay",
+                        "timestamp_us": 550,
+                    }
+                ],
             },
         }
 
     for route in ROUTES:
         export = export_fixture(route)
         failures = validate_export(
-            export, route, {"search": True, "read": True},
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+            export,
+            route,
+            {"search": True, "read": True},
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
         )
         checks[f"route_{route}"] = not failures
         export["sample"]["route_counts"] = {"wrong": 1}
-        checks[f"route_{route}_negative"] = "actual_route_counts_mismatch" in validate_export(
-            export, route, {"search": True, "read": True},
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+        checks[f"route_{route}_negative"] = (
+            "actual_route_counts_mismatch"
+            in validate_export(
+                export,
+                route,
+                {"search": True, "read": True},
+                expected_correlation=correlation,
+                expected_session=session,
+                expected_invocation=1,
+                expected_ordinal=1,
+            )
         )
 
     primary_build = {"cli_sha256": "a" * 64, "base_commit_oid": "b" * 40}
@@ -2762,16 +3588,25 @@ def self_test_command(_args: argparse.Namespace) -> int:
         }
 
     def finalize_primary_fixture(
-        primary: dict[str, Any], *, route: str = "baseline", cleanup_complete: bool = True,
+        primary: dict[str, Any],
+        *,
+        route: str = "baseline",
+        cleanup_complete: bool = True,
         expected_route_observation_count: int = 1,
     ) -> None:
         finalize_primary_performance(
-            primary, route=route,
-            expected_correlation=correlation, expected_session=session,
-            expected_context=context_id, expected_scope_context=context_id,
-            expected_invocation=1, expected_ordinal=1,
-            expected_build=primary_build, expected_fixture=primary_fixture_identity,
-            resource_failures=[], cleanup_complete=cleanup_complete,
+            primary,
+            route=route,
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_context=context_id,
+            expected_scope_context=context_id,
+            expected_invocation=1,
+            expected_ordinal=1,
+            expected_build=primary_build,
+            expected_fixture=primary_fixture_identity,
+            resource_failures=[],
+            cleanup_complete=cleanup_complete,
             build_unchanged=True,
             expected_route_observation_count=expected_route_observation_count,
         )
@@ -2782,7 +3617,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
         "accepted": False,
         "invalid_reasons": ["missing_first_codemap"],
         "collection": {
-            "ok": False, "completed": True,
+            "ok": False,
+            "completed": True,
             "failures": [{"operation": "first_codemap", "type": "timeout"}],
         },
     }
@@ -2792,7 +3628,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
     )
     failed_read_primary = primary_fixture()
     failed_read_primary["direct_tool_evidence"]["read"] = {
-        "ok": False, "type": "malformed", "error": "missing committed marker",
+        "ok": False,
+        "type": "malformed",
+        "error": "missing committed marker",
     }
     finalize_primary_fixture(failed_read_primary)
     checks["failed_read_invalidates_primary"] = (
@@ -2800,8 +3638,12 @@ def self_test_command(_args: argparse.Namespace) -> int:
         and "direct_content_oracle_mismatch" in failed_read_primary["invalid_reasons"]
     )
     route_mismatch_primary = primary_fixture("projected")
-    route_mismatch_primary["diagnostic_checkpoint"]["sample"]["route_counts"] = {"fullCrawl": 1}
-    route_mismatch_primary["diagnostic_checkpoint"]["sample"]["fallback_counts"] = {"fallback": 1}
+    route_mismatch_primary["diagnostic_checkpoint"]["sample"]["route_counts"] = {
+        "fullCrawl": 1
+    }
+    route_mismatch_primary["diagnostic_checkpoint"]["sample"]["fallback_counts"] = {
+        "fallback": 1
+    }
     finalize_primary_fixture(route_mismatch_primary, route="projected")
     checks["route_fallback_mismatch_invalidates_primary"] = (
         route_mismatch_primary["valid"] is False
@@ -2819,18 +3661,23 @@ def self_test_command(_args: argparse.Namespace) -> int:
     nonconcurrent_primary["direct_tool_evidence"]["concurrent"] = False
     finalize_primary_fixture(nonconcurrent_primary)
     checks["recorded_sequential_search_read_rejected"] = (
-        "primary_direct_concurrency_unproven" in nonconcurrent_primary["invalid_reasons"]
+        "primary_direct_concurrency_unproven"
+        in nonconcurrent_primary["invalid_reasons"]
     )
     nonoverlap_primary = primary_fixture()
     nonoverlap_sample = nonoverlap_primary["diagnostic_checkpoint"]["sample"]
-    nonoverlap_sample["operation_boundaries_us"].update({
-        "firstBenchmarkSearchCompleted": 115,
-        "firstBenchmarkReadStarted": 120,
-    })
-    nonoverlap_sample["durations_us"].update({
-        "materialize_to_first_search": 115,
-        "first_search": 5,
-    })
+    nonoverlap_sample["operation_boundaries_us"].update(
+        {
+            "firstBenchmarkSearchCompleted": 115,
+            "firstBenchmarkReadStarted": 120,
+        }
+    )
+    nonoverlap_sample["durations_us"].update(
+        {
+            "materialize_to_first_search": 115,
+            "first_search": 5,
+        }
+    )
     finalize_primary_fixture(nonoverlap_primary)
     checks["interval_sequential_search_read_rejected"] = (
         "primary_search_read_intervals_do_not_overlap"
@@ -2867,9 +3714,13 @@ def self_test_command(_args: argparse.Namespace) -> int:
 
     def receipt_failures(checkpoint: dict[str, Any], route: str) -> list[str]:
         return validate_receipt_oracle(
-            checkpoint, checkpoint["sample"], route,
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+            checkpoint,
+            checkpoint["sample"],
+            route,
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
         )
 
     for source_route in ROUTES:
@@ -2881,11 +3732,10 @@ def self_test_command(_args: argparse.Namespace) -> int:
                 f"receipt_route_matrix_{source_route.replace('-', '_')}_as_"
                 f"{validated_route.replace('-', '_')}"
             )
-            expected_contract_failure = (
-                f"receipt_{validated_route.replace('-', '_')}_decision_contract_mismatch"
-            )
+            expected_contract_failure = f"receipt_{validated_route.replace('-', '_')}_decision_contract_mismatch"
             checks[check_name] = (
-                not route_failures if source_route == validated_route
+                not route_failures
+                if source_route == validated_route
                 else expected_contract_failure in route_failures
             )
 
@@ -2898,7 +3748,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
         mixed_checkpoint["receipt_decisions"][0]["projection"] = projected_decision[
             "projection"
         ]
-        checks[f"receipt_{nonprojected_route.replace('-', '_')}_rejects_projected_evidence"] = (
+        checks[
+            f"receipt_{nonprojected_route.replace('-', '_')}_rejects_projected_evidence"
+        ] = (
             f"receipt_{nonprojected_route.replace('-', '_')}_decision_contract_mismatch"
             in receipt_failures(mixed_checkpoint, nonprojected_route)
         )
@@ -2940,37 +3792,47 @@ def self_test_command(_args: argparse.Namespace) -> int:
             in receipt_failures(contradictory_receipt, "projected")
         )
     wrong_physical_type = export_fixture("projected")
-    wrong_physical_type["receipt_decisions"][0]["creation"]["witness_proves_interval"] = 1
+    wrong_physical_type["receipt_decisions"][0]["creation"][
+        "witness_proves_interval"
+    ] = 1
     checks["receipt_projected_known_physical_type_rejected"] = (
         "receipt_projected_decision_contract_mismatch"
         in receipt_failures(wrong_physical_type, "projected")
     )
     event_id_overflow = export_fixture("projected")
-    event_id_overflow["receipt_decisions"][0]["creation"]["witness_end_event_id"] = 1 << 64
+    event_id_overflow["receipt_decisions"][0]["creation"]["witness_end_event_id"] = (
+        1 << 64
+    )
     checks["receipt_projected_uint64_event_id_overflow_rejected"] = (
         "receipt_projected_decision_contract_mismatch"
         in receipt_failures(event_id_overflow, "projected")
     )
     event_id_sentinel = export_fixture("projected")
-    event_id_sentinel["receipt_decisions"][0]["creation"]["witness_end_event_id"] = (1 << 64) - 1
+    event_id_sentinel["receipt_decisions"][0]["creation"]["witness_end_event_id"] = (
+        1 << 64
+    ) - 1
     checks["receipt_projected_uint64_event_id_sentinel_rejected"] = (
         "receipt_projected_decision_contract_mismatch"
         in receipt_failures(event_id_sentinel, "projected")
     )
     callback_watermark_overflow = export_fixture("projected")
-    callback_watermark_overflow["receipt_decisions"][0]["creation"].update({
-        "witness_end_accepted_callback_watermark": 1 << 64,
-        "witness_accepted_callback_count": (1 << 63) - 1,
-    })
+    callback_watermark_overflow["receipt_decisions"][0]["creation"].update(
+        {
+            "witness_end_accepted_callback_watermark": 1 << 64,
+            "witness_accepted_callback_count": (1 << 63) - 1,
+        }
+    )
     checks["receipt_projected_uint64_callback_watermark_overflow_rejected"] = (
         "receipt_projected_decision_contract_mismatch"
         in receipt_failures(callback_watermark_overflow, "projected")
     )
     callback_count_overflow = export_fixture("projected")
-    callback_count_overflow["receipt_decisions"][0]["creation"].update({
-        "witness_end_accepted_callback_watermark": 1 << 63,
-        "witness_accepted_callback_count": 1 << 63,
-    })
+    callback_count_overflow["receipt_decisions"][0]["creation"].update(
+        {
+            "witness_end_accepted_callback_watermark": 1 << 63,
+            "witness_accepted_callback_count": 1 << 63,
+        }
+    )
     checks["receipt_projected_swift_int_callback_count_overflow_rejected"] = (
         "receipt_projected_decision_contract_mismatch"
         in receipt_failures(callback_count_overflow, "projected")
@@ -2984,18 +3846,25 @@ def self_test_command(_args: argparse.Namespace) -> int:
         in receipt_failures(callback_count_mismatch, "projected")
     )
     events_outside_semantic_cut = export_fixture("projected")
-    outside_cut_creation = events_outside_semantic_cut["receipt_decisions"][0]["creation"]
-    checks["receipt_projected_total_events_outside_semantic_cut_accepted"] = (
-        outside_cut_creation["witness_accepted_event_count"]
-        > outside_cut_creation["witness_accepted_destination_event_count"]
-        + outside_cut_creation["witness_accepted_non_destination_event_count"]
-        and not receipt_failures(events_outside_semantic_cut, "projected")
+    outside_cut_creation = events_outside_semantic_cut["receipt_decisions"][0][
+        "creation"
+    ]
+    checks[
+        "receipt_projected_total_events_outside_semantic_cut_accepted"
+    ] = outside_cut_creation["witness_accepted_event_count"] > outside_cut_creation[
+        "witness_accepted_destination_event_count"
+    ] + outside_cut_creation[
+        "witness_accepted_non_destination_event_count"
+    ] and not receipt_failures(
+        events_outside_semantic_cut, "projected"
     )
     callback_watermark_regression = export_fixture("projected")
-    callback_watermark_regression["receipt_decisions"][0]["creation"].update({
-        "witness_start_accepted_callback_watermark": 13,
-        "witness_end_accepted_callback_watermark": 12,
-    })
+    callback_watermark_regression["receipt_decisions"][0]["creation"].update(
+        {
+            "witness_start_accepted_callback_watermark": 13,
+            "witness_end_accepted_callback_watermark": 12,
+        }
+    )
     checks["receipt_projected_callback_watermark_regression_rejected"] = (
         "receipt_projected_decision_contract_mismatch"
         in receipt_failures(callback_watermark_regression, "projected")
@@ -3016,29 +3885,45 @@ def self_test_command(_args: argparse.Namespace) -> int:
     )
 
     probe_route_export = export_fixture("projected")
-    derived_probe_observations = policy_digest_probe_route_observation_count("diffSeedServing")
+    derived_probe_observations = policy_digest_probe_route_observation_count(
+        "diffSeedServing"
+    )
     probe_route_export["sample"]["route_counts"] = {
         "diffSeedServing": derived_probe_observations
     }
     checks["policy_digest_probe_observation_count_derived_from_typed_events"] = (
         derived_probe_observations
-        == len([
-            event for event in POLICY_DIGEST_PROBE_ROUTE_EVENTS
-            if event.route == "diffSeedServing"
-        ])
+        == len(
+            [
+                event
+                for event in POLICY_DIGEST_PROBE_ROUTE_EVENTS
+                if event.route == "diffSeedServing"
+            ]
+        )
         and all(event.phase for event in POLICY_DIGEST_PROBE_ROUTE_EVENTS)
     )
-    checks["policy_digest_probe_exact_projected_observation_count_accepted"] = not validate_export(
-        probe_route_export, "projected", {"search": True, "read": True},
-        expected_correlation=correlation, expected_session=session,
-        expected_invocation=1, expected_ordinal=1,
-        expected_route_observation_count=derived_probe_observations,
+    checks["policy_digest_probe_exact_projected_observation_count_accepted"] = (
+        not validate_export(
+            probe_route_export,
+            "projected",
+            {"search": True, "read": True},
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
+            expected_route_observation_count=derived_probe_observations,
+        )
     )
     checks["aggregate_projected_route_still_requires_one_observation"] = (
-        "actual_route_counts_mismatch" in validate_export(
-            probe_route_export, "projected", {"search": True, "read": True},
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+        "actual_route_counts_mismatch"
+        in validate_export(
+            probe_route_export,
+            "projected",
+            {"search": True, "read": True},
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
         )
     )
     probe_route_primary = primary_fixture("projected")
@@ -3062,7 +3947,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["forced_full_delta_evidence_rejected"] = (
         "delta_compatibility_evidence_invalid"
         in validate_delta_compatibility_oracle(
-            forced_delta, "forced-full", expected_correlation=correlation,
+            forced_delta,
+            "forced-full",
+            expected_correlation=correlation,
         )
     )
     missing_planner = export_fixture("projected")
@@ -3071,7 +3958,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["projected_requires_evaluator_and_planner_delta_evidence"] = (
         "delta_compatibility_evidence_invalid"
         in validate_delta_compatibility_oracle(
-            missing_planner, "projected", expected_correlation=correlation,
+            missing_planner,
+            "projected",
+            expected_correlation=correlation,
         )
     )
     duplicate_delta = export_fixture("projected")
@@ -3080,7 +3969,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["delta_duplicate_rejected"] = (
         "delta_compatibility_evidence_invalid"
         in validate_delta_compatibility_oracle(
-            duplicate_delta, "projected", expected_correlation=correlation,
+            duplicate_delta,
+            "projected",
+            expected_correlation=correlation,
         )
     )
     contradictory_delta = export_fixture("projected")
@@ -3089,25 +3980,30 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["delta_contradiction_rejected"] = (
         "delta_compatibility_evidence_invalid"
         in validate_delta_compatibility_oracle(
-            contradictory_delta, "projected", expected_correlation=correlation,
+            contradictory_delta,
+            "projected",
+            expected_correlation=correlation,
         )
     )
     canonical_equivalent = policy_canonicalization_fixture()
-    checks["policy_canonicalization_equivalence_accepted"] = not validate_policy_canonicalization_comparison(
-        canonical_equivalent, require_canonical_equivalence=True,
+    checks["policy_canonicalization_equivalence_accepted"] = (
+        not validate_policy_canonicalization_comparison(
+            canonical_equivalent,
+            require_canonical_equivalence=True,
+        )
     )
     semantic_policy = policy_canonicalization_fixture()
     semantic_policy["classification"] = "semanticInputDifference"
     semantic_policy["target"]["constituents"][2]["digest"] = "6" * 64
     semantic_policy["constituent_comparisons"][2]["matched"] = False
-    checks["policy_canonicalization_semantic_classified_but_not_authorized"] = (
-        not validate_policy_canonicalization_comparison(
-            semantic_policy, require_canonical_equivalence=False,
-        )
-        and "policy_canonicalization_not_equivalent"
-        in validate_policy_canonicalization_comparison(
-            semantic_policy, require_canonical_equivalence=True,
-        )
+    checks[
+        "policy_canonicalization_semantic_classified_but_not_authorized"
+    ] = not validate_policy_canonicalization_comparison(
+        semantic_policy,
+        require_canonical_equivalence=False,
+    ) and "policy_canonicalization_not_equivalent" in validate_policy_canonicalization_comparison(
+        semantic_policy,
+        require_canonical_equivalence=True,
     )
     incomplete_policy = policy_canonicalization_fixture()
     incomplete_policy["classification"] = "incomplete"
@@ -3116,7 +4012,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["policy_canonicalization_incomplete_fails_closed"] = (
         "policy_canonicalization_not_equivalent"
         in validate_policy_canonicalization_comparison(
-            incomplete_policy, require_canonical_equivalence=True,
+            incomplete_policy,
+            require_canonical_equivalence=True,
         )
     )
     duplicate_policy = policy_canonicalization_fixture()
@@ -3126,7 +4023,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["policy_canonicalization_duplicate_rejected"] = (
         "policy_canonicalization_base_constituent_order_invalid"
         in validate_policy_canonicalization_comparison(
-            duplicate_policy, require_canonical_equivalence=True,
+            duplicate_policy,
+            require_canonical_equivalence=True,
         )
     )
     contradictory_policy = policy_canonicalization_fixture()
@@ -3134,7 +4032,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["policy_canonicalization_contradiction_rejected"] = (
         "policy_canonicalization_comparison_contradictory"
         in validate_policy_canonicalization_comparison(
-            contradictory_policy, require_canonical_equivalence=True,
+            contradictory_policy,
+            require_canonical_equivalence=True,
         )
     )
     large_policy = policy_canonicalization_fixture()
@@ -3143,19 +4042,27 @@ def self_test_command(_args: argparse.Namespace) -> int:
         large_policy[label]["constituents"][-1]["record_count"] = 1_000_000
     checks["policy_canonicalization_large_summary_counts_accepted"] = (
         not validate_policy_canonicalization_comparison(
-            large_policy, require_canonical_equivalence=True,
+            large_policy,
+            require_canonical_equivalence=True,
         )
     )
     additive_policy = policy_canonicalization_fixture()
     additive_policy["producer_revision"] = 7
-    additive_policy["constituent_comparisons"][0]["future_comparison_evidence"] = "base-target"
+    additive_policy["constituent_comparisons"][0][
+        "future_comparison_evidence"
+    ] = "base-target"
     for label, marker_value in (("base", "left"), ("target", "right")):
         additive_policy[label]["future_side_evidence"] = marker_value
-        additive_policy[label]["constituents"][0]["future_policy_evidence"] = marker_value
-        additive_policy[label]["constituents"][-1]["future_control_evidence"] = marker_value
+        additive_policy[label]["constituents"][0][
+            "future_policy_evidence"
+        ] = marker_value
+        additive_policy[label]["constituents"][-1][
+            "future_control_evidence"
+        ] = marker_value
     checks["policy_canonicalization_unknown_additive_fields_accepted"] = (
         not validate_policy_canonicalization_comparison(
-            additive_policy, require_canonical_equivalence=True,
+            additive_policy,
+            require_canonical_equivalence=True,
         )
     )
     count_policy = policy_canonicalization_fixture()
@@ -3163,7 +4070,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["policy_canonicalization_exact_counts_required"] = (
         "policy_canonicalization_comparison_contradictory"
         in validate_policy_canonicalization_comparison(
-            count_policy, require_canonical_equivalence=True,
+            count_policy,
+            require_canonical_equivalence=True,
         )
     )
     summary_policy = policy_canonicalization_fixture()
@@ -3171,7 +4079,8 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["policy_canonicalization_summary_digest_required"] = (
         "policy_canonicalization_target_committedControls_value_invalid"
         in validate_policy_canonicalization_comparison(
-            summary_policy, require_canonical_equivalence=True,
+            summary_policy,
+            require_canonical_equivalence=True,
         )
     )
     digest_policy = policy_canonicalization_fixture()
@@ -3179,11 +4088,14 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["policy_canonicalization_lowercase_digests_required"] = (
         "policy_canonicalization_target_rootNeutralPolicyConfig_value_invalid"
         in validate_policy_canonicalization_comparison(
-            digest_policy, require_canonical_equivalence=True,
+            digest_policy,
+            require_canonical_equivalence=True,
         )
     )
     semantic_mismatch = export_fixture("projected")
-    semantic_field = semantic_mismatch["delta_compatibility_evaluations"][0]["field_evaluations"][0]
+    semantic_field = semantic_mismatch["delta_compatibility_evaluations"][0][
+        "field_evaluations"
+    ][0]
     semantic_field["decision"] = "mismatch"
     semantic_field["target_digest"] = "b" * 64
     semantic_mismatch["delta_compatibility_evaluations"][0]["mismatched_fields"] = [
@@ -3192,7 +4104,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["semantic_delta_correction_rejected"] = (
         "delta_compatibility_hintEvaluator_correction_contract_mismatch"
         in validate_delta_compatibility_oracle(
-            semantic_mismatch, "projected", expected_correlation=correlation,
+            semantic_mismatch,
+            "projected",
+            expected_correlation=correlation,
         )
     )
     representation_correction = export_fixture("projected")
@@ -3201,16 +4115,25 @@ def self_test_command(_args: argparse.Namespace) -> int:
         field["decision"] = "mismatch"
         field["target_digest"] = "b" * 64
         evaluation["mismatched_fields"] = ["resolvedExcludesFileIdentity"]
-        evaluation["correction_rule_applied"] = "canonicalMissingResolvedExcludesFileIdentity"
-    checks["authorized_representation_delta_correction_accepted"] = not validate_delta_compatibility_oracle(
-        representation_correction, "projected", expected_correlation=correlation,
+        evaluation["correction_rule_applied"] = (
+            "canonicalMissingResolvedExcludesFileIdentity"
+        )
+    checks["authorized_representation_delta_correction_accepted"] = (
+        not validate_delta_compatibility_oracle(
+            representation_correction,
+            "projected",
+            expected_correlation=correlation,
+        )
     )
     malformed_evaluation = export_fixture("projected")
     malformed_evaluation["delta_compatibility_evaluations"][0] = "not-an-evaluation"
     checks["delta_malformed_evaluation_entry_rejected_fail_closed"] = (
         validate_delta_compatibility_oracle(
-            malformed_evaluation, "projected", expected_correlation=correlation,
-        ) == ["delta_compatibility_evaluation_entry_malformed"]
+            malformed_evaluation,
+            "projected",
+            expected_correlation=correlation,
+        )
+        == ["delta_compatibility_evaluation_entry_malformed"]
     )
     malformed_field = export_fixture("projected")
     malformed_field["delta_compatibility_evaluations"][0]["field_evaluations"].append(
@@ -3219,7 +4142,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
     checks["delta_malformed_extra_field_entry_rejected_fail_closed"] = (
         "delta_compatibility_hintEvaluator_field_entry_malformed"
         in validate_delta_compatibility_oracle(
-            malformed_field, "projected", expected_correlation=correlation,
+            malformed_field,
+            "projected",
+            expected_correlation=correlation,
         )
     )
 
@@ -3236,13 +4161,15 @@ def self_test_command(_args: argparse.Namespace) -> int:
             }
 
         selection = operation("selection")
-        selection.update({
-            "set_attempted": True,
-            "get_attempted": True,
-            "get_result_recorded": True,
-            "get_finished_ns": 100,
-            "completion_mark_attempted_ns": 101,
-        })
+        selection.update(
+            {
+                "set_attempted": True,
+                "get_attempted": True,
+                "get_result_recorded": True,
+                "get_finished_ns": 100,
+                "completion_mark_attempted_ns": 101,
+            }
+        )
         return {
             "ok": True,
             "completed": True,
@@ -3299,7 +4226,10 @@ def self_test_command(_args: argparse.Namespace) -> int:
             "source_path": "Scripts/worktree_startup_live_benchmark.py",
             "source_sha256": "a" * 64,
         },
-        "command": {"cwd": "/tmp/repo", "exact": "python3 Scripts/harness.py revalidate-primary"},
+        "command": {
+            "cwd": "/tmp/repo",
+            "exact": "python3 Scripts/harness.py revalidate-primary",
+        },
         "artifact": {
             "artifact_id": "forced-full-fixture",
             "plan_sha256": "c" * 64,
@@ -3311,8 +4241,12 @@ def self_test_command(_args: argparse.Namespace) -> int:
         "inputs": {
             name: {"path": f"/tmp/{name}", "sha256": "b" * 64}
             for name in (
-                "plan_argument", "artifact_plan", "summary", "samples_ndjson",
-                "resources", "cleanup",
+                "plan_argument",
+                "artifact_plan",
+                "summary",
+                "samples_ndjson",
+                "resources",
+                "cleanup",
             )
         },
         "samples": provenance_samples,
@@ -3342,8 +4276,12 @@ def self_test_command(_args: argparse.Namespace) -> int:
         in validate_primary_revalidation_provenance(changed_provenance)
     )
     mixed_provenance = json.loads(json.dumps(provenance_fixture))
-    mixed_provenance["samples"][5]["session_id"] = mixed_provenance["samples"][4]["session_id"]
-    mixed_provenance["samples"][5]["correlation_id"] = mixed_provenance["samples"][4]["correlation_id"]
+    mixed_provenance["samples"][5]["session_id"] = mixed_provenance["samples"][4][
+        "session_id"
+    ]
+    mixed_provenance["samples"][5]["correlation_id"] = mixed_provenance["samples"][4][
+        "correlation_id"
+    ]
     checks["revalidation_provenance_mixed_identity_rejected"] = (
         "revalidation_sample_identity_reused"
         in validate_primary_revalidation_provenance(mixed_provenance)
@@ -3352,18 +4290,27 @@ def self_test_command(_args: argparse.Namespace) -> int:
     schema_export = export_fixture("baseline")
     schema_export["schema_version"] = 4
     checks["schema_v4_rejected"] = "diagnostic_schema_mismatch" in validate_export(
-        schema_export, "baseline", {"search": True, "read": True},
-        expected_correlation=correlation, expected_session=session,
-        expected_invocation=1, expected_ordinal=1,
+        schema_export,
+        "baseline",
+        {"search": True, "read": True},
+        expected_correlation=correlation,
+        expected_session=session,
+        expected_invocation=1,
+        expected_ordinal=1,
     )
     nested_schema_export = export_fixture("baseline")
     nested_schema_export.pop("schema_version")
     nested_schema_export["nested"] = {"schema_version": DIAGNOSTIC_SCHEMA_VERSION}
     checks["nested_schema_v6_does_not_satisfy_top_level_contract"] = (
-        "diagnostic_schema_mismatch" in validate_export(
-            nested_schema_export, "baseline", {"search": True, "read": True},
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+        "diagnostic_schema_mismatch"
+        in validate_export(
+            nested_schema_export,
+            "baseline",
+            {"search": True, "read": True},
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
         )
     )
     invalid_boundary_export = export_fixture("baseline")
@@ -3371,35 +4318,69 @@ def self_test_command(_args: argparse.Namespace) -> int:
         "firstBenchmarkReadCompleted"
     ] = 119
     checks["non_monotonic_boundary_rejected"] = (
-        "non_monotonic_operation_boundaries" in validate_export(
-            invalid_boundary_export, "baseline", {"search": True, "read": True},
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+        "non_monotonic_operation_boundaries"
+        in validate_export(
+            invalid_boundary_export,
+            "baseline",
+            {"search": True, "read": True},
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
         )
     )
     inconsistent_duration_export = export_fixture("baseline")
     inconsistent_duration_export["sample"]["durations_us"]["selection"] = 98
     checks["inconsistent_boundary_duration_rejected"] = (
-        "inconsistent_selection_duration" in validate_export(
-            inconsistent_duration_export, "baseline", {"search": True, "read": True},
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+        "inconsistent_selection_duration"
+        in validate_export(
+            inconsistent_duration_export,
+            "baseline",
+            {"search": True, "read": True},
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
         )
     )
 
     def export_failures(export: dict[str, Any], route: str = "baseline") -> list[str]:
         return validate_export(
-            export, route, {"search": True, "read": True},
-            expected_correlation=correlation, expected_session=session,
-            expected_invocation=1, expected_ordinal=1,
+            export,
+            route,
+            {"search": True, "read": True},
+            expected_correlation=correlation,
+            expected_session=session,
+            expected_invocation=1,
+            expected_ordinal=1,
         )
 
     invalid_count_cases = {
-        "sample_route_bool_count_rejected": ("route_counts", {"fullCrawl": True}, "invalid_route_counts"),
-        "sample_route_string_count_rejected": ("route_counts", {"fullCrawl": "1"}, "invalid_route_counts"),
-        "sample_route_float_count_rejected": ("route_counts", {"fullCrawl": 1.0}, "invalid_route_counts"),
-        "sample_route_negative_count_rejected": ("route_counts", {"fullCrawl": -1}, "invalid_route_counts"),
-        "sample_fallback_bool_count_rejected": ("fallback_counts", {"fallback": True}, "invalid_fallback_counts"),
+        "sample_route_bool_count_rejected": (
+            "route_counts",
+            {"fullCrawl": True},
+            "invalid_route_counts",
+        ),
+        "sample_route_string_count_rejected": (
+            "route_counts",
+            {"fullCrawl": "1"},
+            "invalid_route_counts",
+        ),
+        "sample_route_float_count_rejected": (
+            "route_counts",
+            {"fullCrawl": 1.0},
+            "invalid_route_counts",
+        ),
+        "sample_route_negative_count_rejected": (
+            "route_counts",
+            {"fullCrawl": -1},
+            "invalid_route_counts",
+        ),
+        "sample_fallback_bool_count_rejected": (
+            "fallback_counts",
+            {"fallback": True},
+            "invalid_fallback_counts",
+        ),
     }
     for name, (field, value, expected_failure) in invalid_count_cases.items():
         export = export_fixture("baseline")
@@ -3430,24 +4411,43 @@ def self_test_command(_args: argparse.Namespace) -> int:
         {
             **export_fixture("baseline"),
             "git": {
-                **export_fixture("baseline")["git"], "queue_wait_us": 0.5, "duration_us": 1.5,
+                **export_fixture("baseline")["git"],
+                "queue_wait_us": 0.5,
+                "duration_us": 1.5,
             },
             "work": {
                 **export_fixture("baseline")["work"],
                 "filesystem": {
-                    **export_fixture("baseline")["work"]["filesystem"], "duration_us": 1.25,
+                    **export_fixture("baseline")["work"]["filesystem"],
+                    "duration_us": 1.25,
                 },
             },
         },
-        "baseline", {"search": True, "read": True}, expected_correlation=correlation,
-        expected_session=session, expected_invocation=1, expected_ordinal=1,
+        "baseline",
+        {"search": True, "read": True},
+        expected_correlation=correlation,
+        expected_session=session,
+        expected_invocation=1,
+        expected_ordinal=1,
     )
-    checks["git_bool_timing_rejected"] = "invalid_git_duration_us" in validate_git_evidence({
-        **export_fixture("baseline")["git"], "duration_us": True,
-    })
-    checks["filesystem_nan_timing_rejected"] = "invalid_filesystem_duration_us" in validate_filesystem_evidence({
-        **export_fixture("baseline")["work"]["filesystem"], "duration_us": float("nan"),
-    })
+    checks["git_bool_timing_rejected"] = (
+        "invalid_git_duration_us"
+        in validate_git_evidence(
+            {
+                **export_fixture("baseline")["git"],
+                "duration_us": True,
+            }
+        )
+    )
+    checks["filesystem_nan_timing_rejected"] = (
+        "invalid_filesystem_duration_us"
+        in validate_filesystem_evidence(
+            {
+                **export_fixture("baseline")["work"]["filesystem"],
+                "duration_us": float("nan"),
+            }
+        )
+    )
 
     def stats_rejects(value: Any, *, positive: bool = False) -> bool:
         try:
@@ -3478,9 +4478,13 @@ def self_test_command(_args: argparse.Namespace) -> int:
         "root_readiness": 2 * (baseline_cold // 2),
     }
     baseline_fixture = {
-        "schema_version": SCHEMA_VERSION, "kind": "codemap-gate",
-        "artifact_id": baseline_artifact_id, "decision": "pass", "status": "completed",
-        "fixture_sha256": baseline_fixture_sha, "cleanup_complete": True,
+        "schema_version": SCHEMA_VERSION,
+        "kind": "codemap-gate",
+        "artifact_id": baseline_artifact_id,
+        "decision": "pass",
+        "status": "completed",
+        "fixture_sha256": baseline_fixture_sha,
+        "cleanup_complete": True,
         "configuration": {
             "cold_samples_per_cohort": baseline_cold,
             "warm_samples_per_cohort": baseline_warm,
@@ -3494,7 +4498,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
             for name in CODEMAP_REQUIRED_METRICS
         },
         "privacy": {
-            "ok": True, "scanned_file_count": 1, "failure_codes": [],
+            "ok": True,
+            "scanned_file_count": 1,
+            "failure_codes": [],
             "allowlisted_root_sha256": ["a" * 64],
             "allowlisted_prompt_sha256": ["b" * 64],
         },
@@ -3507,18 +4513,23 @@ def self_test_command(_args: argparse.Namespace) -> int:
         ledger_fixture = {
             "schema_version": SCHEMA_VERSION,
             "kind": CODEMAP_BASELINE_LEDGER_KIND,
-            "accepted_summaries": [{
-                "artifact_id": baseline_artifact_id,
-                "summary_sha256": baseline_digest,
-                "fixture_sha256": baseline_fixture_sha,
-            }],
+            "accepted_summaries": [
+                {
+                    "artifact_id": baseline_artifact_id,
+                    "summary_sha256": baseline_digest,
+                    "fixture_sha256": baseline_fixture_sha,
+                }
+            ],
         }
         save_json(ledger_path, ledger_fixture)
         accepted_ledger_digest = sha256_bytes(ledger_path.read_bytes())
         accepted_baseline, acceptance = validate_codemap_baseline(
-            baseline_path, ledger_path, expected_ledger_sha256=accepted_ledger_digest,
+            baseline_path,
+            ledger_path,
+            expected_ledger_sha256=accepted_ledger_digest,
             fixture_sha256=baseline_fixture_sha,
-            cold_samples=baseline_cold, warm_samples=baseline_warm,
+            cold_samples=baseline_cold,
+            warm_samples=baseline_warm,
         )
         checks["baseline_exact_inventory_and_ledger_accepted"] = (
             accepted_baseline["artifact_id"] == baseline_artifact_id
@@ -3531,9 +4542,12 @@ def self_test_command(_args: argparse.Namespace) -> int:
         secure_write(nonfinite_path, json.dumps(nonfinite).encode())
         try:
             validate_codemap_baseline(
-                nonfinite_path, ledger_path, fixture_sha256=baseline_fixture_sha,
+                nonfinite_path,
+                ledger_path,
+                fixture_sha256=baseline_fixture_sha,
                 expected_ledger_sha256=accepted_ledger_digest,
-                cold_samples=baseline_cold, warm_samples=baseline_warm,
+                cold_samples=baseline_cold,
+                warm_samples=baseline_warm,
             )
             checks["baseline_infinity_rejected"] = False
         except BenchmarkError:
@@ -3544,9 +4558,12 @@ def self_test_command(_args: argparse.Namespace) -> int:
         save_json(missing_metric_path, missing_metric)
         try:
             validate_codemap_baseline(
-                missing_metric_path, ledger_path, fixture_sha256=baseline_fixture_sha,
+                missing_metric_path,
+                ledger_path,
+                fixture_sha256=baseline_fixture_sha,
                 expected_ledger_sha256=accepted_ledger_digest,
-                cold_samples=baseline_cold, warm_samples=baseline_warm,
+                cold_samples=baseline_cold,
+                warm_samples=baseline_warm,
             )
             checks["baseline_missing_inventory_rejected"] = False
         except BenchmarkError:
@@ -3557,9 +4574,12 @@ def self_test_command(_args: argparse.Namespace) -> int:
         save_json(wrong_ledger_path, wrong_ledger)
         try:
             validate_codemap_baseline(
-                baseline_path, wrong_ledger_path, fixture_sha256=baseline_fixture_sha,
+                baseline_path,
+                wrong_ledger_path,
+                fixture_sha256=baseline_fixture_sha,
                 expected_ledger_sha256=accepted_ledger_digest,
-                cold_samples=baseline_cold, warm_samples=baseline_warm,
+                cold_samples=baseline_cold,
+                warm_samples=baseline_warm,
             )
             checks["synthetic_passing_baseline_without_acceptance_rejected"] = False
         except BenchmarkError:
@@ -3605,7 +4625,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
         checks["duplicate_session_rejected"] = True
 
     valid_accounting = {
-        "invocation_count": 2, "attempted": 8, "valid_retained": 6,
+        "invocation_count": 2,
+        "attempted": 8,
+        "valid_retained": 6,
         "invalid_attempted": 0,
     }
     checks["cohort_exact_accounting"] = cohort_accounting_valid(
@@ -3613,36 +4635,54 @@ def self_test_command(_args: argparse.Namespace) -> int:
     )
     checks["cohort_extra_sample_rejected"] = not cohort_accounting_valid(
         dict(valid_accounting, attempted=9, valid_retained=7),
-        width=1, warmups=1, retained=3, invocations=2,
+        width=1,
+        warmups=1,
+        retained=3,
+        invocations=2,
     )
     checks["cohort_invalid_attempt_rejected"] = not cohort_accounting_valid(
         dict(valid_accounting, invalid_attempted=1),
-        width=1, warmups=1, retained=3, invocations=2,
+        width=1,
+        warmups=1,
+        retained=3,
+        invocations=2,
     )
 
     resource_fixture = {
-        "baseline_resident_mb": 100.0, "peak_resident_mb": 120.0,
-        "final_resident_mb": 110.0, "peak_resident_delta_mb": 20.0,
+        "baseline_resident_mb": 100.0,
+        "peak_resident_mb": 120.0,
+        "final_resident_mb": 110.0,
+        "peak_resident_delta_mb": 20.0,
         "retained_resident_delta_mb": 10.0,
-        "baseline_physical_footprint_mb": 80.0, "peak_physical_footprint_mb": 88.0,
-        "final_physical_footprint_mb": 82.0, "peak_physical_footprint_delta_mb": 8.0,
+        "baseline_physical_footprint_mb": 80.0,
+        "peak_physical_footprint_mb": 88.0,
+        "final_physical_footprint_mb": 82.0,
+        "peak_physical_footprint_delta_mb": 8.0,
         "retained_physical_footprint_delta_mb": 2.0,
         "physical_footprint_available": True,
-        "session_cpu_ms": 30.0, "session_user_cpu_ms": 20.0,
-        "session_system_cpu_ms": 10.0, "average_core_utilization_percent": 25.0,
+        "session_cpu_ms": 30.0,
+        "session_user_cpu_ms": 20.0,
+        "session_system_cpu_ms": 10.0,
+        "average_core_utilization_percent": 25.0,
         "peak_interval_core_utilization_percent": 50.0,
-        "sample_count": 3, "duration_seconds": 1.0,
+        "sample_count": 3,
+        "duration_seconds": 1.0,
     }
-    checks["resource_values_validated"] = not validate_resource_evidence(resource_fixture)
+    checks["resource_values_validated"] = not validate_resource_evidence(
+        resource_fixture
+    )
     live_resource_fixture = dict(resource_fixture)
     live_resource_fixture["phys_footprint_available"] = live_resource_fixture.pop(
         "physical_footprint_available"
     )
-    checks["live_resource_availability_alias_validated"] = not validate_resource_evidence(
-        live_resource_fixture
+    checks["live_resource_availability_alias_validated"] = (
+        not validate_resource_evidence(live_resource_fixture)
     )
-    checks["resource_core_range_rejected"] = "invalid_resource_core_utilization" in validate_resource_evidence(
-        dict(resource_fixture, peak_interval_core_utilization_percent=10.0)
+    checks["resource_core_range_rejected"] = (
+        "invalid_resource_core_utilization"
+        in validate_resource_evidence(
+            dict(resource_fixture, peak_interval_core_utilization_percent=10.0)
+        )
     )
     quantized_resource = dict(
         resource_fixture,
@@ -3652,16 +4692,18 @@ def self_test_command(_args: argparse.Namespace) -> int:
         peak_resident_delta_mb=57.0,
         retained_resident_delta_mb=11.2,
     )
-    checks["resource_quantized_point_one_discrepancy_accepted"] = not validate_resource_evidence(
-        quantized_resource
+    checks["resource_quantized_point_one_discrepancy_accepted"] = (
+        not validate_resource_evidence(quantized_resource)
     )
     checks["resource_quantized_point_two_discrepancy_rejected"] = (
-        "inconsistent_resident_peak_delta" in validate_resource_evidence(
+        "inconsistent_resident_peak_delta"
+        in validate_resource_evidence(
             dict(quantized_resource, peak_resident_delta_mb=57.1)
         )
     )
-    checks["resource_off_grid_rejected"] = "invalid_resident_absolute_mb" in validate_resource_evidence(
-        dict(resource_fixture, peak_resident_mb=120.05)
+    checks["resource_off_grid_rejected"] = (
+        "invalid_resident_absolute_mb"
+        in validate_resource_evidence(dict(resource_fixture, peak_resident_mb=120.05))
     )
     negative_retained_resource = dict(
         resource_fixture,
@@ -3670,35 +4712,52 @@ def self_test_command(_args: argparse.Namespace) -> int:
         final_physical_footprint_mb=79.9,
         retained_physical_footprint_delta_mb=-0.1,
     )
-    checks["resource_negative_retained_deltas_accepted"] = not validate_resource_evidence(
-        negative_retained_resource
+    checks["resource_negative_retained_deltas_accepted"] = (
+        not validate_resource_evidence(negative_retained_resource)
     )
     checks["resource_negative_peak_delta_rejected"] = (
-        "inconsistent_resident_peak_delta" in validate_resource_evidence(
+        "inconsistent_resident_peak_delta"
+        in validate_resource_evidence(
             dict(resource_fixture, peak_resident_delta_mb=-20.0)
         )
     )
     checks["resource_nonfinite_signed_delta_rejected"] = (
-        "invalid_resident_delta_mb" in validate_resource_evidence(
+        "invalid_resident_delta_mb"
+        in validate_resource_evidence(
             dict(resource_fixture, retained_resident_delta_mb=float("-inf"))
         )
     )
     drained_fixture = {
-        "contains_paths": False, "is_drained": True,
+        "contains_paths": False,
+        "is_drained": True,
         **{field: 0 for field in DRAIN_ZERO_COUNT_FIELDS},
     }
-    checks["session_drain_zero_snapshot_accepted"] = valid_drain_snapshot(drained_fixture)
+    checks["session_drain_zero_snapshot_accepted"] = valid_drain_snapshot(
+        drained_fixture
+    )
     checks["session_drain_nonzero_snapshot_rejected"] = not valid_drain_snapshot(
         dict(drained_fixture, matching_live_root_count=1)
     )
     recovery_shape = {
-        "content": [{"type": "text", "text": json.dumps({
-            "ok": True, "recovery": {"phase": "provider_start", "worktree_id": "worktree-1"},
-        })}],
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "ok": True,
+                        "recovery": {
+                            "phase": "provider_start",
+                            "worktree_id": "worktree-1",
+                        },
+                    }
+                ),
+            }
+        ],
     }
     drain_shape = {
         "structuredContent": {
-            "ok": True, "drain": {"is_drained": True, "reserved_load_flight_count": 0},
+            "ok": True,
+            "drain": {"is_drained": True, "reserved_load_flight_count": 0},
         },
     }
     checks["recovery_nested_payload_normalized"] = nested_response_object(
@@ -3719,11 +4778,13 @@ def self_test_command(_args: argparse.Namespace) -> int:
         checks["failed_final_status_free_inventory_rejected"] = True
     failed_final_inventory_state = {
         "cleanup_manual_required": True,
-        "attempts": [{
-            "path": None,
-            "manual_cleanup": True,
-            "cleanup_reason": "final_status_free_inventory_failed",
-        }],
+        "attempts": [
+            {
+                "path": None,
+                "manual_cleanup": True,
+                "cleanup_reason": "final_status_free_inventory_failed",
+            }
+        ],
     }
     checks["cleanup_command_nil_path_manual_inventory_failure_rejected"] = not (
         cleanup_command_acceptance(True, failed_final_inventory_state)
@@ -3894,14 +4955,32 @@ def self_test_command(_args: argparse.Namespace) -> int:
         checks["projected_prerequisite_invalid_sample_rejected"] = False
     except BenchmarkError:
         checks["projected_prerequisite_invalid_sample_rejected"] = True
-    checks["git_family_count_rejected"] = "invalid_git_family_counts" in validate_git_evidence({
-        "available": True, "command_count": 2, "families": {"status": 1},
-        "priorities": {"normal": 2}, "queue_wait_us": 0, "duration_us": 1,
-        "output_bytes": 0, "cancelled_count": 0,
-    })
-    checks["filesystem_item_type_rejected"] = "invalid_filesystem_item_count" in validate_filesystem_evidence({
-        "available": True, "operation_count": 1, "duration_us": 1, "item_count": "1",
-    })
+    checks["git_family_count_rejected"] = (
+        "invalid_git_family_counts"
+        in validate_git_evidence(
+            {
+                "available": True,
+                "command_count": 2,
+                "families": {"status": 1},
+                "priorities": {"normal": 2},
+                "queue_wait_us": 0,
+                "duration_us": 1,
+                "output_bytes": 0,
+                "cancelled_count": 0,
+            }
+        )
+    )
+    checks["filesystem_item_type_rejected"] = (
+        "invalid_filesystem_item_count"
+        in validate_filesystem_evidence(
+            {
+                "available": True,
+                "operation_count": 1,
+                "duration_us": 1,
+                "item_count": "1",
+            }
+        )
+    )
 
     checks["memory_absolute"] = math.isclose(
         absolute_memory_regression([100.0, 100.0], [110.0, 110.0]) or -1,
@@ -3909,7 +4988,9 @@ def self_test_command(_args: argparse.Namespace) -> int:
         rel_tol=1e-9,
     )
     checks["memory_zero_rejected"] = absolute_memory_regression([0.0], [10.0]) is None
-    checks["memory_negative_rejected"] = absolute_memory_regression([-1.0], [10.0]) is None
+    checks["memory_negative_rejected"] = (
+        absolute_memory_regression([-1.0], [10.0]) is None
+    )
 
     cleanup_artifact_name = "20260625T171028Z-warm-baseline-w1-73bd1572"
     cleanup_branch = safe_name(f"rpce-bench-{cleanup_artifact_name}-i1-o1")[:120]
@@ -3919,84 +5000,132 @@ def self_test_command(_args: argparse.Namespace) -> int:
     cleanup_worktree_id = "wt-owned"
     cleanup_worktree_path = str((fixture_root / "owned-worktree").resolve(strict=False))
     cleanup_live_worktrees = {
-        (cleanup_worktree_id, cleanup_worktree_path, cleanup_branch, cleanup_commit_oid),
+        (
+            cleanup_worktree_id,
+            cleanup_worktree_path,
+            cleanup_branch,
+            cleanup_commit_oid,
+        ),
     }
     cleanup_snapshot = {
-        "session_id": cleanup_session_id, "status": "running",
+        "session_id": cleanup_session_id,
+        "status": "running",
         "session": {"context_id": cleanup_context_id},
-        "worktree_bindings": [{
-            "worktree_id": cleanup_worktree_id,
-            "worktree_root_path": cleanup_worktree_path,
-            "branch": cleanup_branch, "head": cleanup_commit_oid,
-        }],
+        "worktree_bindings": [
+            {
+                "worktree_id": cleanup_worktree_id,
+                "worktree_root_path": cleanup_worktree_path,
+                "branch": cleanup_branch,
+                "head": cleanup_commit_oid,
+            }
+        ],
     }
     cleanup_session_proof = cleanup_session_ownership_evidence(
-        cleanup_snapshot, expected_session_id=cleanup_session_id,
-        expected_context_id=cleanup_context_id, live_worktrees=cleanup_live_worktrees,
-        artifact_name=cleanup_artifact_name, plan_commit_oid=cleanup_commit_oid,
+        cleanup_snapshot,
+        expected_session_id=cleanup_session_id,
+        expected_context_id=cleanup_context_id,
+        live_worktrees=cleanup_live_worktrees,
+        artifact_name=cleanup_artifact_name,
+        plan_commit_oid=cleanup_commit_oid,
     )
     checks["cleanup_live_session_relationship_proven"] = cleanup_session_proof["ok"]
     checks["cleanup_direct_poll_has_no_inventory_cap_dependency"] = (
-        cleanup_session_proof["ok"] and cleanup_session_proof["session_id"] == cleanup_session_id
+        cleanup_session_proof["ok"]
+        and cleanup_session_proof["session_id"] == cleanup_session_id
     )
-    checks["cleanup_tampered_session_rejected"] = not cleanup_session_ownership_evidence(
-        cleanup_snapshot, expected_session_id=str(uuid.uuid4()).upper(),
-        expected_context_id=cleanup_context_id, live_worktrees=cleanup_live_worktrees,
-        artifact_name=cleanup_artifact_name, plan_commit_oid=cleanup_commit_oid,
-    )["ok"]
+    checks["cleanup_tampered_session_rejected"] = (
+        not cleanup_session_ownership_evidence(
+            cleanup_snapshot,
+            expected_session_id=str(uuid.uuid4()).upper(),
+            expected_context_id=cleanup_context_id,
+            live_worktrees=cleanup_live_worktrees,
+            artifact_name=cleanup_artifact_name,
+            plan_commit_oid=cleanup_commit_oid,
+        )["ok"]
+    )
     wrong_branch_snapshot = json.loads(json.dumps(cleanup_snapshot))
     wrong_branch_snapshot["worktree_bindings"][0]["branch"] = "unrelated-branch"
     checks["cleanup_wrong_branch_rejected"] = not cleanup_session_ownership_evidence(
-        wrong_branch_snapshot, expected_session_id=cleanup_session_id,
-        expected_context_id=cleanup_context_id, live_worktrees=cleanup_live_worktrees,
-        artifact_name=cleanup_artifact_name, plan_commit_oid=cleanup_commit_oid,
+        wrong_branch_snapshot,
+        expected_session_id=cleanup_session_id,
+        expected_context_id=cleanup_context_id,
+        live_worktrees=cleanup_live_worktrees,
+        artifact_name=cleanup_artifact_name,
+        plan_commit_oid=cleanup_commit_oid,
     )["ok"]
     wrong_context_snapshot = json.loads(json.dumps(cleanup_snapshot))
     wrong_context_snapshot["session"]["context_id"] = str(uuid.uuid4()).upper()
     checks["cleanup_wrong_context_rejected"] = not cleanup_session_ownership_evidence(
-        wrong_context_snapshot, expected_session_id=cleanup_session_id,
-        expected_context_id=cleanup_context_id, live_worktrees=cleanup_live_worktrees,
-        artifact_name=cleanup_artifact_name, plan_commit_oid=cleanup_commit_oid,
+        wrong_context_snapshot,
+        expected_session_id=cleanup_session_id,
+        expected_context_id=cleanup_context_id,
+        live_worktrees=cleanup_live_worktrees,
+        artifact_name=cleanup_artifact_name,
+        plan_commit_oid=cleanup_commit_oid,
     )["ok"]
     cleanup_state_worktree = {"path": cleanup_worktree_path, "branch": cleanup_branch}
-    checks["cleanup_live_worktree_relationship_proven"] = cleanup_worktree_ownership_evidence(
-        cleanup_state_worktree, live_worktrees=cleanup_live_worktrees,
-        proven_sessions=[cleanup_session_proof], artifact_name=cleanup_artifact_name,
-        plan_commit_oid=cleanup_commit_oid,
-    )["ok"]
-    checks["cleanup_worktree_requires_session_relationship"] = not cleanup_worktree_ownership_evidence(
-        cleanup_state_worktree, live_worktrees=cleanup_live_worktrees,
-        proven_sessions=[], artifact_name=cleanup_artifact_name,
-        plan_commit_oid=cleanup_commit_oid,
-    )["ok"]
-    checks["cleanup_wrong_plan_commit_rejected"] = not cleanup_worktree_ownership_evidence(
-        cleanup_state_worktree, live_worktrees=cleanup_live_worktrees,
-        proven_sessions=[cleanup_session_proof], artifact_name=cleanup_artifact_name,
-        plan_commit_oid="b" * 40,
-    )["ok"]
+    checks["cleanup_live_worktree_relationship_proven"] = (
+        cleanup_worktree_ownership_evidence(
+            cleanup_state_worktree,
+            live_worktrees=cleanup_live_worktrees,
+            proven_sessions=[cleanup_session_proof],
+            artifact_name=cleanup_artifact_name,
+            plan_commit_oid=cleanup_commit_oid,
+        )["ok"]
+    )
+    checks["cleanup_worktree_requires_session_relationship"] = (
+        not cleanup_worktree_ownership_evidence(
+            cleanup_state_worktree,
+            live_worktrees=cleanup_live_worktrees,
+            proven_sessions=[],
+            artifact_name=cleanup_artifact_name,
+            plan_commit_oid=cleanup_commit_oid,
+        )["ok"]
+    )
+    checks["cleanup_wrong_plan_commit_rejected"] = (
+        not cleanup_worktree_ownership_evidence(
+            cleanup_state_worktree,
+            live_worktrees=cleanup_live_worktrees,
+            proven_sessions=[cleanup_session_proof],
+            artifact_name=cleanup_artifact_name,
+            plan_commit_oid="b" * 40,
+        )["ok"]
+    )
 
     class MemoryRunnerFixture:
         def __init__(self, responses: list[dict[str, Any]]) -> None:
             self.responses = responses
             self.payloads: list[dict[str, Any]] = []
 
-        def call(self, _label: str, _tool: str, payload: dict[str, Any], **_kwargs: Any) -> Any:
+        def call(
+            self, _label: str, _tool: str, payload: dict[str, Any], **_kwargs: Any
+        ) -> Any:
             self.payloads.append(payload)
             return self.responses.pop(0)
 
     started_memory_id = str(uuid.uuid4()).upper()
-    start_memory_runner = MemoryRunnerFixture([
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "current",
-            "running": False,
-        },
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "start",
-            "running": True, "session_id": started_memory_id,
-            "session": {"id": started_memory_id, "label": cleanup_artifact_name,
-                        "running": True},
-        },
-    ])
+    start_memory_runner = MemoryRunnerFixture(
+        [
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "current",
+                "running": False,
+            },
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "start",
+                "running": True,
+                "session_id": started_memory_id,
+                "session": {
+                    "id": started_memory_id,
+                    "label": cleanup_artifact_name,
+                    "running": True,
+                },
+            },
+        ]
+    )
     start_acquisition = MemorySamplerAcquisition(label=cleanup_artifact_name)
     returned_memory_id, _ = start_owned_memory_sampler(
         start_memory_runner, cleanup_artifact_name, start_acquisition
@@ -4011,29 +5140,48 @@ def self_test_command(_args: argparse.Namespace) -> int:
     )
 
     partial_memory_id = str(uuid.uuid4()).upper()
-    partial_memory_runner = MemoryRunnerFixture([
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "current",
-            "running": False,
-        },
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "start",
-            "running": True, "session_id": partial_memory_id,
-            "session": {"label": cleanup_artifact_name, "running": True},
-        },
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "current",
-            "running": True, "session_id": partial_memory_id,
-            "session": {"id": partial_memory_id, "label": cleanup_artifact_name,
-                        "running": True},
-        },
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "stop",
-            "running": False, "session_id": partial_memory_id,
-            "session": {"id": partial_memory_id, "label": cleanup_artifact_name,
-                        "running": False},
-        },
-    ])
+    partial_memory_runner = MemoryRunnerFixture(
+        [
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "current",
+                "running": False,
+            },
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "start",
+                "running": True,
+                "session_id": partial_memory_id,
+                "session": {"label": cleanup_artifact_name, "running": True},
+            },
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "current",
+                "running": True,
+                "session_id": partial_memory_id,
+                "session": {
+                    "id": partial_memory_id,
+                    "label": cleanup_artifact_name,
+                    "running": True,
+                },
+            },
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "stop",
+                "running": False,
+                "session_id": partial_memory_id,
+                "session": {
+                    "id": partial_memory_id,
+                    "label": cleanup_artifact_name,
+                    "running": False,
+                },
+            },
+        ]
+    )
     partial_acquisition = MemorySamplerAcquisition(label=cleanup_artifact_name)
     try:
         start_owned_memory_sampler(
@@ -4043,8 +5191,10 @@ def self_test_command(_args: argparse.Namespace) -> int:
     except BenchmarkError:
         partial_start_rejected = True
     partial_cleanup, _ = cleanup_memory_sampler_acquisition(
-        partial_memory_runner, partial_acquisition,
-        label=cleanup_artifact_name, settle_seconds=0,
+        partial_memory_runner,
+        partial_acquisition,
+        label=cleanup_artifact_name,
+        settle_seconds=0,
     )
     checks["memory_start_success_parse_failure_recovers_only_proven_owner"] = (
         partial_start_rejected
@@ -4061,55 +5211,88 @@ def self_test_command(_args: argparse.Namespace) -> int:
     )
 
     foreign_memory_id = str(uuid.uuid4()).upper()
-    active_memory_runner = MemoryRunnerFixture([{
-        "ok": True, "op": "large_workspace_memory", "action": "current",
-        "running": True, "session_id": foreign_memory_id,
-        "session": {
-            "id": foreign_memory_id, "label": "foreign-owner",
-            "running": True,
-        },
-    }])
+    active_memory_runner = MemoryRunnerFixture(
+        [
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "current",
+                "running": True,
+                "session_id": foreign_memory_id,
+                "session": {
+                    "id": foreign_memory_id,
+                    "label": "foreign-owner",
+                    "running": True,
+                },
+            }
+        ]
+    )
     active_memory_action = verify_resumed_memory_sampler_inactive(
-        active_memory_runner, expected_session_id=str(uuid.uuid4()).upper(),
+        active_memory_runner,
+        expected_session_id=str(uuid.uuid4()).upper(),
         expected_label=cleanup_artifact_name,
     )
     checks["cleanup_active_global_memory_sampler_never_stopped"] = (
         active_memory_action["ok"] is False
         and active_memory_action["manual_cleanup"] is True
         and active_memory_action["stop_attempted"] is False
-        and [payload["action"] for payload in active_memory_runner.payloads] == ["current"]
+        and [payload["action"] for payload in active_memory_runner.payloads]
+        == ["current"]
     )
-    inactive_memory_runner = MemoryRunnerFixture([{
-        "ok": True, "op": "large_workspace_memory", "action": "current",
-        "running": False,
-    }])
+    inactive_memory_runner = MemoryRunnerFixture(
+        [
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "current",
+                "running": False,
+            }
+        ]
+    )
     inactive_memory_action = verify_resumed_memory_sampler_inactive(
-        inactive_memory_runner, expected_session_id=str(uuid.uuid4()).upper(),
+        inactive_memory_runner,
+        expected_session_id=str(uuid.uuid4()).upper(),
         expected_label=cleanup_artifact_name,
     )
     checks["cleanup_inactive_global_memory_sampler_verified"] = (
         inactive_memory_action["ok"] is True
         and inactive_memory_action["verified_stopped"] is True
         and inactive_memory_action["stop_attempted"] is False
-        and [payload["action"] for payload in inactive_memory_runner.payloads] == ["current"]
+        and [payload["action"] for payload in inactive_memory_runner.payloads]
+        == ["current"]
     )
     owned_memory_id = str(uuid.uuid4()).upper()
-    owned_memory_runner = MemoryRunnerFixture([
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "current",
-            "running": True, "session_id": owned_memory_id,
-            "session": {"id": owned_memory_id, "label": cleanup_artifact_name,
-                        "running": True},
-        },
-        {
-            "ok": True, "op": "large_workspace_memory", "action": "stop",
-            "running": False, "session_id": owned_memory_id,
-            "session": {"id": owned_memory_id, "label": cleanup_artifact_name,
-                        "running": False},
-        },
-    ])
+    owned_memory_runner = MemoryRunnerFixture(
+        [
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "current",
+                "running": True,
+                "session_id": owned_memory_id,
+                "session": {
+                    "id": owned_memory_id,
+                    "label": cleanup_artifact_name,
+                    "running": True,
+                },
+            },
+            {
+                "ok": True,
+                "op": "large_workspace_memory",
+                "action": "stop",
+                "running": False,
+                "session_id": owned_memory_id,
+                "session": {
+                    "id": owned_memory_id,
+                    "label": cleanup_artifact_name,
+                    "running": False,
+                },
+            },
+        ]
+    )
     owned_memory_action = verify_resumed_memory_sampler_inactive(
-        owned_memory_runner, expected_session_id=owned_memory_id,
+        owned_memory_runner,
+        expected_session_id=owned_memory_id,
         expected_label=cleanup_artifact_name,
     )
     checks["cleanup_stops_only_matching_memory_owner"] = (
@@ -4123,8 +5306,10 @@ def self_test_command(_args: argparse.Namespace) -> int:
     run_cleanup = [
         {"action": "terminalize_agent", "terminal": True},
         {
-            "action": "remove_worktree", "removed": True,
-            "ownership_proven": True, "worktree_absent": True,
+            "action": "remove_worktree",
+            "removed": True,
+            "ownership_proven": True,
+            "worktree_absent": True,
             "branch_absent": True,
         },
         {"action": "stop_memory_sampler", "ok": True, "verified_stopped": True},
@@ -4134,28 +5319,58 @@ def self_test_command(_args: argparse.Namespace) -> int:
         {"action": "restore_workspace_roots", "ok": True},
     ]
     checks["cleanup_complete"] = validate_cleanup_evidence(
-        run_cleanup, run_artifact=True, expected_agent_count=1, expected_worktree_count=1
+        run_cleanup,
+        run_artifact=True,
+        expected_agent_count=1,
+        expected_worktree_count=1,
     )
     checks["cleanup_missing_rejected"] = not validate_cleanup_evidence(
-        run_cleanup[:-1], run_artifact=True, expected_agent_count=1, expected_worktree_count=1
+        run_cleanup[:-1],
+        run_artifact=True,
+        expected_agent_count=1,
+        expected_worktree_count=1,
     )
     checks["cleanup_memory_unverified_rejected"] = not validate_cleanup_evidence(
-        [dict(item, verified_stopped=False) if item["action"] == "stop_memory_sampler" else item for item in run_cleanup],
-        run_artifact=True, expected_agent_count=1, expected_worktree_count=1,
+        [
+            (
+                dict(item, verified_stopped=False)
+                if item["action"] == "stop_memory_sampler"
+                else item
+            )
+            for item in run_cleanup
+        ],
+        run_artifact=True,
+        expected_agent_count=1,
+        expected_worktree_count=1,
     )
     for field in ("ownership_proven", "worktree_absent", "branch_absent"):
         checks[f"cleanup_{field}_required"] = not validate_cleanup_evidence(
-            [dict(item, **{field: False}) if item["action"] == "remove_worktree" else item
-             for item in run_cleanup],
-            run_artifact=True, expected_agent_count=1, expected_worktree_count=1,
+            [
+                (
+                    dict(item, **{field: False})
+                    if item["action"] == "remove_worktree"
+                    else item
+                )
+                for item in run_cleanup
+            ],
+            run_artifact=True,
+            expected_agent_count=1,
+            expected_worktree_count=1,
         )
     with tempfile.TemporaryDirectory() as cleanup_proof_temp:
         proof_dir = Path(cleanup_proof_temp) / "private-proof"
         proof_path = proof_dir / "cleanup.json"
-        save_cleanup_proof(proof_path, [{
-            "action": "terminalize_agent", "ok": True,
-            "session_id": "session-id-sentinel", "path": "/private/path-sentinel",
-        }])
+        save_cleanup_proof(
+            proof_path,
+            [
+                {
+                    "action": "terminalize_agent",
+                    "ok": True,
+                    "session_id": "session-id-sentinel",
+                    "path": "/private/path-sentinel",
+                }
+            ],
+        )
         proof_text = proof_path.read_text(encoding="utf-8")
         checks["cleanup_proof_redacts_sensitive_identity"] = (
             "session-id-sentinel" not in proof_text
@@ -4168,16 +5383,24 @@ def self_test_command(_args: argparse.Namespace) -> int:
             and proof_path.stat().st_mode & 0o777 == 0o600
         )
     setup_failure_cleanup = [
-        {"action": "stop_memory_sampler", "ok": True, "verified_stopped": True,
-         "reason": "not_acquired"},
+        {
+            "action": "stop_memory_sampler",
+            "ok": True,
+            "verified_stopped": True,
+            "reason": "not_acquired",
+        },
         {"action": "restore_route", "ok": True, "reason": "not_acquired"},
         {"action": "reset_diagnostics", "ok": True},
         {"action": "preserve_benchmark_setting", "ok": True},
         {"action": "restore_workspace_roots", "ok": True},
     ]
-    checks["setup_failure_cleanup_is_complete_without_owned_resources"] = validate_cleanup_evidence(
-        setup_failure_cleanup, run_artifact=True,
-        expected_agent_count=0, expected_worktree_count=0,
+    checks["setup_failure_cleanup_is_complete_without_owned_resources"] = (
+        validate_cleanup_evidence(
+            setup_failure_cleanup,
+            run_artifact=True,
+            expected_agent_count=0,
+            expected_worktree_count=0,
+        )
     )
     frozen_matrix_fixture = {
         "matrix": {
@@ -4198,37 +5421,86 @@ def self_test_command(_args: argparse.Namespace) -> int:
         and all(key.split("/")[0] in {"warm", "aged"} for key in frozen_keys)
         and all(key.rsplit("/", 1)[1] in {"1", "4", "8"} for key in frozen_keys)
         and not any("/cold/" in f"/{key}/" or key.endswith("/2") for key in frozen_keys)
-        and frozen_matrix_fixture["thresholds"]["projected_p95_improvement_minimum"] == 0.30
+        and frozen_matrix_fixture["thresholds"]["projected_p95_improvement_minimum"]
+        == 0.30
         and frozen_matrix_fixture["thresholds"]["other_p95_regression_maximum"] == 0.10
     )
-    fixed_stats = stats([100, 200, 300, 400, 500], positive=True, label="fixed readiness")
-    checks["fixed_percentiles"] = fixed_stats["p50"] == 300 and fixed_stats["p95"] == 500
+    fixed_stats = stats(
+        [100, 200, 300, 400, 500], positive=True, label="fixed readiness"
+    )
+    checks["fixed_percentiles"] = (
+        fixed_stats["p50"] == 300 and fixed_stats["p95"] == 500
+    )
     checks["fixed_cv"] = math.isclose(float(fixed_stats["cv"]), math.sqrt(25_000) / 300)
-    checks["confirmation_not_required_at_boundary"] = confirmation_policy(
-        {"control_p95": 100, "candidate_p95": 70, "control_cv": 0.50, "candidate_cv": 0.10},
-        None, minimum_improvement=0.30,
-    )["status"] == "pass"
-    checks["high_variance_requires_confirmation"] = confirmation_policy(
-        {"control_p95": 100, "candidate_p95": 70, "control_cv": 0.51, "candidate_cv": 0.10},
-        None, minimum_improvement=0.30,
-    )["status"] == "high-variance/inconclusive"
+    checks["confirmation_not_required_at_boundary"] = (
+        confirmation_policy(
+            {
+                "control_p95": 100,
+                "candidate_p95": 70,
+                "control_cv": 0.50,
+                "candidate_cv": 0.10,
+            },
+            None,
+            minimum_improvement=0.30,
+        )["status"]
+        == "pass"
+    )
+    checks["high_variance_requires_confirmation"] = (
+        confirmation_policy(
+            {
+                "control_p95": 100,
+                "candidate_p95": 70,
+                "control_cv": 0.51,
+                "candidate_cv": 0.10,
+            },
+            None,
+            minimum_improvement=0.30,
+        )["status"]
+        == "high-variance/inconclusive"
+    )
     checks["high_cv_confirmation_policy_unchanged"] = confirmation_policy(
-        {"control_p95": 100, "candidate_p95": 70, "control_cv": 0.500001, "candidate_cv": 0.50},
-        None, minimum_improvement=0.30,
+        {
+            "control_p95": 100,
+            "candidate_p95": 70,
+            "control_cv": 0.500001,
+            "candidate_cv": 0.50,
+        },
+        None,
+        minimum_improvement=0.30,
     ) == {
         "status": "high-variance/inconclusive",
         "direction": "pass",
         "confirmation_required": True,
     }
-    checks["directional_confirmation_agrees"] = confirmation_policy(
-        {"control_p95": 100, "candidate_p95": 70, "control_cv": 0.51, "candidate_cv": 0.10},
-        {"control_p95": 200, "candidate_p95": 130}, minimum_improvement=0.30,
-    )["status"] == "pass"
-    checks["directional_confirmation_disagrees"] = confirmation_policy(
-        {"control_p95": 100, "candidate_p95": 70, "control_cv": 0.51, "candidate_cv": 0.10},
-        {"control_p95": 200, "candidate_p95": 150}, minimum_improvement=0.30,
-    )["status"] == "high-variance/inconclusive"
-    with tempfile.TemporaryDirectory(prefix="rpce-worktree-timeout-self-test-") as timeout_raw:
+    checks["directional_confirmation_agrees"] = (
+        confirmation_policy(
+            {
+                "control_p95": 100,
+                "candidate_p95": 70,
+                "control_cv": 0.51,
+                "candidate_cv": 0.10,
+            },
+            {"control_p95": 200, "candidate_p95": 130},
+            minimum_improvement=0.30,
+        )["status"]
+        == "pass"
+    )
+    checks["directional_confirmation_disagrees"] = (
+        confirmation_policy(
+            {
+                "control_p95": 100,
+                "candidate_p95": 70,
+                "control_cv": 0.51,
+                "candidate_cv": 0.10,
+            },
+            {"control_p95": 200, "candidate_p95": 150},
+            minimum_improvement=0.30,
+        )["status"]
+        == "high-variance/inconclusive"
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="rpce-worktree-timeout-self-test-"
+    ) as timeout_raw:
         timeout_root = Path(timeout_raw)
         timeout_artifact = timeout_root / "artifact"
         (timeout_artifact / "raw").mkdir(parents=True)
@@ -4253,7 +5525,11 @@ def self_test_command(_args: argparse.Namespace) -> int:
             checks["timed_call_timeout_raw_record"] = False
         except subprocess.TimeoutExpired:
             raw_records = sorted((timeout_artifact / "raw").glob("*.json"))
-            timeout_record = json.loads(raw_records[0].read_text(encoding="utf-8")) if raw_records else {}
+            timeout_record = (
+                json.loads(raw_records[0].read_text(encoding="utf-8"))
+                if raw_records
+                else {}
+            )
             checks["timed_call_timeout_raw_record"] = (
                 timeout_record.get("timed_out") is True
                 and timeout_record.get("timeout_seconds") == 0.01
@@ -4314,16 +5590,20 @@ def self_test_command(_args: argparse.Namespace) -> int:
         }
     }
     checks["policy_digest_probe_cache_bypass_not_inferred_from_field_presence"] = (
-        prefix_control_cache_bypass_evidence(bypass_counter_fixture)["observed"] is False
+        prefix_control_cache_bypass_evidence(bypass_counter_fixture)["observed"]
+        is False
     )
     bypass_counter_fixture["preparation"]["counters"]["prefix_cache_bypasses"] = 1
     checks["policy_digest_probe_cache_bypass_requires_positive_counter"] = (
         prefix_control_cache_bypass_evidence(bypass_counter_fixture)
         == {"counter": 1, "counter_saturated": False, "observed": True}
     )
-    bypass_counter_fixture["preparation"]["counter_saturated"]["prefix_cache_bypasses"] = True
+    bypass_counter_fixture["preparation"]["counter_saturated"][
+        "prefix_cache_bypasses"
+    ] = True
     checks["policy_digest_probe_cache_bypass_rejects_saturated_counter"] = (
-        prefix_control_cache_bypass_evidence(bypass_counter_fixture)["observed"] is False
+        prefix_control_cache_bypass_evidence(bypass_counter_fixture)["observed"]
+        is False
     )
     probe_args = configure_policy_digest_probe(argparse.Namespace())
     checks["policy_digest_probe_configuration_exact"] = {
@@ -4351,13 +5631,19 @@ def self_test_command(_args: argparse.Namespace) -> int:
         ),
         "policy_digest_probe": True,
     }
-    checks["policy_digest_probe_non_aggregatable"] = is_policy_digest_probe_summary({
-        "kind": "policy-digest-probe",
-        "non_aggregatable": True,
-    }) and not is_policy_digest_probe_summary({"kind": "cohort"})
+    checks["policy_digest_probe_non_aggregatable"] = is_policy_digest_probe_summary(
+        {
+            "kind": "policy-digest-probe",
+            "non_aggregatable": True,
+        }
+    ) and not is_policy_digest_probe_summary({"kind": "cohort"})
     if not all(checks.values()):
-        raise BenchmarkError(f"self-test failed: {[name for name, ok in checks.items() if not ok]}")
-    print(json.dumps({"status": "completed", "checks": checks}, indent=2, sort_keys=True))
+        raise BenchmarkError(
+            f"self-test failed: {[name for name, ok in checks.items() if not ok]}"
+        )
+    print(
+        json.dumps({"status": "completed", "checks": checks}, indent=2, sort_keys=True)
+    )
     return 0
 
 
@@ -4398,15 +5684,26 @@ def workspace_inventory_record(value: Any, workspace_id: str) -> dict[str, Any]:
         if not isinstance(candidate, dict):
             continue
         candidate_id = candidate.get("id") or candidate.get("workspace_id")
-        if isinstance(candidate_id, str) and candidate_id.upper() == workspace_id.upper():
+        if (
+            isinstance(candidate_id, str)
+            and candidate_id.upper() == workspace_id.upper()
+        ):
             matches.append(candidate)
     if len(matches) != 1:
-        raise BenchmarkError("workspace inventory did not contain exactly one planned workspace identity")
+        raise BenchmarkError(
+            "workspace inventory did not contain exactly one planned workspace identity"
+        )
     return matches[0]
 
 
 def workspace_root_paths(record: dict[str, Any]) -> list[str]:
-    for key in ("repo_paths", "repoPaths", "all_repo_paths", "allRepoPaths", "folder_paths"):
+    for key in (
+        "repo_paths",
+        "repoPaths",
+        "all_repo_paths",
+        "allRepoPaths",
+        "folder_paths",
+    ):
         value = record.get(key)
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             return [str(Path(item).expanduser().resolve()) for item in value]
@@ -4428,7 +5725,9 @@ def verify_disposable_target(
             or root != repository_root().resolve()
             or not str(scope.get("workspace_name", "")).startswith("RPCE Search Bench ")
         ):
-            raise BenchmarkError("real repository target lost its strict dedicated-workspace identity")
+            raise BenchmarkError(
+                "real repository target lost its strict dedicated-workspace identity"
+            )
     validate_ownership_marker(
         root,
         workspace_id=scope["workspace_id"],
@@ -4438,7 +5737,9 @@ def verify_disposable_target(
         allow_real_repository=real_repository,
     )
     inventory = runner.call(
-        "workspace-identity", "manage_workspaces", {"action": "list", "include_hidden": True}
+        "workspace-identity",
+        "manage_workspaces",
+        {"action": "list", "include_hidden": True},
     )
     record = workspace_inventory_record(inventory, scope["workspace_id"])
     if record.get("name") != scope["workspace_name"]:
@@ -4446,22 +5747,34 @@ def verify_disposable_target(
     roots = workspace_root_paths(record)
     planned_root = str(root)
     if planned_root not in roots:
-        raise BenchmarkError("planned root is not owned by the planned workspace identity")
+        raise BenchmarkError(
+            "planned root is not owned by the planned workspace identity"
+        )
     if require_only_planned_root and roots != [planned_root]:
-        raise BenchmarkError("benchmark workspace must contain exactly the planned root before/after the campaign")
-    return {"workspace_id": scope["workspace_id"], "workspace_name": record.get("name"), "roots": roots}
+        raise BenchmarkError(
+            "benchmark workspace must contain exactly the planned root before/after the campaign"
+        )
+    return {
+        "workspace_id": scope["workspace_id"],
+        "workspace_name": record.get("name"),
+        "roots": roots,
+    }
 
 
 def require_benchmark_gate(runner: CLIRunner) -> None:
     response = runner.call(
-        "benchmark-gate-status", "app_settings", {"op": "get", "key": BENCHMARK_GATE_KEY}
+        "benchmark-gate-status",
+        "app_settings",
+        {"op": "get", "key": BENCHMARK_GATE_KEY},
     )
     enabled: bool | None = None
     for candidate in walk_json(response):
         if not isinstance(candidate, dict):
             continue
         values = candidate.get("values")
-        if isinstance(values, dict) and isinstance(values.get(BENCHMARK_GATE_KEY), bool):
+        if isinstance(values, dict) and isinstance(
+            values.get(BENCHMARK_GATE_KEY), bool
+        ):
             enabled = values[BENCHMARK_GATE_KEY]
             break
         if candidate.get("key") == BENCHMARK_GATE_KEY:
@@ -4477,18 +5790,28 @@ def require_benchmark_gate(runner: CLIRunner) -> None:
 
 def preflight_command(args: argparse.Namespace) -> int:
     if not args.confirm_live_debug_app:
-        raise BenchmarkError("pass --confirm-live-debug-app after verifying the dedicated DEBUG app is already running")
+        raise BenchmarkError(
+            "pass --confirm-live-debug-app after verifying the dedicated DEBUG app is already running"
+        )
     plan_path = Path(args.plan).expanduser().resolve(strict=True)
     plan = load_plan(plan_path)
-    if plan["scope"].get("target_kind") == "real-repository-dedicated" and not args.confirm_dedicated_workspace:
-        raise BenchmarkError("real-repository preflight requires --confirm-dedicated-workspace")
+    if (
+        plan["scope"].get("target_kind") == "real-repository-dedicated"
+        and not args.confirm_dedicated_workspace
+    ):
+        raise BenchmarkError(
+            "real-repository preflight requires --confirm-dedicated-workspace"
+        )
     cli = resolve_cli(args.cli)
     root = Path(plan["scope"]["root_path"])
     dataset = plan["dataset"]
     base_commit_oid = validate_planned_base_commit(plan, root)
     read_blob_sha256 = validate_tracked_read_fixture(
-        root, base_ref=base_commit_oid, read_path=dataset["read_path"],
-        search_marker=dataset["search_marker"], read_marker=dataset["read_marker"],
+        root,
+        base_ref=base_commit_oid,
+        read_path=dataset["read_path"],
+        search_marker=dataset["search_marker"],
+        read_marker=dataset["read_marker"],
     )
     planned_blob_sha256 = dataset.get("read_blob_sha256")
     if planned_blob_sha256 is not None and planned_blob_sha256 != read_blob_sha256:
@@ -4499,16 +5822,34 @@ def preflight_command(args: argparse.Namespace) -> int:
     )
     schemas: dict[str, str] = {}
     for tool in (
-        "bind_context", "manage_workspaces", "agent_run", "agent_manage", "manage_worktree",
-        "file_search", "read_file", "manage_selection", "get_code_structure", "file_actions",
-        "apply_edits", "app_settings", DEBUG_TOOL,
+        "bind_context",
+        "manage_workspaces",
+        "agent_run",
+        "agent_manage",
+        "manage_worktree",
+        "file_search",
+        "read_file",
+        "manage_selection",
+        "get_code_structure",
+        "file_actions",
+        "apply_edits",
+        "app_settings",
+        DEBUG_TOOL,
     ):
         schema = runner.describe(tool)
         schemas[tool] = sha256_bytes(schema.encode())
-        secure_write(artifact / "schemas" / f"{tool}.txt", schema.encode(), exclusive=True)
-    if "_worktree_startup_benchmark_token" not in (artifact / "schemas" / "agent_run.txt").read_text():
+        secure_write(
+            artifact / "schemas" / f"{tool}.txt", schema.encode(), exclusive=True
+        )
+    if (
+        "_worktree_startup_benchmark_token"
+        not in (artifact / "schemas" / "agent_run.txt").read_text()
+    ):
         raise BenchmarkError("agent_run schema omitted the DEBUG benchmark token")
-    if "remove_folder" not in (artifact / "schemas" / "manage_workspaces.txt").read_text():
+    if (
+        "remove_folder"
+        not in (artifact / "schemas" / "manage_workspaces.txt").read_text()
+    ):
         raise BenchmarkError("manage_workspaces schema omitted remove_folder")
     verified = verify_scope(runner, plan)
     require_benchmark_gate(runner)
@@ -4531,40 +5872,83 @@ def preflight_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def diagnostic_payload(plan: dict[str, Any], action: str, **extra: Any) -> dict[str, Any]:
-    return {"op": "worktree_startup_benchmark", "action": action, **exact_scope(plan), **extra}
+def diagnostic_payload(
+    plan: dict[str, Any], action: str, **extra: Any
+) -> dict[str, Any]:
+    return {
+        "op": "worktree_startup_benchmark",
+        "action": action,
+        **exact_scope(plan),
+        **extra,
+    }
 
 
-def validate_preparation_snapshot(value: Any, preparation_id: str, terminal: str) -> dict[str, Any]:
+def validate_preparation_snapshot(
+    value: Any, preparation_id: str, terminal: str
+) -> dict[str, Any]:
     preparation = find_value(value, "preparation")
     if not isinstance(preparation, dict):
         raise BenchmarkError("set_flags omitted the preparation snapshot")
     required_phases = {
-        "scope_resolution", "set_flags_total", "loaded_root_ingress_fence",
-        "loaded_root_policy_snapshot", "discovery_observation", "discovery_authority_capture",
-        "replacement_observation", "collection_fence", "captured_authority_capture",
-        "captured_observation_validation", "authority_metadata_git", "prefix_control_cache_lookup",
-        "prefix_control_scan", "prefix_control_cache_admit", "tree_inventory_spool",
-        "catalog_manifest_build", "authority_install", "snapshot_materialization",
-        "admission_prepare", "prepared_admission_currentness", "admission_commit",
-        "committed_admission_currentness", "final_loaded_root_currentness",
+        "scope_resolution",
+        "set_flags_total",
+        "loaded_root_ingress_fence",
+        "loaded_root_policy_snapshot",
+        "discovery_observation",
+        "discovery_authority_capture",
+        "replacement_observation",
+        "collection_fence",
+        "captured_authority_capture",
+        "captured_observation_validation",
+        "authority_metadata_git",
+        "prefix_control_cache_lookup",
+        "prefix_control_scan",
+        "prefix_control_cache_admit",
+        "tree_inventory_spool",
+        "catalog_manifest_build",
+        "authority_install",
+        "snapshot_materialization",
+        "admission_prepare",
+        "prepared_admission_currentness",
+        "admission_commit",
+        "committed_admission_currentness",
+        "final_loaded_root_currentness",
     }
     required_counters = {
-        "authority_captures", "git_command_count", "git_queue_us", "git_duration_us",
-        "prefix_cache_hits", "prefix_cache_misses", "prefix_cache_invalidations",
-        "prefix_cache_admissions", "prefix_cache_evictions", "prefix_cache_bypasses",
+        "authority_captures",
+        "git_command_count",
+        "git_queue_us",
+        "git_duration_us",
+        "prefix_cache_hits",
+        "prefix_cache_misses",
+        "prefix_cache_invalidations",
+        "prefix_cache_admissions",
+        "prefix_cache_evictions",
+        "prefix_cache_bypasses",
         "prefix_cache_coalesces",
-        "prefix_scan_count", "enumerated_candidates", "enumerated_directories",
-        "explicitly_pruned_directories", "control_record_count", "tree_records",
-        "tree_spool_bytes", "inventory_records", "catalog_batches", "catalog_regular_paths",
+        "prefix_scan_count",
+        "enumerated_candidates",
+        "enumerated_directories",
+        "explicitly_pruned_directories",
+        "control_record_count",
+        "tree_records",
+        "tree_spool_bytes",
+        "inventory_records",
+        "catalog_batches",
+        "catalog_regular_paths",
         "snapshot_searchable_paths",
     }
     phases, counters, saturation = (
-        preparation.get("phases"), preparation.get("counters"), preparation.get("counter_saturated")
+        preparation.get("phases"),
+        preparation.get("counters"),
+        preparation.get("counter_saturated"),
     )
     if preparation.get("preparation_id", "").upper() != preparation_id.upper():
         raise BenchmarkError("preparation snapshot ID mismatch")
-    if preparation.get("terminal_state") != terminal or preparation.get("path_free") is not True:
+    if (
+        preparation.get("terminal_state") != terminal
+        or preparation.get("path_free") is not True
+    ):
         raise BenchmarkError("preparation snapshot terminal/privacy contract mismatch")
     if not isinstance(phases, dict) or set(phases) != required_phases:
         raise BenchmarkError("preparation snapshot phase schema mismatch")
@@ -4582,14 +5966,18 @@ def prefix_control_cache_bypass_evidence(value: Any) -> dict[str, Any]:
     except BenchmarkError:
         preparation = None
     counters = preparation.get("counters") if isinstance(preparation, dict) else None
-    saturation = preparation.get("counter_saturated") if isinstance(preparation, dict) else None
-    counter = counters.get("prefix_cache_bypasses") if isinstance(counters, dict) else None
-    saturated = saturation.get("prefix_cache_bypasses") if isinstance(saturation, dict) else None
-    observed = (
-        nonnegative_integer(counter)
-        and counter > 0
-        and saturated is False
+    saturation = (
+        preparation.get("counter_saturated") if isinstance(preparation, dict) else None
     )
+    counter = (
+        counters.get("prefix_cache_bypasses") if isinstance(counters, dict) else None
+    )
+    saturated = (
+        saturation.get("prefix_cache_bypasses")
+        if isinstance(saturation, dict)
+        else None
+    )
+    observed = nonnegative_integer(counter) and counter > 0 and saturated is False
     return {
         "counter": counter if nonnegative_integer(counter) else None,
         "counter_saturated": saturated if isinstance(saturated, bool) else None,
@@ -4623,12 +6011,18 @@ def set_route(
             snapshot_response = runner.timed_call(
                 f"set-route-{route}-preparation-snapshot-after-timeout",
                 DEBUG_TOOL,
-                diagnostic_payload(plan, "preparation_snapshot", preparation_id=preparation_id),
+                diagnostic_payload(
+                    plan, "preparation_snapshot", preparation_id=preparation_id
+                ),
                 timeout=15,
                 check=False,
             ).response
-        except Exception as snapshot_exception:  # Preserve the original fixed-deadline failure.
-            snapshot_error = f"{type(snapshot_exception).__name__}: {snapshot_exception}"
+        except (
+            Exception
+        ) as snapshot_exception:  # Preserve the original fixed-deadline failure.
+            snapshot_error = (
+                f"{type(snapshot_exception).__name__}: {snapshot_exception}"
+            )
         timeout_record = {
             "preparation_id": preparation_id,
             "timeout_seconds": error.timeout,
@@ -4636,7 +6030,11 @@ def set_route(
             "preparation_snapshot_error": snapshot_error,
         }
         if runner.artifact:
-            save_json(runner.artifact / "preparation-timeout.json", timeout_record, exclusive=True)
+            save_json(
+                runner.artifact / "preparation-timeout.json",
+                timeout_record,
+                exclusive=True,
+            )
         raise BenchmarkError(
             f"{route} set_flags timed out after {error.timeout}s; preparation_id={preparation_id}"
         ) from error
@@ -4644,7 +6042,10 @@ def set_route(
     control_id = find_value(response, "control_id")
     if not isinstance(control_id, str):
         raise BenchmarkError(f"{route} control omitted control_id")
-    if route == "projected" and find_value(response, "base_snapshot_prepared") is not True:
+    if (
+        route == "projected"
+        and find_value(response, "base_snapshot_prepared") is not True
+    ):
         raise BenchmarkError("projected route did not prepare a base snapshot")
     return control_id, response
 
@@ -4660,17 +6061,30 @@ def arm_sample(
     warmup: bool,
     branch: str,
 ) -> tuple[str, str]:
-    scenario = "aged" if process_state == "aged" else "parallel" if ordinal > 1 else "clean_same_tree"
+    scenario = (
+        "aged"
+        if process_state == "aged"
+        else "parallel" if ordinal > 1 else "clean_same_tree"
+    )
     response = runner.call(
-        f"arm-{route}-{ordinal}", DEBUG_TOOL,
+        f"arm-{route}-{ordinal}",
+        DEBUG_TOOL,
         diagnostic_payload(
-            plan, "arm", control_id=control_id, scenario=scenario, invocation=invocation,
-            ordinal=ordinal, warmup=warmup, expires_seconds=900,
+            plan,
+            "arm",
+            control_id=control_id,
+            scenario=scenario,
+            invocation=invocation,
+            ordinal=ordinal,
+            warmup=warmup,
+            expires_seconds=900,
             worktree_base_ref=plan["dataset"]["base_commit_oid"],
             worktree_branch=branch,
         ),
     )
-    token, correlation = find_value(response, "token"), find_value(response, "correlation_id")
+    token, correlation = find_value(response, "token"), find_value(
+        response, "correlation_id"
+    )
     if not isinstance(token, str) or not isinstance(correlation, str):
         raise BenchmarkError("arm response omitted token or correlation_id")
     return token, correlation
@@ -4687,12 +6101,16 @@ def start_agent(
     branch: str,
 ) -> Any:
     return runner.call(
-        f"agent-start-{ordinal}", "agent_run",
+        f"agent-start-{ordinal}",
+        "agent_run",
         {
-            "op": "start", "model_id": "explore", "detach": True,
+            "op": "start",
+            "model_id": "explore",
+            "detach": True,
             "message": "Reply exactly RPCE_WORKTREE_STARTUP_READY and stop. Do not edit files or invoke tools.",
             "session_name": f"RPCE startup {route} {ordinal}",
-            "worktree_create": True, "worktree_branch": branch,
+            "worktree_create": True,
+            "worktree_branch": branch,
             "worktree_base_ref": plan["dataset"]["base_commit_oid"],
             "worktree_label": f"RPCE startup {label} {ordinal}",
             "context_id": plan["scope"]["context_id"],
@@ -4704,7 +6122,8 @@ def start_agent(
 
 def mark(runner: CLIRunner, plan: dict[str, Any], correlation: str, phase: str) -> None:
     runner.call(
-        f"mark-{phase}", DEBUG_TOOL,
+        f"mark-{phase}",
+        DEBUG_TOOL,
         diagnostic_payload(plan, "mark", correlation_id=correlation, mark=phase),
     )
 
@@ -4721,7 +6140,11 @@ def safe_mark(
 
 def operation_failure_type(error: BaseException | str) -> str:
     text = str(error).lower()
-    if isinstance(error, subprocess.TimeoutExpired) or "timeout" in text or "timed out" in text:
+    if (
+        isinstance(error, subprocess.TimeoutExpired)
+        or "timeout" in text
+        or "timed out" in text
+    ):
         return "timeout"
     if isinstance(error, str):
         return "malformed"
@@ -4740,7 +6163,8 @@ def capture_diagnostic(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         response = runner.call(
-            label, DEBUG_TOOL,
+            label,
+            DEBUG_TOOL,
             diagnostic_payload(plan, action, correlation_id=correlation),
             check=False,
         )
@@ -4765,9 +6189,16 @@ def first_search_read(
 ) -> tuple[dict[str, bool], dict[str, Any], dict[str, str]]:
     routed = {"context_id": context_id}
     runtime = runner.call(
-        "first-tools-root-identity", DEBUG_TOOL,
-        {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-         "recent_publication_limit": 0, "root_limit": 256}, check=False, context_id=context_id,
+        "first-tools-root-identity",
+        DEBUG_TOOL,
+        {
+            "op": "mcp_read_search_runtime_snapshot",
+            "window_id": plan["scope"]["window_id"],
+            "recent_publication_limit": 0,
+            "root_limit": 256,
+        },
+        check=False,
+        context_id=context_id,
     )
     physical_root_identity = runtime_root_identity(runtime, str(worktree_path))
     root_identity = {
@@ -4776,25 +6207,42 @@ def first_search_read(
         "type": "primary_workspace",
     }
     marker_failures = [
-        failure for failure in (
+        failure
+        for failure in (
             safe_mark(runner, plan, correlation, "first_search_started"),
             safe_mark(runner, plan, correlation, "first_read_started"),
-        ) if failure is not None
+        )
+        if failure is not None
     ]
     calls: dict[str, TimedCall] = {}
     call_failures: dict[str, dict[str, str]] = {}
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {
             pool.submit(
-                runner.timed_call, "first-search", "file_search",
-                {"pattern": plan["dataset"]["search_marker"], "regex": False, "mode": "content",
-                 "filter": {"paths": [plan["dataset"]["read_path"]]}, "max_results": 20, **routed},
+                runner.timed_call,
+                "first-search",
+                "file_search",
+                {
+                    "pattern": plan["dataset"]["search_marker"],
+                    "regex": False,
+                    "mode": "content",
+                    "filter": {"paths": [plan["dataset"]["read_path"]]},
+                    "max_results": 20,
+                    **routed,
+                },
                 check=False,
                 context_id=context_id,
             ): "search",
             pool.submit(
-                runner.timed_call, "first-read", "read_file",
-                {"path": plan["dataset"]["read_path"], "start_line": 1, "limit": 80, **routed},
+                runner.timed_call,
+                "first-read",
+                "read_file",
+                {
+                    "path": plan["dataset"]["read_path"],
+                    "start_line": 1,
+                    "limit": 80,
+                    **routed,
+                },
                 check=False,
                 context_id=context_id,
             ): "read",
@@ -4805,7 +6253,8 @@ def first_search_read(
                 calls[name] = future.result()
             except BaseException as error:
                 call_failures[name] = {
-                    "type": operation_failure_type(error), "error": repr(error),
+                    "type": operation_failure_type(error),
+                    "error": repr(error),
                 }
             finally:
                 completion_failure = safe_mark(
@@ -4819,19 +6268,32 @@ def first_search_read(
             return {"ok": False, **call_failures[name]}
         timed = calls.get(name)
         if timed is None:
-            return {"ok": False, "type": "malformed", "error": "missing direct call result"}
+            return {
+                "ok": False,
+                "type": "malformed",
+                "error": "missing direct call result",
+            }
         evidence = structured_success_evidence(
-            timed.response, tool, expected_root_id=root_identity["id"],
-            expected_root_path=root_identity["path"], expected_root_type=root_identity["type"],
-            expected_file_path=plan["dataset"]["read_path"], expected_file_type="file",
-            expected_content=marker, expected_worktree_id=worktree_id,
+            timed.response,
+            tool,
+            expected_root_id=root_identity["id"],
+            expected_root_path=root_identity["path"],
+            expected_root_type=root_identity["type"],
+            expected_file_path=plan["dataset"]["read_path"],
+            expected_file_type="file",
+            expected_content=marker,
+            expected_worktree_id=worktree_id,
             expected_physical_worktree_path=str(worktree_path),
         )
         if evidence.get("ok") is not True:
-            evidence["type"] = operation_failure_type(str(evidence.get("error") or "malformed"))
+            evidence["type"] = operation_failure_type(
+                str(evidence.get("error") or "malformed")
+            )
         return evidence
 
-    search_evidence = direct_evidence("search", "file_search", plan["dataset"]["search_marker"])
+    search_evidence = direct_evidence(
+        "search", "file_search", plan["dataset"]["search_marker"]
+    )
     read_evidence = direct_evidence("read", "read_file", plan["dataset"]["read_marker"])
     concurrent = False
     if set(calls) == {"search", "read"}:
@@ -4842,25 +6304,41 @@ def first_search_read(
         "concurrent": concurrent,
         "search_duration_us": (
             (calls["search"].finished_ns - calls["search"].started_ns) / 1000
-            if "search" in calls else None
+            if "search" in calls
+            else None
         ),
         "read_duration_us": (
             (calls["read"].finished_ns - calls["read"].started_ns) / 1000
-            if "read" in calls else None
+            if "read" in calls
+            else None
         ),
-        "search": search_evidence, "read": read_evidence,
+        "search": search_evidence,
+        "read": read_evidence,
         "physical_runtime_root": physical_root_identity,
         "mark_failures": marker_failures,
     }
-    return {
-        "search": search_evidence.get("ok") is True and concurrent and not marker_failures,
-        "read": read_evidence.get("ok") is True and concurrent and not marker_failures,
-    }, evidence, root_identity
+    return (
+        {
+            "search": search_evidence.get("ok") is True
+            and concurrent
+            and not marker_failures,
+            "read": read_evidence.get("ok") is True
+            and concurrent
+            and not marker_failures,
+        },
+        evidence,
+        root_identity,
+    )
 
 
 def collect_follow_on_evidence(
-    runner: CLIRunner, plan: dict[str, Any], correlation: str, context_id: str,
-    root_identity: dict[str, str], worktree_id: str, worktree_path: Path,
+    runner: CLIRunner,
+    plan: dict[str, Any],
+    correlation: str,
+    context_id: str,
+    root_identity: dict[str, str],
+    worktree_id: str,
+    worktree_path: Path,
 ) -> dict[str, Any]:
     path = plan["dataset"]["read_path"]
     parent = str(Path(path).parent)
@@ -4896,7 +6374,11 @@ def collect_follow_on_evidence(
         timed: TimedCall | None = None
         try:
             timed = runner.timed_call(
-                label, tool, payload, check=False, context_id=context_id,
+                label,
+                tool,
+                payload,
+                check=False,
+                context_id=context_id,
             )
             validated = validator(timed.response)
             validator_ok = validated.get("ok", True)
@@ -4912,7 +6394,11 @@ def collect_follow_on_evidence(
                 )
         except BaseException as error:
             item["ok"] = False
-            item["type"] = "mark_error" if start_failure is not None else operation_failure_type(error)
+            item["type"] = (
+                "mark_error"
+                if start_failure is not None
+                else operation_failure_type(error)
+            )
             item.setdefault("error", repr(error))
         finally:
             item["completion_mark_attempted"] = True
@@ -4928,21 +6414,35 @@ def collect_follow_on_evidence(
         if timed is not None:
             item["duration_us"] = (timed.finished_ns - timed.started_ns) / 1000
         if item.get("ok") is not True:
-            operation_failures.append({
-                "operation": mark_prefix,
-                "type": item.get("type") or "malformed",
-                "error": item.get("error"),
-            })
+            operation_failures.append(
+                {
+                    "operation": mark_prefix,
+                    "type": item.get("type") or "malformed",
+                    "error": item.get("error"),
+                }
+            )
         return item, timed
 
-    for mark_prefix, label in (("first_codemap", "first-codemap"), ("warm_codemap", "warm-codemap")):
+    for mark_prefix, label in (
+        ("first_codemap", "first-codemap"),
+        ("warm_codemap", "warm-codemap"),
+    ):
         item, _ = timed_operation(
-            mark_prefix, label, "get_code_structure",
-            {"paths": [path], "signatures": True, "size": "large", "context_id": context_id},
+            mark_prefix,
+            label,
+            "get_code_structure",
+            {
+                "paths": [path],
+                "signatures": True,
+                "size": "large",
+                "context_id": context_id,
+            },
             lambda response: codemap_structure_evidence(
-                response, expected_root_id=logical_root_id,
+                response,
+                expected_root_id=logical_root_id,
                 expected_root_path=logical_root_path,
-                expected_root_type=logical_root_type, expected_file_path=path,
+                expected_root_type=logical_root_type,
+                expected_file_path=path,
                 expected_marker=plan["dataset"]["read_marker"],
                 expected_file_type=plan["dataset"]["code_file_type"],
                 expected_worktree_id=worktree_id,
@@ -4955,9 +6455,12 @@ def collect_follow_on_evidence(
         try:
             return {
                 **codemap_tree_marker_evidence(
-                    response, expected_context_id=context_id,
-                    expected_root_path=logical_root_path, requested_parent=parent,
-                    expected_file_path=path, expected_worktree_id=worktree_id,
+                    response,
+                    expected_context_id=context_id,
+                    expected_root_path=logical_root_path,
+                    requested_parent=parent,
+                    expected_file_path=path,
+                    expected_worktree_id=worktree_id,
                     expected_physical_worktree_path=str(worktree_path),
                 ),
                 "ok": True,
@@ -4966,9 +6469,16 @@ def collect_follow_on_evidence(
             return {"ok": False, "error": str(error)}
 
     tree_evidence, _ = timed_operation(
-        "passive_tree", "passive-tree", "get_file_tree",
-        {"type": "files", "mode": "full", "path": parent, "max_depth": 1,
-         "context_id": context_id},
+        "passive_tree",
+        "passive-tree",
+        "get_file_tree",
+        {
+            "type": "files",
+            "mode": "full",
+            "path": parent,
+            "max_depth": 1,
+            "context_id": context_id,
+        },
         tree_validator,
     )
 
@@ -4983,9 +6493,7 @@ def collect_follow_on_evidence(
         "get_attempted": False,
         "get_result_recorded": False,
     }
-    selection_start_failure = safe_mark(
-        runner, plan, correlation, "selection_started"
-    )
+    selection_start_failure = safe_mark(runner, plan, correlation, "selection_started")
     selection_record["start_marked"] = selection_start_failure is None
     selection_errors: list[tuple[str, str]] = []
     if selection_start_failure is not None:
@@ -4994,9 +6502,11 @@ def collect_follow_on_evidence(
     selection_timed: TimedCall | None = None
     try:
         selection_timed = runner.timed_call(
-            "selection-set", "manage_selection",
+            "selection-set",
+            "manage_selection",
             {"op": "set", "paths": [path], "mode": "full", "context_id": context_id},
-            check=False, context_id=context_id,
+            check=False,
+            context_id=context_id,
         )
         selection_record["set"] = {"ok": call_succeeded(selection_timed.response)}
         if not call_succeeded(selection_timed.response):
@@ -5008,15 +6518,21 @@ def collect_follow_on_evidence(
     try:
         selection_record["get_attempted"] = True
         selection_get_timed = runner.timed_call(
-            "selection-get", "manage_selection",
+            "selection-get",
+            "manage_selection",
             {"op": "get", "view": "files", "context_id": context_id},
-            check=False, context_id=context_id,
+            check=False,
+            context_id=context_id,
         )
         selection_record["get_result_recorded"] = True
         selection_evidence = structured_success_evidence(
-            selection_get_timed.response, "manage_selection", expected_root_id=logical_root_id,
-            expected_root_path=logical_root_path, expected_root_type=logical_root_type,
-            expected_file_path=path, expected_file_type="file",
+            selection_get_timed.response,
+            "manage_selection",
+            expected_root_id=logical_root_id,
+            expected_root_path=logical_root_path,
+            expected_root_type=logical_root_type,
+            expected_file_path=path,
+            expected_file_type="file",
             expected_worktree_id=worktree_id,
             expected_physical_worktree_path=str(worktree_path),
         )
@@ -5024,21 +6540,26 @@ def collect_follow_on_evidence(
             selection_evidence["type"] = operation_failure_type(
                 str(selection_evidence.get("error") or "malformed selection response")
             )
-            selection_errors.append((
-                selection_evidence["type"],
-                str(selection_evidence.get("error") or "malformed selection response"),
-            ))
+            selection_errors.append(
+                (
+                    selection_evidence["type"],
+                    str(
+                        selection_evidence.get("error")
+                        or "malformed selection response"
+                    ),
+                )
+            )
     except BaseException as error:
         selection_evidence = {
-            "ok": False, "type": operation_failure_type(error), "error": repr(error),
+            "ok": False,
+            "type": operation_failure_type(error),
+            "error": repr(error),
         }
         selection_errors.append((selection_evidence["type"], repr(error)))
     finally:
         selection_record["completion_mark_attempted"] = True
         selection_record["completion_mark_attempted_ns"] = time.monotonic_ns()
-        completion_failure = safe_mark(
-            runner, plan, correlation, "selection_completed"
-        )
+        completion_failure = safe_mark(runner, plan, correlation, "selection_completed")
         selection_record["completion_marked"] = completion_failure is None
         if completion_failure is not None:
             selection_record.setdefault("mark_failures", []).append(completion_failure)
@@ -5055,27 +6576,38 @@ def collect_follow_on_evidence(
         and selection_record["get_finished_ns"]
         <= selection_record["completion_mark_attempted_ns"]
     )
-    selection_type = "success" if selection_ok else (
-        "mark_error" if any(kind == "mark_error" for kind, _ in selection_errors)
-        else selection_errors[0][0] if selection_errors else "malformed"
+    selection_type = (
+        "success"
+        if selection_ok
+        else (
+            "mark_error"
+            if any(kind == "mark_error" for kind, _ in selection_errors)
+            else selection_errors[0][0] if selection_errors else "malformed"
+        )
     )
     selection_record.update(selection_evidence)
     selection_record["ok"] = selection_ok
     selection_record["type"] = selection_type
     selection_record["duration_us"] = (
-        (time.monotonic_ns() - selection_started_ns) / 1000
-    )
+        time.monotonic_ns() - selection_started_ns
+    ) / 1000
     if selection_errors:
         selection_record["error"] = selection_errors[0][1]
     if not selection_ok:
-        operation_failures.append({
-            "operation": "selection", "type": selection_type,
-            "error": selection_record.get("error"),
-        })
+        operation_failures.append(
+            {
+                "operation": "selection",
+                "type": selection_type,
+                "error": selection_record.get("error"),
+            }
+        )
     return {
-        "ok": all(item.get("ok") for item in structures) and tree_evidence.get("ok") is True
-        and selection_ok and not operation_failures,
-        "codemap": structures, "tree": tree_evidence,
+        "ok": all(item.get("ok") for item in structures)
+        and tree_evidence.get("ok") is True
+        and selection_ok
+        and not operation_failures,
+        "codemap": structures,
+        "tree": tree_evidence,
         "selection": selection_record,
         "failures": operation_failures,
         "completed": True,
@@ -5091,13 +6623,18 @@ def validate_follow_on_collection(value: Any) -> list[str]:
     codemap = value.get("codemap")
     tree = value.get("tree")
     selection = value.get("selection")
-    if not isinstance(codemap, list) or not isinstance(tree, dict) or not isinstance(selection, dict):
+    if (
+        not isinstance(codemap, list)
+        or not isinstance(tree, dict)
+        or not isinstance(selection, dict)
+    ):
         return failures + ["follow_on_operation_inventory_malformed"]
     operations = [*codemap, tree, selection]
     if (
         len(operations) != len(FOLLOW_ON_OPERATION_ORDER)
         or any(not isinstance(item, dict) for item in operations)
-        or tuple(item.get("operation") for item in operations) != FOLLOW_ON_OPERATION_ORDER
+        or tuple(item.get("operation") for item in operations)
+        != FOLLOW_ON_OPERATION_ORDER
     ):
         failures.append("follow_on_operation_inventory_mismatch")
         return failures
@@ -5106,8 +6643,10 @@ def validate_follow_on_collection(value: Any) -> list[str]:
     for item in operations:
         operation = str(item["operation"])
         for field in (
-            "start_mark_attempted", "start_marked",
-            "completion_mark_attempted", "completion_marked",
+            "start_mark_attempted",
+            "start_marked",
+            "completion_mark_attempted",
+            "completion_marked",
         ):
             if item.get(field) is not True:
                 failures.append(f"{operation}_{field}_missing")
@@ -5119,11 +6658,13 @@ def validate_follow_on_collection(value: Any) -> list[str]:
         else:
             if operation_type not in FOLLOW_ON_FAILURE_TYPES:
                 failures.append(f"{operation}_failure_type_invalid")
-            expected_failure_inventory.append({
-                "operation": operation,
-                "type": operation_type,
-                "error": item.get("error"),
-            })
+            expected_failure_inventory.append(
+                {
+                    "operation": operation,
+                    "type": operation_type,
+                    "error": item.get("error"),
+                }
+            )
 
     if selection.get("set_attempted") is not True:
         failures.append("selection_set_not_attempted")
@@ -5134,8 +6675,10 @@ def validate_follow_on_collection(value: Any) -> list[str]:
     get_finished_ns = selection.get("get_finished_ns")
     completion_attempted_ns = selection.get("completion_mark_attempted_ns")
     if (
-        not isinstance(get_finished_ns, int) or isinstance(get_finished_ns, bool)
-        or not isinstance(completion_attempted_ns, int) or isinstance(completion_attempted_ns, bool)
+        not isinstance(get_finished_ns, int)
+        or isinstance(get_finished_ns, bool)
+        or not isinstance(completion_attempted_ns, int)
+        or isinstance(completion_attempted_ns, bool)
         or get_finished_ns > completion_attempted_ns
     ):
         failures.append("selection_completed_before_get_result")
@@ -5160,8 +6703,12 @@ def positive_integer(value: Any) -> bool:
 def expected_actual_route_counts(
     route: str, observation_count: int = 1
 ) -> dict[str, int]:
-    if route not in EXPECTED_ACTUAL_ROUTE_COUNTS or not positive_integer(observation_count):
-        raise BenchmarkError("expected route observation count must be a positive integer")
+    if route not in EXPECTED_ACTUAL_ROUTE_COUNTS or not positive_integer(
+        observation_count
+    ):
+        raise BenchmarkError(
+            "expected route observation count must be a positive integer"
+        )
     return {
         name: count * observation_count
         for name, count in EXPECTED_ACTUAL_ROUTE_COUNTS[route].items()
@@ -5230,7 +6777,10 @@ def validate_filesystem_evidence(value: Any) -> list[str]:
         failures.append("invalid_filesystem_duration_us")
     operation_count = value.get("operation_count")
     expected_available = nonnegative_integer(operation_count) and operation_count > 0
-    if not isinstance(value.get("available"), bool) or value.get("available") != expected_available:
+    if (
+        not isinstance(value.get("available"), bool)
+        or value.get("available") != expected_available
+    ):
         failures.append("invalid_filesystem_availability")
     return failures
 
@@ -5256,7 +6806,9 @@ def validate_resource_evidence(value: Any) -> list[str]:
     if (
         not isinstance(value, dict)
         or not required <= set(value)
-        or not ({"physical_footprint_available", "phys_footprint_available"} & set(value))
+        or not (
+            {"physical_footprint_available", "phys_footprint_available"} & set(value)
+        )
     ):
         return ["incomplete_resource_evidence"]
     failures: list[str] = []
@@ -5292,27 +6844,43 @@ def validate_resource_evidence(value: Any) -> list[str]:
         # Their displayed arithmetic may legitimately differ by one grid cell, never two.
         tolerance = PUBLISHED_MEMORY_DELTA_TOLERANCE_MB
         if not math.isclose(
-            float(peak_delta), float(peak) - float(baseline), rel_tol=0.0, abs_tol=tolerance
+            float(peak_delta),
+            float(peak) - float(baseline),
+            rel_tol=0.0,
+            abs_tol=tolerance,
         ):
             failures.append(f"inconsistent_{family}_peak_delta")
         if not math.isclose(
-            float(retained_delta), float(final) - float(baseline), rel_tol=0.0, abs_tol=tolerance
+            float(retained_delta),
+            float(final) - float(baseline),
+            rel_tol=0.0,
+            abs_tol=tolerance,
         ):
             failures.append(f"inconsistent_{family}_retained_delta")
     for field in (
-        "session_cpu_ms", "session_user_cpu_ms", "session_system_cpu_ms",
-        "average_core_utilization_percent", "peak_interval_core_utilization_percent",
+        "session_cpu_ms",
+        "session_user_cpu_ms",
+        "session_system_cpu_ms",
+        "average_core_utilization_percent",
+        "peak_interval_core_utilization_percent",
         "duration_seconds",
     ):
         if not finite_number(value.get(field), positive=field == "duration_seconds"):
             failures.append(f"invalid_resource_{field}")
-    if not nonnegative_integer(value.get("sample_count")) or value.get("sample_count", 0) < 2:
+    if (
+        not nonnegative_integer(value.get("sample_count"))
+        or value.get("sample_count", 0) < 2
+    ):
         failures.append("invalid_resource_sample_count")
-    if all(finite_number(value.get(field)) for field in ("session_cpu_ms", "session_user_cpu_ms", "session_system_cpu_ms")):
+    if all(
+        finite_number(value.get(field))
+        for field in ("session_cpu_ms", "session_user_cpu_ms", "session_system_cpu_ms")
+    ):
         if not math.isclose(
             float(value["session_cpu_ms"]),
             float(value["session_user_cpu_ms"]) + float(value["session_system_cpu_ms"]),
-            rel_tol=1e-6, abs_tol=1e-6,
+            rel_tol=1e-6,
+            abs_tol=1e-6,
         ):
             failures.append("inconsistent_resource_cpu_total")
     average = value.get("average_core_utilization_percent")
@@ -5339,9 +6907,14 @@ def expected_receipt_decision(route: str, correlation: str) -> dict[str, Any]:
         "validation_fallback": None,
     }
     if route in {"baseline", "forced-full"}:
-        observation = {"state": "disabled"} if route == "baseline" else {
-            "fallback_reason": "noReceipt", "state": "fallback",
-        }
+        observation = (
+            {"state": "disabled"}
+            if route == "baseline"
+            else {
+                "fallback_reason": "noReceipt",
+                "state": "fallback",
+            }
+        )
         return {
             "ambiguous_or_duplicate": False,
             "consumption": {
@@ -5405,12 +6978,9 @@ def expected_receipt_decision(route: str, correlation: str) -> dict[str, Any]:
 def matches_mandatory_typed_subset(actual: Any, expected: Any) -> bool:
     """Require every expected receipt field while permitting additive evidence."""
     if isinstance(expected, dict):
-        return (
-            isinstance(actual, dict)
-            and all(
-                key in actual and matches_mandatory_typed_subset(actual[key], value)
-                for key, value in expected.items()
-            )
+        return isinstance(actual, dict) and all(
+            key in actual and matches_mandatory_typed_subset(actual[key], value)
+            for key, value in expected.items()
         )
     if expected is None:
         return actual is None
@@ -5466,8 +7036,11 @@ PROJECTED_RECEIPT_CREATION_EXACT_VALUES: dict[str, Any] = {
     "target_tree_authority_match": "match",
 }
 PROJECTED_RECEIPT_CREATION_DIGEST_FIELDS = {
-    "source_authority_key_digest", "source_common_directory_digest",
-    "repository_id_digest", "repository_namespace_digest", "requested_prefix_digest",
+    "source_authority_key_digest",
+    "source_common_directory_digest",
+    "repository_id_digest",
+    "repository_namespace_digest",
+    "requested_prefix_digest",
     "current_snapshot_sha256",
 }
 PROJECTED_RECEIPT_CREATION_NONNEGATIVE_INTEGER_FIELDS = {
@@ -5497,7 +7070,10 @@ def valid_projected_receipt_creation(value: Any) -> bool:
         return False
     if type(value.get("include_copy_result_present")) is not bool:
         return False
-    if any(not lowercase_sha256(value.get(key)) for key in PROJECTED_RECEIPT_CREATION_DIGEST_FIELDS):
+    if any(
+        not lowercase_sha256(value.get(key))
+        for key in PROJECTED_RECEIPT_CREATION_DIGEST_FIELDS
+    ):
         return False
     if any(
         not nonnegative_integer(value.get(key))
@@ -5567,9 +7143,7 @@ def validate_receipt_oracle(
         route == "projected"
         and not valid_projected_receipt_creation(decision.get("creation"))
     ):
-        failures.append(
-            f"receipt_{route.replace('-', '_')}_decision_contract_mismatch"
-        )
+        failures.append(f"receipt_{route.replace('-', '_')}_decision_contract_mismatch")
     return failures
 
 
@@ -5577,36 +7151,60 @@ def lowercase_sha256(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-def validate_policy_canonicalization_side(value: Any, label: str) -> tuple[list[str], list[dict[str, Any]] | None]:
+def validate_policy_canonicalization_side(
+    value: Any, label: str
+) -> tuple[list[str], list[dict[str, Any]] | None]:
     failures: list[str] = []
     if not isinstance(value, dict) or "constituents" not in value:
         return [f"policy_canonicalization_{label}_inventory_invalid"], None
     constituents = value.get("constituents")
-    if not isinstance(constituents, list) or not all(isinstance(item, dict) for item in constituents):
+    if not isinstance(constituents, list) or not all(
+        isinstance(item, dict) for item in constituents
+    ):
         return [f"policy_canonicalization_{label}_constituents_invalid"], None
-    if [item.get("constituent") for item in constituents] != POLICY_CANONICALIZATION_CONSTITUENTS:
+    if [
+        item.get("constituent") for item in constituents
+    ] != POLICY_CANONICALIZATION_CONSTITUENTS:
         return [f"policy_canonicalization_{label}_constituent_order_invalid"], None
 
     for item in constituents:
         name = item["constituent"]
         if name == "rootNeutralPolicyConfig":
             if not {"constituent", "byte_count", "sha256"}.issubset(item):
-                failures.append(f"policy_canonicalization_{label}_{name}_inventory_invalid")
-            elif not nonnegative_integer(item.get("byte_count")) or not lowercase_sha256(item.get("sha256")):
+                failures.append(
+                    f"policy_canonicalization_{label}_{name}_inventory_invalid"
+                )
+            elif not nonnegative_integer(
+                item.get("byte_count")
+            ) or not lowercase_sha256(item.get("sha256")):
                 failures.append(f"policy_canonicalization_{label}_{name}_value_invalid")
         elif name in {"commonInfoExclude", "commonInfoAttributes"}:
             if not {"constituent", "state", "digest"}.issubset(item):
-                failures.append(f"policy_canonicalization_{label}_{name}_inventory_invalid")
-            elif item.get("state") not in {"missing", "directory", "regular"} or not lowercase_sha256(item.get("digest")):
+                failures.append(
+                    f"policy_canonicalization_{label}_{name}_inventory_invalid"
+                )
+            elif item.get("state") not in {
+                "missing",
+                "directory",
+                "regular",
+            } or not lowercase_sha256(item.get("digest")):
                 failures.append(f"policy_canonicalization_{label}_{name}_value_invalid")
         elif name in {"canonicalIgnoreFooter", "canonicalAttributeFooter"}:
             if not {"constituent", "digest", "record_count"}.issubset(item):
-                failures.append(f"policy_canonicalization_{label}_{name}_inventory_invalid")
-            elif not lowercase_sha256(item.get("digest")) or not nonnegative_integer(item.get("record_count")):
+                failures.append(
+                    f"policy_canonicalization_{label}_{name}_inventory_invalid"
+                )
+            elif not lowercase_sha256(item.get("digest")) or not nonnegative_integer(
+                item.get("record_count")
+            ):
                 failures.append(f"policy_canonicalization_{label}_{name}_value_invalid")
         elif name in {"externalExcludes", "externalAttributes"}:
-            if not {"constituent", "state", "identity_digest", "byte_count"}.issubset(item):
-                failures.append(f"policy_canonicalization_{label}_{name}_inventory_invalid")
+            if not {"constituent", "state", "identity_digest", "byte_count"}.issubset(
+                item
+            ):
+                failures.append(
+                    f"policy_canonicalization_{label}_{name}_inventory_invalid"
+                )
             elif (
                 item.get("state") not in {"unset", "missing", "present"}
                 or not lowercase_sha256(item.get("identity_digest"))
@@ -5615,16 +7213,23 @@ def validate_policy_canonicalization_side(value: Any, label: str) -> tuple[list[
                 failures.append(f"policy_canonicalization_{label}_{name}_value_invalid")
         elif name in {"configuredIgnorePolicy", "attributePolicy", "sparsePolicy"}:
             if not {"constituent", "digest"}.issubset(item):
-                failures.append(f"policy_canonicalization_{label}_{name}_inventory_invalid")
+                failures.append(
+                    f"policy_canonicalization_{label}_{name}_inventory_invalid"
+                )
             elif not lowercase_sha256(item.get("digest")):
                 failures.append(f"policy_canonicalization_{label}_{name}_value_invalid")
         elif name == "canonicalization":
             expected = {
-                "constituent", "policy_version", "pruned_root_count",
-                "pruned_root_summary_sha256", "completeness",
+                "constituent",
+                "policy_version",
+                "pruned_root_count",
+                "pruned_root_summary_sha256",
+                "completeness",
             }
             if not expected.issubset(item):
-                failures.append(f"policy_canonicalization_{label}_{name}_inventory_invalid")
+                failures.append(
+                    f"policy_canonicalization_{label}_{name}_inventory_invalid"
+                )
             elif (
                 not isinstance(item.get("policy_version"), str)
                 or not item["policy_version"]
@@ -5638,11 +7243,12 @@ def validate_policy_canonicalization_side(value: Any, label: str) -> tuple[list[
         elif name == "committedControls":
             expected = {"constituent", "record_count", "summary_sha256"}
             if not expected.issubset(item):
-                failures.append(f"policy_canonicalization_{label}_{name}_inventory_invalid")
-            elif (
-                not nonnegative_integer(item.get("record_count"))
-                or not lowercase_sha256(item.get("summary_sha256"))
-            ):
+                failures.append(
+                    f"policy_canonicalization_{label}_{name}_inventory_invalid"
+                )
+            elif not nonnegative_integer(
+                item.get("record_count")
+            ) or not lowercase_sha256(item.get("summary_sha256")):
                 failures.append(f"policy_canonicalization_{label}_{name}_value_invalid")
     return failures, constituents
 
@@ -5653,15 +7259,13 @@ def policy_constituents_match(
     target: dict[str, Any],
 ) -> bool:
     if name == "canonicalization":
-        return (
-            base.get("policy_version") == target.get("policy_version")
-            and base.get("completeness") == target.get("completeness")
-        )
+        return base.get("policy_version") == target.get("policy_version") and base.get(
+            "completeness"
+        ) == target.get("completeness")
     if name == "committedControls":
-        return (
-            base.get("record_count") == target.get("record_count")
-            and base.get("summary_sha256") == target.get("summary_sha256")
-        )
+        return base.get("record_count") == target.get("record_count") and base.get(
+            "summary_sha256"
+        ) == target.get("summary_sha256")
     known_keys = {
         "rootNeutralPolicyConfig": {"constituent", "byte_count", "sha256"},
         "commonInfoExclude": {"constituent", "state", "digest"},
@@ -5683,7 +7287,10 @@ def validate_policy_canonicalization_comparison(
     require_canonical_equivalence: bool,
 ) -> list[str]:
     if not isinstance(value, dict) or not {
-        "classification", "constituent_comparisons", "base", "target",
+        "classification",
+        "constituent_comparisons",
+        "base",
+        "target",
     }.issubset(value):
         return ["policy_canonicalization_comparison_inventory_invalid"]
     failures: list[str] = []
@@ -5691,12 +7298,17 @@ def validate_policy_canonicalization_comparison(
     if classification not in POLICY_CANONICALIZATION_CLASSIFICATIONS:
         failures.append("policy_canonicalization_classification_invalid")
     comparisons = value.get("constituent_comparisons")
-    if not isinstance(comparisons, list) or not all(isinstance(item, dict) for item in comparisons):
+    if not isinstance(comparisons, list) or not all(
+        isinstance(item, dict) for item in comparisons
+    ):
         return failures + ["policy_canonicalization_constituent_comparisons_invalid"]
-    if [item.get("constituent") for item in comparisons] != POLICY_CANONICALIZATION_CONSTITUENTS:
+    if [
+        item.get("constituent") for item in comparisons
+    ] != POLICY_CANONICALIZATION_CONSTITUENTS:
         failures.append("policy_canonicalization_comparison_order_invalid")
     comparison_shape_valid = not any(
-        not {"constituent", "matched"}.issubset(item) or not isinstance(item.get("matched"), bool)
+        not {"constituent", "matched"}.issubset(item)
+        or not isinstance(item.get("matched"), bool)
         for item in comparisons
     )
     if not comparison_shape_valid:
@@ -5707,10 +7319,14 @@ def validate_policy_canonicalization_comparison(
     base_constituents: list[dict[str, Any]] | None = None
     target_constituents: list[dict[str, Any]] | None = None
     if base_value is not None:
-        side_failures, base_constituents = validate_policy_canonicalization_side(base_value, "base")
+        side_failures, base_constituents = validate_policy_canonicalization_side(
+            base_value, "base"
+        )
         failures.extend(side_failures)
     if target_value is not None:
-        side_failures, target_constituents = validate_policy_canonicalization_side(target_value, "target")
+        side_failures, target_constituents = validate_policy_canonicalization_side(
+            target_value, "target"
+        )
         failures.extend(side_failures)
 
     incomplete = base_constituents is None or target_constituents is None
@@ -5720,11 +7336,17 @@ def validate_policy_canonicalization_comparison(
         and base_constituents is not None
         and target_constituents is not None
     ):
-        for comparison, base, target in zip(comparisons, base_constituents, target_constituents):
-            if comparison.get("constituent") != base.get("constituent") or base.get("constituent") != target.get("constituent"):
+        for comparison, base, target in zip(
+            comparisons, base_constituents, target_constituents
+        ):
+            if comparison.get("constituent") != base.get("constituent") or base.get(
+                "constituent"
+            ) != target.get("constituent"):
                 failures.append("policy_canonicalization_comparison_alignment_invalid")
                 break
-            computed_match = policy_constituents_match(comparison["constituent"], base, target)
+            computed_match = policy_constituents_match(
+                comparison["constituent"], base, target
+            )
             if comparison.get("matched") is not computed_match:
                 failures.append("policy_canonicalization_comparison_contradictory")
                 break
@@ -5735,17 +7357,24 @@ def validate_policy_canonicalization_comparison(
 
     declared_matches = [item.get("matched") for item in comparisons]
     if classification == "canonicalEquivalentAfterReachabilityFiltering":
-        if incomplete or declared_matches != [True] * len(POLICY_CANONICALIZATION_CONSTITUENTS):
+        if incomplete or declared_matches != [True] * len(
+            POLICY_CANONICALIZATION_CONSTITUENTS
+        ):
             failures.append("policy_canonicalization_equivalence_incoherent")
     elif classification == "semanticInputDifference":
         if incomplete or all(declared_matches):
             failures.append("policy_canonicalization_semantic_difference_incoherent")
     elif classification == "incomplete":
         if not incomplete:
-            failures.append("policy_canonicalization_incomplete_classification_incoherent")
+            failures.append(
+                "policy_canonicalization_incomplete_classification_incoherent"
+            )
     elif classification == "incoherent":
         failures.append("policy_canonicalization_reported_incoherent")
-    if require_canonical_equivalence and classification != "canonicalEquivalentAfterReachabilityFiltering":
+    if (
+        require_canonical_equivalence
+        and classification != "canonicalEquivalentAfterReachabilityFiltering"
+    ):
         failures.append("policy_canonicalization_not_equivalent")
     return failures
 
@@ -5774,7 +7403,8 @@ def validate_delta_compatibility_oracle(
     if not all(isinstance(item, dict) for item in evaluations):
         return ["delta_compatibility_evaluation_entry_malformed"]
     if [item.get("source") for item in evaluations] != [
-        "hintEvaluator", "planner",
+        "hintEvaluator",
+        "planner",
     ]:
         failures.append("delta_compatibility_source_contract_mismatch")
         return failures
@@ -5801,7 +7431,8 @@ def validate_delta_compatibility_oracle(
             or evaluation.get("target_authority_comparison_reached") is not True
             or evaluation.get("target_authority_comparison_passed") is not True
             or evaluation.get("terminal_fallback") is not None
-            or evaluation.get("tree_relation") not in {
+            or evaluation.get("tree_relation")
+            not in {
                 "sameExcludedFromDeltaCompatibility",
                 "differentExcludedFromDeltaCompatibility",
             }
@@ -5824,24 +7455,35 @@ def validate_delta_compatibility_oracle(
                 or re.fullmatch(r"[0-9a-f]{64}", field["base_digest"]) is None
                 or not isinstance(field.get("target_digest"), str)
                 or re.fullmatch(r"[0-9a-f]{64}", field["target_digest"]) is None
-                or (field.get("decision") == "match" and field["base_digest"] != field["target_digest"])
+                or (
+                    field.get("decision") == "match"
+                    and field["base_digest"] != field["target_digest"]
+                )
             ):
                 failures.append(f"delta_compatibility_{source}_field_digest_invalid")
                 break
-        derived_mismatches = [field["field"] for field in fields if field.get("decision") == "mismatch"]
+        derived_mismatches = [
+            field["field"] for field in fields if field.get("decision") == "mismatch"
+        ]
         if mismatched != derived_mismatches:
             failures.append(f"delta_compatibility_{source}_mismatch_set_invalid")
         authorized_corrections = {
             (): "none",
-            ("resolvedExcludesFileIdentity",): "canonicalMissingResolvedExcludesFileIdentity",
-            ("resolvedAttributesFileIdentity",): "canonicalMissingResolvedAttributesFileIdentity",
+            (
+                "resolvedExcludesFileIdentity",
+            ): "canonicalMissingResolvedExcludesFileIdentity",
+            (
+                "resolvedAttributesFileIdentity",
+            ): "canonicalMissingResolvedAttributesFileIdentity",
             (
                 "resolvedExcludesFileIdentity",
                 "resolvedAttributesFileIdentity",
             ): "canonicalMissingResolvedExternalAuthorityIdentities",
         }
         if authorized_corrections.get(tuple(derived_mismatches)) != correction:
-            failures.append(f"delta_compatibility_{source}_correction_contract_mismatch")
+            failures.append(
+                f"delta_compatibility_{source}_correction_contract_mismatch"
+            )
         if source == "hintEvaluator":
             if (
                 evaluation.get("current_search_abi_reached") is not True
@@ -5849,7 +7491,9 @@ def validate_delta_compatibility_oracle(
                 or evaluation.get("catalog_policy_comparison_reached") is not False
                 or evaluation.get("catalog_policy_matched") is not None
             ):
-                failures.append("delta_compatibility_hintEvaluator_gate_contract_mismatch")
+                failures.append(
+                    "delta_compatibility_hintEvaluator_gate_contract_mismatch"
+                )
         elif source == "planner":
             if (
                 evaluation.get("current_search_abi_reached") is not False
@@ -5894,9 +7538,15 @@ def validate_primary_checkpoint(
         "correlation_id": expected_correlation,
         "agent_session_id": expected_session,
     }.items():
-        if not isinstance(sample.get(key), str) or sample[key].upper() != expected.upper():
+        if (
+            not isinstance(sample.get(key), str)
+            or sample[key].upper() != expected.upper()
+        ):
             failures.append(f"sample_{key}_mismatch")
-    for key, expected in (("invocation", expected_invocation), ("ordinal", expected_ordinal)):
+    for key, expected in (
+        ("invocation", expected_invocation),
+        ("ordinal", expected_ordinal),
+    ):
         if not positive_integer(sample.get(key)) or sample[key] != expected:
             failures.append(f"sample_{key}_mismatch")
     if sample.get("root_ready") is not True:
@@ -5953,7 +7603,10 @@ def validate_primary_checkpoint(
     if not isinstance(durations, dict):
         failures.append("invalid_primary_durations")
         durations = {}
-    elif any(not finite_number(durations.get(metric), positive=True) for metric in PRIMARY_DURATION_METRICS):
+    elif any(
+        not finite_number(durations.get(metric), positive=True)
+        for metric in PRIMARY_DURATION_METRICS
+    ):
         failures.append("invalid_primary_durations")
     if isinstance(boundaries, dict) and all(
         finite_number(boundaries.get(key)) for key in PRIMARY_BOUNDARY_KEYS
@@ -5963,7 +7616,9 @@ def validate_primary_checkpoint(
             duration = durations.get(metric)
             if finite_number(duration, positive=True):
                 expected = float(boundaries[end]) - float(boundaries[start])
-                if expected <= 0 or not math.isclose(float(duration), expected, abs_tol=1.0):
+                if expected <= 0 or not math.isclose(
+                    float(duration), expected, abs_tol=1.0
+                ):
                     failures.append(f"inconsistent_{metric}_duration")
         interactive = sample.get("interactive_readiness_us")
         expected_interactive = max(
@@ -5975,16 +7630,24 @@ def validate_primary_checkpoint(
         elif not math.isclose(float(interactive), expected_interactive, abs_tol=1.0):
             failures.append("interactive_readiness_boundary_mismatch")
 
-    failures.extend(validate_receipt_oracle(
-        checkpoint, sample, route,
-        expected_correlation=expected_correlation,
-        expected_session=expected_session,
-        expected_invocation=expected_invocation,
-        expected_ordinal=expected_ordinal,
-    ))
-    failures.extend(validate_delta_compatibility_oracle(
-        checkpoint, route, expected_correlation=expected_correlation,
-    ))
+    failures.extend(
+        validate_receipt_oracle(
+            checkpoint,
+            sample,
+            route,
+            expected_correlation=expected_correlation,
+            expected_session=expected_session,
+            expected_invocation=expected_invocation,
+            expected_ordinal=expected_ordinal,
+        )
+    )
+    failures.extend(
+        validate_delta_compatibility_oracle(
+            checkpoint,
+            route,
+            expected_correlation=expected_correlation,
+        )
+    )
     return failures
 
 
@@ -6022,25 +7685,31 @@ def validate_primary_performance(
     if not isinstance(direct, dict) or direct.get("mark_failures") != []:
         failures.append("primary_direct_mark_failure")
     correctness = {
-        "search": isinstance(direct, dict) and isinstance(direct.get("search"), dict)
+        "search": isinstance(direct, dict)
+        and isinstance(direct.get("search"), dict)
         and direct["search"].get("ok") is True,
-        "read": isinstance(direct, dict) and isinstance(direct.get("read"), dict)
+        "read": isinstance(direct, dict)
+        and isinstance(direct.get("read"), dict)
         and direct["read"].get("ok") is True,
     }
     checkpoint = primary.get("diagnostic_checkpoint")
     if not isinstance(checkpoint, dict):
         failures.append("missing_primary_diagnostic_checkpoint")
     else:
-        failures.extend(validate_primary_checkpoint(
-            checkpoint, route, correctness,
-            expected_correlation=expected_correlation,
-            expected_session=expected_session,
-            expected_context=expected_context,
-            expected_scope_context=expected_scope_context,
-            expected_invocation=expected_invocation,
-            expected_ordinal=expected_ordinal,
-            expected_route_observation_count=expected_route_observation_count,
-        ))
+        failures.extend(
+            validate_primary_checkpoint(
+                checkpoint,
+                route,
+                correctness,
+                expected_correlation=expected_correlation,
+                expected_session=expected_session,
+                expected_context=expected_context,
+                expected_scope_context=expected_scope_context,
+                expected_invocation=expected_invocation,
+                expected_ordinal=expected_ordinal,
+                expected_route_observation_count=expected_route_observation_count,
+            )
+        )
     resource_cleanup = primary.get("resource_cleanup")
     if not isinstance(resource_cleanup, dict):
         failures.append("missing_resource_cleanup_proof")
@@ -6078,7 +7747,8 @@ def finalize_primary_performance(
         "build_unchanged": build_unchanged,
     }
     failures = validate_primary_performance(
-        primary, route,
+        primary,
+        route,
         expected_correlation=expected_correlation,
         expected_session=expected_session,
         expected_context=expected_context,
@@ -6137,7 +7807,9 @@ def validate_boundary_evidence(sample: dict[str, Any]) -> list[str]:
         duration = durations.get(metric)
         if finite_number(duration, positive=True):
             expected = float(boundaries[end]) - float(boundaries[start])
-            if expected <= 0 or not math.isclose(float(duration), expected, abs_tol=1.0):
+            if expected <= 0 or not math.isclose(
+                float(duration), expected, abs_tol=1.0
+            ):
                 failures.append(f"inconsistent_{metric}_duration")
     interactive = sample.get("interactive_readiness_us")
     if finite_number(interactive, positive=True):
@@ -6176,9 +7848,15 @@ def validate_export(
         "agent_session_id": expected_session,
     }
     for key, expected in string_identity_expectations.items():
-        if not isinstance(sample.get(key), str) or sample[key].upper() != expected.upper():
+        if (
+            not isinstance(sample.get(key), str)
+            or sample[key].upper() != expected.upper()
+        ):
             failures.append(f"sample_{key}_mismatch")
-    for key, expected in (("invocation", expected_invocation), ("ordinal", expected_ordinal)):
+    for key, expected in (
+        ("invocation", expected_invocation),
+        ("ordinal", expected_ordinal),
+    ):
         if not positive_integer(sample.get(key)) or sample[key] != expected:
             failures.append(f"sample_{key}_mismatch")
     route_counts = sample.get("route_counts")
@@ -6196,7 +7874,9 @@ def validate_export(
     if not all(correctness.values()):
         failures.append("content_oracle_mismatch")
     durations = sample.get("durations_us")
-    if not isinstance(durations, dict) or not all(isinstance(key, str) and key for key in durations):
+    if not isinstance(durations, dict) or not all(
+        isinstance(key, str) and key for key in durations
+    ):
         failures.append("invalid_sample_durations")
         durations = {}
     elif any(not finite_number(value, positive=True) for value in durations.values()):
@@ -6211,7 +7891,9 @@ def validate_export(
         search = durations.get("materialize_to_first_search")
         read = durations.get("materialize_to_first_read")
         if finite_number(search, positive=True) and finite_number(read, positive=True):
-            if not math.isclose(float(interactive), max(float(search), float(read)), abs_tol=1.0):
+            if not math.isclose(
+                float(interactive), max(float(search), float(read)), abs_tol=1.0
+            ):
                 failures.append("interactive_readiness_mismatch")
     failures.extend(validate_boundary_evidence(sample))
     git = export.get("git")
@@ -6220,7 +7902,13 @@ def validate_export(
     filesystem = work.get("filesystem") if isinstance(work, dict) else None
     failures.extend(validate_filesystem_evidence(filesystem))
     planner = work.get("planner") if isinstance(work, dict) else None
-    expected_planner = {"targetNamespace", "treeEvidence", "indexEvidence", "statusEvidence", "reconcile"}
+    expected_planner = {
+        "targetNamespace",
+        "treeEvidence",
+        "indexEvidence",
+        "statusEvidence",
+        "reconcile",
+    }
     if not isinstance(planner, dict):
         failures.append("invalid_planner_evidence")
     elif route == "projected" and set(planner) != expected_planner:
@@ -6236,11 +7924,14 @@ def validate_export(
     mutation = work.get("mutation_lock") if isinstance(work, dict) else None
     if not isinstance(mutation, dict) or mutation.get("available") is not True:
         failures.append("mutation_lock_evidence_unavailable")
-    elif (
-        not positive_integer(mutation.get("count"))
-        or any(not finite_number(mutation.get(field)) for field in (
-            "queue_wait_us", "held_us", "mutation_us", "post_mutation_finalization_us"
-        ))
+    elif not positive_integer(mutation.get("count")) or any(
+        not finite_number(mutation.get(field))
+        for field in (
+            "queue_wait_us",
+            "held_us",
+            "mutation_us",
+            "post_mutation_finalization_us",
+        )
     ):
         failures.append("invalid_mutation_lock_evidence")
     passive = work.get("passive_tree") if isinstance(work, dict) else None
@@ -6248,17 +7939,17 @@ def validate_export(
         failures.append("invalid_passive_tree_evidence")
     elif passive.get("available") is not True or passive.get("operation_count", 0) < 1:
         failures.append("passive_tree_evidence_unavailable")
-    elif (
-        not nonnegative_integer(passive.get("operation_count"))
-        or not finite_number(passive.get("duration_us"))
+    elif not nonnegative_integer(passive.get("operation_count")) or not finite_number(
+        passive.get("duration_us")
     ):
         failures.append("invalid_passive_tree_evidence")
     markers = work.get("marker_publications") if isinstance(work, dict) else None
     if not isinstance(markers, list) or any(
         not isinstance(item, dict)
-        or not all(isinstance(item.get(key), str) and item.get(key) for key in (
-            "root_id", "root_lifetime_id", "source"
-        ))
+        or not all(
+            isinstance(item.get(key), str) and item.get(key)
+            for key in ("root_id", "root_lifetime_id", "source")
+        )
         or not nonnegative_integer(item.get("revision"))
         or not positive_integer(item.get("effective_change_count"))
         or not finite_number(item.get("timestamp_us"))
@@ -6270,27 +7961,43 @@ def validate_export(
     return failures
 
 
-def terminalize(runner: CLIRunner, session_id: str, context_id: str | None = None) -> str:
+def terminalize(
+    runner: CLIRunner, session_id: str, context_id: str | None = None
+) -> str:
     response = runner.call(
-        f"wait-{session_id[:8]}", "agent_run", {"op": "wait", "session_id": session_id, "timeout": 120},
-        timeout=150, check=False, context_id=context_id,
+        f"wait-{session_id[:8]}",
+        "agent_run",
+        {"op": "wait", "session_id": session_id, "timeout": 120},
+        timeout=150,
+        check=False,
+        context_id=context_id,
     )
     status = response_status(response)
     if status not in TERMINAL_STATES:
         runner.call(
-            f"cancel-{session_id[:8]}", "agent_run", {"op": "cancel", "session_id": session_id},
-            timeout=30, check=False, context_id=context_id,
+            f"cancel-{session_id[:8]}",
+            "agent_run",
+            {"op": "cancel", "session_id": session_id},
+            timeout=30,
+            check=False,
+            context_id=context_id,
         )
         response = runner.call(
-            f"settle-{session_id[:8]}", "agent_run", {"op": "wait", "session_id": session_id, "timeout": 30},
-            timeout=45, check=False, context_id=context_id,
+            f"settle-{session_id[:8]}",
+            "agent_run",
+            {"op": "wait", "session_id": session_id, "timeout": 30},
+            timeout=45,
+            check=False,
+            context_id=context_id,
         )
         status = response_status(response)
     return status
 
 
 def worktree_branch(path: Path, repo: Path) -> str | None:
-    process = run_local(["git", "-C", str(path), "branch", "--show-current"], repo, check=False)
+    process = run_local(
+        ["git", "-C", str(path), "branch", "--show-current"], repo, check=False
+    )
     value = process.stdout.strip()
     return value if process.returncode == 0 and value else None
 
@@ -6323,7 +8030,9 @@ def clean_owned_worktree(
     result: dict[str, Any] = {
         "action": "remove_worktree",
         "path_sha256": sha256_bytes(str(candidate.resolve(strict=False)).encode()),
-        "branch_sha256": sha256_bytes(expected_branch.encode()) if expected_branch else None,
+        "branch_sha256": (
+            sha256_bytes(expected_branch.encode()) if expected_branch else None
+        ),
         "head_sha256": sha256_bytes(expected_head.encode()) if expected_head else None,
         "ownership_proven": ownership_proven,
         "worktree_removed": False,
@@ -6336,14 +8045,13 @@ def clean_owned_worktree(
     if not terminal:
         result["reason"] = "session_nonterminal"
         return result
-    if expected_path is not None and candidate.resolve() != Path(expected_path).resolve():
+    if (
+        expected_path is not None
+        and candidate.resolve() != Path(expected_path).resolve()
+    ):
         result["reason"] = "ownership_path_mismatch"
         return result
-    if (
-        not ownership_proven
-        or expected_path is None
-        or expected_head is None
-    ):
+    if not ownership_proven or expected_path is None or expected_head is None:
         result["reason"] = "ownership_unproven"
         return result
     branch_ref = f"refs/heads/{expected_branch}" if expected_branch else None
@@ -6351,7 +8059,10 @@ def clean_owned_worktree(
         branch_lookup = run_local(
             ["git", "show-ref", "--verify", "--hash", branch_ref], repo, check=False
         )
-        if branch_lookup.returncode == 0 and branch_lookup.stdout.strip() != expected_head:
+        if (
+            branch_lookup.returncode == 0
+            and branch_lookup.stdout.strip() != expected_head
+        ):
             result["reason"] = "ownership_head_mismatch"
             return result
 
@@ -6359,8 +8070,13 @@ def clean_owned_worktree(
         if worktree_branch(candidate, repo) != expected_branch:
             result["reason"] = "ownership_branch_mismatch"
             return result
-        worktree_head = run_local(["git", "-C", str(candidate), "rev-parse", "HEAD"], repo, check=False)
-        if worktree_head.returncode != 0 or worktree_head.stdout.strip() != expected_head:
+        worktree_head = run_local(
+            ["git", "-C", str(candidate), "rev-parse", "HEAD"], repo, check=False
+        )
+        if (
+            worktree_head.returncode != 0
+            or worktree_head.stdout.strip() != expected_head
+        ):
             result["reason"] = "ownership_head_mismatch"
             return result
         listed = run_local(["git", "worktree", "list", "--porcelain"], repo).stdout
@@ -6368,22 +8084,34 @@ def clean_owned_worktree(
             result["reason"] = "not_registered"
             return result
         dirty = run_local(
-            ["git", "-C", str(candidate), "status", "--porcelain=v1", "--untracked-files=all"],
+            [
+                "git",
+                "-C",
+                str(candidate),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
             repo,
             check=False,
         ).stdout.strip()
         if dirty:
             result["reason"] = "dirty"
             return result
-        removal = run_local(["git", "worktree", "remove", str(candidate)], repo, check=False)
+        removal = run_local(
+            ["git", "worktree", "remove", str(candidate)], repo, check=False
+        )
         if removal.returncode != 0:
             result["reason"] = "git_worktree_remove_failed"
             return result
         result["worktree_removed"] = True
 
-    listed_after_removal = run_local(["git", "worktree", "list", "--porcelain"], repo).stdout
+    listed_after_removal = run_local(
+        ["git", "worktree", "list", "--porcelain"], repo
+    ).stdout
     result["worktree_absent"] = (
-        not candidate.exists() and f"worktree {candidate.resolve(strict=False)}\n" not in listed_after_removal
+        not candidate.exists()
+        and f"worktree {candidate.resolve(strict=False)}\n" not in listed_after_removal
     )
     if not result["worktree_absent"]:
         result["reason"] = "worktree_absence_unproven"
@@ -6400,7 +8128,9 @@ def clean_owned_worktree(
             if f"branch {branch_ref}\n" in listed_after_removal:
                 result["reason"] = "branch_still_checked_out"
                 return result
-            deletion = run_local(["git", "branch", "-D", "--", expected_branch], repo, check=False)
+            deletion = run_local(
+                ["git", "branch", "-D", "--", expected_branch], repo, check=False
+            )
             if deletion.returncode != 0:
                 result["reason"] = "git_branch_remove_failed"
                 return result
@@ -6423,10 +8153,14 @@ def run_command(args: argparse.Namespace) -> int:
         args, "expected_route_observation_count", 1
     )
     if not args.confirm_live_debug_app or not args.confirm_process_state:
-        raise BenchmarkError("run requires --confirm-live-debug-app and --confirm-process-state")
+        raise BenchmarkError(
+            "run requires --confirm-live-debug-app and --confirm-process-state"
+        )
     plan_path = Path(args.plan).expanduser().resolve(strict=True)
     plan = load_plan(plan_path)
-    configured_states, configured_checkouts, configured_routes, configured_widths = configured_matrix_variants(plan)
+    configured_states, configured_checkouts, configured_routes, configured_widths = (
+        configured_matrix_variants(plan)
+    )
     if args.process_state not in configured_states:
         raise BenchmarkError("run process state was not declared by the frozen plan")
     if args.checkout_kind not in configured_checkouts:
@@ -6435,8 +8169,13 @@ def run_command(args: argparse.Namespace) -> int:
         raise BenchmarkError("run route was not declared by the frozen plan")
     if args.width not in configured_widths:
         raise BenchmarkError("run width was not declared by the frozen plan")
-    if plan["scope"].get("target_kind") == "real-repository-dedicated" and not args.confirm_dedicated_workspace:
-        raise BenchmarkError("real-repository runs require --confirm-dedicated-workspace")
+    if (
+        plan["scope"].get("target_kind") == "real-repository-dedicated"
+        and not args.confirm_dedicated_workspace
+    ):
+        raise BenchmarkError(
+            "real-repository runs require --confirm-dedicated-workspace"
+        )
     if policy_digest_probe:
         exact_probe_configuration = {
             "process_state": "warm",
@@ -6451,10 +8190,15 @@ def run_command(args: argparse.Namespace) -> int:
                 policy_digest_probe_route_observation_count("diffSeedServing")
             ),
         }
-        if any(getattr(args, key, None) != value for key, value in exact_probe_configuration.items()):
+        if any(
+            getattr(args, key, None) != value
+            for key, value in exact_probe_configuration.items()
+        ):
             raise BenchmarkError("policy-digest-probe configuration must remain exact")
     elif args.warmups != FIXED_WARMUPS or args.samples != FIXED_RETAINED_SAMPLES:
-        raise BenchmarkError("run requires one excluded warmup and exactly five retained samples")
+        raise BenchmarkError(
+            "run requires one excluded warmup and exactly five retained samples"
+        )
     cli = resolve_cli(args.cli)
     root = Path(plan["scope"]["root_path"])
     validate_planned_base_commit(plan, root)
@@ -6478,9 +8222,15 @@ def run_command(args: argparse.Namespace) -> int:
     )
     save_json(artifact / "plan.json", plan, exclusive=True)
     state: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION, "plan_sha256": plan["plan_sha256"], "sessions": [],
-        "worktrees": [], "attempts": [], "control_id": None, "scope_reset": False,
-        "benchmark_gate_expected_enabled": True, "memory_session_id": None,
+        "schema_version": SCHEMA_VERSION,
+        "plan_sha256": plan["plan_sha256"],
+        "sessions": [],
+        "worktrees": [],
+        "attempts": [],
+        "control_id": None,
+        "scope_reset": False,
+        "benchmark_gate_expected_enabled": True,
+        "memory_session_id": None,
         "build_identity": build_identity,
     }
     save_json(artifact / "state.json", state)
@@ -6488,10 +8238,20 @@ def run_command(args: argparse.Namespace) -> int:
     require_benchmark_gate(runner)
     verify_disposable_target(runner, plan, require_only_planned_root=True)
     if args.process_state == "aged":
-        inventory = runner.call("aged-session-inventory", "agent_manage", {"op": "list_sessions", "limit": 500})
-        session_count = sum(1 for item in walk_json(inventory) if isinstance(item, dict) and "session_id" in item)
+        inventory = runner.call(
+            "aged-session-inventory",
+            "agent_manage",
+            {"op": "list_sessions", "limit": 500},
+        )
+        session_count = sum(
+            1
+            for item in walk_json(inventory)
+            if isinstance(item, dict) and "session_id" in item
+        )
         if session_count < args.minimum_aged_sessions:
-            raise BenchmarkError(f"aged cohort requires at least {args.minimum_aged_sessions} existing sessions; found {session_count}")
+            raise BenchmarkError(
+                f"aged cohort requires at least {args.minimum_aged_sessions} existing sessions; found {session_count}"
+            )
     control_id: str | None = None
     memory_session_id: str | None = None
     memory_acquisition = MemorySamplerAcquisition(label=artifact.name)
@@ -6527,31 +8287,47 @@ def run_command(args: argparse.Namespace) -> int:
                     f"rpce-bench-{artifact.name}-i{invocation}-o{global_ordinal}"
                 )[:120]
                 token, correlation = arm_sample(
-                    runner, plan, control_id, args.route, args.process_state,
-                    invocation, global_ordinal, warmup, branch,
+                    runner,
+                    plan,
+                    control_id,
+                    args.route,
+                    args.process_state,
+                    invocation,
+                    global_ordinal,
+                    warmup,
+                    branch,
                 )
                 armed.append((global_ordinal, token, correlation, branch))
-                state["attempts"].append({
-                    "correlation_id": correlation,
-                    "control_id": control_id,
-                    "invocation": invocation,
-                    "ordinal": global_ordinal,
-                    "warmup": warmup,
-                    "branch": branch,
-                    "expected_head": plan["dataset"]["base_commit_oid"],
-                    "state": "armed",
-                    "session_id": None,
-                    "context_id": None,
-                    "worktree_id": None,
-                    "path": None,
-                })
+                state["attempts"].append(
+                    {
+                        "correlation_id": correlation,
+                        "control_id": control_id,
+                        "invocation": invocation,
+                        "ordinal": global_ordinal,
+                        "warmup": warmup,
+                        "branch": branch,
+                        "expected_head": plan["dataset"]["base_commit_oid"],
+                        "state": "armed",
+                        "session_id": None,
+                        "context_id": None,
+                        "worktree_id": None,
+                        "path": None,
+                    }
+                )
                 save_json(artifact / "state.json", state)
             starts: dict[int, Any] = {}
             with ThreadPoolExecutor(max_workers=args.width) as pool:
                 futures = {
                     pool.submit(
-                        start_agent, runner, plan, args.route, token, invocation, ordinal,
-                        f"{artifact.name}-{group}", branch,
+                        start_agent,
+                        runner,
+                        plan,
+                        args.route,
+                        token,
+                        invocation,
+                        ordinal,
+                        f"{artifact.name}-{group}",
+                        branch,
                     ): ordinal
                     for ordinal, token, _, branch in armed
                 }
@@ -6568,28 +8344,48 @@ def run_command(args: argparse.Namespace) -> int:
                     start, owned_worktree
                 )
                 if bound_worktree_path != str(owned_worktree):
-                    raise BenchmarkError("agent worktree binding path changed after discovery")
+                    raise BenchmarkError(
+                        "agent worktree binding path changed after discovery"
+                    )
                 attempt = next(
-                    item for item in state["attempts"]
+                    item
+                    for item in state["attempts"]
                     if item["correlation_id"] == correlation
                 )
-                attempt.update({
-                    "state": "started", "session_id": session_id,
-                    "context_id": context_id, "worktree_id": worktree_id,
-                    "path": str(owned_worktree),
-                    "path_sha256": sha256_bytes(str(owned_worktree).encode()),
-                })
-                state["sessions"].append({"session_id": session_id, "context_id": context_id, "terminal": False})
-                state["worktrees"].append({
-                    "path": str(owned_worktree), "worktree_id": worktree_id,
-                    "owned": True, "branch": branch,
-                })
+                attempt.update(
+                    {
+                        "state": "started",
+                        "session_id": session_id,
+                        "context_id": context_id,
+                        "worktree_id": worktree_id,
+                        "path": str(owned_worktree),
+                        "path_sha256": sha256_bytes(str(owned_worktree).encode()),
+                    }
+                )
+                state["sessions"].append(
+                    {
+                        "session_id": session_id,
+                        "context_id": context_id,
+                        "terminal": False,
+                    }
+                )
+                state["worktrees"].append(
+                    {
+                        "path": str(owned_worktree),
+                        "worktree_id": worktree_id,
+                        "owned": True,
+                        "branch": branch,
+                    }
+                )
                 save_json(artifact / "state.json", state)
                 correctness, direct_tools, root_identity = first_search_read(
                     runner, plan, correlation, context_id, owned_worktree, worktree_id
                 )
                 checkpoint_payload, checkpoint_capture = capture_diagnostic(
-                    runner, plan, correlation, action="snapshot",
+                    runner,
+                    plan,
+                    correlation,
+                    action="snapshot",
                     label=f"primary-checkpoint-{ordinal}",
                 )
                 primary_performance = {
@@ -6610,34 +8406,48 @@ def run_command(args: argparse.Namespace) -> int:
                     "invalid_reasons": ["resource_cleanup_pending"],
                 }
                 follow_on: dict[str, Any] = {
-                    "ok": False, "completed": False,
+                    "ok": False,
+                    "completed": False,
                     "failures": [{"operation": "collection", "type": "not_started"}],
                 }
                 export_payload: dict[str, Any] = {}
                 export_capture: dict[str, Any]
                 try:
                     follow_on = collect_follow_on_evidence(
-                        runner, plan, correlation, context_id, root_identity,
-                        worktree_id, owned_worktree
+                        runner,
+                        plan,
+                        correlation,
+                        context_id,
+                        root_identity,
+                        worktree_id,
+                        owned_worktree,
                     )
                 except BaseException as error:
                     follow_on = {
-                        "ok": False, "completed": True,
-                        "failures": [{
-                            "operation": "collection",
-                            "type": operation_failure_type(error),
-                            "error": repr(error),
-                        }],
+                        "ok": False,
+                        "completed": True,
+                        "failures": [
+                            {
+                                "operation": "collection",
+                                "type": operation_failure_type(error),
+                                "error": repr(error),
+                            }
+                        ],
                     }
                 finally:
                     export_payload, export_capture = capture_diagnostic(
-                        runner, plan, correlation, action="export",
+                        runner,
+                        plan,
+                        correlation,
+                        action="export",
                         label=f"export-{ordinal}",
                     )
                 collection_failures = validate_follow_on_collection(follow_on)
                 correctness["follow_on"] = not collection_failures
                 follow_on_failures = validate_export(
-                    export_payload, args.route, correctness,
+                    export_payload,
+                    args.route,
+                    correctness,
                     expected_correlation=correlation,
                     expected_session=session_id,
                     expected_invocation=invocation,
@@ -6665,17 +8475,26 @@ def run_command(args: argparse.Namespace) -> int:
                 state["sessions"][-1]["terminal"] = status in TERMINAL_STATES
                 state["sessions"][-1]["status"] = status
                 record = {
-                    "schema_version": SCHEMA_VERSION, "plan_sha256": plan["plan_sha256"],
+                    "schema_version": SCHEMA_VERSION,
+                    "plan_sha256": plan["plan_sha256"],
                     "artifact_id": artifact.name,
-                    "process_state": args.process_state, "checkout_kind": args.checkout_kind,
-                    "route": args.route, "width": args.width, "invocation": invocation,
-                    "ordinal": ordinal, "warmup": warmup, "correlation_id": correlation,
+                    "process_state": args.process_state,
+                    "checkout_kind": args.checkout_kind,
+                    "route": args.route,
+                    "width": args.width,
+                    "invocation": invocation,
+                    "ordinal": ordinal,
+                    "warmup": warmup,
+                    "correlation_id": correlation,
                     "session_id": session_id,
-                    "context_id": context_id, "correctness": correctness,
-                    "direct_tool_evidence": direct_tools, "follow_on_evidence": follow_on,
+                    "context_id": context_id,
+                    "correctness": correctness,
+                    "direct_tool_evidence": direct_tools,
+                    "follow_on_evidence": follow_on,
                     "primary_performance": primary_performance,
                     "follow_on_acceptance": follow_on_acceptance,
-                    "valid": False, "invalid_reasons": ["resource_cleanup_pending"],
+                    "valid": False,
+                    "invalid_reasons": ["resource_cleanup_pending"],
                     "diagnostic": export_payload,
                 }
                 sample_records.append(record)
@@ -6686,12 +8505,16 @@ def run_command(args: argparse.Namespace) -> int:
         state["cleanup_entered"] = True
         try:
             memory_cleanup, resources = cleanup_memory_sampler_acquisition(
-                runner, memory_acquisition, label=artifact.name,
+                runner,
+                memory_acquisition,
+                label=artifact.name,
             )
         except BaseException as cleanup_error:
             memory_cleanup = {
-                "action": "stop_memory_sampler", "ok": False,
-                "verified_stopped": False, "stop_attempted": False,
+                "action": "stop_memory_sampler",
+                "ok": False,
+                "verified_stopped": False,
+                "stop_attempted": False,
                 "manual_cleanup": True,
                 "reason": f"memory sampler cleanup failed: {cleanup_error!r}",
             }
@@ -6703,26 +8526,37 @@ def run_command(args: argparse.Namespace) -> int:
         save_json(artifact / "resources.json", resources, exclusive=True)
         state["memory_stopped"] = memory_cleanup.get("verified_stopped") is True
         try:
-            cleanup.extend(cleanup_benchmark_attempts(runner, plan, state, artifact.name))
+            cleanup.extend(
+                cleanup_benchmark_attempts(runner, plan, state, artifact.name)
+            )
         except BaseException as cleanup_error:
             state["cleanup_manual_required"] = True
-            cleanup.append({
-                "action": "recover_agent_worktrees", "ok": False,
-                "manual_cleanup": True, "reason": operation_failure_type(cleanup_error),
-            })
+            cleanup.append(
+                {
+                    "action": "recover_agent_worktrees",
+                    "ok": False,
+                    "manual_cleanup": True,
+                    "reason": operation_failure_type(cleanup_error),
+                }
+            )
         state["route_restored"] = control_id is None
         if control_id is not None:
             try:
                 restore_response = runner.call(
-                    "restore-route", DEBUG_TOOL,
-                    diagnostic_payload(plan, "restore_flags", control_id=control_id), check=False,
+                    "restore-route",
+                    DEBUG_TOOL,
+                    diagnostic_payload(plan, "restore_flags", control_id=control_id),
+                    check=False,
                 )
                 state["route_restored"] = call_succeeded(restore_response)
             except BaseException:
                 state["route_restored"] = False
         try:
             reset_response = runner.call(
-                "reset-scope", DEBUG_TOOL, diagnostic_payload(plan, "reset"), check=False
+                "reset-scope",
+                DEBUG_TOOL,
+                diagnostic_payload(plan, "reset"),
+                check=False,
             )
             state["scope_reset"] = call_succeeded(reset_response) and isinstance(
                 find_value(reset_response, "reset"), dict
@@ -6734,15 +8568,21 @@ def run_command(args: argparse.Namespace) -> int:
             state["benchmark_gate_unchanged"] = True
         except BenchmarkError:
             state["benchmark_gate_unchanged"] = False
-        cleanup.extend([
-            memory_cleanup,
-            {
-                "action": "restore_route", "ok": state["route_restored"],
-                "reason": "not_acquired" if control_id is None else None,
-            },
-            {"action": "reset_diagnostics", "ok": state["scope_reset"]},
-            {"action": "preserve_benchmark_setting", "ok": state["benchmark_gate_unchanged"]},
-        ])
+        cleanup.extend(
+            [
+                memory_cleanup,
+                {
+                    "action": "restore_route",
+                    "ok": state["route_restored"],
+                    "reason": "not_acquired" if control_id is None else None,
+                },
+                {"action": "reset_diagnostics", "ok": state["scope_reset"]},
+                {
+                    "action": "preserve_benchmark_setting",
+                    "ok": state["benchmark_gate_unchanged"],
+                },
+            ]
+        )
         final_target_ok = False
         try:
             verify_disposable_target(runner, plan, require_only_planned_root=True)
@@ -6753,11 +8593,16 @@ def run_command(args: argparse.Namespace) -> int:
         save_cleanup_proof(artifact / "cleanup.json", cleanup)
         save_json(artifact / "state.json", state)
     cleanup_ok = validate_cleanup_evidence(
-        cleanup, run_artifact=True, expected_agent_count=len(state.get("attempts", [])),
-        expected_worktree_count=len({
-            item.get("path") for item in state.get("attempts", [])
-            if isinstance(item, dict) and isinstance(item.get("path"), str)
-        }),
+        cleanup,
+        run_artifact=True,
+        expected_agent_count=len(state.get("attempts", [])),
+        expected_worktree_count=len(
+            {
+                item.get("path")
+                for item in state.get("attempts", [])
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            }
+        ),
     )
     resource_metrics = find_value(resources, "metrics")
     resource_failures = validate_resource_evidence(resource_metrics)
@@ -6765,14 +8610,16 @@ def run_command(args: argparse.Namespace) -> int:
         build_unchanged = (
             resolved_cli.exists()
             and exact_live_build_identity(cli, plan) == build_identity
-            and validate_planned_base_commit(plan, root) == build_identity["base_commit_oid"]
+            and validate_planned_base_commit(plan, root)
+            == build_identity["base_commit_oid"]
         )
     except (BenchmarkError, OSError):
         build_unchanged = False
     for record in sample_records:
         primary = record["primary_performance"]
         finalize_primary_performance(
-            primary, route=args.route,
+            primary,
+            route=args.route,
             expected_correlation=record["correlation_id"],
             expected_session=record["session_id"],
             expected_context=record["context_id"],
@@ -6788,41 +8635,50 @@ def run_command(args: argparse.Namespace) -> int:
         )
         follow_on_acceptance = record["follow_on_acceptance"]
         record["valid"] = (
-            primary["valid"] is True
-            and follow_on_acceptance["accepted"] is True
+            primary["valid"] is True and follow_on_acceptance["accepted"] is True
         )
-        record["invalid_reasons"] = (
-            [f"primary:{reason}" for reason in primary["invalid_reasons"]]
-            + [
-                f"follow_on:{reason}"
-                for reason in follow_on_acceptance["invalid_reasons"]
-            ]
-        )
+        record["invalid_reasons"] = [
+            f"primary:{reason}" for reason in primary["invalid_reasons"]
+        ] + [
+            f"follow_on:{reason}" for reason in follow_on_acceptance["invalid_reasons"]
+        ]
         append_ndjson(artifact / "samples.ndjson", record)
-    valid = [sample for sample in sample_records if sample["valid"] and not sample["warmup"]]
+    valid = [
+        sample for sample in sample_records if sample["valid"] and not sample["warmup"]
+    ]
     primary_valid = [
-        sample for sample in sample_records
+        sample
+        for sample in sample_records
         if sample["primary_performance"]["valid"] and not sample["warmup"]
     ]
     follow_on_accepted = [
-        sample for sample in sample_records
+        sample
+        for sample in sample_records
         if sample["follow_on_acceptance"]["accepted"] and not sample["warmup"]
     ]
     summary = {
         "schema_version": SCHEMA_VERSION,
         "status": "failed" if operational_error or not cleanup_ok else "completed",
         "artifact_id": artifact.name,
-        "plan_sha256": plan["plan_sha256"], "artifact_directory": str(artifact),
+        "plan_sha256": plan["plan_sha256"],
+        "artifact_directory": str(artifact),
         "build_identity": build_identity,
-        "process_state": args.process_state, "checkout_kind": args.checkout_kind,
-        "route": args.route, "width": args.width, "invocation": args.invocation,
-        "warmup_groups": args.warmups, "retained_groups": args.samples,
+        "process_state": args.process_state,
+        "checkout_kind": args.checkout_kind,
+        "route": args.route,
+        "width": args.width,
+        "invocation": args.invocation,
+        "warmup_groups": args.warmups,
+        "retained_groups": args.samples,
         "expected_sample_count": (args.warmups + args.samples) * args.width,
         "operational_error": operational_error,
-        "sample_count": len(sample_records), "valid_retained_count": len(valid),
+        "sample_count": len(sample_records),
+        "valid_retained_count": len(valid),
         "primary_valid_retained_count": len(primary_valid),
         "follow_on_accepted_retained_count": len(follow_on_accepted),
-        "invalid_count": len([sample for sample in sample_records if not sample["valid"]]),
+        "invalid_count": len(
+            [sample for sample in sample_records if not sample["valid"]]
+        ),
         "cleanup_complete": cleanup_ok,
     }
     if policy_digest_probe:
@@ -6834,14 +8690,16 @@ def run_command(args: argparse.Namespace) -> int:
             and summary["invalid_count"] == 0
             and cache_bypass_evidence["observed"] is True
         )
-        summary.update({
-            "kind": "policy-digest-probe",
-            "non_aggregatable": True,
-            "performance_acceptance_applied": False,
-            "prefix_control_cache_bypassed": cache_bypass_evidence["observed"],
-            "prefix_control_cache_bypass_evidence": cache_bypass_evidence,
-            "diagnostic_gate_passed": diagnostic_gate_passed,
-        })
+        summary.update(
+            {
+                "kind": "policy-digest-probe",
+                "non_aggregatable": True,
+                "performance_acceptance_applied": False,
+                "prefix_control_cache_bypassed": cache_bypass_evidence["observed"],
+                "prefix_control_cache_bypass_evidence": cache_bypass_evidence,
+                "diagnostic_gate_passed": diagnostic_gate_passed,
+            }
+        )
         if not diagnostic_gate_passed:
             summary["status"] = "failed"
     save_json(artifact / "summary.json", summary, exclusive=True)
@@ -6861,8 +8719,8 @@ def configure_policy_digest_probe(args: argparse.Namespace) -> argparse.Namespac
     args.minimum_aged_sessions = 0
     args.confirm_process_state = True
     args.bypass_prefix_control_cache = True
-    args.expected_route_observation_count = (
-        policy_digest_probe_route_observation_count("diffSeedServing")
+    args.expected_route_observation_count = policy_digest_probe_route_observation_count(
+        "diffSeedServing"
     )
     args.policy_digest_probe = True
     return args
@@ -6888,21 +8746,37 @@ def bounded_poll_search(
     last_evidence: dict[str, Any] = {"ok": False, "error": "no structured response"}
     while time.monotonic() < deadline:
         response = runner.call(
-            "watcher-poll", "file_search",
-            {"pattern": marker, "regex": False, "mode": "content", "filter": {"paths": [path]},
-             "max_results": 20, "context_id": context_id},
-            timeout=60, check=False,
+            "watcher-poll",
+            "file_search",
+            {
+                "pattern": marker,
+                "regex": False,
+                "mode": "content",
+                "filter": {"paths": [path]},
+                "max_results": 20,
+                "context_id": context_id,
+            },
+            timeout=60,
+            check=False,
         )
         if present:
             last_evidence = structured_success_evidence(
-                response, "file_search", expected_root_id=expected_root_id,
-                expected_root_path=expected_root_path, expected_root_type=expected_root_type,
-                expected_file_path=path, expected_file_type="file", expected_content=marker,
+                response,
+                "file_search",
+                expected_root_id=expected_root_id,
+                expected_root_path=expected_root_path,
+                expected_root_type=expected_root_type,
+                expected_file_path=path,
+                expected_file_type="file",
+                expected_content=marker,
             )
         else:
             last_evidence = structured_empty_success_evidence(
-                response, "file_search", expected_root_id=expected_root_id,
-                expected_root_path=expected_root_path, expected_root_type=expected_root_type,
+                response,
+                "file_search",
+                expected_root_id=expected_root_id,
+                expected_root_path=expected_root_path,
+                expected_root_type=expected_root_type,
             )
         if last_evidence["ok"]:
             return last_evidence
@@ -6911,7 +8785,10 @@ def bounded_poll_search(
 
 
 def overlap(call: TimedCall, mutation: TimedCall) -> bool:
-    return call.started_ns < mutation.finished_ns and call.finished_ns > mutation.started_ns
+    return (
+        call.started_ns < mutation.finished_ns
+        and call.finished_ns > mutation.started_ns
+    )
 
 
 def call_succeeded(value: Any) -> bool:
@@ -6942,11 +8819,13 @@ def transcript_xml_from_log(value: Any) -> str:
 def parse_agent_transcript_records(transcript_xml: str) -> dict[str, Any]:
     raw_tool_event_count = len(re.findall(r"<tool_(?:call|result)\b", transcript_xml))
     if re.search(r"<(?:function|command|shell|exec)_(?:call|result)\b", transcript_xml):
-        raise BenchmarkError("transcript contained an unsupported substitute tool-event encoding")
+        raise BenchmarkError(
+            "transcript contained an unsupported substitute tool-event encoding"
+        )
     event_pattern = re.compile(
         r'<tool_call name="([^"]+)"(?:>(.*?)</tool_call>|/>)'
         r'|<tool_result name="([^"]+)"([^>]*?)(?:>(.*?)</tool_result>|/>)'
-        r'|<assistant>(.*?)</assistant>',
+        r"|<assistant>(.*?)</assistant>",
         re.DOTALL,
     )
     calls: list[dict[str, Any]] = []
@@ -6962,9 +8841,13 @@ def parse_agent_transcript_records(transcript_xml: str) -> dict[str, Any]:
                 try:
                     arguments = json.loads(html.unescape(raw))
                 except json.JSONDecodeError as error:
-                    raise BenchmarkError(f"invalid structured {tool} transcript arguments") from error
+                    raise BenchmarkError(
+                        f"invalid structured {tool} transcript arguments"
+                    ) from error
             if not isinstance(arguments, dict):
-                raise BenchmarkError(f"structured {tool} transcript arguments must be an object")
+                raise BenchmarkError(
+                    f"structured {tool} transcript arguments must be an object"
+                )
             calls.append({"ordinal": ordinal, "tool": tool, "arguments": arguments})
         elif match.group(3) is not None:
             tool = match.group(3).split("__")[-1]
@@ -6976,21 +8859,32 @@ def parse_agent_transcript_records(transcript_xml: str) -> dict[str, Any]:
                 try:
                     parsed_result = json.loads(html.unescape(raw_result))
                 except json.JSONDecodeError as error:
-                    raise BenchmarkError(f"invalid structured {tool} transcript result") from error
+                    raise BenchmarkError(
+                        f"invalid structured {tool} transcript result"
+                    ) from error
                 if not isinstance(parsed_result, dict):
-                    raise BenchmarkError(f"structured {tool} transcript result must be an object")
+                    raise BenchmarkError(
+                        f"structured {tool} transcript result must be an object"
+                    )
                 result = parsed_result
-            results.append({
-                "ordinal": ordinal, "tool": tool,
-                "status": status_match.group(1) if status_match else (
-                    result.get("status") if result is not None else None
-                ),
-                "result": result,
-            })
+            results.append(
+                {
+                    "ordinal": ordinal,
+                    "tool": tool,
+                    "status": (
+                        status_match.group(1)
+                        if status_match
+                        else (result.get("status") if result is not None else None)
+                    ),
+                    "result": result,
+                }
+            )
         else:
             assistants.append(html.unescape(match.group(6) or "").strip())
     if len(calls) + len(results) != raw_tool_event_count:
-        raise BenchmarkError("transcript contained an unrecognized or malformed tool event")
+        raise BenchmarkError(
+            "transcript contained an unrecognized or malformed tool event"
+        )
     return {"calls": calls, "results": results, "assistants": assistants}
 
 
@@ -7007,17 +8901,28 @@ def verify_agent_file_tool_transcript(
     if expected_pairs < 1:
         raise BenchmarkError("transcript expected pair count must be positive")
     allowed_tools = {"file_search", "read_file"}
-    unexpected = sorted({
-        item["tool"] for item in records["calls"] + records["results"]
-        if item["tool"] not in allowed_tools
-    })
+    unexpected = sorted(
+        {
+            item["tool"]
+            for item in records["calls"] + records["results"]
+            if item["tool"] not in allowed_tools
+        }
+    )
     if unexpected:
-        raise BenchmarkError(f"transcript used forbidden/substitute tools: {unexpected}")
-    expected_tools = [tool for _ in range(expected_pairs) for tool in ("file_search", "read_file")]
+        raise BenchmarkError(
+            f"transcript used forbidden/substitute tools: {unexpected}"
+        )
+    expected_tools = [
+        tool for _ in range(expected_pairs) for tool in ("file_search", "read_file")
+    ]
     if [item["tool"] for item in records["calls"]] != expected_tools:
-        raise BenchmarkError("transcript did not contain the exact alternating file-tool calls")
+        raise BenchmarkError(
+            "transcript did not contain the exact alternating file-tool calls"
+        )
     if [item["tool"] for item in records["results"]] != expected_tools:
-        raise BenchmarkError("transcript did not contain one result for every exact file-tool call")
+        raise BenchmarkError(
+            "transcript did not contain one result for every exact file-tool call"
+        )
     statuses = {"ok", "complete", "completed", "ready", "success"}
     previous_ordinal = 0
     reported_statuses: list[str] = []
@@ -7029,26 +8934,35 @@ def verify_agent_file_tool_transcript(
         reported_status = result.get("status")
         if reported_status is not None:
             if reported_status not in statuses:
-                raise BenchmarkError("transcript contained an explicitly unsuccessful tool result")
+                raise BenchmarkError(
+                    "transcript contained an explicitly unsuccessful tool result"
+                )
             reported_statuses.append(reported_status)
         arguments = call["arguments"]
         if call["tool"] == "file_search":
-            search_paths = ((arguments.get("filter") or {}).get("paths"))
+            search_paths = (arguments.get("filter") or {}).get("paths")
             if (
                 arguments.get("pattern") != expected_marker
                 or arguments.get("regex") is not False
                 or search_paths != [expected_file_path]
             ):
-                raise BenchmarkError("file_search transcript arguments did not match the exact request")
+                raise BenchmarkError(
+                    "file_search transcript arguments did not match the exact request"
+                )
         else:
             if arguments.get("path") != expected_file_path:
-                raise BenchmarkError("read_file transcript arguments did not match the exact request")
+                raise BenchmarkError(
+                    "read_file transcript arguments did not match the exact request"
+                )
         if strict_result_expectations is not None:
             result_payload = result.get("result")
             if not isinstance(result_payload, dict):
-                raise BenchmarkError("transcript result omitted structured file-tool evidence")
+                raise BenchmarkError(
+                    "transcript result omitted structured file-tool evidence"
+                )
             expected_content = (
-                expected_marker if call["tool"] == "file_search"
+                expected_marker
+                if call["tool"] == "file_search"
                 else strict_result_expectations["read_marker"]
             )
             evidence = structured_success_evidence(
@@ -7061,7 +8975,9 @@ def verify_agent_file_tool_transcript(
                 expected_file_type="file",
                 expected_content=expected_content,
                 expected_worktree_id=strict_result_expectations["worktree_id"],
-                expected_physical_worktree_path=strict_result_expectations["worktree_path"],
+                expected_physical_worktree_path=strict_result_expectations[
+                    "worktree_path"
+                ],
             )
             if evidence.get("ok") is not True:
                 raise BenchmarkError(
@@ -7071,8 +8987,10 @@ def verify_agent_file_tool_transcript(
     if not records["assistants"] or records["assistants"][-1] != expected_output:
         raise BenchmarkError("transcript final assistant output mismatch")
     return {
-        "call_count": expected_pairs * 2, "result_count": expected_pairs * 2,
-        "search_call_count": expected_pairs, "read_call_count": expected_pairs,
+        "call_count": expected_pairs * 2,
+        "result_count": expected_pairs * 2,
+        "search_call_count": expected_pairs,
+        "read_call_count": expected_pairs,
         "reported_result_status_count": len(reported_statuses),
         "structured_result_evidence": structured_results,
         "proof_basis": (
@@ -7091,8 +9009,11 @@ def poll_active_agent(
     label: str,
 ) -> dict[str, Any]:
     call = runner.timed_call(
-        label, "agent_run", {"op": "poll", "session_id": session_id},
-        check=False, context_id=expected_context_id,
+        label,
+        "agent_run",
+        {"op": "poll", "session_id": session_id},
+        check=False,
+        context_id=expected_context_id,
     )
     response = call.response
     return {
@@ -7141,22 +9062,30 @@ def wait_agent_success(
     strict_result_expectations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     waited = runner.call(
-        f"wait-success-{session_id[:8]}", "agent_run",
-        {"op": "wait", "session_id": session_id, "timeout": 180}, timeout=210, check=False,
+        f"wait-success-{session_id[:8]}",
+        "agent_run",
+        {"op": "wait", "session_id": session_id, "timeout": 180},
+        timeout=210,
+        check=False,
         context_id=context_id,
     )
     log = runner.call(
-        f"log-success-{session_id[:8]}", "agent_manage",
+        f"log-success-{session_id[:8]}",
+        "agent_manage",
         {"op": "get_log", "session_id": session_id, "offset": 0, "limit": 1000},
-        timeout=90, check=False, context_id=context_id,
+        timeout=90,
+        check=False,
+        context_id=context_id,
     )
     status = response_status(waited)
     transcript_evidence: dict[str, Any] | None = None
     transcript_error: str | None = None
     try:
         transcript_evidence = verify_agent_file_tool_transcript(
-            transcript_xml_from_log(log), expected_output=expected_output,
-            expected_marker=expected_marker, expected_file_path=expected_file_path,
+            transcript_xml_from_log(log),
+            expected_output=expected_output,
+            expected_marker=expected_marker,
+            expected_file_path=expected_file_path,
             expected_pairs=expected_pairs,
             strict_result_expectations=strict_result_expectations,
         )
@@ -7175,7 +9104,9 @@ def wait_agent_success(
     }
 
 
-def fixture_relative_path(root: Path, raw: Any, label: str, *, directory: bool) -> tuple[str, Path]:
+def fixture_relative_path(
+    root: Path, raw: Any, label: str, *, directory: bool
+) -> tuple[str, Path]:
     if not isinstance(raw, str) or not raw.strip():
         raise BenchmarkError(f"{label} must be a non-empty root-relative path")
     relative = Path(raw)
@@ -7250,7 +9181,10 @@ def load_codemap_gate_fixture(
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise BenchmarkError("codemap fixture uses an unsupported schema")
     root = Path(plan["scope"]["root_path"]).resolve(strict=True)
-    if int(plan["dataset"].get("asserted_file_count", 0)) < CODEMAP_GATE_MINIMUM_SUPPORTED_FILES:
+    if (
+        int(plan["dataset"].get("asserted_file_count", 0))
+        < CODEMAP_GATE_MINIMUM_SUPPORTED_FILES
+    ):
         raise BenchmarkError(
             f"codemap gate requires at least {CODEMAP_GATE_MINIMUM_SUPPORTED_FILES} asserted files"
         )
@@ -7263,10 +9197,14 @@ def load_codemap_gate_fixture(
             root, item.get("path"), f"individuals[{index}].path", directory=False
         )
         marker = item.get("marker")
-        if not isinstance(marker, str) or not marker or marker not in resolved.read_text(
-            encoding="utf-8", errors="strict"
+        if (
+            not isinstance(marker, str)
+            or not marker
+            or marker not in resolved.read_text(encoding="utf-8", errors="strict")
         ):
-            raise BenchmarkError(f"individuals[{index}].marker is absent from the exact fixture")
+            raise BenchmarkError(
+                f"individuals[{index}].marker is absent from the exact fixture"
+            )
         individuals.append({"path": relative, "marker": marker})
 
     directories: list[dict[str, str]] = []
@@ -7277,36 +9215,54 @@ def load_codemap_gate_fixture(
             root, item.get("path"), f"directories[{index}].path", directory=True
         )
         expected_relative, expected = fixture_relative_path(
-            root, item.get("expected_file"), f"directories[{index}].expected_file", directory=False
+            root,
+            item.get("expected_file"),
+            f"directories[{index}].expected_file",
+            directory=False,
         )
         if resolved != expected and resolved not in expected.parents:
-            raise BenchmarkError(f"directories[{index}].expected_file is outside its directory")
+            raise BenchmarkError(
+                f"directories[{index}].expected_file is outside its directory"
+            )
         marker = item.get("marker")
-        if not isinstance(marker, str) or not marker or marker not in expected.read_text(
-            encoding="utf-8", errors="strict"
+        if (
+            not isinstance(marker, str)
+            or not marker
+            or marker not in expected.read_text(encoding="utf-8", errors="strict")
         ):
-            raise BenchmarkError(f"directories[{index}].marker is absent from the exact fixture")
-        directories.append({
-            "path": relative,
-            "expected_file": expected_relative,
-            "marker": marker,
-        })
+            raise BenchmarkError(
+                f"directories[{index}].marker is absent from the exact fixture"
+            )
+        directories.append(
+            {
+                "path": relative,
+                "expected_file": expected_relative,
+                "marker": marker,
+            }
+        )
 
     if len({item["path"] for item in individuals}) < cold_samples:
-        raise BenchmarkError(f"codemap fixture requires {cold_samples} unique individual files")
+        raise BenchmarkError(
+            f"codemap fixture requires {cold_samples} unique individual files"
+        )
     if len({item["path"] for item in directories}) < cold_samples:
-        raise BenchmarkError(f"codemap fixture requires {cold_samples} unique directories")
+        raise BenchmarkError(
+            f"codemap fixture requires {cold_samples} unique directories"
+        )
 
     overflow_relative, overflow = fixture_relative_path(
         root, value.get("overflow_directory"), "overflow_directory", directory=True
     )
     overflow_members = {
-        item["path"] for item in individuals
+        item["path"]
+        for item in individuals
         if overflow == (root / item["path"]).resolve()
         or overflow in (root / item["path"]).resolve().parents
     }
     if len(overflow_members) < 2:
-        raise BenchmarkError("overflow_directory must contain at least two individual fixtures")
+        raise BenchmarkError(
+            "overflow_directory must contain at least two individual fixtures"
+        )
     watcher_relative = value.get("watcher_directory", ".rpce-codemap-gate")
     if not isinstance(watcher_relative, str):
         raise BenchmarkError("watcher_directory must be a relative string")
@@ -7326,8 +9282,12 @@ def load_codemap_gate_fixture(
         "fixture_sha256": sha256_bytes(canonical_json(normalized)),
         "individual_count": len(individuals),
         "directory_count": len(directories),
-        "individual_path_sha256": [sha256_bytes(item["path"].encode()) for item in individuals],
-        "directory_path_sha256": [sha256_bytes(item["path"].encode()) for item in directories],
+        "individual_path_sha256": [
+            sha256_bytes(item["path"].encode()) for item in individuals
+        ],
+        "directory_path_sha256": [
+            sha256_bytes(item["path"].encode()) for item in directories
+        ],
         "overflow_path_sha256": sha256_bytes(overflow_relative.encode()),
     }
     return normalized, sanitized
@@ -7357,34 +9317,47 @@ def codemap_structure_evidence(
         expected_physical_worktree_path=expected_physical_worktree_path,
     )
     if record.get("status") not in {"ok", "partial"}:
-        raise BenchmarkError(f"get_code_structure returned {record.get('status')!r}, not useful")
+        raise BenchmarkError(
+            f"get_code_structure returned {record.get('status')!r}, not useful"
+        )
     if record.get("size") not in {"small", "medium", "large"}:
         raise BenchmarkError("get_code_structure omitted its effective size")
     if record.get("status") == "ok" and record.get("retry") is not None:
-        raise BenchmarkError("complete get_code_structure unexpectedly included retry metadata")
+        raise BenchmarkError(
+            "complete get_code_structure unexpectedly included retry metadata"
+        )
     issues = record.get("issues")
     if not isinstance(issues, list):
         raise BenchmarkError("get_code_structure omitted typed issues")
     expected = canonicalize_evidence_path(expected_file_path, expected_root_path)
     matches = [item for item in record["files"] if item.get("path") == expected]
     if len(matches) != 1:
-        raise BenchmarkError("get_code_structure did not return the exact expected logical file")
+        raise BenchmarkError(
+            "get_code_structure did not return the exact expected logical file"
+        )
     matched = matches[0]
     content = matched.get("content")
     if matched.get("type") != expected_file_type or not isinstance(content, str):
-        raise BenchmarkError("get_code_structure returned the wrong file type or no codemap text")
+        raise BenchmarkError(
+            "get_code_structure returned the wrong file type or no codemap text"
+        )
     if expected_marker not in content:
-        raise BenchmarkError("get_code_structure codemap text omitted the expected real marker")
+        raise BenchmarkError(
+            "get_code_structure codemap text omitted the expected real marker"
+        )
     return {
         "status": record["status"],
         "size": record["size"],
         "file_path_sha256": sha256_bytes(expected_file_path.encode()),
         "codemap_content_sha256": sha256_bytes(content.encode()),
         "codemap_content_present": True,
-        "issue_codes": sorted({
-            str(issue.get("code")) for issue in issues
-            if isinstance(issue, dict) and isinstance(issue.get("code"), str)
-        }),
+        "issue_codes": sorted(
+            {
+                str(issue.get("code"))
+                for issue in issues
+                if isinstance(issue, dict) and isinstance(issue.get("code"), str)
+            }
+        ),
         "returned_file_count": len(record["files"]),
     }
 
@@ -7406,7 +9379,9 @@ def codemap_tree_marker_evidence(
         not isinstance(binding, dict)
         or str(binding.get("context_id", "")).upper() != expected_context_id.upper()
     ):
-        raise BenchmarkError("get_file_tree was not atomically bound to the expected context")
+        raise BenchmarkError(
+            "get_file_tree was not atomically bound to the expected context"
+        )
     canonical_root = Path(expected_root_path).expanduser().resolve(strict=False)
     roots = binding_root_paths(value)
     if roots is None or str(canonical_root) not in roots:
@@ -7420,7 +9395,9 @@ def codemap_tree_marker_evidence(
         or request.get("max_depth") != 1
         or request.get("path") != requested_parent
     ):
-        raise BenchmarkError("get_file_tree request did not bind the exact parent contract")
+        raise BenchmarkError(
+            "get_file_tree request did not bind the exact parent contract"
+        )
     canonical_parent = Path(
         canonicalize_evidence_path(requested_parent, str(canonical_root))
     )
@@ -7428,7 +9405,9 @@ def codemap_tree_marker_evidence(
         canonicalize_evidence_path(expected_file_path, str(canonical_root))
     )
     if canonical_file.parent != canonical_parent:
-        raise BenchmarkError("get_file_tree expected file was not a direct child of its parent")
+        raise BenchmarkError(
+            "get_file_tree expected file was not a direct child of its parent"
+        )
     payload = tool_payload(value, "get_file_tree")
     if expected_worktree_id is not None and expected_physical_worktree_path is not None:
         validate_worktree_scope(
@@ -7450,11 +9429,12 @@ def codemap_tree_marker_evidence(
         else f"{canonical_root.name}/{relative_parent.as_posix()}"
     )
     if lines[0].rstrip() not in {logical_parent, str(canonical_parent)}:
-        raise BenchmarkError("get_file_tree header did not identify the exact requested parent")
+        raise BenchmarkError(
+            "get_file_tree header did not identify the exact requested parent"
+        )
     name = canonical_file.name
     marker_lines = [
-        line for line in lines
-        if line.rstrip() in {f"├── {name} +", f"└── {name} +"}
+        line for line in lines if line.rstrip() in {f"├── {name} +", f"└── {name} +"}
     ]
     if (
         len(marker_lines) != 1
@@ -7462,7 +9442,9 @@ def codemap_tree_marker_evidence(
         or CODEMAP_TREE_LEGEND not in response_text(value)
         or (canonical_parent / name).resolve(strict=False) != canonical_file
     ):
-        raise BenchmarkError("get_file_tree omitted the exact full-path current marker or legend")
+        raise BenchmarkError(
+            "get_file_tree omitted the exact full-path current marker or legend"
+        )
     return {
         "status": "ready",
         "file_path_sha256": sha256_bytes(expected_file_path.encode()),
@@ -7475,16 +9457,12 @@ def codemap_tree_marker_evidence(
 
 
 def codemap_reply_issues(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    issues = [
-        issue for issue in payload.get("issues") or []
-        if isinstance(issue, dict)
-    ]
+    issues = [issue for issue in payload.get("issues") or [] if isinstance(issue, dict)]
     for root in payload.get("roots") or []:
         if not isinstance(root, dict):
             continue
         issues.extend(
-            issue for issue in root.get("issues") or []
-            if isinstance(issue, dict)
+            issue for issue in root.get("issues") or [] if isinstance(issue, dict)
         )
     return issues
 
@@ -7497,7 +9475,9 @@ def codemap_retryable_pending_evidence(value: Any) -> dict[str, Any]:
     if payload.get("status") != "pending" or payload.get("files") != []:
         raise BenchmarkError("expected empty typed pending code-structure result")
     if not retryable_issues or not isinstance(retry, dict):
-        raise BenchmarkError("pending result omitted typed retryable issues or reply retry")
+        raise BenchmarkError(
+            "pending result omitted typed retryable issues or reply retry"
+        )
     if any(
         not positive_integer(issue.get("retry_after_ms"))
         or issue.get("attempted") is not None
@@ -7508,10 +9488,13 @@ def codemap_retryable_pending_evidence(value: Any) -> dict[str, Any]:
         or not positive_integer(retry.get("retry_after_ms"))
     ):
         raise BenchmarkError("pending result omitted current nullable retry metadata")
-    issue_codes = sorted({
-        str(issue["code"]) for issue in retryable_issues
-        if isinstance(issue.get("code"), str)
-    })
+    issue_codes = sorted(
+        {
+            str(issue["code"])
+            for issue in retryable_issues
+            if isinstance(issue.get("code"), str)
+        }
+    )
     if not issue_codes:
         raise BenchmarkError("pending result omitted a typed retryable issue code")
     return {
@@ -7528,11 +9511,13 @@ def codemap_retryable_pending_evidence(value: Any) -> dict[str, Any]:
 def codemap_budget_evidence(value: Any) -> dict[str, Any]:
     payload = tool_payload(value, "get_code_structure")
     matches = [
-        issue for issue in codemap_reply_issues(payload)
+        issue
+        for issue in codemap_reply_issues(payload)
         if issue.get("code") == "graph_size_limit"
     ]
     truncated = [
-        root.get("truncated") for root in payload.get("roots") or []
+        root.get("truncated")
+        for root in payload.get("roots") or []
         if isinstance(root, dict) and isinstance(root.get("truncated"), dict)
     ]
     if (
@@ -7542,9 +9527,15 @@ def codemap_budget_evidence(value: Any) -> dict[str, Any]:
         or matches[0].get("attempted") is not None
         or matches[0].get("limit") is not None
         or not truncated
-        or any(item.get("reason") != "size" or not positive_integer(item.get("dropped_nodes")) for item in truncated)
+        or any(
+            item.get("reason") != "size"
+            or not positive_integer(item.get("dropped_nodes"))
+            for item in truncated
+        )
     ):
-        raise BenchmarkError("small directory output lacked current size-truncation evidence")
+        raise BenchmarkError(
+            "small directory output lacked current size-truncation evidence"
+        )
     return {
         "status": "partial",
         "size": "small",
@@ -7560,17 +9551,24 @@ def codemap_debug_action(
     **extra: Any,
 ) -> dict[str, Any]:
     response = runner.call(
-        f"codemap-{action}", DEBUG_TOOL, diagnostic_payload(plan, action, **extra), check=False
+        f"codemap-{action}",
+        DEBUG_TOOL,
+        diagnostic_payload(plan, action, **extra),
+        check=False,
     )
     if not call_succeeded(response):
         raise BenchmarkError(f"DEBUG codemap action {action!r} failed")
     snapshot = find_value(response, "codemap_graph_index")
     if not isinstance(snapshot, dict):
-        raise BenchmarkError(f"DEBUG codemap action {action!r} omitted codemap_graph_index")
+        raise BenchmarkError(
+            f"DEBUG codemap action {action!r} omitted codemap_graph_index"
+        )
     return {"response": response, "snapshot": snapshot}
 
 
-def codemap_counter_delta(before: dict[str, Any], after: dict[str, Any], key: str) -> int:
+def codemap_counter_delta(
+    before: dict[str, Any], after: dict[str, Any], key: str
+) -> int:
     left, right = before.get(key), after.get(key)
     if not nonnegative_integer(left) or not nonnegative_integer(right) or right < left:
         raise BenchmarkError(f"invalid monotonic codemap counter {key!r}")
@@ -7585,15 +9583,22 @@ def verify_agent_codemap_transcript(
 ) -> dict[str, Any]:
     records = parse_agent_transcript_records(transcript_xml)
     allowed_tools = {"get_code_structure", "get_file_tree"}
-    unexpected = sorted({
-        item["tool"] for item in records["calls"] + records["results"]
-        if item["tool"] not in allowed_tools
-    })
+    unexpected = sorted(
+        {
+            item["tool"]
+            for item in records["calls"] + records["results"]
+            if item["tool"] not in allowed_tools
+        }
+    )
     if unexpected:
-        raise BenchmarkError(f"codemap transcript used forbidden/substitute tools: {unexpected}")
+        raise BenchmarkError(
+            f"codemap transcript used forbidden/substitute tools: {unexpected}"
+        )
     expected_tools = [item[0] for item in expected_calls]
     if [item["tool"] for item in records["calls"]] != expected_tools:
-        raise BenchmarkError("codemap transcript tool calls did not match the exact ordered scenario")
+        raise BenchmarkError(
+            "codemap transcript tool calls did not match the exact ordered scenario"
+        )
     if [item["tool"] for item in records["results"]] != expected_tools:
         raise BenchmarkError("codemap transcript omitted exact ordered paired results")
     previous_ordinal = 0
@@ -7607,16 +9612,25 @@ def verify_agent_codemap_transcript(
         previous_ordinal = result["ordinal"]
         if result.get("status") is not None:
             if result["status"] not in successful_statuses:
-                raise BenchmarkError("codemap transcript contained an unsuccessful tool result")
+                raise BenchmarkError(
+                    "codemap transcript contained an unsuccessful tool result"
+                )
             reported_status_count += 1
         arguments = call["arguments"]
         if tool == "get_code_structure":
             if arguments.get("paths") != expected["paths"]:
                 raise BenchmarkError("codemap transcript structure paths did not match")
-            if arguments.get("signatures") is not True or arguments.get("size") != "large":
-                raise BenchmarkError("codemap transcript omitted current signature/size arguments")
+            if (
+                arguments.get("signatures") is not True
+                or arguments.get("size") != "large"
+            ):
+                raise BenchmarkError(
+                    "codemap transcript omitted current signature/size arguments"
+                )
             if set(arguments) - {"paths", "expand", "depth", "signatures", "size"}:
-                raise BenchmarkError("agent supplied a non-current get_code_structure field")
+                raise BenchmarkError(
+                    "agent supplied a non-current get_code_structure field"
+                )
         elif arguments.get("path") != expected.get("path"):
             raise BenchmarkError("codemap transcript tree path did not match")
     if not records["assistants"] or records["assistants"][-1] != expected_output:
@@ -7648,15 +9662,21 @@ def wait_codemap_agent_success(
     expected_calls: list[tuple[str, dict[str, Any]]],
 ) -> dict[str, Any]:
     waited_call = runner.timed_call(
-        f"codemap-wait-{session_id[:8]}", "agent_run",
+        f"codemap-wait-{session_id[:8]}",
+        "agent_run",
         {"op": "wait", "session_id": session_id, "timeout": 300},
-        timeout=330, check=False, context_id=context_id,
+        timeout=330,
+        check=False,
+        context_id=context_id,
     )
     waited = waited_call.response
     log = runner.call(
-        f"codemap-log-{session_id[:8]}", "agent_manage",
+        f"codemap-log-{session_id[:8]}",
+        "agent_manage",
         {"op": "get_log", "session_id": session_id, "offset": 0, "limit": 4000},
-        timeout=120, check=False, context_id=context_id,
+        timeout=120,
+        check=False,
+        context_id=context_id,
     )
     evidence: dict[str, Any] | None = None
     error: str | None = None
@@ -7672,10 +9692,14 @@ def wait_codemap_agent_success(
     started_ns = find_value(start_response, "_benchmark_started_monotonic_ns")
     inference_elapsed_ms = (
         (waited_call.finished_ns - started_ns) / 1_000_000
-        if isinstance(started_ns, int) and waited_call.finished_ns >= started_ns else None
+        if isinstance(started_ns, int) and waited_call.finished_ns >= started_ns
+        else None
     )
     return {
-        "ok": call_succeeded(waited) and call_succeeded(log) and status == "completed" and evidence is not None,
+        "ok": call_succeeded(waited)
+        and call_succeeded(log)
+        and status == "completed"
+        and evidence is not None,
         "status": status,
         "inference_elapsed_ms": inference_elapsed_ms,
         "transcript_evidence": evidence,
@@ -7704,11 +9728,16 @@ def agent_codemap_direct_evidence(
     if len(matching_bindings) != 1:
         raise BenchmarkError("agent start omitted one exact worktree binding")
     runtime = runner.call(
-        f"codemap-agent-root-{session_id[:8]}", DEBUG_TOOL,
-        {"op": "mcp_read_search_runtime_snapshot",
-         "window_id": plan["scope"]["window_id"],
-         "recent_publication_limit": 0, "root_limit": 256},
-        check=False, context_id=context_id,
+        f"codemap-agent-root-{session_id[:8]}",
+        DEBUG_TOOL,
+        {
+            "op": "mcp_read_search_runtime_snapshot",
+            "window_id": plan["scope"]["window_id"],
+            "recent_publication_limit": 0,
+            "root_limit": 256,
+        },
+        check=False,
+        context_id=context_id,
     )
     if not call_succeeded(runtime):
         raise BenchmarkError("agent-bound runtime root identity snapshot failed")
@@ -7720,9 +9749,14 @@ def agent_codemap_direct_evidence(
             timed = runner.timed_call(
                 f"codemap-agent-direct-structure-{session_id[:8]}-{ordinal}",
                 tool,
-                {"paths": expected["paths"], "signatures": True, "size": "large",
-                 "context_id": context_id},
-                check=False, context_id=context_id,
+                {
+                    "paths": expected["paths"],
+                    "signatures": True,
+                    "size": "large",
+                    "context_id": context_id,
+                },
+                check=False,
+                context_id=context_id,
             )
             evidence = codemap_structure_evidence(
                 timed.response,
@@ -7739,9 +9773,15 @@ def agent_codemap_direct_evidence(
             timed = runner.timed_call(
                 f"codemap-agent-direct-tree-{session_id[:8]}-{ordinal}",
                 tool,
-                {"type": "files", "mode": "full", "path": expected["path"],
-                 "max_depth": 1, "context_id": context_id},
-                check=False, context_id=context_id,
+                {
+                    "type": "files",
+                    "mode": "full",
+                    "path": expected["path"],
+                    "max_depth": 1,
+                    "context_id": context_id,
+                },
+                check=False,
+                context_id=context_id,
             )
             evidence = codemap_tree_marker_evidence(
                 timed.response,
@@ -7755,7 +9795,9 @@ def agent_codemap_direct_evidence(
         else:
             raise BenchmarkError("agent direct evidence received an unsupported tool")
     if not structure_evidence or not tree_evidence:
-        raise BenchmarkError("agent direct evidence requires structure and tree results")
+        raise BenchmarkError(
+            "agent direct evidence requires structure and tree results"
+        )
     return {
         "ok": True,
         "proof_basis": "atomic_same_agent_context_direct_probe",
@@ -7776,17 +9818,22 @@ def verify_agent_codemap_revoked_transcript(
 ) -> dict[str, Any]:
     records = parse_agent_transcript_records(transcript_xml)
     allowed = {"get_code_structure", "get_file_tree"}
-    if any(item["tool"] not in allowed for item in records["calls"] + records["results"]):
+    if any(
+        item["tool"] not in allowed for item in records["calls"] + records["results"]
+    ):
         raise BenchmarkError("revoked linked agent used a forbidden/substitute tool")
     if not records["calls"]:
         raise BenchmarkError("revoked linked agent transcript omitted its held call")
     matching = [
-        call for call in records["calls"]
+        call
+        for call in records["calls"]
         if call["tool"] == "get_code_structure"
         and call["arguments"].get("paths") == [expected_first_path]
     ]
     if len(matching) != 1:
-        raise BenchmarkError("revoked linked agent did not issue one exact held request")
+        raise BenchmarkError(
+            "revoked linked agent did not issue one exact held request"
+        )
     if len(records["results"]) > len(records["calls"]):
         raise BenchmarkError("revoked linked agent transcript contained orphan results")
     return {
@@ -7810,9 +9857,12 @@ def wait_for_exact_agent_structure_call(
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         log = runner.call(
-            f"codemap-held-call-{session_id[:8]}", "agent_manage",
+            f"codemap-held-call-{session_id[:8]}",
+            "agent_manage",
             {"op": "get_log", "session_id": session_id, "offset": 0, "limit": 4000},
-            timeout=60, check=False, context_id=context_id,
+            timeout=60,
+            check=False,
+            context_id=context_id,
         )
         if call_succeeded(log):
             try:
@@ -7827,12 +9877,15 @@ def wait_for_exact_agent_structure_call(
             ):
                 finished_ns = time.monotonic_ns()
                 return {
-                    "ok": True, "observed_before_remove": True,
+                    "ok": True,
+                    "observed_before_remove": True,
                     "duration_ms": (finished_ns - started_ns) / 1_000_000,
                     "path_sha256": sha256_bytes(expected_path.encode()),
                 }
         time.sleep(0.1)
-    raise BenchmarkError("linked agent did not issue the exact held demand before removal")
+    raise BenchmarkError(
+        "linked agent did not issue the exact held demand before removal"
+    )
 
 
 def codemap_agent_prompt(
@@ -7862,16 +9915,25 @@ def codemap_agent_prompt(
 
 
 def sanitize_codemap_summary_value(value: Any, key: str = "") -> Any:
-    sensitive_key = any(fragment in key.lower() for fragment in (
-        "path", "root", "session_id", "context_id", "hold_id", "worktree_id",
-    ))
+    sensitive_key = any(
+        fragment in key.lower()
+        for fragment in (
+            "path",
+            "root",
+            "session_id",
+            "context_id",
+            "hold_id",
+            "worktree_id",
+        )
+    )
     if isinstance(value, dict):
         return {
             child_key: sanitize_codemap_summary_value(
                 child, f"{key}.{child_key}" if key else child_key
             )
             for child_key, child in value.items()
-            if child_key not in {"transcript_error", "operational_error", "message", "content"}
+            if child_key
+            not in {"transcript_error", "operational_error", "message", "content"}
         }
     if isinstance(value, list):
         return [sanitize_codemap_summary_value(child, key) for child in value]
@@ -7896,7 +9958,9 @@ def validate_codemap_baseline(
         re.fullmatch(r"[0-9a-f]{64}", expected_ledger_sha256.lower()) is None
         or ledger_sha256 != expected_ledger_sha256.lower()
     ):
-        raise BenchmarkError("baseline ledger does not match the independently accepted digest")
+        raise BenchmarkError(
+            "baseline ledger does not match the independently accepted digest"
+        )
     if not isinstance(baseline_value, dict):
         raise BenchmarkError("codemap baseline must contain one object")
     baseline = baseline_value
@@ -7908,7 +9972,9 @@ def validate_codemap_baseline(
         or baseline.get("fixture_sha256") != fixture_sha256
         or baseline.get("cleanup_complete") is not True
     ):
-        raise BenchmarkError("baseline is not a completed accepted-fixture codemap gate")
+        raise BenchmarkError(
+            "baseline is not a completed accepted-fixture codemap gate"
+        )
     artifact_id = baseline.get("artifact_id")
     if not isinstance(artifact_id, str) or not artifact_id:
         raise BenchmarkError("baseline omitted its artifact identity")
@@ -7919,7 +9985,9 @@ def validate_codemap_baseline(
         "harness_allowance_ms": CODEMAP_GATE_HARNESS_ALLOWANCE_MILLISECONDS,
     }
     if baseline.get("configuration") != expected_configuration:
-        raise BenchmarkError("baseline configuration/sample inventory does not match this gate")
+        raise BenchmarkError(
+            "baseline configuration/sample inventory does not match this gate"
+        )
     expected_sample_counts = {
         "attempted": 2 * (cold_samples + warm_samples),
         "valid": 2 * (cold_samples + warm_samples),
@@ -7948,7 +10016,9 @@ def validate_codemap_baseline(
     for name in CODEMAP_REQUIRED_METRICS:
         metric = metrics.get(name)
         if not isinstance(metric, dict) or not positive_integer(metric.get("count")):
-            raise BenchmarkError(f"baseline metric {name!r} omitted a positive sample count")
+            raise BenchmarkError(
+                f"baseline metric {name!r} omitted a positive sample count"
+            )
         if name in exact_counts and metric["count"] != exact_counts[name]:
             raise BenchmarkError(f"baseline metric {name!r} sample count was not exact")
         for percentile in ("p50", "p95"):
@@ -7971,7 +10041,9 @@ def validate_codemap_baseline(
     ):
         raise BenchmarkError("baseline privacy evidence was incomplete or non-passing")
     if not isinstance(ledger_value, dict) or set(ledger_value) != {
-        "schema_version", "kind", "accepted_summaries",
+        "schema_version",
+        "kind",
+        "accepted_summaries",
     }:
         raise BenchmarkError("baseline ledger schema/inventory was not exact")
     accepted = ledger_value.get("accepted_summaries")
@@ -7983,7 +10055,8 @@ def validate_codemap_baseline(
         raise BenchmarkError("baseline ledger is unsupported")
     baseline_sha256 = sha256_bytes(baseline_raw)
     matches = [
-        entry for entry in accepted
+        entry
+        for entry in accepted
         if isinstance(entry, dict)
         and set(entry) == {"artifact_id", "summary_sha256", "fixture_sha256"}
         and entry.get("artifact_id") == artifact_id
@@ -7991,7 +10064,9 @@ def validate_codemap_baseline(
         and entry.get("fixture_sha256") == fixture_sha256
     ]
     if len(matches) != 1:
-        raise BenchmarkError("baseline artifact digest is not uniquely accepted by the ledger")
+        raise BenchmarkError(
+            "baseline artifact digest is not uniquely accepted by the ledger"
+        )
     return baseline, {
         "summary_sha256": baseline_sha256,
         "ledger_sha256": ledger_sha256,
@@ -8010,17 +10085,28 @@ def codemap_artifact_privacy_scan(
     scanned_files = 0
     secret_patterns = [
         re.compile(r"\b(?:sk|rk|sess)-[A-Za-z0-9_-]{16,}\b"),
-        re.compile(r"(?i)\b(?:authorization|api[_-]?key|access[_-]?token|client[_-]?secret|password)\b\s*[:=]\s*[^\s,}\]]+"),
+        re.compile(
+            r"(?i)\b(?:authorization|api[_-]?key|access[_-]?token|client[_-]?secret|password)\b\s*[:=]\s*[^\s,}\]]+"
+        ),
         re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     ]
     forbidden_roots = [Path.home().resolve(), repository_root().resolve()]
-    allowlisted = sorted({str(path.resolve()) for path in allowlisted_roots}, key=len, reverse=True)
+    allowlisted = sorted(
+        {str(path.resolve()) for path in allowlisted_roots}, key=len, reverse=True
+    )
     prompt_allowlist = set(allowlisted_prompts)
     if not allowlisted:
-        raise BenchmarkError("privacy scan requires at least one allowlisted owned root")
-    for directory in [artifact, *[item for item in artifact.rglob("*") if item.is_dir()]]:
+        raise BenchmarkError(
+            "privacy scan requires at least one allowlisted owned root"
+        )
+    for directory in [
+        artifact,
+        *[item for item in artifact.rglob("*") if item.is_dir()],
+    ]:
         if directory.stat().st_mode & 0o777 != 0o700:
-            failures.append(f"directory_mode:{directory.relative_to(artifact) if directory != artifact else '.'}")
+            failures.append(
+                f"directory_mode:{directory.relative_to(artifact) if directory != artifact else '.'}"
+            )
     for item in artifact.rglob("*"):
         if not item.is_file():
             continue
@@ -8070,28 +10156,43 @@ def codemap_artifact_privacy_scan(
                 for candidate_key, candidate_value in candidate.items():
                     if "path" not in str(candidate_key).lower():
                         continue
-                    path_values = candidate_value if isinstance(candidate_value, list) else [candidate_value]
+                    path_values = (
+                        candidate_value
+                        if isinstance(candidate_value, list)
+                        else [candidate_value]
+                    )
                     for raw_path in path_values:
-                        if not isinstance(raw_path, str) or not raw_path.startswith("/"):
+                        if not isinstance(raw_path, str) or not raw_path.startswith(
+                            "/"
+                        ):
                             continue
                         resolved_path = str(Path(raw_path).resolve(strict=False))
                         if not any(
-                            resolved_path == owned or resolved_path.startswith(owned + os.sep)
+                            resolved_path == owned
+                            or resolved_path.startswith(owned + os.sep)
                             for owned in allowlisted
                         ):
-                            failures.append(f"unallowlisted_physical_path:{item.relative_to(artifact)}")
+                            failures.append(
+                                f"unallowlisted_physical_path:{item.relative_to(artifact)}"
+                            )
     return {
         "ok": not failures,
         "scanned_file_count": scanned_files,
         "failure_codes": sorted(set(failures)),
-        "allowlisted_root_sha256": [sha256_bytes(item.encode()) for item in allowlisted],
-        "allowlisted_prompt_sha256": sorted(sha256_bytes(item.encode()) for item in prompt_allowlist),
+        "allowlisted_root_sha256": [
+            sha256_bytes(item.encode()) for item in allowlisted
+        ],
+        "allowlisted_prompt_sha256": sorted(
+            sha256_bytes(item.encode()) for item in prompt_allowlist
+        ),
     }
 
 
 def smoke_command(args: argparse.Namespace) -> int:
     if not args.confirm_live_debug_app or not args.confirm_dedicated_workspace:
-        raise BenchmarkError("smoke requires both live-app and dedicated-workspace confirmations")
+        raise BenchmarkError(
+            "smoke requires both live-app and dedicated-workspace confirmations"
+        )
     plan = load_plan(Path(args.plan).expanduser().resolve(strict=True))
     cli = resolve_cli(args.cli)
     root = Path(plan["scope"]["root_path"])
@@ -8120,9 +10221,12 @@ def smoke_command(args: argparse.Namespace) -> int:
     child_session: str | None = None
     try:
         parent = runner.call(
-            "active-parent-start", "agent_run",
+            "active-parent-start",
+            "agent_run",
             {
-                "op": "start", "model_id": "explore", "detach": True,
+                "op": "start",
+                "model_id": "explore",
+                "detach": True,
                 "message": (
                     "Make exactly 20 sequential tool calls, strictly alternating: file_search then "
                     "read_file, repeated 10 times. Every file_search must use marker "
@@ -8132,57 +10236,83 @@ def smoke_command(args: argparse.Namespace) -> int:
                     "exec, delegation, or substitute calls. After all 20 calls succeed, reply exactly "
                     "RPCE_ACTIVE_PARENT_OK."
                 ),
-                "session_name": "RPCE active-root smoke", "worktree_create": True,
+                "session_name": "RPCE active-root smoke",
+                "worktree_create": True,
                 "worktree_branch": parent_branch,
                 "worktree_base_ref": base_commit_oid,
-                "worktree_label": f"RPCE smoke {artifact.name}", "context_id": plan["scope"]["context_id"],
-            }, timeout=180,
+                "worktree_label": f"RPCE smoke {artifact.name}",
+                "context_id": plan["scope"]["context_id"],
+            },
+            timeout=180,
         )
         parent_session = response_session_id(parent)
         parent_context = response_context_id(parent)
         if parent_context is None:
             raise BenchmarkError("smoke parent start omitted context_id")
-        parent_worktree = discover_owned_worktree(benchmark_final_response(parent), root, parent_branch)
+        parent_worktree = discover_owned_worktree(
+            benchmark_final_response(parent), root, parent_branch
+        )
         parent_worktree_bindings = response_worktree_binding_set(parent)
         parent_started_in_worktree = any(
             Path(path).resolve() == parent_worktree.resolve()
             for _, path in parent_worktree_bindings
         )
         parent_runtime = runner.call(
-            "parent-root-identity", DEBUG_TOOL,
-            {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-             "recent_publication_limit": 0, "root_limit": 256}, check=False,
+            "parent-root-identity",
+            DEBUG_TOOL,
+            {
+                "op": "mcp_read_search_runtime_snapshot",
+                "window_id": plan["scope"]["window_id"],
+                "recent_publication_limit": 0,
+                "root_limit": 256,
+            },
+            check=False,
         )
         if not call_succeeded(parent_runtime):
             raise BenchmarkError("parent runtime root identity snapshot failed")
-        parent_root_identity = runtime_root_identity(parent_runtime, str(parent_worktree))
-        parent_activity.append(poll_active_agent(
-            runner, parent_session, parent_context, "parent-poll-before"
-        ))
+        parent_root_identity = runtime_root_identity(
+            parent_runtime, str(parent_worktree)
+        )
+        parent_activity.append(
+            poll_active_agent(
+                runner, parent_session, parent_context, "parent-poll-before"
+            )
+        )
 
         child = runner.call(
-            "nested-child-start", "agent_run",
+            "nested-child-start",
+            "agent_run",
             {
-                "op": "start", "model_id": "explore", "detach": True, "inherit_worktree": True,
+                "op": "start",
+                "model_id": "explore",
+                "detach": True,
+                "inherit_worktree": True,
                 "message": (
                     "In the inherited worktree, call file_search exactly once for marker "
                     f"{plan['dataset']['search_marker']!r} scoped to {plan['dataset']['read_path']!r}, "
                     f"then call read_file exactly once for {plan['dataset']['read_path']!r}. "
                     "Require both calls to succeed and reply exactly RPCE_INHERITED_CHILD_OK."
                 ),
-                "session_name": "RPCE inherited child", "context_id": parent_context,
-            }, timeout=180, check=False, context_id=parent_context,
+                "session_name": "RPCE inherited child",
+                "context_id": parent_context,
+            },
+            timeout=180,
+            check=False,
+            context_id=parent_context,
         )
         child_session = find_value(child, "session_id")
         child_parent = find_value(child, "parent_session_id")
         child_context = response_context_id(child)
         inheritance = child_inheritance_evidence(
-            parent, child, parent_context_id=parent_context,
+            parent,
+            child,
+            parent_context_id=parent_context,
             parent_worktree_path=str(parent_worktree),
         )
         child_completion = (
             wait_agent_success(
-                runner, child_session,
+                runner,
+                child_session,
                 expected_output="RPCE_INHERITED_CHILD_OK",
                 expected_marker=plan["dataset"]["search_marker"],
                 expected_file_path=plan["dataset"]["read_path"],
@@ -8202,30 +10332,48 @@ def smoke_command(args: argparse.Namespace) -> int:
         )
         results["nested-inherited-worktree-agent"] = {
             **inheritance,
-            "ok": nested_ok, "parent_session_id_matches": child_parent == parent_session,
+            "ok": nested_ok,
+            "parent_session_id_matches": child_parent == parent_session,
             "terminal_success": child_completion,
         }
 
         selected = runner.call(
-            "selection-set", "manage_selection",
-            {"op": "set", "paths": [plan["dataset"]["read_path"]], "mode": "full", "context_id": parent_context},
+            "selection-set",
+            "manage_selection",
+            {
+                "op": "set",
+                "paths": [plan["dataset"]["read_path"]],
+                "mode": "full",
+                "context_id": parent_context,
+            },
             check=False,
         )
         selected_get = runner.call(
-            "selection-get", "manage_selection",
-            {"op": "get", "view": "files", "context_id": parent_context}, check=False,
+            "selection-get",
+            "manage_selection",
+            {"op": "get", "view": "files", "context_id": parent_context},
+            check=False,
         )
         structure = runner.call(
-            "structure-selected", "get_code_structure",
-            {"signatures": True, "size": "large", "context_id": parent_context}, check=False,
+            "structure-selected",
+            "get_code_structure",
+            {"signatures": True, "size": "large", "context_id": parent_context},
+            check=False,
         )
         explicit_structure = runner.call(
-            "structure-explicit", "get_code_structure",
-            {"paths": [plan["dataset"]["read_path"]], "signatures": True, "size": "large",
-             "context_id": parent_context}, check=False,
+            "structure-explicit",
+            "get_code_structure",
+            {
+                "paths": [plan["dataset"]["read_path"]],
+                "signatures": True,
+                "size": "large",
+                "context_id": parent_context,
+            },
+            check=False,
         )
         selected_evidence = structured_success_evidence(
-            selected_get, "manage_selection",
+            selected_get,
+            "manage_selection",
             expected_root_id=parent_root_identity["id"],
             expected_root_path=parent_root_identity["path"],
             expected_root_type=parent_root_identity["type"],
@@ -8237,7 +10385,8 @@ def smoke_command(args: argparse.Namespace) -> int:
             "structured_evidence": selected_evidence,
         }
         structure_selected = structured_success_evidence(
-            structure, "get_code_structure",
+            structure,
+            "get_code_structure",
             expected_root_id=parent_root_identity["id"],
             expected_root_path=parent_root_identity["path"],
             expected_root_type=parent_root_identity["type"],
@@ -8247,7 +10396,8 @@ def smoke_command(args: argparse.Namespace) -> int:
             require_only_file=False,
         )
         structure_explicit = structured_success_evidence(
-            explicit_structure, "get_code_structure",
+            explicit_structure,
+            "get_code_structure",
             expected_root_id=parent_root_identity["id"],
             expected_root_path=parent_root_identity["path"],
             expected_root_type=parent_root_identity["type"],
@@ -8265,73 +10415,126 @@ def smoke_command(args: argparse.Namespace) -> int:
         non_git = Path(tempfile.mkdtemp(prefix="rpce-startup-nongit-"))
         owned_dirs.append(non_git)
         non_git_marker = f"RPCE_NON_GIT_{uuid.uuid4().hex}"
-        (non_git / "NonGit.swift").write_text(f"struct {non_git_marker} {{}}\n", encoding="utf-8")
+        (non_git / "NonGit.swift").write_text(
+            f"struct {non_git_marker} {{}}\n", encoding="utf-8"
+        )
         add_non_git = runner.timed_call(
-            "add-non-git", "manage_workspaces",
-            {"action": "add_folder", "workspace": plan["scope"]["workspace_id"],
-             "folder_path": str(non_git), "window_id": plan["scope"]["window_id"]},
+            "add-non-git",
+            "manage_workspaces",
+            {
+                "action": "add_folder",
+                "workspace": plan["scope"]["workspace_id"],
+                "folder_path": str(non_git),
+                "window_id": plan["scope"]["window_id"],
+            },
         )
         added_roots.append(non_git)
         non_git_runtime = runner.call(
-            "non-git-root-identity", DEBUG_TOOL,
-            {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-             "recent_publication_limit": 0, "root_limit": 256}, check=False,
+            "non-git-root-identity",
+            DEBUG_TOOL,
+            {
+                "op": "mcp_read_search_runtime_snapshot",
+                "window_id": plan["scope"]["window_id"],
+                "recent_publication_limit": 0,
+                "root_limit": 256,
+            },
+            check=False,
         )
         if not call_succeeded(non_git_runtime):
             raise BenchmarkError("non-Git runtime root identity snapshot failed")
         non_git_root_identity = runtime_root_identity(non_git_runtime, str(non_git))
         non_git_search = runner.call(
-            "non-git-search", "file_search",
-            {"pattern": non_git_marker, "regex": False, "filter": {"paths": [str(non_git)]}, "context_id": parent_context},
+            "non-git-search",
+            "file_search",
+            {
+                "pattern": non_git_marker,
+                "regex": False,
+                "filter": {"paths": [str(non_git)]},
+                "context_id": parent_context,
+            },
             check=False,
         )
         non_git_read = runner.call(
-            "non-git-read", "read_file", {"path": str(non_git / "NonGit.swift"), "context_id": parent_context}, check=False,
+            "non-git-read",
+            "read_file",
+            {"path": str(non_git / "NonGit.swift"), "context_id": parent_context},
+            check=False,
         )
         work_before = runner.call(
-            "non-git-work-before", DEBUG_TOOL,
-            {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-             "recent_publication_limit": 0, "root_limit": 256}, check=False,
+            "non-git-work-before",
+            DEBUG_TOOL,
+            {
+                "op": "mcp_read_search_runtime_snapshot",
+                "window_id": plan["scope"]["window_id"],
+                "recent_publication_limit": 0,
+                "root_limit": 256,
+            },
+            check=False,
         )
         non_git_structure = runner.call(
-            "non-git-structure", "get_code_structure",
-            {"paths": [str(non_git / "NonGit.swift")], "signatures": True, "size": "medium",
-             "context_id": parent_context},
+            "non-git-structure",
+            "get_code_structure",
+            {
+                "paths": [str(non_git / "NonGit.swift")],
+                "signatures": True,
+                "size": "medium",
+                "context_id": parent_context,
+            },
             check=False,
         )
         main_structure_after_non_git = runner.call(
-            "main-structure-after-non-git", "get_code_structure",
-            {"paths": [plan["dataset"]["read_path"]], "signatures": True, "size": "large",
-             "context_id": parent_context}, check=False,
+            "main-structure-after-non-git",
+            "get_code_structure",
+            {
+                "paths": [plan["dataset"]["read_path"]],
+                "signatures": True,
+                "size": "large",
+                "context_id": parent_context,
+            },
+            check=False,
         )
         work_after = runner.call(
-            "non-git-work-after", DEBUG_TOOL,
-            {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-             "recent_publication_limit": 0, "root_limit": 256}, check=False,
+            "non-git-work-after",
+            DEBUG_TOOL,
+            {
+                "op": "mcp_read_search_runtime_snapshot",
+                "window_id": plan["scope"]["window_id"],
+                "recent_publication_limit": 0,
+                "root_limit": 256,
+            },
+            check=False,
         )
         non_git_work = [
-            record for record in new_records(git_work_records(work_before), git_work_records(work_after))
+            record
+            for record in new_records(
+                git_work_records(work_before), git_work_records(work_after)
+            )
             if record.get("operation") == "get_code_structure"
         ]
         zero_git = len(non_git_work) == 1 and non_git_work[0].get("command_count") == 0
         non_git_search_evidence = structured_success_evidence(
-            non_git_search, "file_search",
+            non_git_search,
+            "file_search",
             expected_root_id=non_git_root_identity["id"],
             expected_root_path=non_git_root_identity["path"],
             expected_root_type=non_git_root_identity["type"],
-            expected_file_path=str(non_git / "NonGit.swift"), expected_file_type="file",
+            expected_file_path=str(non_git / "NonGit.swift"),
+            expected_file_type="file",
             expected_content=non_git_marker,
         )
         non_git_read_evidence = structured_success_evidence(
-            non_git_read, "read_file",
+            non_git_read,
+            "read_file",
             expected_root_id=non_git_root_identity["id"],
             expected_root_path=non_git_root_identity["path"],
             expected_root_type=non_git_root_identity["type"],
-            expected_file_path=str(non_git / "NonGit.swift"), expected_file_type="file",
+            expected_file_path=str(non_git / "NonGit.swift"),
+            expected_file_type="file",
             expected_content=non_git_marker,
         )
         non_git_structure_evidence = structured_removed_evidence(
-            non_git_structure, "get_code_structure",
+            non_git_structure,
+            "get_code_structure",
             expected_root_id=non_git_root_identity["id"],
             expected_root_path=non_git_root_identity["path"],
             expected_root_type=non_git_root_identity["type"],
@@ -8347,20 +10550,34 @@ def smoke_command(args: argparse.Namespace) -> int:
             "read": non_git_read_evidence,
             "structure": non_git_structure_evidence,
             "git_work_record_count": len(non_git_work),
-            "git_command_count": non_git_work[0].get("command_count") if len(non_git_work) == 1 else None,
+            "git_command_count": (
+                non_git_work[0].get("command_count") if len(non_git_work) == 1 else None
+            ),
         }
         cross = runner.call(
-            "cross-root-negative", "file_search",
-            {"pattern": non_git_marker, "regex": False, "filter": {"paths": [plan["scope"]["root_path"]],
-             "exclude": [str(non_git)]}, "context_id": parent_context}, check=False,
+            "cross-root-negative",
+            "file_search",
+            {
+                "pattern": non_git_marker,
+                "regex": False,
+                "filter": {
+                    "paths": [plan["scope"]["root_path"]],
+                    "exclude": [str(non_git)],
+                },
+                "context_id": parent_context,
+            },
+            check=False,
         )
         cross_search_evidence = structured_empty_success_evidence(
-            cross, "file_search", expected_root_id=parent_root_identity["id"],
+            cross,
+            "file_search",
+            expected_root_id=parent_root_identity["id"],
             expected_root_path=parent_root_identity["path"],
             expected_root_type=parent_root_identity["type"],
         )
         cross_structure_evidence = structured_success_evidence(
-            main_structure_after_non_git, "get_code_structure",
+            main_structure_after_non_git,
+            "get_code_structure",
             expected_root_id=parent_root_identity["id"],
             expected_root_path=parent_root_identity["path"],
             expected_root_type=parent_root_identity["type"],
@@ -8382,24 +10599,64 @@ def smoke_command(args: argparse.Namespace) -> int:
         ordinary_file.write_text(f"struct {ordinary_marker} {{}}\n", encoding="utf-8")
         linked_parent = Path(tempfile.mkdtemp(prefix="rpce-startup-linked-parent-"))
         linked_secondary = linked_parent / "worktree"
-        run_local(["git", "worktree", "add", "--detach", str(linked_secondary), base_commit_oid], root)
+        run_local(
+            [
+                "git",
+                "worktree",
+                "add",
+                "--detach",
+                str(linked_secondary),
+                base_commit_oid,
+            ],
+            root,
+        )
         linked_marker = f"RPCE_LINKED_{uuid.uuid4().hex}"
         linked_file = linked_secondary / f"{linked_marker}.swift"
         linked_file.write_text(f"struct {linked_marker} {{}}\n", encoding="utf-8")
 
-        def in_flight_calls(label: str, marker: str, file_path: str) -> dict[str, TimedCall]:
+        def in_flight_calls(
+            label: str, marker: str, file_path: str
+        ) -> dict[str, TimedCall]:
             calls = {
-                "search": ("file_search", {"pattern": marker, "regex": False, "mode": "content", "filter": {"paths": [file_path]}, "max_results": 2000, "context_id": parent_context}),
-                "read": ("read_file", {"path": file_path, "start_line": 1, "limit": 1000, "context_id": parent_context}),
-                "selection": ("manage_selection", {"op": "get", "view": "files", "context_id": parent_context}),
-                "structure": ("get_code_structure", {
-                    "paths": [file_path], "signatures": True, "size": "medium",
-                    "context_id": parent_context,
-                }),
+                "search": (
+                    "file_search",
+                    {
+                        "pattern": marker,
+                        "regex": False,
+                        "mode": "content",
+                        "filter": {"paths": [file_path]},
+                        "max_results": 2000,
+                        "context_id": parent_context,
+                    },
+                ),
+                "read": (
+                    "read_file",
+                    {
+                        "path": file_path,
+                        "start_line": 1,
+                        "limit": 1000,
+                        "context_id": parent_context,
+                    },
+                ),
+                "selection": (
+                    "manage_selection",
+                    {"op": "get", "view": "files", "context_id": parent_context},
+                ),
+                "structure": (
+                    "get_code_structure",
+                    {
+                        "paths": [file_path],
+                        "signatures": True,
+                        "size": "medium",
+                        "context_id": parent_context,
+                    },
+                ),
             }
             with ThreadPoolExecutor(max_workers=4) as pool:
                 futures = {
-                    key: pool.submit(runner.timed_call, f"{label}-{key}", tool, payload, check=False)
+                    key: pool.submit(
+                        runner.timed_call, f"{label}-{key}", tool, payload, check=False
+                    )
                     for key, (tool, payload) in calls.items()
                 }
                 return {key: future.result() for key, future in futures.items()}
@@ -8408,18 +10665,28 @@ def smoke_command(args: argparse.Namespace) -> int:
             ("ordinary", ordinary, ordinary_file, ordinary_marker),
             ("worktree", linked_secondary, linked_file, linked_marker),
         ):
-            parent_activity.append(poll_active_agent(
-                runner, parent_session, parent_context, f"parent-{kind}-before-add"
-            ))
+            parent_activity.append(
+                poll_active_agent(
+                    runner, parent_session, parent_context, f"parent-{kind}-before-add"
+                )
+            )
             with ThreadPoolExecutor(max_workers=2) as pool:
                 calls_future = pool.submit(
-                    in_flight_calls, f"{kind}-add-inflight",
-                    plan["dataset"]["search_marker"], plan["dataset"]["read_path"],
+                    in_flight_calls,
+                    f"{kind}-add-inflight",
+                    plan["dataset"]["search_marker"],
+                    plan["dataset"]["read_path"],
                 )
                 mutation_future = pool.submit(
-                    runner.timed_call, f"add-{kind}-root", "manage_workspaces",
-                    {"action": "add_folder", "workspace": plan["scope"]["workspace_id"],
-                     "folder_path": str(secondary), "window_id": plan["scope"]["window_id"]},
+                    runner.timed_call,
+                    f"add-{kind}-root",
+                    "manage_workspaces",
+                    {
+                        "action": "add_folder",
+                        "workspace": plan["scope"]["workspace_id"],
+                        "folder_path": str(secondary),
+                        "window_id": plan["scope"]["window_id"],
+                    },
                 )
                 during_add = poll_active_agent(
                     runner, parent_session, parent_context, f"parent-{kind}-during-add"
@@ -8431,75 +10698,133 @@ def smoke_command(args: argparse.Namespace) -> int:
             )
             parent_activity.append(during_add)
             added_roots.append(secondary)
-            parent_activity.append(poll_active_agent(
-                runner, parent_session, parent_context, f"parent-{kind}-after-add"
-            ))
-            overlapped_add = [key for key, call in calls.items() if overlap(call, mutation) and call_succeeded(call)]
+            parent_activity.append(
+                poll_active_agent(
+                    runner, parent_session, parent_context, f"parent-{kind}-after-add"
+                )
+            )
+            overlapped_add = [
+                key
+                for key, call in calls.items()
+                if overlap(call, mutation) and call_succeeded(call)
+            ]
             overlap_add = call_succeeded(mutation) and bool(overlapped_add)
             inventory_after_add = runner.call(
-                f"inventory-{kind}-after-add", "manage_workspaces",
-                {"action": "list", "include_hidden": True}, check=False,
+                f"inventory-{kind}-after-add",
+                "manage_workspaces",
+                {"action": "list", "include_hidden": True},
+                check=False,
             )
             added_inventory_paths = (
-                workspace_root_paths(workspace_inventory_record(inventory_after_add, plan["scope"]["workspace_id"]))
-                if call_succeeded(inventory_after_add) else []
+                workspace_root_paths(
+                    workspace_inventory_record(
+                        inventory_after_add, plan["scope"]["workspace_id"]
+                    )
+                )
+                if call_succeeded(inventory_after_add)
+                else []
             )
             secondary_runtime = runner.call(
-                f"{kind}-root-identity", DEBUG_TOOL,
-                {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-                 "recent_publication_limit": 0, "root_limit": 256}, check=False,
+                f"{kind}-root-identity",
+                DEBUG_TOOL,
+                {
+                    "op": "mcp_read_search_runtime_snapshot",
+                    "window_id": plan["scope"]["window_id"],
+                    "recent_publication_limit": 0,
+                    "root_limit": 256,
+                },
+                check=False,
             )
             if not call_succeeded(secondary_runtime):
                 raise BenchmarkError(f"{kind} runtime root identity snapshot failed")
-            secondary_root_identity = runtime_root_identity(secondary_runtime, str(secondary))
+            secondary_root_identity = runtime_root_identity(
+                secondary_runtime, str(secondary)
+            )
             added_search = runner.call(
-                f"{kind}-added-search", "file_search",
-                {"pattern": secondary_marker, "regex": False, "mode": "content",
-                 "filter": {"paths": [str(secondary_file)]}, "context_id": parent_context}, check=False,
+                f"{kind}-added-search",
+                "file_search",
+                {
+                    "pattern": secondary_marker,
+                    "regex": False,
+                    "mode": "content",
+                    "filter": {"paths": [str(secondary_file)]},
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             added_read = runner.call(
-                f"{kind}-added-read", "read_file",
-                {"path": str(secondary_file), "start_line": 1, "limit": 40,
-                 "context_id": parent_context}, check=False,
+                f"{kind}-added-read",
+                "read_file",
+                {
+                    "path": str(secondary_file),
+                    "start_line": 1,
+                    "limit": 40,
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             selection_add = runner.call(
-                f"{kind}-selection-add", "manage_selection",
-                {"op": "add", "paths": [str(secondary_file)], "mode": "full",
-                 "context_id": parent_context}, check=False,
+                f"{kind}-selection-add",
+                "manage_selection",
+                {
+                    "op": "add",
+                    "paths": [str(secondary_file)],
+                    "mode": "full",
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             selection_with_root = runner.call(
-                f"{kind}-selection-after-add", "manage_selection",
-                {"op": "get", "view": "files", "context_id": parent_context}, check=False,
+                f"{kind}-selection-after-add",
+                "manage_selection",
+                {"op": "get", "view": "files", "context_id": parent_context},
+                check=False,
             )
             added_structure = runner.call(
-                f"{kind}-structure-after-add", "get_code_structure",
-                {"paths": [str(secondary_file)], "signatures": True, "size": "large",
-                 "context_id": parent_context}, check=False,
+                f"{kind}-structure-after-add",
+                "get_code_structure",
+                {
+                    "paths": [str(secondary_file)],
+                    "signatures": True,
+                    "size": "large",
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             added_search_evidence = structured_success_evidence(
-                added_search, "file_search", expected_root_id=secondary_root_identity["id"],
-                expected_root_path=secondary_root_identity["path"],
-                expected_root_type=secondary_root_identity["type"],
-                expected_file_path=str(secondary_file), expected_file_type="file",
-                expected_content=secondary_marker,
-            )
-            added_read_evidence = structured_success_evidence(
-                added_read, "read_file", expected_root_id=secondary_root_identity["id"],
-                expected_root_path=secondary_root_identity["path"],
-                expected_root_type=secondary_root_identity["type"],
-                expected_file_path=str(secondary_file), expected_file_type="file",
-                expected_content=secondary_marker,
-            )
-            added_selection_evidence = structured_success_evidence(
-                selection_with_root, "manage_selection",
+                added_search,
+                "file_search",
                 expected_root_id=secondary_root_identity["id"],
                 expected_root_path=secondary_root_identity["path"],
                 expected_root_type=secondary_root_identity["type"],
-                expected_file_path=str(secondary_file), expected_file_type="file",
-                require_only_file=False, allow_other_roots=True,
+                expected_file_path=str(secondary_file),
+                expected_file_type="file",
+                expected_content=secondary_marker,
+            )
+            added_read_evidence = structured_success_evidence(
+                added_read,
+                "read_file",
+                expected_root_id=secondary_root_identity["id"],
+                expected_root_path=secondary_root_identity["path"],
+                expected_root_type=secondary_root_identity["type"],
+                expected_file_path=str(secondary_file),
+                expected_file_type="file",
+                expected_content=secondary_marker,
+            )
+            added_selection_evidence = structured_success_evidence(
+                selection_with_root,
+                "manage_selection",
+                expected_root_id=secondary_root_identity["id"],
+                expected_root_path=secondary_root_identity["path"],
+                expected_root_type=secondary_root_identity["type"],
+                expected_file_path=str(secondary_file),
+                expected_file_type="file",
+                require_only_file=False,
+                allow_other_roots=True,
             )
             added_structure_evidence = structured_success_evidence(
-                added_structure, "get_code_structure",
+                added_structure,
+                "get_code_structure",
                 expected_root_id=secondary_root_identity["id"],
                 expected_root_path=secondary_root_identity["path"],
                 expected_root_type=secondary_root_identity["type"],
@@ -8510,34 +10835,56 @@ def smoke_command(args: argparse.Namespace) -> int:
             )
             added_usable = (
                 str(secondary.resolve()) in added_inventory_paths
-                and added_search_evidence["ok"] and added_read_evidence["ok"]
-                and call_succeeded(selection_add) and added_selection_evidence["ok"]
+                and added_search_evidence["ok"]
+                and added_read_evidence["ok"]
+                and call_succeeded(selection_add)
+                and added_selection_evidence["ok"]
                 and added_structure_evidence["ok"]
             )
             results[f"secondary-{kind}-root-in-flight"] = {
-                "ok": overlap_add, "add_overlapped_calls": overlapped_add,
+                "ok": overlap_add,
+                "add_overlapped_calls": overlapped_add,
             }
             results[f"secondary-{kind}-root-idle"] = {
                 "ok": call_succeeded(mutation) and added_usable,
                 "visible_and_usable_after_add": added_usable,
-                "search": added_search_evidence, "read": added_read_evidence,
-                "selection": added_selection_evidence, "structure": added_structure_evidence,
+                "search": added_search_evidence,
+                "read": added_read_evidence,
+                "selection": added_selection_evidence,
+                "structure": added_structure_evidence,
             }
 
-            parent_activity.append(poll_active_agent(
-                runner, parent_session, parent_context, f"parent-{kind}-before-remove"
-            ))
+            parent_activity.append(
+                poll_active_agent(
+                    runner,
+                    parent_session,
+                    parent_context,
+                    f"parent-{kind}-before-remove",
+                )
+            )
             with ThreadPoolExecutor(max_workers=2) as pool:
                 calls_future = pool.submit(
-                    in_flight_calls, f"{kind}-remove-inflight", secondary_marker, str(secondary_file)
+                    in_flight_calls,
+                    f"{kind}-remove-inflight",
+                    secondary_marker,
+                    str(secondary_file),
                 )
                 mutation_future = pool.submit(
-                    runner.timed_call, f"remove-{kind}-root", "manage_workspaces",
-                    {"action": "remove_folder", "workspace": plan["scope"]["workspace_id"],
-                     "folder_path": str(secondary), "window_id": plan["scope"]["window_id"]},
+                    runner.timed_call,
+                    f"remove-{kind}-root",
+                    "manage_workspaces",
+                    {
+                        "action": "remove_folder",
+                        "workspace": plan["scope"]["workspace_id"],
+                        "folder_path": str(secondary),
+                        "window_id": plan["scope"]["window_id"],
+                    },
                 )
                 during_remove = poll_active_agent(
-                    runner, parent_session, parent_context, f"parent-{kind}-during-remove"
+                    runner,
+                    parent_session,
+                    parent_context,
+                    f"parent-{kind}-during-remove",
                 )
                 calls, mutation = calls_future.result(), mutation_future.result()
             during_remove["overlapped_mutation"] = (
@@ -8549,42 +10896,84 @@ def smoke_command(args: argparse.Namespace) -> int:
                 added_roots.remove(secondary)
                 detached_workspace_roots.add(secondary.resolve())
             if call_succeeded(mutation):
-                smoke_cleanup.append({
-                    "action": "remove_workspace_root", "path": str(secondary), "ok": True,
-                })
-            parent_activity.append(poll_active_agent(
-                runner, parent_session, parent_context, f"parent-{kind}-after-remove"
-            ))
-            remove_overlapped = [key for key, call in calls.items() if overlap(call, mutation) and call_succeeded(call)]
+                smoke_cleanup.append(
+                    {
+                        "action": "remove_workspace_root",
+                        "path": str(secondary),
+                        "ok": True,
+                    }
+                )
+            parent_activity.append(
+                poll_active_agent(
+                    runner,
+                    parent_session,
+                    parent_context,
+                    f"parent-{kind}-after-remove",
+                )
+            )
+            remove_overlapped = [
+                key
+                for key, call in calls.items()
+                if overlap(call, mutation) and call_succeeded(call)
+            ]
             inventory_after_remove = runner.call(
-                f"inventory-{kind}-after-remove", "manage_workspaces",
-                {"action": "list", "include_hidden": True}, check=False,
+                f"inventory-{kind}-after-remove",
+                "manage_workspaces",
+                {"action": "list", "include_hidden": True},
+                check=False,
             )
             removed_inventory_paths = (
-                workspace_root_paths(workspace_inventory_record(inventory_after_remove, plan["scope"]["workspace_id"]))
-                if call_succeeded(inventory_after_remove) else []
+                workspace_root_paths(
+                    workspace_inventory_record(
+                        inventory_after_remove, plan["scope"]["workspace_id"]
+                    )
+                )
+                if call_succeeded(inventory_after_remove)
+                else []
             )
             removed_search = runner.call(
-                f"{kind}-removed-search", "file_search",
-                {"pattern": secondary_marker, "regex": False, "mode": "content",
-                 "filter": {"paths": [str(secondary_file)]}, "context_id": parent_context}, check=False,
+                f"{kind}-removed-search",
+                "file_search",
+                {
+                    "pattern": secondary_marker,
+                    "regex": False,
+                    "mode": "content",
+                    "filter": {"paths": [str(secondary_file)]},
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             removed_read = runner.call(
-                f"{kind}-removed-read", "read_file",
-                {"path": str(secondary_file), "start_line": 1, "limit": 40,
-                 "context_id": parent_context}, check=False,
+                f"{kind}-removed-read",
+                "read_file",
+                {
+                    "path": str(secondary_file),
+                    "start_line": 1,
+                    "limit": 40,
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             selection_after_remove = runner.call(
-                f"{kind}-selection-after-remove", "manage_selection",
-                {"op": "get", "view": "files", "context_id": parent_context}, check=False,
+                f"{kind}-selection-after-remove",
+                "manage_selection",
+                {"op": "get", "view": "files", "context_id": parent_context},
+                check=False,
             )
             structure_after_remove = runner.call(
-                f"{kind}-structure-after-remove", "get_code_structure",
-                {"paths": [str(secondary_file)], "signatures": True, "size": "large",
-                 "context_id": parent_context}, check=False,
+                f"{kind}-structure-after-remove",
+                "get_code_structure",
+                {
+                    "paths": [str(secondary_file)],
+                    "signatures": True,
+                    "size": "large",
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             removed_search_evidence = structured_removed_evidence(
-                removed_search, "file_search",
+                removed_search,
+                "file_search",
                 expected_root_id=secondary_root_identity["id"],
                 expected_root_path=secondary_root_identity["path"],
                 expected_root_type=secondary_root_identity["type"],
@@ -8592,7 +10981,8 @@ def smoke_command(args: argparse.Namespace) -> int:
                 require_absent_bound_root=True,
             )
             removed_read_evidence = structured_removed_evidence(
-                removed_read, "read_file",
+                removed_read,
+                "read_file",
                 expected_root_id=secondary_root_identity["id"],
                 expected_root_path=secondary_root_identity["path"],
                 expected_root_type=secondary_root_identity["type"],
@@ -8600,7 +10990,8 @@ def smoke_command(args: argparse.Namespace) -> int:
                 require_absent_bound_root=True,
             )
             removed_structure_evidence = structured_removed_evidence(
-                structure_after_remove, "get_code_structure",
+                structure_after_remove,
+                "get_code_structure",
                 expected_root_id=secondary_root_identity["id"],
                 expected_root_path=secondary_root_identity["path"],
                 expected_root_type=secondary_root_identity["type"],
@@ -8608,7 +10999,8 @@ def smoke_command(args: argparse.Namespace) -> int:
                 require_absent_bound_root=True,
             )
             selection_after_remove_evidence = structured_success_evidence(
-                selection_after_remove, "manage_selection",
+                selection_after_remove,
+                "manage_selection",
                 expected_root_id=parent_root_identity["id"],
                 expected_root_path=parent_root_identity["path"],
                 expected_root_type=parent_root_identity["type"],
@@ -8622,20 +11014,36 @@ def smoke_command(args: argparse.Namespace) -> int:
                 and removed_structure_evidence["ok"]
                 and selection_after_remove_evidence["ok"]
             )
-            results[f"secondary-{kind}-root-in-flight"]["remove_overlapped_calls"] = remove_overlapped
+            results[f"secondary-{kind}-root-in-flight"][
+                "remove_overlapped_calls"
+            ] = remove_overlapped
             results[f"secondary-{kind}-root-in-flight"]["ok"] = (
                 results[f"secondary-{kind}-root-in-flight"]["ok"]
-                and call_succeeded(mutation) and bool(remove_overlapped) and removed_revoked
+                and call_succeeded(mutation)
+                and bool(remove_overlapped)
+                and removed_revoked
             )
-            results[f"secondary-{kind}-root-in-flight"]["removed_state_revoked"] = removed_revoked
-            results[f"secondary-{kind}-root-in-flight"]["removed_search"] = removed_search_evidence
-            results[f"secondary-{kind}-root-in-flight"]["removed_read"] = removed_read_evidence
-            results[f"secondary-{kind}-root-in-flight"]["removed_structure"] = removed_structure_evidence
-            results[f"secondary-{kind}-root-in-flight"]["selection_after_remove"] = selection_after_remove_evidence
+            results[f"secondary-{kind}-root-in-flight"][
+                "removed_state_revoked"
+            ] = removed_revoked
+            results[f"secondary-{kind}-root-in-flight"][
+                "removed_search"
+            ] = removed_search_evidence
+            results[f"secondary-{kind}-root-in-flight"][
+                "removed_read"
+            ] = removed_read_evidence
+            results[f"secondary-{kind}-root-in-flight"][
+                "removed_structure"
+            ] = removed_structure_evidence
+            results[f"secondary-{kind}-root-in-flight"][
+                "selection_after_remove"
+            ] = selection_after_remove_evidence
             results[f"secondary-{kind}-root-idle"]["ok"] = (
                 results[f"secondary-{kind}-root-idle"]["ok"] and removed_revoked
             )
-            results[f"secondary-{kind}-root-idle"]["removed_state_revoked"] = removed_revoked
+            results[f"secondary-{kind}-root-idle"][
+                "removed_state_revoked"
+            ] = removed_revoked
 
         if parent_worktree:
             relative_dir = ".rpce-benchmark"
@@ -8644,8 +11052,14 @@ def smoke_command(args: argparse.Namespace) -> int:
             marker_v1 = f"RPCE_WATCHER_{uuid.uuid4().hex}_V1"
             marker_v2 = marker_v1.replace("_V1", "_V2")
             created = runner.call(
-                "watcher-create", "file_actions",
-                {"action": "create", "path": str(parent_worktree / old_relative), "content": f"struct {marker_v1} {{}}\n", "context_id": parent_context},
+                "watcher-create",
+                "file_actions",
+                {
+                    "action": "create",
+                    "path": str(parent_worktree / old_relative),
+                    "content": f"struct {marker_v1} {{}}\n",
+                    "context_id": parent_context,
+                },
                 check=False,
             )
             watcher_root = {
@@ -8654,76 +11068,156 @@ def smoke_command(args: argparse.Namespace) -> int:
                 "expected_root_type": parent_root_identity["type"],
             }
             create_visible = bounded_poll_search(
-                runner, parent_context, marker_v1, old_relative, present=True, **watcher_root
+                runner,
+                parent_context,
+                marker_v1,
+                old_relative,
+                present=True,
+                **watcher_root,
             )
             edited = runner.call(
-                "watcher-edit", "apply_edits",
-                {"path": old_relative, "search": marker_v1, "replace": marker_v2, "context_id": parent_context}, check=False,
+                "watcher-edit",
+                "apply_edits",
+                {
+                    "path": old_relative,
+                    "search": marker_v1,
+                    "replace": marker_v2,
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             edit_visible = bounded_poll_search(
-                runner, parent_context, marker_v2, old_relative, present=True, **watcher_root
+                runner,
+                parent_context,
+                marker_v2,
+                old_relative,
+                present=True,
+                **watcher_root,
             )
             moved = runner.call(
-                "watcher-rename", "file_actions",
-                {"action": "move", "path": str(parent_worktree / old_relative),
-                 "new_path": str(parent_worktree / new_relative), "context_id": parent_context}, check=False,
+                "watcher-rename",
+                "file_actions",
+                {
+                    "action": "move",
+                    "path": str(parent_worktree / old_relative),
+                    "new_path": str(parent_worktree / new_relative),
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             rename_visible = bounded_poll_search(
-                runner, parent_context, marker_v2, new_relative, present=True, **watcher_root
+                runner,
+                parent_context,
+                marker_v2,
+                new_relative,
+                present=True,
+                **watcher_root,
             )
             old_absent = bounded_poll_search(
-                runner, parent_context, marker_v2, old_relative, present=False, **watcher_root
+                runner,
+                parent_context,
+                marker_v2,
+                old_relative,
+                present=False,
+                **watcher_root,
             )
             deleted = runner.call(
-                "watcher-delete", "file_actions",
-                {"action": "delete", "path": str(parent_worktree / new_relative), "context_id": parent_context}, check=False,
+                "watcher-delete",
+                "file_actions",
+                {
+                    "action": "delete",
+                    "path": str(parent_worktree / new_relative),
+                    "context_id": parent_context,
+                },
+                check=False,
             )
             delete_absent = bounded_poll_search(
-                runner, parent_context, marker_v2, new_relative, present=False, **watcher_root
+                runner,
+                parent_context,
+                marker_v2,
+                new_relative,
+                present=False,
+                **watcher_root,
             )
             results["watcher-create-edit-rename-delete"] = {
-                "ok": all((
-                    call_succeeded(created), call_succeeded(edited), call_succeeded(moved), call_succeeded(deleted),
-                    create_visible["ok"], edit_visible["ok"], rename_visible["ok"],
-                    old_absent["ok"], delete_absent["ok"],
-                )),
-                "create_visible": create_visible, "edit_visible": edit_visible,
-                "rename_visible": rename_visible, "old_absent": old_absent, "delete_absent": delete_absent,
-                "tool_calls_succeeded": all(call_succeeded(item) for item in (created, edited, moved, deleted)),
+                "ok": all(
+                    (
+                        call_succeeded(created),
+                        call_succeeded(edited),
+                        call_succeeded(moved),
+                        call_succeeded(deleted),
+                        create_visible["ok"],
+                        edit_visible["ok"],
+                        rename_visible["ok"],
+                        old_absent["ok"],
+                        delete_absent["ok"],
+                    )
+                ),
+                "create_visible": create_visible,
+                "edit_visible": edit_visible,
+                "rename_visible": rename_visible,
+                "old_absent": old_absent,
+                "delete_absent": delete_absent,
+                "tool_calls_succeeded": all(
+                    call_succeeded(item) for item in (created, edited, moved, deleted)
+                ),
             }
 
-        parent_activity.append(poll_active_agent(
-            runner, parent_session, parent_context, "parent-poll-after"
-        ))
+        parent_activity.append(
+            poll_active_agent(
+                runner, parent_session, parent_context, "parent-poll-after"
+            )
+        )
         surviving_search = runner.call(
-            "surviving-root-search", "file_search",
-            {"pattern": plan["dataset"]["search_marker"], "regex": False,
-             "filter": {"paths": [plan["dataset"]["read_path"]]}, "context_id": parent_context}, check=False,
+            "surviving-root-search",
+            "file_search",
+            {
+                "pattern": plan["dataset"]["search_marker"],
+                "regex": False,
+                "filter": {"paths": [plan["dataset"]["read_path"]]},
+                "context_id": parent_context,
+            },
+            check=False,
         )
         surviving_read = runner.call(
-            "surviving-root-read", "read_file",
-            {"path": plan["dataset"]["read_path"], "start_line": 1, "limit": 80,
-            "context_id": parent_context}, check=False,
+            "surviving-root-read",
+            "read_file",
+            {
+                "path": plan["dataset"]["read_path"],
+                "start_line": 1,
+                "limit": 80,
+                "context_id": parent_context,
+            },
+            check=False,
         )
         surviving_search_evidence = structured_success_evidence(
-            surviving_search, "file_search", expected_root_id=parent_root_identity["id"],
+            surviving_search,
+            "file_search",
+            expected_root_id=parent_root_identity["id"],
             expected_root_path=parent_root_identity["path"],
             expected_root_type=parent_root_identity["type"],
-            expected_file_path=plan["dataset"]["read_path"], expected_file_type="file",
+            expected_file_path=plan["dataset"]["read_path"],
+            expected_file_type="file",
             expected_content=plan["dataset"]["search_marker"],
         )
         surviving_read_evidence = structured_success_evidence(
-            surviving_read, "read_file", expected_root_id=parent_root_identity["id"],
+            surviving_read,
+            "read_file",
+            expected_root_id=parent_root_identity["id"],
             expected_root_path=parent_root_identity["path"],
             expected_root_type=parent_root_identity["type"],
-            expected_file_path=plan["dataset"]["read_path"], expected_file_type="file",
+            expected_file_path=plan["dataset"]["read_path"],
+            expected_file_type="file",
             expected_content=plan["dataset"]["read_marker"],
         )
         parent_completion = wait_agent_success(
-            runner, parent_session, expected_output="RPCE_ACTIVE_PARENT_OK",
+            runner,
+            parent_session,
+            expected_output="RPCE_ACTIVE_PARENT_OK",
             expected_marker=plan["dataset"]["search_marker"],
             expected_file_path=plan["dataset"]["read_path"],
-            context_id=parent_context, expected_pairs=10,
+            context_id=parent_context,
+            expected_pairs=10,
         )
         relevant_agent_status[parent_session] = str(parent_completion["status"])
         results["active-agent-tab-binding"] = {
@@ -8755,11 +11249,23 @@ def smoke_command(args: argparse.Namespace) -> int:
     finally:
         for path in reversed(added_roots):
             removal_response = runner.call(
-                f"cleanup-remove-{safe_name(path.name)}", "manage_workspaces",
-                {"action": "remove_folder", "workspace": plan["scope"]["workspace_id"],
-                 "folder_path": str(path), "window_id": plan["scope"]["window_id"]}, check=False,
+                f"cleanup-remove-{safe_name(path.name)}",
+                "manage_workspaces",
+                {
+                    "action": "remove_folder",
+                    "workspace": plan["scope"]["workspace_id"],
+                    "folder_path": str(path),
+                    "window_id": plan["scope"]["window_id"],
+                },
+                check=False,
             )
-            smoke_cleanup.append({"action": "remove_workspace_root", "path": str(path), "ok": call_succeeded(removal_response)})
+            smoke_cleanup.append(
+                {
+                    "action": "remove_workspace_root",
+                    "path": str(path),
+                    "ok": call_succeeded(removal_response),
+                }
+            )
             if call_succeeded(removal_response):
                 detached_workspace_roots.add(path.resolve())
         if child_session:
@@ -8767,40 +11273,53 @@ def smoke_command(args: argparse.Namespace) -> int:
             if child_status not in TERMINAL_STATES:
                 child_status = terminalize(runner, child_session)
                 relevant_agent_status[child_session] = child_status
-            smoke_cleanup.append({
-                "action": "terminalize_child",
-                "session_id_sha256": sha256_bytes(child_session.encode()),
-                "status": child_status, "terminal": child_status in TERMINAL_STATES,
-            })
+            smoke_cleanup.append(
+                {
+                    "action": "terminalize_child",
+                    "session_id_sha256": sha256_bytes(child_session.encode()),
+                    "status": child_status,
+                    "terminal": child_status in TERMINAL_STATES,
+                }
+            )
         if parent_session:
             parent_status = terminalize(runner, parent_session)
             relevant_agent_status[parent_session] = parent_status
-            smoke_cleanup.append({
-                "action": "terminalize_parent",
-                "session_id_sha256": sha256_bytes(parent_session.encode()),
-                "status": parent_status, "terminal": parent_status in TERMINAL_STATES,
-            })
+            smoke_cleanup.append(
+                {
+                    "action": "terminalize_parent",
+                    "session_id_sha256": sha256_bytes(parent_session.encode()),
+                    "status": parent_status,
+                    "terminal": parent_status in TERMINAL_STATES,
+                }
+            )
         all_relevant_terminal = bool(relevant_agent_status) and all(
             status in TERMINAL_STATES for status in relevant_agent_status.values()
         )
         if parent_worktree:
-            smoke_cleanup.append(clean_owned_worktree(
-                root,
-                str(parent_worktree),
-                all_relevant_terminal,
-                expected_branch=parent_branch,
-                expected_path=str(parent_worktree),
-                expected_head=base_commit_oid,
-                ownership_proven=True,
-            ))
+            smoke_cleanup.append(
+                clean_owned_worktree(
+                    root,
+                    str(parent_worktree),
+                    all_relevant_terminal,
+                    expected_branch=parent_branch,
+                    expected_path=str(parent_worktree),
+                    expected_head=base_commit_oid,
+                    ownership_proven=True,
+                )
+            )
         if linked_secondary and linked_secondary.resolve() in detached_workspace_roots:
             if linked_file and linked_file.exists():
                 linked_file.unlink()
-            smoke_cleanup.append(clean_owned_worktree(
-                root, str(linked_secondary), all_relevant_terminal,
-                expected_path=str(linked_secondary), expected_head=base_commit_oid,
-                ownership_proven=True,
-            ))
+            smoke_cleanup.append(
+                clean_owned_worktree(
+                    root,
+                    str(linked_secondary),
+                    all_relevant_terminal,
+                    expected_path=str(linked_secondary),
+                    expected_head=base_commit_oid,
+                    ownership_proven=True,
+                )
+            )
         if linked_parent:
             try:
                 linked_parent.rmdir()
@@ -8815,14 +11334,19 @@ def smoke_command(args: argparse.Namespace) -> int:
             final_target_ok = True
         except BenchmarkError:
             pass
-        smoke_cleanup.append({
-            "action": "restore_workspace_roots", "ok": final_target_ok,
-        })
-        smoke_cleanup.extend([
-            {"action": "route_control_unchanged", "ok": True},
-            {"action": "benchmark_setting_unchanged", "ok": True},
-            {"action": "diagnostics_reset_not_required", "ok": True},
-        ])
+        smoke_cleanup.append(
+            {
+                "action": "restore_workspace_roots",
+                "ok": final_target_ok,
+            }
+        )
+        smoke_cleanup.extend(
+            [
+                {"action": "route_control_unchanged", "ok": True},
+                {"action": "benchmark_setting_unchanged", "ok": True},
+                {"action": "diagnostics_reset_not_required", "ok": True},
+            ]
+        )
     save_cleanup_proof(artifact / "cleanup.json", smoke_cleanup)
     for scenario in CORRECTNESS_SCENARIOS:
         results.setdefault(scenario, {"ok": False, "reason": "not_exercised"})
@@ -8835,10 +11359,16 @@ def smoke_command(args: argparse.Namespace) -> int:
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
-        "status": "completed" if all(item.get("ok") for item in results.values()) and smoke_cleanup_ok else "failed",
+        "status": (
+            "completed"
+            if all(item.get("ok") for item in results.values()) and smoke_cleanup_ok
+            else "failed"
+        ),
         "artifact_id": artifact.name,
-        "plan_sha256": plan["plan_sha256"], "artifact_directory": str(artifact),
-        "cleanup_complete": smoke_cleanup_ok, "results": results,
+        "plan_sha256": plan["plan_sha256"],
+        "artifact_directory": str(artifact),
+        "cleanup_complete": smoke_cleanup_ok,
+        "results": results,
     }
     save_json(artifact / "summary.json", summary, exclusive=True)
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -8847,9 +11377,13 @@ def smoke_command(args: argparse.Namespace) -> int:
 
 def codemap_gate_command(args: argparse.Namespace) -> int:
     if not args.confirm_live_debug_app or not args.confirm_dedicated_workspace:
-        raise BenchmarkError("codemap-gate requires live-app and dedicated-workspace confirmations")
+        raise BenchmarkError(
+            "codemap-gate requires live-app and dedicated-workspace confirmations"
+        )
     if not args.confirm_synthetic_allowlisted_source:
-        raise BenchmarkError("codemap-gate requires explicit synthetic/allowlisted-source confirmation")
+        raise BenchmarkError(
+            "codemap-gate requires explicit synthetic/allowlisted-source confirmation"
+        )
     if args.cold_samples < CODEMAP_GATE_MINIMUM_COLD_SAMPLES:
         raise BenchmarkError(
             f"codemap-gate requires at least {CODEMAP_GATE_MINIMUM_COLD_SAMPLES} cold samples"
@@ -8883,11 +11417,23 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
     )
     structure_schema = runner.describe("get_code_structure")
     secure_write(
-        artifact / "get-code-structure-schema.txt", structure_schema.encode(), exclusive=True
+        artifact / "get-code-structure-schema.txt",
+        structure_schema.encode(),
+        exclusive=True,
     )
-    required_structure_terms = {"paths", "expand", "depth", "signatures", "size", "small", "medium", "large"}
+    required_structure_terms = {
+        "paths",
+        "expand",
+        "depth",
+        "signatures",
+        "size",
+        "small",
+        "medium",
+        "large",
+    }
     missing_structure_terms = sorted(
-        term for term in required_structure_terms
+        term
+        for term in required_structure_terms
         if re.search(rf"\b{re.escape(term)}\b", structure_schema) is None
     )
     if missing_structure_terms:
@@ -8930,14 +11476,22 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         require_benchmark_gate(runner)
         verify_disposable_target(runner, plan, require_only_planned_root=True)
         runtime = runner.call(
-            "codemap-root-identity", DEBUG_TOOL,
-            {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-             "recent_publication_limit": 0, "root_limit": 256}, check=False,
+            "codemap-root-identity",
+            DEBUG_TOOL,
+            {
+                "op": "mcp_read_search_runtime_snapshot",
+                "window_id": plan["scope"]["window_id"],
+                "recent_publication_limit": 0,
+                "root_limit": 256,
+            },
+            check=False,
         )
         if not call_succeeded(runtime):
             raise BenchmarkError("codemap root identity snapshot failed")
         root_identity = runtime_root_identity(runtime, str(root))
-        start_snapshot = codemap_debug_action(runner, plan, "codemap_graph_index_snapshot")["snapshot"]
+        start_snapshot = codemap_debug_action(
+            runner, plan, "codemap_graph_index_snapshot"
+        )["snapshot"]
         memory_session_id, _ = start_owned_memory_sampler(
             runner, artifact.name, memory_acquisition
         )
@@ -8945,26 +11499,35 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         save_json(artifact / "state.json", state)
 
         cold_provenance: list[dict[str, Any]] = []
-        for cohort, key in (("individual", "individuals"), ("directory", "directories")):
-            for index, item in enumerate(fixture[key][:args.cold_samples], start=1):
+        for cohort, key in (
+            ("individual", "individuals"),
+            ("directory", "directories"),
+        ):
+            for index, item in enumerate(fixture[key][: args.cold_samples], start=1):
                 expected_path = item.get("expected_file", item["path"])
-                tree_path = (
-                    str(Path(expected_path).parent)
-                )
+                tree_path = str(Path(expected_path).parent)
                 preflight_tree = runner.call(
-                    f"codemap-cold-provenance-{cohort}-{index}", "get_file_tree",
-                    {"type": "files", "mode": "full", "path": tree_path,
-                     "max_depth": 1}, check=False,
+                    f"codemap-cold-provenance-{cohort}-{index}",
+                    "get_file_tree",
+                    {
+                        "type": "files",
+                        "mode": "full",
+                        "path": tree_path,
+                        "max_depth": 1,
+                    },
+                    check=False,
                 )
                 tree_payload = tool_payload(preflight_tree, "get_file_tree")
-                marker_was_absent = (
-                    f"{Path(expected_path).name} +" not in str(tree_payload.get("tree") or "")
+                marker_was_absent = f"{Path(expected_path).name} +" not in str(
+                    tree_payload.get("tree") or ""
                 )
-                cold_provenance.append({
-                    "scenario": cohort,
-                    "path_sha256": sha256_bytes(item["path"].encode()),
-                    "marker_was_absent": marker_was_absent,
-                })
+                cold_provenance.append(
+                    {
+                        "scenario": cohort,
+                        "path_sha256": sha256_bytes(item["path"].encode()),
+                        "marker_was_absent": marker_was_absent,
+                    }
+                )
         results["cold-fixture-provenance"] = {
             "ok": len(cold_provenance) == args.cold_samples * 2
             and all(item["marker_was_absent"] for item in cold_provenance),
@@ -8982,10 +11545,15 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             call = runner.timed_call(
                 f"codemap-{cohort}-{temperature}-{ordinal}",
                 "get_code_structure",
-                {"paths": [requested_path], "signatures": True, "size": "large",
-                 "context_id": plan["scope"]["context_id"]},
+                {
+                    "paths": [requested_path],
+                    "signatures": True,
+                    "size": "large",
+                    "context_id": plan["scope"]["context_id"],
+                },
                 timeout=CODEMAP_GATE_WAIT_MILLISECONDS / 1000
-                + CODEMAP_GATE_HARNESS_ALLOWANCE_MILLISECONDS / 1000 + 5,
+                + CODEMAP_GATE_HARNESS_ALLOWANCE_MILLISECONDS / 1000
+                + 5,
                 check=False,
             )
             elapsed_ms = (call.finished_ns - call.started_ns) / 1_000_000
@@ -8994,8 +11562,14 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             tree_evidence: dict[str, Any] | None = None
             tree_elapsed_ms: float | None = None
             try:
-                if elapsed_ms > CODEMAP_GATE_WAIT_MILLISECONDS + CODEMAP_GATE_HARNESS_ALLOWANCE_MILLISECONDS:
-                    raise BenchmarkError("structure request exceeded the 10s + 500ms contract")
+                if (
+                    elapsed_ms
+                    > CODEMAP_GATE_WAIT_MILLISECONDS
+                    + CODEMAP_GATE_HARNESS_ALLOWANCE_MILLISECONDS
+                ):
+                    raise BenchmarkError(
+                        "structure request exceeded the 10s + 500ms contract"
+                    )
                 evidence = codemap_structure_evidence(
                     call.response,
                     expected_root_id=root_identity["id"],
@@ -9008,11 +11582,18 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
                 tree_call = runner.timed_call(
                     f"codemap-tree-{cohort}-{temperature}-{ordinal}",
                     "get_file_tree",
-                    {"type": "files", "mode": "full",
-                     "path": str(Path(expected_path).parent), "max_depth": 1},
-                    timeout=60, check=False,
+                    {
+                        "type": "files",
+                        "mode": "full",
+                        "path": str(Path(expected_path).parent),
+                        "max_depth": 1,
+                    },
+                    timeout=60,
+                    check=False,
                 )
-                tree_elapsed_ms = (tree_call.finished_ns - tree_call.started_ns) / 1_000_000
+                tree_elapsed_ms = (
+                    tree_call.finished_ns - tree_call.started_ns
+                ) / 1_000_000
                 tree_evidence = codemap_tree_marker_evidence(
                     tree_call.response,
                     expected_context_id=plan["scope"]["context_id"],
@@ -9046,60 +11627,112 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
 
         def record_responsiveness_sample(label: str, item: dict[str, str]) -> None:
             search_call = runner.timed_call(
-                f"codemap-saturated-search-{label}", "file_search",
-                {"pattern": item["marker"], "regex": False, "mode": "content",
-                 "filter": {"paths": [item["path"]]}, "max_results": 20,
-                 "context_id": plan["scope"]["context_id"]}, check=False,
+                f"codemap-saturated-search-{label}",
+                "file_search",
+                {
+                    "pattern": item["marker"],
+                    "regex": False,
+                    "mode": "content",
+                    "filter": {"paths": [item["path"]]},
+                    "max_results": 20,
+                    "context_id": plan["scope"]["context_id"],
+                },
+                check=False,
             )
             read_call = runner.timed_call(
-                f"codemap-saturated-read-{label}", "read_file",
-                {"path": item["path"], "start_line": 1, "limit": 80,
-                 "context_id": plan["scope"]["context_id"]}, check=False,
+                f"codemap-saturated-read-{label}",
+                "read_file",
+                {
+                    "path": item["path"],
+                    "start_line": 1,
+                    "limit": 80,
+                    "context_id": plan["scope"]["context_id"],
+                },
+                check=False,
             )
             readiness_call = runner.timed_call(
-                f"codemap-saturated-root-{label}", DEBUG_TOOL,
-                {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-                 "recent_publication_limit": 0, "root_limit": 256}, check=False,
+                f"codemap-saturated-root-{label}",
+                DEBUG_TOOL,
+                {
+                    "op": "mcp_read_search_runtime_snapshot",
+                    "window_id": plan["scope"]["window_id"],
+                    "recent_publication_limit": 0,
+                    "root_limit": 256,
+                },
+                check=False,
             )
             search_ok = structured_success_evidence(
-                search_call.response, "file_search",
-                expected_root_id=root_identity["id"], expected_root_path=root_identity["path"],
-                expected_root_type=root_identity["type"], expected_file_path=item["path"],
-                expected_file_type="file", expected_content=item["marker"],
+                search_call.response,
+                "file_search",
+                expected_root_id=root_identity["id"],
+                expected_root_path=root_identity["path"],
+                expected_root_type=root_identity["type"],
+                expected_file_path=item["path"],
+                expected_file_type="file",
+                expected_content=item["marker"],
             )["ok"]
             read_ok = structured_success_evidence(
-                read_call.response, "read_file",
-                expected_root_id=root_identity["id"], expected_root_path=root_identity["path"],
-                expected_root_type=root_identity["type"], expected_file_path=item["path"],
-                expected_file_type="file", expected_content=item["marker"],
+                read_call.response,
+                "read_file",
+                expected_root_id=root_identity["id"],
+                expected_root_path=root_identity["path"],
+                expected_root_type=root_identity["type"],
+                expected_file_path=item["path"],
+                expected_file_type="file",
+                expected_content=item["marker"],
             )["ok"]
-            if not search_ok or not read_ok or not call_succeeded(readiness_call.response):
-                raise BenchmarkError("saturated root/search/read responsiveness sample failed")
-            if runtime_root_identity(readiness_call.response, str(root)) != root_identity:
-                raise BenchmarkError("saturated root readiness changed canonical identity")
-            search_durations.append((search_call.finished_ns - search_call.started_ns) / 1_000_000)
-            read_durations.append((read_call.finished_ns - read_call.started_ns) / 1_000_000)
+            if (
+                not search_ok
+                or not read_ok
+                or not call_succeeded(readiness_call.response)
+            ):
+                raise BenchmarkError(
+                    "saturated root/search/read responsiveness sample failed"
+                )
+            if (
+                runtime_root_identity(readiness_call.response, str(root))
+                != root_identity
+            ):
+                raise BenchmarkError(
+                    "saturated root readiness changed canonical identity"
+                )
+            search_durations.append(
+                (search_call.finished_ns - search_call.started_ns) / 1_000_000
+            )
+            read_durations.append(
+                (read_call.finished_ns - read_call.started_ns) / 1_000_000
+            )
             readiness_durations.append(
                 (readiness_call.finished_ns - readiness_call.started_ns) / 1_000_000
             )
 
-        for cohort, key in (("individual", "individuals"), ("directory", "directories")):
-            cold_items = fixture[key][:args.cold_samples]
+        for cohort, key in (
+            ("individual", "individuals"),
+            ("directory", "directories"),
+        ):
+            cold_items = fixture[key][: args.cold_samples]
             with ThreadPoolExecutor(max_workers=min(4, args.cold_samples)) as pool:
                 futures = {
-                    pool.submit(run_structure_sample, cohort, "cold", index, item): index
+                    pool.submit(
+                        run_structure_sample, cohort, "cold", index, item
+                    ): index
                     for index, item in enumerate(cold_items, start=1)
                 }
                 for index, item in enumerate(
-                    fixture["individuals"][:args.cold_samples // 2], start=1
+                    fixture["individuals"][: args.cold_samples // 2], start=1
                 ):
                     record_responsiveness_sample(f"{cohort}-{index}", item)
                 cold_records = [future.result() for future in as_completed(futures)]
             samples.extend(sorted(cold_records, key=lambda item: item["ordinal"]))
-            warm_items = [cold_items[index % len(cold_items)] for index in range(args.warm_samples)]
+            warm_items = [
+                cold_items[index % len(cold_items)]
+                for index in range(args.warm_samples)
+            ]
             with ThreadPoolExecutor(max_workers=min(4, args.warm_samples)) as pool:
                 futures = {
-                    pool.submit(run_structure_sample, cohort, "warm", index, item): index
+                    pool.submit(
+                        run_structure_sample, cohort, "warm", index, item
+                    ): index
                     for index, item in enumerate(warm_items, start=1)
                 }
                 warm_records = [future.result() for future in as_completed(futures)]
@@ -9110,9 +11743,15 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             runner, plan, "codemap_graph_index_snapshot"
         )["snapshot"]
         overflow = runner.call(
-            "codemap-directory-overflow", "get_code_structure",
-            {"paths": [fixture["overflow_directory"]], "signatures": False, "size": "small",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-directory-overflow",
+            "get_code_structure",
+            {
+                "paths": [fixture["overflow_directory"]],
+                "signatures": False,
+                "size": "small",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         overflow_evidence = codemap_budget_evidence(overflow)
         after_overflow = codemap_debug_action(
@@ -9121,9 +11760,13 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         overflow_deltas = {
             key: codemap_counter_delta(before_overflow, after_overflow, key)
             for key in (
-                "builds", "materializations", "manifest_writes",
-                "graph_index_runs_started", "graph_index_batches_queued",
-                "graph_index_batches_started", "graph_index_catalog_pages",
+                "builds",
+                "materializations",
+                "manifest_writes",
+                "graph_index_runs_started",
+                "graph_index_batches_queued",
+                "graph_index_batches_started",
+                "graph_index_catalog_pages",
                 "graph_index_catalog_candidates",
                 "graph_index_changes_published",
             )
@@ -9145,71 +11788,120 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         non_git_file = non_git / "NonGit.swift"
         non_git_file.write_text(f"struct {non_git_marker} {{}}\n", encoding="utf-8")
         added_non_git = runner.call(
-            "codemap-add-non-git", "manage_workspaces",
-            {"action": "add_folder", "workspace": plan["scope"]["workspace_id"],
-             "folder_path": str(non_git), "window_id": plan["scope"]["window_id"]}, check=False,
+            "codemap-add-non-git",
+            "manage_workspaces",
+            {
+                "action": "add_folder",
+                "workspace": plan["scope"]["workspace_id"],
+                "folder_path": str(non_git),
+                "window_id": plan["scope"]["window_id"],
+            },
+            check=False,
         )
         if not call_succeeded(added_non_git):
             raise BenchmarkError("failed to add owned non-Git root")
-        state["added_roots"].append({
-            "path": str(non_git), "kind": "non-git", "owned": True,
-            **non_git_ownership,
-        })
+        state["added_roots"].append(
+            {
+                "path": str(non_git),
+                "kind": "non-git",
+                "owned": True,
+                **non_git_ownership,
+            }
+        )
         save_json(artifact / "state.json", state)
         non_git_runtime = runner.call(
-            "codemap-non-git-root", DEBUG_TOOL,
-            {"op": "mcp_read_search_runtime_snapshot", "window_id": plan["scope"]["window_id"],
-             "recent_publication_limit": 0, "root_limit": 256}, check=False,
+            "codemap-non-git-root",
+            DEBUG_TOOL,
+            {
+                "op": "mcp_read_search_runtime_snapshot",
+                "window_id": plan["scope"]["window_id"],
+                "recent_publication_limit": 0,
+                "root_limit": 256,
+            },
+            check=False,
         )
         non_git_identity = runtime_root_identity(non_git_runtime, str(non_git))
         before_non_git = codemap_debug_action(
             runner, plan, "codemap_root_snapshot", target_root_id=non_git_identity["id"]
         )
         non_git_search = runner.call(
-            "codemap-non-git-search", "file_search",
-            {"pattern": non_git_marker, "regex": False,
-             "filter": {"paths": [str(non_git_file)]},
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-non-git-search",
+            "file_search",
+            {
+                "pattern": non_git_marker,
+                "regex": False,
+                "filter": {"paths": [str(non_git_file)]},
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         non_git_read = runner.call(
-            "codemap-non-git-read", "read_file",
-            {"path": str(non_git_file), "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-non-git-read",
+            "read_file",
+            {"path": str(non_git_file), "context_id": plan["scope"]["context_id"]},
+            check=False,
         )
         non_git_structure = runner.call(
-            "codemap-non-git-structure", "get_code_structure",
-            {"paths": [str(non_git_file)], "signatures": True, "size": "medium",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-non-git-structure",
+            "get_code_structure",
+            {
+                "paths": [str(non_git_file)],
+                "signatures": True,
+                "size": "medium",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         after_non_git = codemap_debug_action(
             runner, plan, "codemap_root_snapshot", target_root_id=non_git_identity["id"]
         )
         non_git_search_ok = structured_success_evidence(
-            non_git_search, "file_search", expected_root_id=non_git_identity["id"],
-            expected_root_path=non_git_identity["path"], expected_root_type=non_git_identity["type"],
-            expected_file_path=str(non_git_file), expected_file_type="file",
+            non_git_search,
+            "file_search",
+            expected_root_id=non_git_identity["id"],
+            expected_root_path=non_git_identity["path"],
+            expected_root_type=non_git_identity["type"],
+            expected_file_path=str(non_git_file),
+            expected_file_type="file",
             expected_content=non_git_marker,
         )["ok"]
         non_git_read_ok = structured_success_evidence(
-            non_git_read, "read_file", expected_root_id=non_git_identity["id"],
-            expected_root_path=non_git_identity["path"], expected_root_type=non_git_identity["type"],
-            expected_file_path=str(non_git_file), expected_file_type="file",
+            non_git_read,
+            "read_file",
+            expected_root_id=non_git_identity["id"],
+            expected_root_path=non_git_identity["path"],
+            expected_root_type=non_git_identity["type"],
+            expected_file_path=str(non_git_file),
+            expected_file_type="file",
             expected_content=non_git_marker,
         )["ok"]
         non_git_terminal = structured_removed_evidence(
-            non_git_structure, "get_code_structure", expected_root_id=non_git_identity["id"],
-            expected_root_path=non_git_identity["path"], expected_root_type=non_git_identity["type"],
+            non_git_structure,
+            "get_code_structure",
+            expected_root_id=non_git_identity["id"],
+            expected_root_path=non_git_identity["path"],
+            expected_root_type=non_git_identity["type"],
         )
         non_git_deltas = {
-            key: codemap_counter_delta(before_non_git["snapshot"], after_non_git["snapshot"], key)
-            for key in ("builds", "graph_index_batches_started", "graph_index_catalog_candidates")
+            key: codemap_counter_delta(
+                before_non_git["snapshot"], after_non_git["snapshot"], key
+            )
+            for key in (
+                "builds",
+                "graph_index_batches_started",
+                "graph_index_catalog_candidates",
+            )
         }
         non_git_engine_absent = (
             find_value(before_non_git["response"], "engine_present") is False
             and find_value(after_non_git["response"], "engine_present") is False
         )
         results["non-git-zero-codemap-work"] = {
-            "ok": non_git_search_ok and non_git_read_ok and non_git_terminal["ok"]
-            and non_git_engine_absent and all(value == 0 for value in non_git_deltas.values()),
+            "ok": non_git_search_ok
+            and non_git_read_ok
+            and non_git_terminal["ok"]
+            and non_git_engine_absent
+            and all(value == 0 for value in non_git_deltas.values()),
             "typed_terminal": non_git_terminal,
             "engine_present": not non_git_engine_absent,
             "counter_deltas": non_git_deltas,
@@ -9223,117 +11915,199 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         watcher_v1 = f"RPCE_CODEMAP_WATCHER_{uuid.uuid4().hex}_V1"
         watcher_v2 = watcher_v1.replace("_V1", "_V2")
         created = runner.call(
-            "codemap-watcher-create", "file_actions",
-            {"action": "create", "path": str(root / watcher_old),
-             "content": f"struct {watcher_v1} {{}}\n",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-create",
+            "file_actions",
+            {
+                "action": "create",
+                "path": str(root / watcher_old),
+                "content": f"struct {watcher_v1} {{}}\n",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         created_structure = runner.call(
-            "codemap-watcher-create-structure", "get_code_structure",
-            {"paths": [watcher_old], "signatures": True, "size": "large",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-create-structure",
+            "get_code_structure",
+            {
+                "paths": [watcher_old],
+                "signatures": True,
+                "size": "large",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         create_evidence = codemap_structure_evidence(
-            created_structure, expected_root_id=root_identity["id"],
-            expected_root_path=root_identity["path"], expected_root_type=root_identity["type"],
-            expected_file_path=watcher_old, expected_marker=watcher_v1,
+            created_structure,
+            expected_root_id=root_identity["id"],
+            expected_root_path=root_identity["path"],
+            expected_root_type=root_identity["type"],
+            expected_file_path=watcher_old,
+            expected_marker=watcher_v1,
             expected_file_type=plan["dataset"]["code_file_type"],
         )
         create_tree = runner.call(
-            "codemap-watcher-create-tree", "get_file_tree",
-            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1}, check=False,
+            "codemap-watcher-create-tree",
+            "get_file_tree",
+            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1},
+            check=False,
         )
         create_marker = codemap_tree_marker_evidence(
-            create_tree, expected_context_id=plan["scope"]["context_id"],
-            expected_root_path=root_identity["path"], requested_parent=watcher_dir,
+            create_tree,
+            expected_context_id=plan["scope"]["context_id"],
+            expected_root_path=root_identity["path"],
+            requested_parent=watcher_dir,
             expected_file_path=watcher_old,
         )
         edited = runner.call(
-            "codemap-watcher-edit", "apply_edits",
-            {"path": watcher_old, "search": watcher_v1, "replace": watcher_v2,
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-edit",
+            "apply_edits",
+            {
+                "path": watcher_old,
+                "search": watcher_v1,
+                "replace": watcher_v2,
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         edited_structure = runner.call(
-            "codemap-watcher-edit-structure", "get_code_structure",
-            {"paths": [watcher_old], "signatures": True, "size": "large",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-edit-structure",
+            "get_code_structure",
+            {
+                "paths": [watcher_old],
+                "signatures": True,
+                "size": "large",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         edit_evidence = codemap_structure_evidence(
-            edited_structure, expected_root_id=root_identity["id"],
-            expected_root_path=root_identity["path"], expected_root_type=root_identity["type"],
-            expected_file_path=watcher_old, expected_marker=watcher_v2,
+            edited_structure,
+            expected_root_id=root_identity["id"],
+            expected_root_path=root_identity["path"],
+            expected_root_type=root_identity["type"],
+            expected_file_path=watcher_old,
+            expected_marker=watcher_v2,
             expected_file_type=plan["dataset"]["code_file_type"],
         )
         edit_tree = runner.call(
-            "codemap-watcher-edit-tree", "get_file_tree",
-            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1}, check=False,
+            "codemap-watcher-edit-tree",
+            "get_file_tree",
+            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1},
+            check=False,
         )
         edit_marker = codemap_tree_marker_evidence(
-            edit_tree, expected_context_id=plan["scope"]["context_id"],
-            expected_root_path=root_identity["path"], requested_parent=watcher_dir,
+            edit_tree,
+            expected_context_id=plan["scope"]["context_id"],
+            expected_root_path=root_identity["path"],
+            requested_parent=watcher_dir,
             expected_file_path=watcher_old,
         )
         moved = runner.call(
-            "codemap-watcher-rename", "file_actions",
-            {"action": "move", "path": str(root / watcher_old),
-             "new_path": str(root / watcher_new),
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-rename",
+            "file_actions",
+            {
+                "action": "move",
+                "path": str(root / watcher_old),
+                "new_path": str(root / watcher_new),
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         moved_structure = runner.call(
-            "codemap-watcher-rename-structure", "get_code_structure",
-            {"paths": [watcher_new], "signatures": True, "size": "large",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-rename-structure",
+            "get_code_structure",
+            {
+                "paths": [watcher_new],
+                "signatures": True,
+                "size": "large",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         rename_evidence = codemap_structure_evidence(
-            moved_structure, expected_root_id=root_identity["id"],
-            expected_root_path=root_identity["path"], expected_root_type=root_identity["type"],
-            expected_file_path=watcher_new, expected_marker=watcher_v2,
+            moved_structure,
+            expected_root_id=root_identity["id"],
+            expected_root_path=root_identity["path"],
+            expected_root_type=root_identity["type"],
+            expected_file_path=watcher_new,
+            expected_marker=watcher_v2,
             expected_file_type=plan["dataset"]["code_file_type"],
         )
         watcher_tree = runner.call(
-            "codemap-watcher-tree", "get_file_tree",
-            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1}, check=False,
+            "codemap-watcher-tree",
+            "get_file_tree",
+            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1},
+            check=False,
         )
         watcher_marker = codemap_tree_marker_evidence(
-            watcher_tree, expected_context_id=plan["scope"]["context_id"],
-            expected_root_path=root_identity["path"], requested_parent=watcher_dir,
+            watcher_tree,
+            expected_context_id=plan["scope"]["context_id"],
+            expected_root_path=root_identity["path"],
+            requested_parent=watcher_dir,
             expected_file_path=watcher_new,
         )
         deleted = runner.call(
-            "codemap-watcher-delete", "file_actions",
-            {"action": "delete", "path": str(root / watcher_new),
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-delete",
+            "file_actions",
+            {
+                "action": "delete",
+                "path": str(root / watcher_new),
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         deleted_structure = runner.call(
-            "codemap-watcher-delete-structure", "get_code_structure",
-            {"paths": [watcher_new], "signatures": True, "size": "large",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-watcher-delete-structure",
+            "get_code_structure",
+            {
+                "paths": [watcher_new],
+                "signatures": True,
+                "size": "large",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         deleted_payload = tool_payload(deleted_structure, "get_code_structure")
         deleted_issues = deleted_payload.get("issues")
-        deleted_issue_codes = sorted({
-            str(issue.get("code")) for issue in deleted_issues or []
-            if isinstance(issue, dict) and isinstance(issue.get("code"), str)
-        })
+        deleted_issue_codes = sorted(
+            {
+                str(issue.get("code"))
+                for issue in deleted_issues or []
+                if isinstance(issue, dict) and isinstance(issue.get("code"), str)
+            }
+        )
         deleted_tree = runner.call(
-            "codemap-watcher-delete-tree", "get_file_tree",
-            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1}, check=False,
+            "codemap-watcher-delete-tree",
+            "get_file_tree",
+            {"type": "files", "mode": "full", "path": watcher_dir, "max_depth": 1},
+            check=False,
         )
         deleted_tree_payload = tool_payload(deleted_tree, "get_file_tree")
         delete_absent = (
             deleted_payload.get("status") == "unavailable"
             and deleted_payload.get("files") == []
             and "path_not_found" in deleted_issue_codes
-            and f"{Path(watcher_new).name} +" not in str(deleted_tree_payload.get("tree") or "")
+            and f"{Path(watcher_new).name} +"
+            not in str(deleted_tree_payload.get("tree") or "")
         )
         results["watcher-create-edit-rename-delete"] = {
-            "ok": all(call_succeeded(item) for item in (created, edited, moved, deleted))
+            "ok": all(
+                call_succeeded(item) for item in (created, edited, moved, deleted)
+            )
             and delete_absent,
-            "create": create_evidence, "edit": edit_evidence,
+            "create": create_evidence,
+            "edit": edit_evidence,
             "rename": rename_evidence,
-            "markers": {"create": create_marker, "edit": edit_marker, "rename": watcher_marker},
-            "delete": {"status": deleted_payload.get("status"),
-                       "issue_codes": deleted_issue_codes, "marker_absent": delete_absent},
+            "markers": {
+                "create": create_marker,
+                "edit": edit_marker,
+                "rename": watcher_marker,
+            },
+            "delete": {
+                "status": deleted_payload.get("status"),
+                "issue_codes": deleted_issue_codes,
+                "marker_absent": delete_absent,
+            },
         }
 
         # The DEBUG hold pauses only future graph-index admission. The graph-native
@@ -9346,28 +12120,45 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             raise BenchmarkError("DEBUG codemap hold acquire omitted hold_id")
         active_hold = hold_id
         active_hold_target_root_id = root_identity["id"]
-        state["codemap_holds"].append({
-            "hold_id": hold_id, "target_root_id": root_identity["id"], "released": False,
-        })
+        state["codemap_holds"].append(
+            {
+                "hold_id": hold_id,
+                "target_root_id": root_identity["id"],
+                "released": False,
+            }
+        )
         save_json(artifact / "state.json", state)
         timeout_path = f"{watcher_dir}/{artifact.name}-timeout.swift"
         watcher_paths.append(timeout_path)
         timeout_marker = f"RPCE_CODEMAP_TIMEOUT_{uuid.uuid4().hex}"
         timeout_create = runner.call(
-            "codemap-timeout-create", "file_actions",
-            {"action": "create", "path": str(root / timeout_path),
-             "content": f"struct {timeout_marker} {{}}\n",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-timeout-create",
+            "file_actions",
+            {
+                "action": "create",
+                "path": str(root / timeout_path),
+                "content": f"struct {timeout_marker} {{}}\n",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         pending_call = runner.timed_call(
-            "codemap-held-timeout", "get_code_structure",
-            {"paths": [timeout_path], "expand": "referrers", "depth": 1,
-             "signatures": True, "size": "large",
-             "context_id": plan["scope"]["context_id"]},
+            "codemap-held-timeout",
+            "get_code_structure",
+            {
+                "paths": [timeout_path],
+                "expand": "referrers",
+                "depth": 1,
+                "signatures": True,
+                "size": "large",
+                "context_id": plan["scope"]["context_id"],
+            },
             timeout=15,
             check=False,
         )
-        pending_elapsed_ms = (pending_call.finished_ns - pending_call.started_ns) / 1_000_000
+        pending_elapsed_ms = (
+            pending_call.finished_ns - pending_call.started_ns
+        ) / 1_000_000
         pending_evidence = codemap_retryable_pending_evidence(pending_call.response)
         released = codemap_debug_action(
             runner, plan, "codemap_graph_index_hold_release", hold_id=hold_id
@@ -9379,15 +12170,25 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         state["codemap_holds"][-1]["released"] = True
         save_json(artifact / "state.json", state)
         timeout_retry = runner.call(
-            "codemap-timeout-retry", "get_code_structure",
-            {"paths": [timeout_path], "expand": "referrers", "depth": 1,
-             "signatures": True, "size": "large",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-timeout-retry",
+            "get_code_structure",
+            {
+                "paths": [timeout_path],
+                "expand": "referrers",
+                "depth": 1,
+                "signatures": True,
+                "size": "large",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         retry_evidence = codemap_structure_evidence(
-            timeout_retry, expected_root_id=root_identity["id"],
-            expected_root_path=root_identity["path"], expected_root_type=root_identity["type"],
-            expected_file_path=timeout_path, expected_marker=timeout_marker,
+            timeout_retry,
+            expected_root_id=root_identity["id"],
+            expected_root_path=root_identity["path"],
+            expected_root_type=root_identity["type"],
+            expected_file_path=timeout_path,
+            expected_marker=timeout_marker,
             expected_file_type=plan["dataset"]["code_file_type"],
         )
         results["held-indexing-retry-contract"] = {
@@ -9401,32 +12202,66 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         # Real agent_run transcript: multiple file/directory calls, marker trees, inherited child.
         parent_calls: list[tuple[str, dict[str, Any]]] = []
         for item in fixture["individuals"][:2]:
-            parent_calls.extend([
-                ("get_code_structure", {"paths": [item["path"]],
-                                        "expected_file": item["path"], "marker": item["marker"]}),
-                ("get_file_tree", {"path": str(Path(item["path"]).parent),
-                                   "expected_file": item["path"]}),
-            ])
+            parent_calls.extend(
+                [
+                    (
+                        "get_code_structure",
+                        {
+                            "paths": [item["path"]],
+                            "expected_file": item["path"],
+                            "marker": item["marker"],
+                        },
+                    ),
+                    (
+                        "get_file_tree",
+                        {
+                            "path": str(Path(item["path"]).parent),
+                            "expected_file": item["path"],
+                        },
+                    ),
+                ]
+            )
         for item in fixture["directories"][:2]:
-            parent_calls.extend([
-                ("get_code_structure", {"paths": [item["path"]],
-                                        "expected_file": item["expected_file"],
-                                        "marker": item["marker"]}),
-                ("get_file_tree", {"path": str(Path(item["expected_file"]).parent),
-                                   "expected_file": item["expected_file"]}),
-            ])
+            parent_calls.extend(
+                [
+                    (
+                        "get_code_structure",
+                        {
+                            "paths": [item["path"]],
+                            "expected_file": item["expected_file"],
+                            "marker": item["marker"],
+                        },
+                    ),
+                    (
+                        "get_file_tree",
+                        {
+                            "path": str(Path(item["expected_file"]).parent),
+                            "expected_file": item["expected_file"],
+                        },
+                    ),
+                ]
+            )
         parent_branch = safe_name(f"rpce-bench-{artifact.name}-i1-o1")[:120]
-        parent_prompt = codemap_agent_prompt(parent_calls, sentinel=CODEMAP_GATE_SENTINEL)
+        parent_prompt = codemap_agent_prompt(
+            parent_calls, sentinel=CODEMAP_GATE_SENTINEL
+        )
         privacy_prompt_allowlist.append(parent_prompt)
         parent = runner.call(
-            "codemap-agent-parent", "agent_run",
-            {"op": "start", "model_id": "explore", "detach": True,
-             "message": parent_prompt,
-             "session_name": "RPCE codemap gate parent", "worktree_create": True,
-             "worktree_branch": parent_branch,
-             "worktree_base_ref": plan["dataset"]["base_commit_oid"],
-             "worktree_label": f"RPCE codemap {artifact.name}",
-             "context_id": plan["scope"]["context_id"]}, timeout=180,
+            "codemap-agent-parent",
+            "agent_run",
+            {
+                "op": "start",
+                "model_id": "explore",
+                "detach": True,
+                "message": parent_prompt,
+                "session_name": "RPCE codemap gate parent",
+                "worktree_create": True,
+                "worktree_branch": parent_branch,
+                "worktree_base_ref": plan["dataset"]["base_commit_oid"],
+                "worktree_label": f"RPCE codemap {artifact.name}",
+                "context_id": plan["scope"]["context_id"],
+            },
+            timeout=180,
         )
         parent_session = response_session_id(parent)
         parent_context = response_context_id(parent)
@@ -9434,75 +12269,122 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             raise BenchmarkError("codemap parent omitted context_id")
         parent_worktree = discover_owned_worktree(parent, root, parent_branch)
         privacy_allowlist.append(parent_worktree)
-        state["sessions"].append({
-            "session_id": parent_session, "context_id": parent_context,
-            "terminal": False, "scenario": "multiple-files-directories",
-        })
-        state["worktrees"].append({
-            "path": str(parent_worktree), "owned": True, "branch": parent_branch,
-        })
+        state["sessions"].append(
+            {
+                "session_id": parent_session,
+                "context_id": parent_context,
+                "terminal": False,
+                "scenario": "multiple-files-directories",
+            }
+        )
+        state["worktrees"].append(
+            {
+                "path": str(parent_worktree),
+                "owned": True,
+                "branch": parent_branch,
+            }
+        )
         save_json(artifact / "state.json", state)
         child_calls = [
-            ("get_code_structure", {"paths": [fixture["individuals"][5]["path"]],
-                                    "expected_file": fixture["individuals"][5]["path"],
-                                    "marker": fixture["individuals"][5]["marker"]}),
-            ("get_file_tree", {"path": str(Path(fixture["individuals"][5]["path"]).parent),
-                               "expected_file": fixture["individuals"][5]["path"]}),
+            (
+                "get_code_structure",
+                {
+                    "paths": [fixture["individuals"][5]["path"]],
+                    "expected_file": fixture["individuals"][5]["path"],
+                    "marker": fixture["individuals"][5]["marker"],
+                },
+            ),
+            (
+                "get_file_tree",
+                {
+                    "path": str(Path(fixture["individuals"][5]["path"]).parent),
+                    "expected_file": fixture["individuals"][5]["path"],
+                },
+            ),
         ]
         child_prompt = codemap_agent_prompt(child_calls, sentinel=CODEMAP_GATE_SENTINEL)
         privacy_prompt_allowlist.append(child_prompt)
         child = runner.call(
-            "codemap-agent-child", "agent_run",
-            {"op": "start", "model_id": "explore", "detach": True,
-             "inherit_worktree": True,
-             "message": child_prompt,
-             "session_name": "RPCE codemap inherited child", "context_id": parent_context},
-            timeout=180, check=False, context_id=parent_context,
+            "codemap-agent-child",
+            "agent_run",
+            {
+                "op": "start",
+                "model_id": "explore",
+                "detach": True,
+                "inherit_worktree": True,
+                "message": child_prompt,
+                "session_name": "RPCE codemap inherited child",
+                "context_id": parent_context,
+            },
+            timeout=180,
+            check=False,
+            context_id=parent_context,
         )
         child_session = response_session_id(child)
         child_context = response_context_id(child)
         if child_context is None:
             raise BenchmarkError("codemap inherited child omitted context_id")
-        state["sessions"].append({
-            "session_id": child_session, "context_id": child_context,
-            "terminal": False, "scenario": "inherited-worktree-child",
-        })
+        state["sessions"].append(
+            {
+                "session_id": child_session,
+                "context_id": child_context,
+                "terminal": False,
+                "scenario": "inherited-worktree-child",
+            }
+        )
         save_json(artifact / "state.json", state)
         child_result = wait_codemap_agent_success(
-            runner, child_session, child_context,
+            runner,
+            child_session,
+            child_context,
             start_response=child,
-            expected_output=CODEMAP_GATE_SENTINEL, expected_calls=child_calls,
+            expected_output=CODEMAP_GATE_SENTINEL,
+            expected_calls=child_calls,
         )
         if not child_result["ok"]:
             raise BenchmarkError("fail-fast inherited child inference probe failed")
         state["sessions"][-1]["terminal"] = child_result["status"] in TERMINAL_STATES
         state["sessions"][-1]["status"] = child_result["status"]
         parent_result = wait_codemap_agent_success(
-            runner, parent_session, parent_context,
+            runner,
+            parent_session,
+            parent_context,
             start_response=parent,
-            expected_output=CODEMAP_GATE_SENTINEL, expected_calls=parent_calls,
+            expected_output=CODEMAP_GATE_SENTINEL,
+            expected_calls=parent_calls,
         )
         if not parent_result["ok"]:
             raise BenchmarkError("fail-fast multi-path parent inference probe failed")
         state["sessions"][-2]["terminal"] = parent_result["status"] in TERMINAL_STATES
         state["sessions"][-2]["status"] = parent_result["status"]
         child_direct = agent_codemap_direct_evidence(
-            runner, plan, start_response=child, session_id=child_session,
-            context_id=child_context, worktree_path=parent_worktree,
+            runner,
+            plan,
+            start_response=child,
+            session_id=child_session,
+            context_id=child_context,
+            worktree_path=parent_worktree,
             expected_calls=child_calls,
         )
         parent_direct = agent_codemap_direct_evidence(
-            runner, plan, start_response=parent, session_id=parent_session,
-            context_id=parent_context, worktree_path=parent_worktree,
+            runner,
+            plan,
+            start_response=parent,
+            session_id=parent_session,
+            context_id=parent_context,
+            worktree_path=parent_worktree,
             expected_calls=parent_calls,
         )
         inheritance = child_inheritance_evidence(
-            parent, child, parent_context_id=parent_context,
+            parent,
+            child,
+            parent_context_id=parent_context,
             parent_worktree_path=str(parent_worktree),
         )
         results["agent-multiple-files-directories"] = {
             "ok": parent_result["ok"] and parent_direct["ok"],
-            "transcript": parent_result, "structured": parent_direct,
+            "transcript": parent_result,
+            "structured": parent_direct,
         }
         results["inherited-worktree-child"] = {
             "ok": child_result["ok"] and inheritance["ok"] and child_direct["ok"],
@@ -9518,65 +12400,126 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         linked_root = linked_parent / "worktree"
         linked_branch = safe_name(f"rpce-bench-{artifact.name}-i3-o1")[:120]
         run_local(
-            ["git", "worktree", "add", "-b", linked_branch, str(linked_root),
-             plan["dataset"]["base_commit_oid"]], root
+            [
+                "git",
+                "worktree",
+                "add",
+                "-b",
+                linked_branch,
+                str(linked_root),
+                plan["dataset"]["base_commit_oid"],
+            ],
+            root,
         )
         privacy_allowlist.append(linked_root)
-        state["worktrees"].append({
-            "path": str(linked_root), "owned": True, "branch": linked_branch,
-        })
+        state["worktrees"].append(
+            {
+                "path": str(linked_root),
+                "owned": True,
+                "branch": linked_branch,
+            }
+        )
         primary_probe_calls = [
-            ("get_code_structure", {"paths": [fixture["individuals"][6]["path"]],
-                                    "expected_file": fixture["individuals"][6]["path"],
-                                    "marker": fixture["individuals"][6]["marker"]}),
-            ("get_file_tree", {"path": str(Path(fixture["individuals"][6]["path"]).parent),
-                               "expected_file": fixture["individuals"][6]["path"]}),
+            (
+                "get_code_structure",
+                {
+                    "paths": [fixture["individuals"][6]["path"]],
+                    "expected_file": fixture["individuals"][6]["path"],
+                    "marker": fixture["individuals"][6]["marker"],
+                },
+            ),
+            (
+                "get_file_tree",
+                {
+                    "path": str(Path(fixture["individuals"][6]["path"]).parent),
+                    "expected_file": fixture["individuals"][6]["path"],
+                },
+            ),
         ]
 
         def primary_structure_pressure(label: str) -> TimedCall:
             return runner.timed_call(
-                label, "get_code_structure",
-                {"paths": [fixture["directories"][6]["path"]],
-                 "signatures": True, "size": "large",
-                 "context_id": plan["scope"]["context_id"]}, check=False,
+                label,
+                "get_code_structure",
+                {
+                    "paths": [fixture["directories"][6]["path"]],
+                    "signatures": True,
+                    "size": "large",
+                    "context_id": plan["scope"]["context_id"],
+                },
+                check=False,
             )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pressure_future = pool.submit(primary_structure_pressure, "codemap-primary-during-add")
+            pressure_future = pool.submit(
+                primary_structure_pressure, "codemap-primary-during-add"
+            )
             add_future = pool.submit(
-                runner.timed_call, "codemap-add-linked-root", "manage_workspaces",
-                {"action": "add_folder", "workspace": plan["scope"]["workspace_id"],
-                 "folder_path": str(linked_root), "window_id": plan["scope"]["window_id"]},
+                runner.timed_call,
+                "codemap-add-linked-root",
+                "manage_workspaces",
+                {
+                    "action": "add_folder",
+                    "workspace": plan["scope"]["workspace_id"],
+                    "folder_path": str(linked_root),
+                    "window_id": plan["scope"]["window_id"],
+                },
                 check=False,
             )
             pressure_add, add_linked = pressure_future.result(), add_future.result()
         if not call_succeeded(add_linked) or not call_succeeded(pressure_add):
-            raise BenchmarkError("linked-root add or concurrent primary structure failed")
-        state["added_roots"].append({"path": str(linked_root), "kind": "git-worktree", "owned": True})
+            raise BenchmarkError(
+                "linked-root add or concurrent primary structure failed"
+            )
+        state["added_roots"].append(
+            {"path": str(linked_root), "kind": "git-worktree", "owned": True}
+        )
         save_json(artifact / "state.json", state)
         secondary_calls = [
-            ("get_code_structure", {"paths": [fixture["individuals"][7]["path"]],
-                                    "expected_file": fixture["individuals"][7]["path"],
-                                    "marker": fixture["individuals"][7]["marker"]}),
-            ("get_file_tree", {"path": str(Path(fixture["individuals"][7]["path"]).parent),
-                               "expected_file": fixture["individuals"][7]["path"]}),
+            (
+                "get_code_structure",
+                {
+                    "paths": [fixture["individuals"][7]["path"]],
+                    "expected_file": fixture["individuals"][7]["path"],
+                    "marker": fixture["individuals"][7]["marker"],
+                },
+            ),
+            (
+                "get_file_tree",
+                {
+                    "path": str(Path(fixture["individuals"][7]["path"]).parent),
+                    "expected_file": fixture["individuals"][7]["path"],
+                },
+            ),
         ]
         linked_runtime = runner.call(
-            "codemap-linked-root-identity", DEBUG_TOOL,
-            {"op": "mcp_read_search_runtime_snapshot",
-             "window_id": plan["scope"]["window_id"],
-             "recent_publication_limit": 0, "root_limit": 256}, check=False,
+            "codemap-linked-root-identity",
+            DEBUG_TOOL,
+            {
+                "op": "mcp_read_search_runtime_snapshot",
+                "window_id": plan["scope"]["window_id"],
+                "recent_publication_limit": 0,
+                "root_limit": 256,
+            },
+            check=False,
         )
         linked_identity = runtime_root_identity(linked_runtime, str(linked_root))
         linked_prewarm_path = str(linked_root / fixture["individuals"][7]["path"])
         linked_prewarm_parent = str(Path(linked_prewarm_path).parent)
         linked_prewarm = runner.call(
-            "codemap-linked-prewarm", "get_code_structure",
-            {"paths": [linked_prewarm_path], "signatures": True, "size": "large",
-             "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-linked-prewarm",
+            "get_code_structure",
+            {
+                "paths": [linked_prewarm_path],
+                "signatures": True,
+                "size": "large",
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         linked_prewarm_evidence = codemap_structure_evidence(
-            linked_prewarm, expected_root_id=linked_identity["id"],
+            linked_prewarm,
+            expected_root_id=linked_identity["id"],
             expected_root_path=linked_identity["path"],
             expected_root_type=linked_identity["type"],
             expected_file_path=linked_prewarm_path,
@@ -9584,9 +12527,16 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             expected_file_type=plan["dataset"]["code_file_type"],
         )
         linked_prewarm_tree = runner.call(
-            "codemap-linked-prewarm-tree", "get_file_tree",
-            {"type": "files", "mode": "full", "path": linked_prewarm_parent,
-             "max_depth": 1, "context_id": plan["scope"]["context_id"]}, check=False,
+            "codemap-linked-prewarm-tree",
+            "get_file_tree",
+            {
+                "type": "files",
+                "mode": "full",
+                "path": linked_prewarm_parent,
+                "max_depth": 1,
+                "context_id": plan["scope"]["context_id"],
+            },
+            check=False,
         )
         linked_prewarm_tree_evidence = codemap_tree_marker_evidence(
             linked_prewarm_tree,
@@ -9596,30 +12546,43 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             expected_file_path=linked_prewarm_path,
         )
         linked_hold = codemap_debug_action(
-            runner, plan, "codemap_graph_index_hold_acquire",
-            target_root_id=linked_identity["id"], expires_ms=60_000,
+            runner,
+            plan,
+            "codemap_graph_index_hold_acquire",
+            target_root_id=linked_identity["id"],
+            expires_ms=60_000,
         )
         linked_hold_id = find_value(linked_hold["response"], "hold_id")
         if not isinstance(linked_hold_id, str):
             raise BenchmarkError("linked-root DEBUG hold acquire omitted hold_id")
         active_hold = linked_hold_id
         active_hold_target_root_id = linked_identity["id"]
-        state["codemap_holds"].append({
-            "hold_id": linked_hold_id,
-            "target_root_id": linked_identity["id"],
-            "released": False,
-        })
+        state["codemap_holds"].append(
+            {
+                "hold_id": linked_hold_id,
+                "target_root_id": linked_identity["id"],
+                "released": False,
+            }
+        )
         blocked_item = fixture["individuals"][8]
         linked_blocked_path = str(linked_root / blocked_item["path"])
-        linked_blocked_calls = [*secondary_calls,
-            ("get_code_structure", {
-                "paths": [linked_blocked_path],
-                "expected_file": linked_blocked_path, "marker": blocked_item["marker"],
-            }),
-            ("get_file_tree", {
-                "path": str(Path(linked_blocked_path).parent),
-                "expected_file": linked_blocked_path,
-            }),
+        linked_blocked_calls = [
+            *secondary_calls,
+            (
+                "get_code_structure",
+                {
+                    "paths": [linked_blocked_path],
+                    "expected_file": linked_blocked_path,
+                    "marker": blocked_item["marker"],
+                },
+            ),
+            (
+                "get_file_tree",
+                {
+                    "path": str(Path(linked_blocked_path).parent),
+                    "expected_file": linked_blocked_path,
+                },
+            ),
         ]
         save_json(artifact / "state.json", state)
         ordinary_branch = safe_name(f"rpce-bench-{artifact.name}-i2-o1")[:120]
@@ -9632,34 +12595,56 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         privacy_prompt_allowlist.extend([ordinary_prompt, linked_prompt])
         with ThreadPoolExecutor(max_workers=2) as pool:
             ordinary_future = pool.submit(
-                runner.call, "codemap-agent-ordinary", "agent_run",
-                {"op": "start", "model_id": "explore", "detach": True,
-                 "message": ordinary_prompt,
-                 "session_name": "RPCE codemap primary agent", "worktree_create": True,
-                 "worktree_branch": ordinary_branch,
-                 "worktree_base_ref": plan["dataset"]["base_commit_oid"],
-                 "worktree_label": f"RPCE codemap {artifact.name} primary",
-                 "context_id": plan["scope"]["context_id"]},
+                runner.call,
+                "codemap-agent-ordinary",
+                "agent_run",
+                {
+                    "op": "start",
+                    "model_id": "explore",
+                    "detach": True,
+                    "message": ordinary_prompt,
+                    "session_name": "RPCE codemap primary agent",
+                    "worktree_create": True,
+                    "worktree_branch": ordinary_branch,
+                    "worktree_base_ref": plan["dataset"]["base_commit_oid"],
+                    "worktree_label": f"RPCE codemap {artifact.name} primary",
+                    "context_id": plan["scope"]["context_id"],
+                },
                 timeout=180,
             )
             linked_future = pool.submit(
-                runner.call, "codemap-agent-linked", "agent_run",
-                {"op": "start", "model_id": "explore", "detach": True,
-                 "message": linked_prompt,
-                 "session_name": "RPCE codemap linked root", "worktree": str(linked_root),
-                 "context_id": plan["scope"]["context_id"]},
+                runner.call,
+                "codemap-agent-linked",
+                "agent_run",
+                {
+                    "op": "start",
+                    "model_id": "explore",
+                    "detach": True,
+                    "message": linked_prompt,
+                    "session_name": "RPCE codemap linked root",
+                    "worktree": str(linked_root),
+                    "context_id": plan["scope"]["context_id"],
+                },
                 timeout=180,
             )
             ordinary, linked = ordinary_future.result(), linked_future.result()
-        ordinary_session, linked_session = response_session_id(ordinary), response_session_id(linked)
-        ordinary_context, linked_context = response_context_id(ordinary), response_context_id(linked)
+        ordinary_session, linked_session = response_session_id(
+            ordinary
+        ), response_session_id(linked)
+        ordinary_context, linked_context = response_context_id(
+            ordinary
+        ), response_context_id(linked)
         if ordinary_context is None or linked_context is None:
             raise BenchmarkError("concurrent codemap agents omitted contexts")
         ordinary_worktree = discover_owned_worktree(ordinary, root, ordinary_branch)
         privacy_allowlist.append(ordinary_worktree)
-        state["worktrees"].append({
-            "path": str(ordinary_worktree), "owned": True, "branch": ordinary_branch,
-        })
+        state["worktrees"].append(
+            {
+                "path": str(ordinary_worktree),
+                "owned": True,
+                "branch": ordinary_branch,
+            }
+        )
         linked_binding_ok = any(
             Path(path).resolve() == linked_root.resolve()
             for _, path in response_worktree_binding_set(linked)
@@ -9668,20 +12653,36 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             Path(path).resolve() == ordinary_worktree.resolve()
             for _, path in response_worktree_binding_set(ordinary)
         )
-        state["sessions"].extend([
-            {"session_id": ordinary_session, "context_id": ordinary_context,
-             "terminal": False, "scenario": "concurrent-ordinary-root"},
-            {"session_id": linked_session, "context_id": linked_context,
-             "terminal": False, "scenario": "concurrent-linked-root"},
-        ])
+        state["sessions"].extend(
+            [
+                {
+                    "session_id": ordinary_session,
+                    "context_id": ordinary_context,
+                    "terminal": False,
+                    "scenario": "concurrent-ordinary-root",
+                },
+                {
+                    "session_id": linked_session,
+                    "context_id": linked_context,
+                    "terminal": False,
+                    "scenario": "concurrent-linked-root",
+                },
+            ]
+        )
         save_json(artifact / "state.json", state)
         linked_direct = agent_codemap_direct_evidence(
-            runner, plan, start_response=linked, session_id=linked_session,
-            context_id=linked_context, worktree_path=linked_root,
+            runner,
+            plan,
+            start_response=linked,
+            session_id=linked_session,
+            context_id=linked_context,
+            worktree_path=linked_root,
             expected_calls=secondary_calls,
         )
         held_call_observed = wait_for_exact_agent_structure_call(
-            runner, session_id=linked_session, context_id=linked_context,
+            runner,
+            session_id=linked_session,
+            context_id=linked_context,
             expected_path=linked_blocked_path,
         )
         linked_active_before_remove = poll_active_agent(
@@ -9693,28 +12694,49 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         if not linked_active_before_remove["ok"]:
             raise BenchmarkError("linked-root agent terminalized before root removal")
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pressure_future = pool.submit(primary_structure_pressure, "codemap-primary-during-remove")
+            pressure_future = pool.submit(
+                primary_structure_pressure, "codemap-primary-during-remove"
+            )
             remove_future = pool.submit(
-                runner.timed_call, "codemap-remove-linked-root", "manage_workspaces",
-                {"action": "remove_folder", "workspace": plan["scope"]["workspace_id"],
-                 "folder_path": str(linked_root), "window_id": plan["scope"]["window_id"]},
+                runner.timed_call,
+                "codemap-remove-linked-root",
+                "manage_workspaces",
+                {
+                    "action": "remove_folder",
+                    "workspace": plan["scope"]["workspace_id"],
+                    "folder_path": str(linked_root),
+                    "window_id": plan["scope"]["window_id"],
+                },
                 check=False,
             )
-            pressure_remove, remove_linked = pressure_future.result(), remove_future.result()
+            pressure_remove, remove_linked = (
+                pressure_future.result(),
+                remove_future.result(),
+            )
         if call_succeeded(remove_linked):
             state["added_roots"] = [
-                item for item in state["added_roots"] if item.get("path") != str(linked_root)
+                item
+                for item in state["added_roots"]
+                if item.get("path") != str(linked_root)
             ]
         ordinary_active_after_remove = poll_active_agent(
             runner, ordinary_session, ordinary_context, "codemap-ordinary-after-remove"
         )
         revoked_call = runner.call(
-            "codemap-linked-revoked-probe", "get_code_structure",
-            {"paths": [linked_blocked_path], "signatures": True, "size": "large",
-             "context_id": linked_context}, check=False, context_id=linked_context,
+            "codemap-linked-revoked-probe",
+            "get_code_structure",
+            {
+                "paths": [linked_blocked_path],
+                "signatures": True,
+                "size": "large",
+                "context_id": linked_context,
+            },
+            check=False,
+            context_id=linked_context,
         )
         linked_revoked = structured_removed_evidence(
-            revoked_call, "get_code_structure",
+            revoked_call,
+            "get_code_structure",
             expected_root_id=linked_identity["id"],
             expected_root_path=linked_identity["path"],
             expected_root_type=linked_identity["type"],
@@ -9725,21 +12747,29 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         linked_started_ns = find_value(linked, "_benchmark_started_monotonic_ns")
         linked_inference_elapsed_ms = (
             (time.monotonic_ns() - linked_started_ns) / 1_000_000
-            if isinstance(linked_started_ns, int) else None
+            if isinstance(linked_started_ns, int)
+            else None
         )
         state["sessions"][-1]["terminal"] = linked_status in TERMINAL_STATES
         state["sessions"][-1]["status"] = linked_status
         linked_log = runner.call(
-            "codemap-linked-revoked-log", "agent_manage",
+            "codemap-linked-revoked-log",
+            "agent_manage",
             {"op": "get_log", "session_id": linked_session, "offset": 0, "limit": 4000},
-            timeout=120, check=False, context_id=linked_context,
+            timeout=120,
+            check=False,
+            context_id=linked_context,
         )
         linked_transcript = verify_agent_codemap_revoked_transcript(
-            transcript_xml_from_log(linked_log), expected_first_path=linked_blocked_path,
+            transcript_xml_from_log(linked_log),
+            expected_first_path=linked_blocked_path,
         )
         linked_released = codemap_debug_action(
-            runner, plan, "codemap_graph_index_hold_release",
-            target_root_id=linked_identity["id"], hold_id=linked_hold_id,
+            runner,
+            plan,
+            "codemap_graph_index_hold_release",
+            target_root_id=linked_identity["id"],
+            hold_id=linked_hold_id,
         )
         if find_value(linked_released["response"], "released") is not True:
             raise BenchmarkError("linked-root DEBUG hold was not released by its owner")
@@ -9747,17 +12777,24 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         active_hold_target_root_id = None
         state["codemap_holds"][-1]["released"] = True
         ordinary_result = wait_codemap_agent_success(
-            runner, ordinary_session, ordinary_context,
+            runner,
+            ordinary_session,
+            ordinary_context,
             start_response=ordinary,
-            expected_output=CODEMAP_GATE_SENTINEL, expected_calls=primary_probe_calls,
+            expected_output=CODEMAP_GATE_SENTINEL,
+            expected_calls=primary_probe_calls,
         )
         if not ordinary_result["ok"]:
             raise BenchmarkError("fail-fast concurrent ordinary inference probe failed")
         state["sessions"][-2]["terminal"] = ordinary_result["status"] in TERMINAL_STATES
         state["sessions"][-2]["status"] = ordinary_result["status"]
         ordinary_direct = agent_codemap_direct_evidence(
-            runner, plan, start_response=ordinary, session_id=ordinary_session,
-            context_id=ordinary_context, worktree_path=ordinary_worktree,
+            runner,
+            plan,
+            start_response=ordinary,
+            session_id=ordinary_session,
+            context_id=ordinary_context,
+            worktree_path=ordinary_worktree,
             expected_calls=primary_probe_calls,
         )
         linked_lifecycle = linked_root_removal_evidence(
@@ -9765,8 +12802,11 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         )
         save_json(artifact / "state.json", state)
         results["concurrent-roots-agents"] = {
-            "ok": linked_direct["ok"] and ordinary_result["ok"]
-            and ordinary_direct["ok"] and linked_binding_ok and ordinary_binding_ok,
+            "ok": linked_direct["ok"]
+            and ordinary_result["ok"]
+            and ordinary_direct["ok"]
+            and linked_binding_ok
+            and ordinary_binding_ok,
             "ordinary": {"transcript": ordinary_result, "structured": ordinary_direct},
             "linked": {"structured": linked_direct, "transcript": linked_transcript},
             "linked_binding_exact": linked_binding_ok,
@@ -9778,8 +12818,10 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         }
         results["active-secondary-root-add-remove"] = {
             "ok": (
-                call_succeeded(add_linked) and call_succeeded(remove_linked)
-                and call_succeeded(pressure_add) and call_succeeded(pressure_remove)
+                call_succeeded(add_linked)
+                and call_succeeded(remove_linked)
+                and call_succeeded(pressure_add)
+                and call_succeeded(pressure_remove)
                 and linked_lifecycle["ok"]
                 and overlap(pressure_add, add_linked)
                 and overlap(pressure_remove, remove_linked)
@@ -9803,10 +12845,14 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             or not nonnegative_integer(final_queue_ordinal)
             or final_queue_ordinal < start_queue_ordinal
         ):
-            raise BenchmarkError("DEBUG codemap snapshot omitted scoped queue sample ordinals")
+            raise BenchmarkError(
+                "DEBUG codemap snapshot omitted scoped queue sample ordinals"
+            )
         queue_sample_delta = final_queue_ordinal - start_queue_ordinal
         if queue_sample_delta > len(raw_queue_wait_values) or not all(
-            isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value >= 0
             for value in raw_queue_wait_values
         ):
             raise BenchmarkError("DEBUG codemap snapshot omitted queue_wait_ms samples")
@@ -9814,8 +12860,12 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             raw_queue_wait_values[-queue_sample_delta:] if queue_sample_delta else []
         )
         resource_keys = (
-            "retained_path_bytes", "retained_source_bytes", "retained_graph_index_bytes",
-            "staged_graph_bytes", "resident_graph_bytes", "queued_manifest_mutation_bytes",
+            "retained_path_bytes",
+            "retained_source_bytes",
+            "retained_graph_index_bytes",
+            "staged_graph_bytes",
+            "resident_graph_bytes",
+            "queued_manifest_mutation_bytes",
         )
         resources_bounded = all(
             nonnegative_integer(final_snapshot.get(key))
@@ -9824,7 +12874,10 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             for key in resource_keys
         )
         rejection_keys = (
-            "graph_index_budget_rejections", "busy_rejections", "failures", "manifest_failures",
+            "graph_index_budget_rejections",
+            "busy_rejections",
+            "failures",
+            "manifest_failures",
         )
         rejection_deltas = {
             key: codemap_counter_delta(start_snapshot, final_snapshot, key)
@@ -9834,8 +12887,10 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         results["resource-policy"] = {
             "ok": resources_bounded and no_policy_rejection,
             "resource_bytes": {
-                key: {"used": final_snapshot.get(key),
-                      "limit": final_snapshot.get(f"limit_{key}")}
+                key: {
+                    "used": final_snapshot.get(key),
+                    "limit": final_snapshot.get(f"limit_{key}"),
+                }
                 for key in resource_keys
             },
             "rejection_deltas": rejection_deltas,
@@ -9844,7 +12899,9 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         if memory_session_id is None:
             raise BenchmarkError("codemap memory session ownership was lost")
         memory_stopped, resources = stop_owned_memory_sampler(
-            runner, memory_session_id, label="codemap-memory-stop",
+            runner,
+            memory_session_id,
+            label="codemap-memory-stop",
         )
         memory_acquisition.stop_verified = memory_stopped
         memory_acquisition.stop_response = resources
@@ -9854,22 +12911,31 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
     finally:
         if active_hold:
             released = runner.call(
-                "codemap-finally-release-hold", DEBUG_TOOL,
+                "codemap-finally-release-hold",
+                DEBUG_TOOL,
                 diagnostic_payload(
-                    plan, "codemap_graph_index_hold_release", hold_id=active_hold,
-                    **({"target_root_id": active_hold_target_root_id}
-                       if active_hold_target_root_id else {}),
+                    plan,
+                    "codemap_graph_index_hold_release",
+                    hold_id=active_hold,
+                    **(
+                        {"target_root_id": active_hold_target_root_id}
+                        if active_hold_target_root_id
+                        else {}
+                    ),
                 ),
                 check=False,
             )
-            released_ok = (
-                call_succeeded(released)
-                and (find_value(released, "released") is True or find_value(released, "hold_count") == 0)
+            released_ok = call_succeeded(released) and (
+                find_value(released, "released") is True
+                or find_value(released, "hold_count") == 0
             )
-            cleanup.append({
-                "action": "release_codemap_hold", "hold_id_sha256": sha256_bytes(active_hold.encode()),
-                "ok": released_ok,
-            })
+            cleanup.append(
+                {
+                    "action": "release_codemap_hold",
+                    "hold_id_sha256": sha256_bytes(active_hold.encode()),
+                    "ok": released_ok,
+                }
+            )
             for item in state["codemap_holds"]:
                 if item.get("hold_id") == active_hold:
                     item["released"] = released_ok
@@ -9877,79 +12943,113 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             candidate = root / raw
             if candidate.exists():
                 response = runner.call(
-                    f"codemap-cleanup-file-{safe_name(candidate.name)}", "file_actions",
-                    {"action": "delete", "path": str(candidate),
-                     "context_id": plan["scope"]["context_id"]}, check=False,
+                    f"codemap-cleanup-file-{safe_name(candidate.name)}",
+                    "file_actions",
+                    {
+                        "action": "delete",
+                        "path": str(candidate),
+                        "context_id": plan["scope"]["context_id"],
+                    },
+                    check=False,
                 )
-                cleanup.append({
-                    "action": "remove_owned_fixture", "path_sha256": sha256_bytes(raw.encode()),
-                    "ok": call_succeeded(response),
-                })
+                cleanup.append(
+                    {
+                        "action": "remove_owned_fixture",
+                        "path_sha256": sha256_bytes(raw.encode()),
+                        "ok": call_succeeded(response),
+                    }
+                )
         for session in state["sessions"]:
             if not session.get("terminal"):
                 status = terminalize(runner, session["session_id"])
                 session["status"] = status
                 session["terminal"] = status in TERMINAL_STATES
-            cleanup.append({
-                "action": "terminalize_agent",
-                "session_id_sha256": sha256_bytes(session["session_id"].encode()),
-                "status": session.get("status"), "terminal": session.get("terminal") is True,
-            })
-        all_terminal = all(session.get("terminal") is True for session in state["sessions"])
+            cleanup.append(
+                {
+                    "action": "terminalize_agent",
+                    "session_id_sha256": sha256_bytes(session["session_id"].encode()),
+                    "status": session.get("status"),
+                    "terminal": session.get("terminal") is True,
+                }
+            )
+        all_terminal = all(
+            session.get("terminal") is True for session in state["sessions"]
+        )
         remaining_added_roots: list[dict[str, Any]] = []
         for item in reversed(state["added_roots"]):
             path = item.get("path")
-            ownership_proven = (
-                item.get("kind") == "non-git"
-                and validate_codemap_temp_ownership_marker(
-                    item, artifact_id=artifact.name, plan_sha256=plan["plan_sha256"]
-                )
+            ownership_proven = item.get(
+                "kind"
+            ) == "non-git" and validate_codemap_temp_ownership_marker(
+                item, artifact_id=artifact.name, plan_sha256=plan["plan_sha256"]
             )
             if not all_terminal or not ownership_proven:
-                cleanup.append({
-                    "action": "remove_workspace_root",
-                    "path_sha256": sha256_bytes(str(path).encode()),
-                    "ok": False, "manual_cleanup": True,
-                    "reason": (
-                        "agents_not_terminal" if not all_terminal else
-                        "live_cleanup_ownership_proof_required"
-                    ),
-                })
+                cleanup.append(
+                    {
+                        "action": "remove_workspace_root",
+                        "path_sha256": sha256_bytes(str(path).encode()),
+                        "ok": False,
+                        "manual_cleanup": True,
+                        "reason": (
+                            "agents_not_terminal"
+                            if not all_terminal
+                            else "live_cleanup_ownership_proof_required"
+                        ),
+                    }
+                )
                 remaining_added_roots.append(item)
                 continue
             response = runner.call(
-                f"codemap-cleanup-root-{safe_name(str(path))}", "manage_workspaces",
-                {"action": "remove_folder", "workspace": plan["scope"]["workspace_id"],
-                 "folder_path": path, "window_id": plan["scope"]["window_id"]}, check=False,
+                f"codemap-cleanup-root-{safe_name(str(path))}",
+                "manage_workspaces",
+                {
+                    "action": "remove_folder",
+                    "workspace": plan["scope"]["workspace_id"],
+                    "folder_path": path,
+                    "window_id": plan["scope"]["window_id"],
+                },
+                check=False,
             )
             ok = call_succeeded(response)
-            cleanup.append({
-                "action": "remove_workspace_root",
-                "path_sha256": sha256_bytes(str(path).encode()), "ok": ok,
-            })
+            cleanup.append(
+                {
+                    "action": "remove_workspace_root",
+                    "path_sha256": sha256_bytes(str(path).encode()),
+                    "ok": ok,
+                }
+            )
             if not ok:
                 remaining_added_roots.append(item)
         state["added_roots"] = list(reversed(remaining_added_roots))
         for worktree in {item["path"]: item for item in state["worktrees"]}.values():
             cleaned = clean_owned_worktree(
-                root, worktree["path"], all_terminal,
-                expected_branch=worktree.get("branch"), expected_path=worktree["path"],
-                expected_head=plan["dataset"]["base_commit_oid"], ownership_proven=True,
+                root,
+                worktree["path"],
+                all_terminal,
+                expected_branch=worktree.get("branch"),
+                expected_path=worktree["path"],
+                expected_head=plan["dataset"]["base_commit_oid"],
+                ownership_proven=True,
             )
             cleanup.append(cleaned)
         try:
             memory_cleanup, resources = cleanup_memory_sampler_acquisition(
-                runner, memory_acquisition, label=artifact.name,
+                runner,
+                memory_acquisition,
+                label=artifact.name,
             )
         except BaseException as cleanup_error:
             memory_cleanup = {
-                "action": "stop_memory_sampler", "ok": False,
-                "verified_stopped": False, "stop_attempted": False,
+                "action": "stop_memory_sampler",
+                "ok": False,
+                "verified_stopped": False,
+                "stop_attempted": False,
                 "manual_cleanup": True,
                 "reason": f"memory sampler cleanup failed: {cleanup_error!r}",
             }
             resources = {
-                "available": False, "reason": "sampler_cleanup_failed",
+                "available": False,
+                "reason": "sampler_cleanup_failed",
                 "error": repr(cleanup_error),
             }
         state["memory_stopped"] = memory_cleanup.get("verified_stopped") is True
@@ -9959,9 +13059,12 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
             state["benchmark_gate_unchanged"] = True
         except BenchmarkError:
             state["benchmark_gate_unchanged"] = False
-        cleanup.append({
-            "action": "preserve_benchmark_setting", "ok": state["benchmark_gate_unchanged"],
-        })
+        cleanup.append(
+            {
+                "action": "preserve_benchmark_setting",
+                "ok": state["benchmark_gate_unchanged"],
+            }
+        )
         final_target_ok = False
         try:
             verify_disposable_target(runner, plan, require_only_planned_root=True)
@@ -9971,7 +13074,8 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         cleanup.append({"action": "restore_workspace_roots", "ok": final_target_ok})
         remaining_paths = {
             str(Path(item["path"]).resolve())
-            for item in state["added_roots"] if isinstance(item.get("path"), str)
+            for item in state["added_roots"]
+            if isinstance(item.get("path"), str)
         }
         for path in reversed(owned_dirs):
             if not path.exists() or str(path.resolve()) in remaining_paths:
@@ -9997,28 +13101,39 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
                 continue
             started = raw_call.get("started_monotonic_ns")
             finished = raw_call.get("finished_monotonic_ns")
-            if not isinstance(started, int) or not isinstance(finished, int) or finished < started:
-                raise BenchmarkError("raw get_code_structure timing evidence was malformed")
+            if (
+                not isinstance(started, int)
+                or not isinstance(finished, int)
+                or finished < started
+            ):
+                raise BenchmarkError(
+                    "raw get_code_structure timing evidence was malformed"
+                )
             direct_structure_durations.append((finished - started) / 1_000_000)
     metric_values = {
         "cold_individual_structure": [
-            sample["duration_ms"] for sample in retained
+            sample["duration_ms"]
+            for sample in retained
             if sample["scenario"] == "cold-individual"
         ],
         "warm_individual_structure": [
-            sample["duration_ms"] for sample in retained
+            sample["duration_ms"]
+            for sample in retained
             if sample["scenario"] == "warm-individual"
         ],
         "cold_directory_structure": [
-            sample["duration_ms"] for sample in retained
+            sample["duration_ms"]
+            for sample in retained
             if sample["scenario"] == "cold-directory"
         ],
         "warm_directory_structure": [
-            sample["duration_ms"] for sample in retained
+            sample["duration_ms"]
+            for sample in retained
             if sample["scenario"] == "warm-directory"
         ],
         "tree_marker_availability": [
-            sample["tree_marker_duration_ms"] for sample in retained
+            sample["tree_marker_duration_ms"]
+            for sample in retained
             if sample.get("tree_marker_duration_ms") is not None
         ],
         "first_search": locals().get("search_durations", []),
@@ -10026,42 +13141,61 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         "root_readiness": locals().get("readiness_durations", []),
         "queue_wait": (
             locals().get("queue_wait_values", [])
-            if isinstance(locals().get("queue_wait_values", []), list) else []
+            if isinstance(locals().get("queue_wait_values", []), list)
+            else []
         ),
         "operation_duration": direct_structure_durations,
     }
     resource_metrics = find_value(resources, "metrics")
     memory_metric_names = (
-        "peak_resident_delta_mb", "retained_resident_delta_mb",
-        "peak_physical_footprint_delta_mb", "retained_physical_footprint_delta_mb",
+        "peak_resident_delta_mb",
+        "retained_resident_delta_mb",
+        "peak_physical_footprint_delta_mb",
+        "retained_physical_footprint_delta_mb",
     )
     for key in memory_metric_names:
         metric_values[f"memory_{key}"] = []
     if isinstance(resource_metrics, dict):
         for key in memory_metric_names:
             value = resource_metrics.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ):
                 metric_values[f"memory_{key}"] = [max(0.0, float(value))]
             else:
                 metric_values[f"memory_{key}"] = []
-    metrics = {name: stats(values, label=f"codemap {name}") for name, values in metric_values.items()}
+    metrics = {
+        name: stats(values, label=f"codemap {name}")
+        for name, values in metric_values.items()
+    }
 
     def metric_within_baseline(name: str, percentile: str) -> bool:
         current = (metrics.get(name) or {}).get(percentile)
-        baseline_value = ((baseline.get("metrics") or {}).get(name) or {}).get(percentile)
+        baseline_value = ((baseline.get("metrics") or {}).get(name) or {}).get(
+            percentile
+        )
         return (
-            isinstance(current, (int, float)) and not isinstance(current, bool)
-            and isinstance(baseline_value, (int, float)) and not isinstance(baseline_value, bool)
-            and baseline_value > 0 and current <= baseline_value * 1.10
+            isinstance(current, (int, float))
+            and not isinstance(current, bool)
+            and isinstance(baseline_value, (int, float))
+            and not isinstance(baseline_value, bool)
+            and baseline_value > 0
+            and current <= baseline_value * 1.10
         )
 
-    scenario_ok = operational_error is None and all(item.get("ok") is True for item in results.values())
-    exact_counts = all((
-        metrics["cold_individual_structure"]["count"] == args.cold_samples,
-        metrics["warm_individual_structure"]["count"] == args.warm_samples,
-        metrics["cold_directory_structure"]["count"] == args.cold_samples,
-        metrics["warm_directory_structure"]["count"] == args.warm_samples,
-    ))
+    scenario_ok = operational_error is None and all(
+        item.get("ok") is True for item in results.values()
+    )
+    exact_counts = all(
+        (
+            metrics["cold_individual_structure"]["count"] == args.cold_samples,
+            metrics["warm_individual_structure"]["count"] == args.warm_samples,
+            metrics["cold_directory_structure"]["count"] == args.cold_samples,
+            metrics["warm_directory_structure"]["count"] == args.warm_samples,
+        )
+    )
     required_metric_inventory = all(
         metrics[name]["count"] > 0
         and finite_number(metrics[name]["p50"])
@@ -10071,8 +13205,10 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         for name in CODEMAP_REQUIRED_METRICS
     )
     cleanup_ok = bool(cleanup) and all(
-        item.get("ok") is True or item.get("terminal") is True
-        or item.get("removed") is True or item.get("reason") == "already_absent"
+        item.get("ok") is True
+        or item.get("terminal") is True
+        or item.get("removed") is True
+        or item.get("reason") == "already_absent"
         for item in cleanup
     )
     gates = {
@@ -10081,9 +13217,11 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         "all codemap content/path/tree scenarios": scenario_ok,
         "every request within 10s + 500ms": all(
             duration
-            <= CODEMAP_GATE_WAIT_MILLISECONDS + CODEMAP_GATE_HARNESS_ALLOWANCE_MILLISECONDS
+            <= CODEMAP_GATE_WAIT_MILLISECONDS
+            + CODEMAP_GATE_HARNESS_ALLOWANCE_MILLISECONDS
             for duration in direct_structure_durations
-        ) and bool(direct_structure_durations),
+        )
+        and bool(direct_structure_durations),
         "root/search/read p95 regression <= 10%": all(
             metric_within_baseline(name, "p95")
             for name in ("root_readiness", "first_search", "first_read")
@@ -10111,7 +13249,8 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
         "gates": gates,
         "metrics": metrics,
         "sample_counts": {
-            "attempted": len(samples), "valid": len(retained),
+            "attempted": len(samples),
+            "valid": len(retained),
             "invalid": len(samples) - len(retained),
         },
         "configuration": {
@@ -10139,10 +13278,18 @@ def codemap_gate_command(args: argparse.Namespace) -> int:
     summary["decision"] = decision
     summary["status"] = "completed" if decision == "pass" else "failed"
     save_json(artifact / "summary.json", summary)
-    print(json.dumps({
-        "status": summary["status"], "decision": decision,
-        "artifact_directory": str(artifact), "gates": gates,
-    }, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "status": summary["status"],
+                "decision": decision,
+                "artifact_directory": str(artifact),
+                "gates": gates,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0 if decision == "pass" else 1
 
 
@@ -10172,7 +13319,8 @@ def diagnostic_number(
 def sample_metric_number(item: dict[str, Any], metric: str) -> float | None:
     diagnostic = (
         (item.get("primary_performance") or {}).get("diagnostic_checkpoint")
-        if metric in METRICS else item.get("diagnostic")
+        if metric in METRICS
+        else item.get("diagnostic")
     )
     sample = find_value(diagnostic, "sample")
     if not isinstance(sample, dict):
@@ -10185,12 +13333,17 @@ def sample_metric_number(item: dict[str, Any], metric: str) -> float | None:
     return float(value) if finite_number(value, positive=True) else None
 
 
-def absolute_memory_regression(control: Iterable[float], candidate: Iterable[float]) -> float | None:
+def absolute_memory_regression(
+    control: Iterable[float], candidate: Iterable[float]
+) -> float | None:
     control_values = [float(value) for value in control]
     candidate_values = [float(value) for value in candidate]
     if not control_values or not candidate_values:
         return None
-    if not all(math.isfinite(value) and value > 0 for value in control_values + candidate_values):
+    if not all(
+        math.isfinite(value) and value > 0
+        for value in control_values + candidate_values
+    ):
         return None
     baseline = statistics.median(control_values)
     if baseline <= 0:
@@ -10221,7 +13374,10 @@ def validate_cleanup_evidence(
         action = item.get("action")
         if isinstance(action, str):
             by_action.setdefault(action, []).append(item)
-    if run_artifact and len(by_action.get("terminalize_agent", [])) != expected_agent_count:
+    if (
+        run_artifact
+        and len(by_action.get("terminalize_agent", [])) != expected_agent_count
+    ):
         return False
     if len(by_action.get("remove_worktree", [])) != expected_worktree_count:
         return False
@@ -10235,13 +13391,19 @@ def validate_cleanup_evidence(
         return False
     required = (
         {
-            "stop_memory_sampler", "restore_route", "reset_diagnostics",
-            "preserve_benchmark_setting", "restore_workspace_roots",
+            "stop_memory_sampler",
+            "restore_route",
+            "reset_diagnostics",
+            "preserve_benchmark_setting",
+            "restore_workspace_roots",
         }
-        if run_artifact else
-        {
-            "terminalize_child", "terminalize_parent", "restore_workspace_roots",
-            "route_control_unchanged", "benchmark_setting_unchanged",
+        if run_artifact
+        else {
+            "terminalize_child",
+            "terminalize_parent",
+            "restore_workspace_roots",
+            "route_control_unchanged",
+            "benchmark_setting_unchanged",
             "diagnostics_reset_not_required",
         }
     )
@@ -10250,8 +13412,8 @@ def validate_cleanup_evidence(
     if run_artifact and (
         len(by_action.get("stop_memory_sampler", [])) != 1
         or not all(
-        item.get("ok") is True and item.get("verified_stopped") is True
-        for item in by_action.get("stop_memory_sampler", [])
+            item.get("ok") is True and item.get("verified_stopped") is True
+            for item in by_action.get("stop_memory_sampler", [])
         )
     ):
         return False
@@ -10263,8 +13425,7 @@ def cleanup_command_acceptance(
     state: dict[str, Any],
 ) -> bool:
     return (
-        cleanup_evidence_complete
-        and state.get("cleanup_manual_required") is not True
+        cleanup_evidence_complete and state.get("cleanup_manual_required") is not True
     )
 
 
@@ -10278,9 +13439,13 @@ def memory_sampler_record(value: Any, action: str) -> dict[str, Any]:
             and candidate.get("action") == action
             and isinstance(candidate.get("running"), bool)
         ):
-            matches[json.dumps(candidate, sort_keys=True, separators=(",", ":"))] = candidate
+            matches[json.dumps(candidate, sort_keys=True, separators=(",", ":"))] = (
+                candidate
+            )
     if len(matches) != 1:
-        raise BenchmarkError(f"memory sampler {action} response was missing or ambiguous")
+        raise BenchmarkError(
+            f"memory sampler {action} response was missing or ambiguous"
+        )
     record = next(iter(matches.values()))
     if action in {"start", "stop"} or record.get("running") is True:
         session = record.get("session")
@@ -10292,7 +13457,9 @@ def memory_sampler_record(value: Any, action: str) -> dict[str, Any]:
             or validate_uuid(top_level_id, "memory session-id")
             != validate_uuid(nested_id, "memory nested session-id")
         ):
-            raise BenchmarkError(f"memory sampler {action} omitted one exact session owner")
+            raise BenchmarkError(
+                f"memory sampler {action} omitted one exact session owner"
+            )
     return record
 
 
@@ -10314,22 +13481,34 @@ def start_owned_memory_sampler(
 ) -> tuple[str, Any]:
     owner = acquisition or MemorySamplerAcquisition(label=label)
     if owner.label != label or owner.start_attempted:
-        raise BenchmarkError("memory sampler acquisition handle was invalid or already used")
+        raise BenchmarkError(
+            "memory sampler acquisition handle was invalid or already used"
+        )
     current = runner.call(
-        f"{safe_name(label)}-memory-preflight", DEBUG_TOOL,
+        f"{safe_name(label)}-memory-preflight",
+        DEBUG_TOOL,
         {"op": "large_workspace_memory", "action": "current"},
-        timeout=60, check=False,
+        timeout=60,
+        check=False,
     )
     current_record = memory_sampler_record(current, "current")
     if current_record.get("running") is not False:
-        raise BenchmarkError("memory sampler start requires a proven inactive global sampler")
+        raise BenchmarkError(
+            "memory sampler start requires a proven inactive global sampler"
+        )
     owner.preflight_inactive_proven = True
     owner.start_attempted = True
     owner.acquisition_uncertain = True
     response = runner.call(
-        f"{safe_name(label)}-memory-start", DEBUG_TOOL,
-        {"op": "large_workspace_memory", "action": "start", "label": label,
-         "interval_ms": 100, "benchmark_gate": True},
+        f"{safe_name(label)}-memory-start",
+        DEBUG_TOOL,
+        {
+            "op": "large_workspace_memory",
+            "action": "start",
+            "label": label,
+            "interval_ms": 100,
+            "benchmark_gate": True,
+        },
     )
     record = memory_sampler_record(response, "start")
     session_id = validate_uuid(str(record["session_id"]), "memory session-id")
@@ -10337,7 +13516,9 @@ def start_owned_memory_sampler(
         raise BenchmarkError("owned memory sampler did not start")
     session = record.get("session")
     if not isinstance(session, dict) or session.get("label") != label:
-        raise BenchmarkError("owned memory sampler start returned the wrong owner label")
+        raise BenchmarkError(
+            "owned memory sampler start returned the wrong owner label"
+        )
     owner.session_id = session_id
     owner.acquisition_uncertain = False
     return session_id, response
@@ -10352,14 +13533,22 @@ def stop_owned_memory_sampler(
 ) -> tuple[bool, Any]:
     owned_id = validate_uuid(session_id, "memory session-id")
     response = runner.call(
-        label, DEBUG_TOOL,
-        {"op": "large_workspace_memory", "action": "stop",
-         "session_id": owned_id, "settle_seconds": settle_seconds},
-        timeout=60, check=False,
+        label,
+        DEBUG_TOOL,
+        {
+            "op": "large_workspace_memory",
+            "action": "stop",
+            "session_id": owned_id,
+            "settle_seconds": settle_seconds,
+        },
+        timeout=60,
+        check=False,
     )
     try:
         record = memory_sampler_record(response, "stop")
-        stopped_id = validate_uuid(str(record["session_id"]), "stopped memory session-id")
+        stopped_id = validate_uuid(
+            str(record["session_id"]), "stopped memory session-id"
+        )
         ok = stopped_id == owned_id and record.get("running") is False
     except BenchmarkError:
         ok = False
@@ -10374,60 +13563,106 @@ def cleanup_memory_sampler_acquisition(
     settle_seconds: float = 2,
 ) -> tuple[dict[str, Any], Any]:
     if acquisition.label != label:
-        return ({
-            "action": "stop_memory_sampler", "ok": False, "verified_stopped": False,
-            "stop_attempted": False, "manual_cleanup": True,
-            "reason": "memory sampler cleanup label did not match the acquisition handle",
-        }, {"available": False, "reason": "acquisition_label_mismatch"})
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": False,
+                "verified_stopped": False,
+                "stop_attempted": False,
+                "manual_cleanup": True,
+                "reason": "memory sampler cleanup label did not match the acquisition handle",
+            },
+            {"available": False, "reason": "acquisition_label_mismatch"},
+        )
     if acquisition.stop_verified:
-        return ({
-            "action": "stop_memory_sampler", "ok": True, "verified_stopped": True,
-            "stop_attempted": True, "ownership_proven": True,
-            "reason": "owned_session_already_stopped",
-        }, acquisition.stop_response)
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": True,
+                "verified_stopped": True,
+                "stop_attempted": True,
+                "ownership_proven": True,
+                "reason": "owned_session_already_stopped",
+            },
+            acquisition.stop_response,
+        )
     if acquisition.session_id is not None:
         stopped, response = stop_owned_memory_sampler(
-            runner, acquisition.session_id, label=label,
+            runner,
+            acquisition.session_id,
+            label=label,
             settle_seconds=settle_seconds,
         )
-        return ({
-            "action": "stop_memory_sampler", "ok": stopped,
-            "verified_stopped": stopped, "stop_attempted": True,
-            "ownership_proven": True,
-            "session_id_sha256": sha256_bytes(acquisition.session_id.encode()),
-        }, response)
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": stopped,
+                "verified_stopped": stopped,
+                "stop_attempted": True,
+                "ownership_proven": True,
+                "session_id_sha256": sha256_bytes(acquisition.session_id.encode()),
+            },
+            response,
+        )
     if not acquisition.start_attempted:
-        return ({
-            "action": "stop_memory_sampler", "ok": True, "verified_stopped": True,
-            "stop_attempted": False, "ownership_proven": True,
-            "reason": "start_not_attempted",
-        }, {"available": False, "reason": "sampler_start_not_attempted"})
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": True,
+                "verified_stopped": True,
+                "stop_attempted": False,
+                "ownership_proven": True,
+                "reason": "start_not_attempted",
+            },
+            {"available": False, "reason": "sampler_start_not_attempted"},
+        )
     if not acquisition.preflight_inactive_proven:
-        return ({
-            "action": "stop_memory_sampler", "ok": False, "verified_stopped": False,
-            "stop_attempted": False, "manual_cleanup": True,
-            "reason": "uncertain sampler acquisition lacked an inactive preflight",
-        }, {"available": False, "reason": "sampler_ownership_unproven"})
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": False,
+                "verified_stopped": False,
+                "stop_attempted": False,
+                "manual_cleanup": True,
+                "reason": "uncertain sampler acquisition lacked an inactive preflight",
+            },
+            {"available": False, "reason": "sampler_ownership_unproven"},
+        )
 
     current = runner.call(
-        "cleanup-memory-uncertain-current", DEBUG_TOOL,
+        "cleanup-memory-uncertain-current",
+        DEBUG_TOOL,
         {"op": "large_workspace_memory", "action": "current"},
-        timeout=60, check=False,
+        timeout=60,
+        check=False,
     )
     try:
         record = memory_sampler_record(current, "current")
     except BenchmarkError as error:
-        return ({
-            "action": "stop_memory_sampler", "ok": False, "verified_stopped": False,
-            "stop_attempted": False, "manual_cleanup": True,
-            "reason": f"uncertain sampler acquisition could not be resolved: {error}",
-        }, current)
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": False,
+                "verified_stopped": False,
+                "stop_attempted": False,
+                "manual_cleanup": True,
+                "reason": f"uncertain sampler acquisition could not be resolved: {error}",
+            },
+            current,
+        )
     if record.get("running") is False:
-        return ({
-            "action": "stop_memory_sampler", "ok": True, "verified_stopped": True,
-            "stop_attempted": False, "ownership_proven": True,
-            "observed_running": False, "reason": "uncertain_start_observed_inactive",
-        }, current)
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": True,
+                "verified_stopped": True,
+                "stop_attempted": False,
+                "ownership_proven": True,
+                "observed_running": False,
+                "reason": "uncertain_start_observed_inactive",
+            },
+            current,
+        )
     session = record.get("session")
     current_id = record.get("session_id")
     try:
@@ -10435,27 +13670,44 @@ def cleanup_memory_sampler_acquisition(
         ownership_proven = (
             isinstance(session, dict)
             and session.get("label") == acquisition.label
-            and validate_uuid(str(session.get("id")), "uncertain nested memory session-id")
+            and validate_uuid(
+                str(session.get("id")), "uncertain nested memory session-id"
+            )
             == proven_id
         )
     except BenchmarkError:
         ownership_proven = False
         proven_id = None
     if not ownership_proven or proven_id is None:
-        return ({
-            "action": "stop_memory_sampler", "ok": False, "verified_stopped": False,
-            "stop_attempted": False, "manual_cleanup": True,
-            "reason": "uncertain sampler acquisition resolved to a foreign or unproven owner",
-        }, current)
+        return (
+            {
+                "action": "stop_memory_sampler",
+                "ok": False,
+                "verified_stopped": False,
+                "stop_attempted": False,
+                "manual_cleanup": True,
+                "reason": "uncertain sampler acquisition resolved to a foreign or unproven owner",
+            },
+            current,
+        )
     stopped, response = stop_owned_memory_sampler(
-        runner, proven_id, label=label, settle_seconds=settle_seconds,
+        runner,
+        proven_id,
+        label=label,
+        settle_seconds=settle_seconds,
     )
-    return ({
-        "action": "stop_memory_sampler", "ok": stopped,
-        "verified_stopped": stopped, "stop_attempted": True,
-        "ownership_proven": True, "recovered_uncertain_acquisition": True,
-        "session_id_sha256": sha256_bytes(proven_id.encode()),
-    }, response)
+    return (
+        {
+            "action": "stop_memory_sampler",
+            "ok": stopped,
+            "verified_stopped": stopped,
+            "stop_attempted": True,
+            "ownership_proven": True,
+            "recovered_uncertain_acquisition": True,
+            "session_id_sha256": sha256_bytes(proven_id.encode()),
+        },
+        response,
+    )
 
 
 def verify_resumed_memory_sampler_inactive(
@@ -10465,17 +13717,22 @@ def verify_resumed_memory_sampler_inactive(
     expected_label: str,
 ) -> dict[str, Any]:
     current = runner.call(
-        "cleanup-memory-current", DEBUG_TOOL,
+        "cleanup-memory-current",
+        DEBUG_TOOL,
         {"op": "large_workspace_memory", "action": "current"},
-        timeout=60, check=False,
+        timeout=60,
+        check=False,
     )
     try:
         record = memory_sampler_record(current, "current")
         running = record["running"]
     except BenchmarkError as error:
         return {
-            "action": "stop_memory_sampler", "ok": False, "verified_stopped": False,
-            "stop_attempted": False, "manual_cleanup": True,
+            "action": "stop_memory_sampler",
+            "ok": False,
+            "verified_stopped": False,
+            "stop_attempted": False,
+            "manual_cleanup": True,
             "reason": f"resumed cleanup could not prove the global sampler inactive: {error}",
         }
     if running:
@@ -10493,35 +13750,47 @@ def verify_resumed_memory_sampler_inactive(
             matches_owner = False
         if matches_owner:
             stopped, _ = stop_owned_memory_sampler(
-                runner, expected_session_id,
-                label="cleanup-memory-stop-owned", settle_seconds=0,
+                runner,
+                expected_session_id,
+                label="cleanup-memory-stop-owned",
+                settle_seconds=0,
             )
             return {
-                "action": "stop_memory_sampler", "ok": stopped,
-                "verified_stopped": stopped, "stop_attempted": True,
+                "action": "stop_memory_sampler",
+                "ok": stopped,
+                "verified_stopped": stopped,
+                "stop_attempted": True,
                 "ownership_proven": True,
                 "session_id_sha256": sha256_bytes(expected_session_id.encode()),
             }
         return {
-            "action": "stop_memory_sampler", "ok": False, "verified_stopped": False,
-            "stop_attempted": False, "manual_cleanup": True,
+            "action": "stop_memory_sampler",
+            "ok": False,
+            "verified_stopped": False,
+            "stop_attempted": False,
+            "manual_cleanup": True,
             "reason": (
                 "process-global memory sampler is owned by another or unproven session; "
                 "resumed cleanup refuses takeover"
             ),
         }
     return {
-        "action": "stop_memory_sampler", "ok": True, "verified_stopped": True,
-        "stop_attempted": False, "observed_running": False,
+        "action": "stop_memory_sampler",
+        "ok": True,
+        "verified_stopped": True,
+        "stop_attempted": False,
+        "observed_running": False,
     }
 
 
 def render_scoreboard(summary: dict[str, Any]) -> str:
     lines = [
-        f"## Worktree startup live benchmark — {summary['aggregate_id']}", "",
+        f"## Worktree startup live benchmark — {summary['aggregate_id']}",
+        "",
         f"- Plan SHA-256: `{summary['plan_sha256']}`",
         f"- Decision: **{summary['decision']}**",
-        f"- Generated: `{summary['created_at']}`", "",
+        f"- Generated: `{summary['created_at']}`",
+        "",
         "| cohort | metric | N | p50 µs | p95 µs | CV |",
         "|---|---|---:|---:|---:|---:|",
     ]
@@ -10530,16 +13799,34 @@ def render_scoreboard(summary: dict[str, Any]) -> str:
             lines.append(
                 f"| `{key}` | `{metric}` | {values['count']} | {values['p50']} | {values['p95']} | {values['cv']} |"
             )
-    lines.extend([
-        "", "### Route and work attribution", "",
-        "| cohort | primary retained | follow-on accepted | routes | fallbacks | Git commands p50 | Git µs p50 | FS ops p50 | FS µs p50 | CPU ms | peak physical Δ MB | retained physical Δ MB |",
-        "|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|",
-    ])
+    lines.extend(
+        [
+            "",
+            "### Route and work attribution",
+            "",
+            "| cohort | primary retained | follow-on accepted | routes | fallbacks | Git commands p50 | Git µs p50 | FS ops p50 | FS µs p50 | CPU ms | peak physical Δ MB | retained physical Δ MB |",
+            "|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for key, cohort in sorted(summary["cohorts"].items()):
         resources = cohort.get("resources") or []
-        cpu = [item.get("session_cpu_ms") for item in resources if isinstance(item.get("session_cpu_ms"), (int, float))]
-        peak = [item.get("peak_physical_footprint_delta_mb") for item in resources if isinstance(item.get("peak_physical_footprint_delta_mb"), (int, float))]
-        retained = [item.get("retained_physical_footprint_delta_mb") for item in resources if isinstance(item.get("retained_physical_footprint_delta_mb"), (int, float))]
+        cpu = [
+            item.get("session_cpu_ms")
+            for item in resources
+            if isinstance(item.get("session_cpu_ms"), (int, float))
+        ]
+        peak = [
+            item.get("peak_physical_footprint_delta_mb")
+            for item in resources
+            if isinstance(item.get("peak_physical_footprint_delta_mb"), (int, float))
+        ]
+        retained = [
+            item.get("retained_physical_footprint_delta_mb")
+            for item in resources
+            if isinstance(
+                item.get("retained_physical_footprint_delta_mb"), (int, float)
+            )
+        ]
         lines.append(
             f"| `{key}` | {cohort.get('primary_valid_retained', 0)} | "
             f"{cohort.get('follow_on_accepted_retained', 0)} | "
@@ -10554,15 +13841,23 @@ def render_scoreboard(summary: dict[str, Any]) -> str:
         lines.append(f"| {gate} | `{value}` |")
     lines.extend(["", "### Evidence", ""])
     lines.append(f"- Correctness results: `{summary['correctness']}`")
-    lines.append(f"- Invalid attempted samples: `{summary['invalid_attempted_samples']}`")
+    lines.append(
+        f"- Invalid attempted samples: `{summary['invalid_attempted_samples']}`"
+    )
     lines.append(f"- Invalid retained samples: `{summary['invalid_retained_samples']}`")
-    lines.append(f"- Primary-invalid attempted samples: `{summary['primary_invalid_attempted_samples']}`")
-    lines.append(f"- Follow-on-failed attempted samples: `{summary['follow_on_failed_attempted_samples']}`")
+    lines.append(
+        f"- Primary-invalid attempted samples: `{summary['primary_invalid_attempted_samples']}`"
+    )
+    lines.append(
+        f"- Follow-on-failed attempted samples: `{summary['follow_on_failed_attempted_samples']}`"
+    )
     lines.append(f"- Artifact directories: `{', '.join(summary['artifacts'])}`")
     return "\n".join(lines) + "\n"
 
 
-def configured_matrix_variants(plan: dict[str, Any]) -> tuple[list[str], list[str], list[str], list[int]]:
+def configured_matrix_variants(
+    plan: dict[str, Any],
+) -> tuple[list[str], list[str], list[str], list[int]]:
     matrix = plan.get("matrix")
     if not isinstance(matrix, dict):
         raise BenchmarkError("plan omitted benchmark matrix")
@@ -10571,11 +13866,17 @@ def configured_matrix_variants(plan: dict[str, Any]) -> tuple[list[str], list[st
     routes = matrix.get("routes")
     widths = matrix.get("widths")
     if (
-        not isinstance(states, list) or not states
-        or not isinstance(checkouts, list) or not checkouts
-        or not isinstance(routes, list) or not routes
-        or not isinstance(widths, list) or not widths
-        or not all(isinstance(item, str) and item for item in states + checkouts + routes)
+        not isinstance(states, list)
+        or not states
+        or not isinstance(checkouts, list)
+        or not checkouts
+        or not isinstance(routes, list)
+        or not routes
+        or not isinstance(widths, list)
+        or not widths
+        or not all(
+            isinstance(item, str) and item for item in states + checkouts + routes
+        )
         or not all(positive_integer(item) for item in widths)
     ):
         raise BenchmarkError("plan benchmark matrix variants were invalid")
@@ -10586,7 +13887,10 @@ def configured_required_matrix_keys(plan: dict[str, Any]) -> set[str]:
     states, checkouts, routes, widths = configured_matrix_variants(plan)
     return {
         f"{state}/{checkout}/{route}/{width}"
-        for state in states for checkout in checkouts for route in routes for width in widths
+        for state in states
+        for checkout in checkouts
+        for route in routes
+        for width in widths
     }
 
 
@@ -10629,8 +13933,12 @@ def validate_primary_revalidation_provenance(value: Any) -> list[str]:
         failures.append("revalidation_artifact_identity_invalid")
     inputs = value.get("inputs")
     required_inputs = {
-        "plan_argument", "artifact_plan", "summary", "samples_ndjson",
-        "resources", "cleanup",
+        "plan_argument",
+        "artifact_plan",
+        "summary",
+        "samples_ndjson",
+        "resources",
+        "cleanup",
     }
     if not isinstance(inputs, dict) or set(inputs) != required_inputs:
         failures.append("revalidation_input_inventory_mismatch")
@@ -10648,11 +13956,14 @@ def validate_primary_revalidation_provenance(value: Any) -> list[str]:
         failures.append("revalidation_sample_count_mismatch")
         samples = []
     else:
-        if [item.get("ordinal") for item in samples if isinstance(item, dict)] != list(range(1, 7)):
+        if [item.get("ordinal") for item in samples if isinstance(item, dict)] != list(
+            range(1, 7)
+        ):
             failures.append("revalidation_sample_ordinals_mismatch")
         identities = {
             (item.get("correlation_id"), item.get("session_id"))
-            for item in samples if isinstance(item, dict)
+            for item in samples
+            if isinstance(item, dict)
         }
         if len(identities) != 6:
             failures.append("revalidation_sample_identity_reused")
@@ -10666,7 +13977,8 @@ def validate_primary_revalidation_provenance(value: Any) -> list[str]:
                 or not isinstance(item.get("checkpoint_sha256"), str)
                 or len(item.get("checkpoint_sha256", "")) != 64
                 or not isinstance(item.get("revalidated_checkpoint_sha256"), str)
-                or item.get("revalidated_checkpoint_sha256") != item.get("checkpoint_sha256")
+                or item.get("revalidated_checkpoint_sha256")
+                != item.get("checkpoint_sha256")
                 or not finite_number(item.get("raw_primary_ms"), positive=True)
                 or item.get("revalidated_primary_ms") != item.get("raw_primary_ms")
             ):
@@ -10674,15 +13986,18 @@ def validate_primary_revalidation_provenance(value: Any) -> list[str]:
                 break
     raw_values = value.get("raw_values_ms")
     source_retained = [
-        item.get("raw_primary_ms") for item in samples
+        item.get("raw_primary_ms")
+        for item in samples
         if isinstance(item, dict) and item.get("warmup") is False
     ]
     source_warmup = [
-        item.get("raw_primary_ms") for item in samples
+        item.get("raw_primary_ms")
+        for item in samples
         if isinstance(item, dict) and item.get("warmup") is True
     ]
     revalidated_retained = [
-        item.get("revalidated_primary_ms") for item in samples
+        item.get("revalidated_primary_ms")
+        for item in samples
         if isinstance(item, dict) and item.get("warmup") is False
     ]
     if (
@@ -10742,7 +14057,9 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
         or summary.get("retained_groups") != 5
         or summary.get("expected_sample_count") != 6
     ):
-        raise BenchmarkError("revalidation artifact is not the exact forced-full 1+5 cohort")
+        raise BenchmarkError(
+            "revalidation artifact is not the exact forced-full 1+5 cohort"
+        )
     build_identity = summary.get("build_identity")
     if (
         not isinstance(build_identity, dict)
@@ -10755,9 +14072,15 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
     resources = json.loads(artifact_files["resources"].read_text(encoding="utf-8"))
     resource_failures = validate_resource_evidence(find_value(resources, "metrics"))
     cleanup = json.loads(artifact_files["cleanup"].read_text(encoding="utf-8"))
-    cleanup_entries = [item for item in cleanup if isinstance(item, dict)] if isinstance(cleanup, list) else []
+    cleanup_entries = (
+        [item for item in cleanup if isinstance(item, dict)]
+        if isinstance(cleanup, list)
+        else []
+    )
     cleanup_complete = validate_cleanup_evidence(
-        cleanup_entries, run_artifact=True, expected_agent_count=6,
+        cleanup_entries,
+        run_artifact=True,
+        expected_agent_count=6,
         expected_worktree_count=6,
     )
     expected_fixture = {
@@ -10767,7 +14090,9 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
         "search_marker": str(plan["dataset"]["search_marker"]),
         "read_marker": str(plan["dataset"]["read_marker"]),
     }
-    raw_lines = artifact_files["samples_ndjson"].read_text(encoding="utf-8").splitlines()
+    raw_lines = (
+        artifact_files["samples_ndjson"].read_text(encoding="utf-8").splitlines()
+    )
     samples: list[dict[str, Any]] = []
     mixed_samples = 0
     for line in raw_lines:
@@ -10786,8 +14111,12 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
             raise BenchmarkError("revalidation sample omitted primary_performance")
         source_checkpoint = source_primary.get("diagnostic_checkpoint")
         source_checkpoint_sample = find_value(source_checkpoint, "sample")
-        if not isinstance(source_checkpoint, dict) or not isinstance(source_checkpoint_sample, dict):
-            raise BenchmarkError("revalidation source sample omitted its primary checkpoint")
+        if not isinstance(source_checkpoint, dict) or not isinstance(
+            source_checkpoint_sample, dict
+        ):
+            raise BenchmarkError(
+                "revalidation source sample omitted its primary checkpoint"
+            )
         source_raw_primary_us = source_checkpoint_sample.get("interactive_readiness_us")
         if not finite_number(source_raw_primary_us, positive=True):
             raise BenchmarkError("revalidation source sample primary value is invalid")
@@ -10795,10 +14124,12 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
         primary["resource_cleanup"] = {
             "resource_failures": resource_failures,
             "cleanup_complete": cleanup_complete,
-            "build_unchanged": primary.get("identity", {}).get("build") == build_identity,
+            "build_unchanged": primary.get("identity", {}).get("build")
+            == build_identity,
         }
         failures = validate_primary_performance(
-            primary, "forced-full",
+            primary,
+            "forced-full",
             expected_correlation=sample["correlation_id"],
             expected_session=sample["session_id"],
             expected_context=sample["context_id"],
@@ -10815,22 +14146,28 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
         revalidated_raw_primary_us = checkpoint_sample.get("interactive_readiness_us")
         if not finite_number(revalidated_raw_primary_us, positive=True):
             raise BenchmarkError("revalidation sample primary value is invalid")
-        samples.append({
-            "ordinal": sample["ordinal"],
-            "warmup": sample["warmup"],
-            "correlation_id": sample["correlation_id"],
-            "session_id": sample["session_id"],
-            "source_record_sha256": sha256_bytes((line + "\n").encode()),
-            "checkpoint_sha256": sha256_bytes(canonical_json(source_checkpoint)),
-            "revalidated_checkpoint_sha256": sha256_bytes(canonical_json(checkpoint)),
-            "raw_primary_ms": float(source_raw_primary_us) / 1000,
-            "revalidated_primary_ms": float(revalidated_raw_primary_us) / 1000,
-            "primary_valid": not failures,
-            "invalid_reasons": failures,
-        })
+        samples.append(
+            {
+                "ordinal": sample["ordinal"],
+                "warmup": sample["warmup"],
+                "correlation_id": sample["correlation_id"],
+                "session_id": sample["session_id"],
+                "source_record_sha256": sha256_bytes((line + "\n").encode()),
+                "checkpoint_sha256": sha256_bytes(canonical_json(source_checkpoint)),
+                "revalidated_checkpoint_sha256": sha256_bytes(
+                    canonical_json(checkpoint)
+                ),
+                "raw_primary_ms": float(source_raw_primary_us) / 1000,
+                "revalidated_primary_ms": float(revalidated_raw_primary_us) / 1000,
+                "primary_valid": not failures,
+                "invalid_reasons": failures,
+            }
+        )
     validate_sample_ordinals(samples, 6)
     if any(item["primary_valid"] is not True for item in samples):
-        raise BenchmarkError("one or more forced-full primary samples failed revalidation")
+        raise BenchmarkError(
+            "one or more forced-full primary samples failed revalidation"
+        )
 
     retained = [item["raw_primary_ms"] for item in samples if item["warmup"] is False]
     revalidated_retained = [
@@ -10843,12 +14180,25 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
         source_display = str(source_path.relative_to(cwd))
     except ValueError:
         source_display = str(source_path)
-    command = " ".join(shlex.quote(item) for item in (
-        "python3", source_display, "revalidate-primary",
-        "--plan", str(plan_path), "--artifact", str(artifact), "--output", str(output),
-    ))
+    command = " ".join(
+        shlex.quote(item)
+        for item in (
+            "python3",
+            source_display,
+            "revalidate-primary",
+            "--plan",
+            str(plan_path),
+            "--artifact",
+            str(artifact),
+            "--output",
+            str(output),
+        )
+    )
     inputs = {
-        "plan_argument": {"path": str(plan_path), "sha256": sha256_bytes(plan_path.read_bytes())},
+        "plan_argument": {
+            "path": str(plan_path),
+            "sha256": sha256_bytes(plan_path.read_bytes()),
+        },
         **{
             name: {"path": str(path), "sha256": sha256_bytes(path.read_bytes())}
             for name, path in artifact_files.items()
@@ -10881,8 +14231,12 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
         "proof": {
             "plan_content_matches_artifact": artifact_plan == plan,
             "artifact_identity_exact": summary.get("artifact_id") == artifact.name,
-            "exact_sample_accounting": len(samples) == 6 and len(warmup) == 1 and len(retained) == 5,
-            "checkpoint_hashes_recorded": all(len(item["checkpoint_sha256"]) == 64 for item in samples),
+            "exact_sample_accounting": len(samples) == 6
+            and len(warmup) == 1
+            and len(retained) == 5,
+            "checkpoint_hashes_recorded": all(
+                len(item["checkpoint_sha256"]) == 64 for item in samples
+            ),
             "source_raw_values_equal_revalidated": retained == revalidated_retained,
             "no_mixed_samples": mixed_samples == 0,
             "cleanup_complete": cleanup_complete,
@@ -10898,9 +14252,9 @@ def revalidate_primary_command(args: argparse.Namespace) -> int:
 
 
 def is_policy_digest_probe_summary(value: Any) -> bool:
-    return (
-        isinstance(value, dict)
-        and (value.get("kind") == "policy-digest-probe" or value.get("non_aggregatable") is True)
+    return isinstance(value, dict) and (
+        value.get("kind") == "policy-digest-probe"
+        or value.get("non_aggregatable") is True
     )
 
 
@@ -10934,7 +14288,9 @@ def aggregate_command(args: argparse.Namespace) -> int:
             raise BenchmarkError(f"artifact omitted summary.json: {artifact}")
         item = json.loads(summary_file.read_text(encoding="utf-8"))
         if is_policy_digest_probe_summary(item):
-            raise BenchmarkError(f"policy-digest-probe artifacts are non-aggregatable: {artifact}")
+            raise BenchmarkError(
+                f"policy-digest-probe artifacts are non-aggregatable: {artifact}"
+            )
         if item.get("plan_sha256") != plan["plan_sha256"]:
             raise BenchmarkError(f"artifact summary does not match plan: {artifact}")
         artifact_id = item.get("artifact_id")
@@ -10948,41 +14304,69 @@ def aggregate_command(args: argparse.Namespace) -> int:
             build_identity = item.get("build_identity")
             if (
                 not isinstance(build_identity, dict)
-                or set(build_identity) != {
-                    "cli_sha256", "app_executable_sha256",
-                    "harness_source_sha256", "base_commit_oid",
+                or set(build_identity)
+                != {
+                    "cli_sha256",
+                    "app_executable_sha256",
+                    "harness_source_sha256",
+                    "base_commit_oid",
                 }
-                or build_identity.get("base_commit_oid") != plan["dataset"]["base_commit_oid"]
+                or build_identity.get("base_commit_oid")
+                != plan["dataset"]["base_commit_oid"]
                 or not isinstance(build_identity.get("cli_sha256"), str)
                 or len(build_identity["cli_sha256"]) != 64
             ):
-                raise BenchmarkError(f"run artifact omitted exact build identity: {artifact}")
+                raise BenchmarkError(
+                    f"run artifact omitted exact build identity: {artifact}"
+                )
             cohort_invocation = (
-                str(item["process_state"]), str(item["checkout_kind"]), str(item["route"]),
-                int(item["width"]), int(item["invocation"]),
+                str(item["process_state"]),
+                str(item["checkout_kind"]),
+                str(item["route"]),
+                int(item["width"]),
+                int(item["invocation"]),
             )
             register_unique(cohort_invocation, cohort_invocations, "cohort invocation")
             expected_sample_count = int(item.get("expected_sample_count", -1))
             expected_from_groups = (
-                int(item.get("warmup_groups", -1)) + int(item.get("retained_groups", -1))
+                int(item.get("warmup_groups", -1))
+                + int(item.get("retained_groups", -1))
             ) * int(item["width"])
-            if expected_sample_count <= 0 or expected_sample_count != expected_from_groups:
-                raise BenchmarkError(f"invalid expected sample accounting in {artifact}")
+            if (
+                expected_sample_count <= 0
+                or expected_sample_count != expected_from_groups
+            ):
+                raise BenchmarkError(
+                    f"invalid expected sample accounting in {artifact}"
+                )
             sample_file = artifact / "samples.ndjson"
             if not sample_file.exists():
                 raise BenchmarkError(f"run artifact omitted samples.ndjson: {artifact}")
             artifact_samples: list[dict[str, Any]] = []
             for line in sample_file.read_text(encoding="utf-8").splitlines():
                 sample = json.loads(line)
-                if sample.get("schema_version") != SCHEMA_VERSION or sample.get("plan_sha256") != plan["plan_sha256"]:
+                if (
+                    sample.get("schema_version") != SCHEMA_VERSION
+                    or sample.get("plan_sha256") != plan["plan_sha256"]
+                ):
                     raise BenchmarkError(f"sample schema/plan mismatch in {artifact}")
                 for field in ("invocation", "width", "ordinal"):
                     if not positive_integer(sample.get(field)):
-                        raise BenchmarkError(f"sample {field} must be a positive integer in {artifact}")
-                if not isinstance(sample.get("warmup"), bool) or not isinstance(sample.get("valid"), bool):
-                    raise BenchmarkError(f"sample warmup/valid flags must be booleans in {artifact}")
-                if not isinstance(sample.get("correlation_id"), str) or not isinstance(sample.get("session_id"), str):
-                    raise BenchmarkError(f"sample correlation/session IDs must be strings in {artifact}")
+                        raise BenchmarkError(
+                            f"sample {field} must be a positive integer in {artifact}"
+                        )
+                if not isinstance(sample.get("warmup"), bool) or not isinstance(
+                    sample.get("valid"), bool
+                ):
+                    raise BenchmarkError(
+                        f"sample warmup/valid flags must be booleans in {artifact}"
+                    )
+                if not isinstance(sample.get("correlation_id"), str) or not isinstance(
+                    sample.get("session_id"), str
+                ):
+                    raise BenchmarkError(
+                        f"sample correlation/session IDs must be strings in {artifact}"
+                    )
                 record_correlation = validate_uuid(
                     sample["correlation_id"], "sample record correlation_id"
                 )
@@ -10990,32 +14374,53 @@ def aggregate_command(args: argparse.Namespace) -> int:
                     sample["session_id"], "sample session_id"
                 )
                 identity = (
-                    str(sample.get("artifact_id")), sample["invocation"],
-                    str(sample.get("process_state")), str(sample.get("checkout_kind")),
-                    str(sample.get("route")), sample["width"],
-                    sample["ordinal"], record_correlation, record_session,
+                    str(sample.get("artifact_id")),
+                    sample["invocation"],
+                    str(sample.get("process_state")),
+                    str(sample.get("checkout_kind")),
+                    str(sample.get("route")),
+                    sample["width"],
+                    sample["ordinal"],
+                    record_correlation,
+                    record_session,
                 )
                 expected_prefix = (
-                    artifact_id, int(item["invocation"]), str(item["process_state"]),
-                    str(item["checkout_kind"]), str(item["route"]), int(item["width"]),
+                    artifact_id,
+                    int(item["invocation"]),
+                    str(item["process_state"]),
+                    str(item["checkout_kind"]),
+                    str(item["route"]),
+                    int(item["width"]),
                 )
                 if identity[:6] != expected_prefix:
                     raise BenchmarkError(f"mixed sample identity: {identity}")
                 primary = sample.get("primary_performance")
                 follow_on_acceptance = sample.get("follow_on_acceptance")
-                if not isinstance(primary, dict) or not isinstance(follow_on_acceptance, dict):
-                    raise BenchmarkError(f"sample omitted split primary/follow-on evidence in {artifact}")
-                diagnostic_sample = find_value(primary.get("diagnostic_checkpoint"), "sample")
+                if not isinstance(primary, dict) or not isinstance(
+                    follow_on_acceptance, dict
+                ):
+                    raise BenchmarkError(
+                        f"sample omitted split primary/follow-on evidence in {artifact}"
+                    )
+                diagnostic_sample = find_value(
+                    primary.get("diagnostic_checkpoint"), "sample"
+                )
                 if not isinstance(diagnostic_sample, dict):
-                    raise BenchmarkError(f"sample omitted primary diagnostic checkpoint in {artifact}")
+                    raise BenchmarkError(
+                        f"sample omitted primary diagnostic checkpoint in {artifact}"
+                    )
                 correlation_id = validate_uuid(
-                    str(diagnostic_sample.get("correlation_id") or ""), "sample correlation_id"
+                    str(diagnostic_sample.get("correlation_id") or ""),
+                    "sample correlation_id",
                 )
                 session_id = record_session
                 if correlation_id != record_correlation:
-                    raise BenchmarkError(f"sample correlation IDs disagree in {artifact}")
+                    raise BenchmarkError(
+                        f"sample correlation IDs disagree in {artifact}"
+                    )
                 primary_failures = validate_primary_performance(
-                    primary, str(sample["route"]),
+                    primary,
+                    str(sample["route"]),
                     expected_correlation=correlation_id,
                     expected_session=session_id,
                     expected_context=sample["context_id"],
@@ -11025,12 +14430,20 @@ def aggregate_command(args: argparse.Namespace) -> int:
                     expected_build=build_identity,
                     expected_fixture=expected_fixture,
                 )
-                if sorted(primary_failures) != sorted(primary.get("invalid_reasons") or []):
-                    raise BenchmarkError(f"primary validity evidence mismatch in {artifact}")
+                if sorted(primary_failures) != sorted(
+                    primary.get("invalid_reasons") or []
+                ):
+                    raise BenchmarkError(
+                        f"primary validity evidence mismatch in {artifact}"
+                    )
                 if primary.get("valid") is not (not primary_failures):
-                    raise BenchmarkError(f"primary valid flag disagrees with evidence in {artifact}")
+                    raise BenchmarkError(
+                        f"primary valid flag disagrees with evidence in {artifact}"
+                    )
                 follow_on_failures = validate_export(
-                    sample["diagnostic"], str(sample["route"]), sample.get("correctness") or {},
+                    sample["diagnostic"],
+                    str(sample["route"]),
+                    sample.get("correctness") or {},
                     expected_correlation=correlation_id,
                     expected_session=session_id,
                     expected_invocation=sample["invocation"],
@@ -11046,30 +14459,46 @@ def aggregate_command(args: argparse.Namespace) -> int:
                     for failure in validate_follow_on_collection(collection)
                 )
                 export_capture = follow_on_acceptance.get("export_capture")
-                if isinstance(export_capture, dict) and export_capture.get("ok") is not True:
+                if (
+                    isinstance(export_capture, dict)
+                    and export_capture.get("ok") is not True
+                ):
                     follow_on_failures.append(
                         f"final_export_{export_capture.get('type') or 'failed'}"
                     )
                 if sorted(follow_on_failures) != sorted(
                     follow_on_acceptance.get("invalid_reasons") or []
                 ):
-                    raise BenchmarkError(f"follow-on acceptance evidence mismatch in {artifact}")
+                    raise BenchmarkError(
+                        f"follow-on acceptance evidence mismatch in {artifact}"
+                    )
                 if follow_on_acceptance.get("accepted") is not (not follow_on_failures):
-                    raise BenchmarkError(f"follow-on accepted flag disagrees with evidence in {artifact}")
-                recomputed_failures = (
-                    [f"primary:{reason}" for reason in primary_failures]
-                    + [f"follow_on:{reason}" for reason in follow_on_failures]
-                )
-                if sorted(recomputed_failures) != sorted(sample.get("invalid_reasons") or []):
-                    raise BenchmarkError(f"sample validity evidence mismatch in {artifact}")
+                    raise BenchmarkError(
+                        f"follow-on accepted flag disagrees with evidence in {artifact}"
+                    )
+                recomputed_failures = [
+                    f"primary:{reason}" for reason in primary_failures
+                ] + [f"follow_on:{reason}" for reason in follow_on_failures]
+                if sorted(recomputed_failures) != sorted(
+                    sample.get("invalid_reasons") or []
+                ):
+                    raise BenchmarkError(
+                        f"sample validity evidence mismatch in {artifact}"
+                    )
                 if sample["valid"] is not (not recomputed_failures):
-                    raise BenchmarkError(f"sample valid flag disagrees with evidence in {artifact}")
+                    raise BenchmarkError(
+                        f"sample valid flag disagrees with evidence in {artifact}"
+                    )
                 register_unique(identity, sample_identities, "sample identity")
-                register_unique(correlation_id, correlation_ids, "sample correlation identity")
+                register_unique(
+                    correlation_id, correlation_ids, "sample correlation identity"
+                )
                 register_unique(session_id, session_ids, "sample session identity")
                 ordinal_key = (artifact_id, sample["invocation"], sample["ordinal"])
                 if ordinal_key in ordinal_identity_map:
-                    raise BenchmarkError(f"duplicate ordinal identity mapping: {ordinal_key}")
+                    raise BenchmarkError(
+                        f"duplicate ordinal identity mapping: {ordinal_key}"
+                    )
                 ordinal_identity_map[ordinal_key] = (correlation_id, session_id)
                 artifact_samples.append(sample)
             try:
@@ -11077,7 +14506,10 @@ def aggregate_command(args: argparse.Namespace) -> int:
             except BenchmarkError as error:
                 raise BenchmarkError(f"{error} in {artifact}") from error
             samples.extend(artifact_samples)
-            key = "/".join(str(item[field]) for field in ("process_state", "checkout_kind", "route", "width"))
+            key = "/".join(
+                str(item[field])
+                for field in ("process_state", "checkout_kind", "route", "width")
+            )
             resource_file = artifact / "resources.json"
             if not resource_file.exists():
                 raise BenchmarkError(f"run artifact omitted resources.json: {artifact}")
@@ -11085,9 +14517,10 @@ def aggregate_command(args: argparse.Namespace) -> int:
             metrics_value = find_value(resource_value, "metrics")
             resource_failures = validate_resource_evidence(metrics_value)
             if any(
-                (sample.get("primary_performance") or {}).get("resource_cleanup", {}).get(
-                    "resource_failures"
-                ) != resource_failures
+                (sample.get("primary_performance") or {})
+                .get("resource_cleanup", {})
+                .get("resource_failures")
+                != resource_failures
                 for sample in artifact_samples
             ):
                 raise BenchmarkError(f"sample resource proof disagrees with {artifact}")
@@ -11101,9 +14534,15 @@ def aggregate_command(args: argparse.Namespace) -> int:
         if not cleanup_file.exists():
             raise BenchmarkError(f"artifact omitted cleanup.json: {artifact}")
         cleanup_value = json.loads(cleanup_file.read_text(encoding="utf-8"))
-        entries = [entry for entry in cleanup_value if isinstance(entry, dict)] if isinstance(cleanup_value, list) else []
+        entries = (
+            [entry for entry in cleanup_value if isinstance(entry, dict)]
+            if isinstance(cleanup_value, list)
+            else []
+        )
         expected_cleanup_ok = validate_cleanup_evidence(
-            entries, run_artifact=is_run, expected_agent_count=expected_sample_count,
+            entries,
+            run_artifact=is_run,
+            expected_agent_count=expected_sample_count,
             expected_worktree_count=expected_sample_count if is_run else 2,
         )
         teardown_results.append(expected_cleanup_ok)
@@ -11111,13 +14550,16 @@ def aggregate_command(args: argparse.Namespace) -> int:
             teardown_results.append(False)
         if is_run:
             actual_cleanup_ok = validate_cleanup_evidence(
-                entries, run_artifact=True, expected_agent_count=len(artifact_samples),
+                entries,
+                run_artifact=True,
+                expected_agent_count=len(artifact_samples),
                 expected_worktree_count=len(artifact_samples),
             )
             if any(
-                (sample.get("primary_performance") or {}).get("resource_cleanup", {}).get(
-                    "cleanup_complete"
-                ) is not actual_cleanup_ok
+                (sample.get("primary_performance") or {})
+                .get("resource_cleanup", {})
+                .get("cleanup_complete")
+                is not actual_cleanup_ok
                 for sample in artifact_samples
             ):
                 raise BenchmarkError(f"sample cleanup proof disagrees with {artifact}")
@@ -11126,10 +14568,15 @@ def aggregate_command(args: argparse.Namespace) -> int:
                 raise BenchmarkError(f"run artifact omitted state.json: {artifact}")
             state_value = json.loads(state_file.read_text(encoding="utf-8"))
             state_sessions = state_value.get("sessions", [])
-            artifact_session_ids = {str(sample["session_id"]).upper() for sample in artifact_samples}
+            artifact_session_ids = {
+                str(sample["session_id"]).upper() for sample in artifact_samples
+            }
             teardown_results.append(
                 len(state_sessions) == expected_sample_count
-                and {str(session.get("session_id", "")).upper() for session in state_sessions}
+                and {
+                    str(session.get("session_id", "")).upper()
+                    for session in state_sessions
+                }
                 == artifact_session_ids
                 and all(session.get("terminal") is True for session in state_sessions)
                 and state_value.get("memory_stopped") is True
@@ -11139,22 +14586,35 @@ def aggregate_command(args: argparse.Namespace) -> int:
             )
     external_evidence: dict[str, dict[str, Any]] = {}
     for raw in args.evidence or []:
-        evidence = json.loads(Path(raw).expanduser().resolve(strict=True).read_text(encoding="utf-8"))
-        if evidence.get("schema_version") != SCHEMA_VERSION or evidence.get("plan_sha256") != plan["plan_sha256"]:
+        evidence = json.loads(
+            Path(raw).expanduser().resolve(strict=True).read_text(encoding="utf-8")
+        )
+        if (
+            evidence.get("schema_version") != SCHEMA_VERSION
+            or evidence.get("plan_sha256") != plan["plan_sha256"]
+        ):
             raise BenchmarkError(f"external evidence does not match plan: {raw}")
         scenario = evidence.get("scenario")
         if not isinstance(scenario, str) or scenario in external_evidence:
-            raise BenchmarkError(f"duplicate or invalid external evidence scenario: {scenario}")
+            raise BenchmarkError(
+                f"duplicate or invalid external evidence scenario: {scenario}"
+            )
         external_evidence[scenario] = evidence
     cohorts: dict[str, dict[str, Any]] = {}
     grouped: dict[str, list[dict[str, Any]]] = {}
     for sample in samples:
-        key = "/".join(str(sample.get(field)) for field in ("process_state", "checkout_kind", "route", "width"))
+        key = "/".join(
+            str(sample.get(field))
+            for field in ("process_state", "checkout_kind", "route", "width")
+        )
         grouped.setdefault(key, []).append(sample)
     for key, members in grouped.items():
-        retained = [item for item in members if not item.get("warmup") and item.get("valid")]
+        retained = [
+            item for item in members if not item.get("warmup") and item.get("valid")
+        ]
         primary_retained = [
-            item for item in members
+            item
+            for item in members
             if not item.get("warmup")
             and (item.get("primary_performance") or {}).get("valid") is True
         ]
@@ -11181,27 +14641,48 @@ def aggregate_command(args: argparse.Namespace) -> int:
             "invocation_count": invocation_count,
             "valid_retained": len(retained),
             "primary_valid_retained": len(primary_retained),
-            "follow_on_accepted_retained": len([
-                item for item in members
-                if not item.get("warmup")
-                and (item.get("follow_on_acceptance") or {}).get("accepted") is True
-            ]),
-            "invalid_retained": len([item for item in members if not item.get("warmup") and not item.get("valid")]),
-            "invalid_attempted": len([item for item in members if not item.get("valid")]),
-            "primary_invalid_attempted": len([
-                item for item in members
-                if (item.get("primary_performance") or {}).get("valid") is not True
-            ]),
-            "follow_on_failed_attempted": len([
-                item for item in members
-                if (item.get("follow_on_acceptance") or {}).get("accepted") is not True
-            ]),
+            "follow_on_accepted_retained": len(
+                [
+                    item
+                    for item in members
+                    if not item.get("warmup")
+                    and (item.get("follow_on_acceptance") or {}).get("accepted") is True
+                ]
+            ),
+            "invalid_retained": len(
+                [
+                    item
+                    for item in members
+                    if not item.get("warmup") and not item.get("valid")
+                ]
+            ),
+            "invalid_attempted": len(
+                [item for item in members if not item.get("valid")]
+            ),
+            "primary_invalid_attempted": len(
+                [
+                    item
+                    for item in members
+                    if (item.get("primary_performance") or {}).get("valid") is not True
+                ]
+            ),
+            "follow_on_failed_attempted": len(
+                [
+                    item
+                    for item in members
+                    if (item.get("follow_on_acceptance") or {}).get("accepted")
+                    is not True
+                ]
+            ),
             "route_counts": route_counts,
             "fallback_counts": fallback_counts,
             "exact_actual_routes": (
-                route_counts == {
+                route_counts
+                == {
                     name: count * len(primary_retained)
-                    for name, count in EXPECTED_ACTUAL_ROUTE_COUNTS[key.split("/")[2]].items()
+                    for name, count in EXPECTED_ACTUAL_ROUTE_COUNTS[
+                        key.split("/")[2]
+                    ].items()
                 }
                 and fallback_counts == {}
             ),
@@ -11209,7 +14690,9 @@ def aggregate_command(args: argparse.Namespace) -> int:
                 metric: stats(
                     (
                         value
-                        for item in (primary_retained if metric in METRICS else retained)
+                        for item in (
+                            primary_retained if metric in METRICS else retained
+                        )
                         if (value := sample_metric_number(item, metric)) is not None
                     ),
                     positive=True,
@@ -11221,7 +14704,8 @@ def aggregate_command(args: argparse.Namespace) -> int:
                 (
                     number
                     for item in retained
-                    if (number := diagnostic_number(item, "git", "command_count")) is not None
+                    if (number := diagnostic_number(item, "git", "command_count"))
+                    is not None
                 ),
                 label="Git command count",
             ),
@@ -11229,7 +14713,8 @@ def aggregate_command(args: argparse.Namespace) -> int:
                 (
                     number
                     for item in retained
-                    if (number := diagnostic_number(item, "git", "duration_us")) is not None
+                    if (number := diagnostic_number(item, "git", "duration_us"))
+                    is not None
                 ),
                 label="Git duration",
             ),
@@ -11237,7 +14722,12 @@ def aggregate_command(args: argparse.Namespace) -> int:
                 (
                     number
                     for item in retained
-                    if (number := diagnostic_number(item, "work", "operation_count", "filesystem")) is not None
+                    if (
+                        number := diagnostic_number(
+                            item, "work", "operation_count", "filesystem"
+                        )
+                    )
+                    is not None
                 ),
                 label="filesystem operation count",
             ),
@@ -11245,7 +14735,12 @@ def aggregate_command(args: argparse.Namespace) -> int:
                 (
                     number
                     for item in retained
-                    if (number := diagnostic_number(item, "work", "duration_us", "filesystem")) is not None
+                    if (
+                        number := diagnostic_number(
+                            item, "work", "duration_us", "filesystem"
+                        )
+                    )
+                    is not None
                 ),
                 label="filesystem duration",
             ),
@@ -11271,7 +14766,8 @@ def aggregate_command(args: argparse.Namespace) -> int:
                 expected_comparisons += 1
                 ratio = gate_ratio(
                     forced and forced["metrics"]["interactive_readiness_us"]["p95"],
-                    projected and projected["metrics"]["interactive_readiness_us"]["p95"],
+                    projected
+                    and projected["metrics"]["interactive_readiness_us"]["p95"],
                 )
                 if ratio is not None:
                     improvement_values.append(ratio)
@@ -11279,7 +14775,9 @@ def aggregate_command(args: argparse.Namespace) -> int:
                     forced_p95 = forced and forced["metrics"][metric]["p95"]
                     projected_p95 = projected and projected["metrics"][metric]["p95"]
                     if forced_p95 not in (None, 0) and projected_p95 is not None:
-                        other_latency_regressions.append((projected_p95 - forced_p95) / forced_p95)
+                        other_latency_regressions.append(
+                            (projected_p95 - forced_p95) / forced_p95
+                        )
                 forced_resources = (forced or {}).get("resources") or []
                 projected_resources = (projected or {}).get("resources") or []
                 for memory_metric in (
@@ -11289,19 +14787,34 @@ def aggregate_command(args: argparse.Namespace) -> int:
                     "final_physical_footprint_mb",
                 ):
                     expected_memory_comparisons += 1
-                    forced_values = [item.get(memory_metric) for item in forced_resources if isinstance(item.get(memory_metric), (int, float))]
-                    projected_values = [item.get(memory_metric) for item in projected_resources if isinstance(item.get(memory_metric), (int, float))]
-                    regression = absolute_memory_regression(forced_values, projected_values)
+                    forced_values = [
+                        item.get(memory_metric)
+                        for item in forced_resources
+                        if isinstance(item.get(memory_metric), (int, float))
+                    ]
+                    projected_values = [
+                        item.get(memory_metric)
+                        for item in projected_resources
+                        if isinstance(item.get(memory_metric), (int, float))
+                    ]
+                    regression = absolute_memory_regression(
+                        forced_values, projected_values
+                    )
                     if regression is not None:
                         memory_regressions.append(regression)
                     elif forced_resources and projected_resources:
                         invalid_memory_baseline = True
-    gates[f"projected interactive-readiness p95 improvement >= {primary_improvement:.0%}"] = (
-        "pass" if len(improvement_values) == expected_comparisons and min(improvement_values) >= primary_improvement else
-        "fail" if len(improvement_values) == expected_comparisons else "incomplete"
+    gates[
+        f"projected interactive-readiness p95 improvement >= {primary_improvement:.0%}"
+    ] = (
+        "pass"
+        if len(improvement_values) == expected_comparisons
+        and min(improvement_values) >= primary_improvement
+        else "fail" if len(improvement_values) == expected_comparisons else "incomplete"
     )
     sample_correctness_mismatches = sum(
-        1 for sample in samples
+        1
+        for sample in samples
         if any(
             str(reason).endswith("content_oracle_mismatch")
             for reason in sample.get("invalid_reasons", [])
@@ -11311,50 +14824,83 @@ def aggregate_command(args: argparse.Namespace) -> int:
         1 for group in correctness for item in group.values() if not item.get("ok")
     )
     covered_correctness = {
-        scenario for group in correctness for scenario, item in group.items() if item.get("ok") is True
+        scenario
+        for group in correctness
+        for scenario, item in group.items()
+        if item.get("ok") is True
     }
     correctness_complete = set(CORRECTNESS_SCENARIOS) <= covered_correctness
     gates["zero correctness mismatches"] = (
-        "pass" if correctness_complete and mismatches == 0 else
-        "fail" if mismatches else "incomplete"
+        "pass"
+        if correctness_complete and mismatches == 0
+        else "fail" if mismatches else "incomplete"
     )
     invalid = sum(1 for sample in samples if not sample.get("valid"))
     gates["zero invalid attempted samples"] = (
         "pass" if samples and invalid == 0 else "fail" if samples else "incomplete"
     )
     projected_fallbacks = sum(
-        1 for sample in samples
+        1
+        for sample in samples
         if sample.get("route") == "projected"
         and any(
             str(reason).endswith("unexpected_fallback")
             for reason in sample.get("invalid_reasons", [])
         )
     )
-    gates["zero eligible warm fallbacks"] = "pass" if samples and projected_fallbacks == 0 else "fail" if samples else "incomplete"
-    expected_secondary_comparisons = len(states) * len(checkouts) * len(widths) * len(TOOL_METRICS)
+    gates["zero eligible warm fallbacks"] = (
+        "pass"
+        if samples and projected_fallbacks == 0
+        else "fail" if samples else "incomplete"
+    )
+    expected_secondary_comparisons = (
+        len(states) * len(checkouts) * len(widths) * len(TOOL_METRICS)
+    )
     gates[f"other p95 regression <= {secondary_regression:.0%}"] = (
-        "pass" if len(other_latency_regressions) == expected_secondary_comparisons
-        and max(other_latency_regressions) <= secondary_regression else
-        "fail" if len(other_latency_regressions) == expected_secondary_comparisons else "incomplete"
+        "pass"
+        if len(other_latency_regressions) == expected_secondary_comparisons
+        and max(other_latency_regressions) <= secondary_regression
+        else (
+            "fail"
+            if len(other_latency_regressions) == expected_secondary_comparisons
+            else "incomplete"
+        )
     )
     gates[f"peak memory regression <= {memory_regression:.0%}"] = (
-        "fail" if invalid_memory_baseline else
-        "pass" if len(memory_regressions) == expected_memory_comparisons and max(memory_regressions) <= memory_regression else
-        "fail" if len(memory_regressions) == expected_memory_comparisons else "incomplete"
+        "fail"
+        if invalid_memory_baseline
+        else (
+            "pass"
+            if len(memory_regressions) == expected_memory_comparisons
+            and max(memory_regressions) <= memory_regression
+            else (
+                "fail"
+                if len(memory_regressions) == expected_memory_comparisons
+                else "incomplete"
+            )
+        )
     )
     required_matrix_keys = configured_required_matrix_keys(plan)
     retained_per_series = int(plan["matrix"]["retained_samples_per_series"])
     warmups_per_series = int(plan["matrix"]["warmups_per_series"])
     invocations_per_series = int(plan["matrix"].get("invocations_per_series", 0))
-    complete_matrix = required_matrix_keys == set(cohorts) and invocations_per_series > 0 and all(
-        cohort_accounting_valid(
-            cohorts[key], width=int(key.rsplit("/", 1)[1]),
-            warmups=warmups_per_series, retained=retained_per_series,
-            invocations=invocations_per_series,
+    complete_matrix = (
+        required_matrix_keys == set(cohorts)
+        and invocations_per_series > 0
+        and all(
+            cohort_accounting_valid(
+                cohorts[key],
+                width=int(key.rsplit("/", 1)[1]),
+                warmups=warmups_per_series,
+                retained=retained_per_series,
+                invocations=invocations_per_series,
+            )
+            for key in required_matrix_keys
         )
-        for key in required_matrix_keys
     )
-    gates["complete route/process/checkout/width matrix"] = "pass" if complete_matrix else "incomplete"
+    gates["complete route/process/checkout/width matrix"] = (
+        "pass" if complete_matrix else "incomplete"
+    )
     exact_routes_complete = complete_matrix and all(
         cohorts[key]["exact_actual_routes"] is True for key in required_matrix_keys
     )
@@ -11364,56 +14910,89 @@ def aggregate_command(args: argparse.Namespace) -> int:
     attribution_complete = complete_matrix and all(
         cohorts[key]["git_command_count"]["count"] == cohorts[key]["valid_retained"]
         and cohorts[key]["git_duration_us"]["count"] == cohorts[key]["valid_retained"]
-        and cohorts[key]["filesystem_operation_count"]["count"] == cohorts[key]["valid_retained"]
-        and cohorts[key]["filesystem_duration_us"]["count"] == cohorts[key]["valid_retained"]
+        and cohorts[key]["filesystem_operation_count"]["count"]
+        == cohorts[key]["valid_retained"]
+        and cohorts[key]["filesystem_duration_us"]["count"]
+        == cohorts[key]["valid_retained"]
         for key in required_matrix_keys
     )
-    gates["complete Git/filesystem attribution"] = "pass" if attribution_complete else "incomplete"
+    gates["complete Git/filesystem attribution"] = (
+        "pass" if attribution_complete else "incomplete"
+    )
     cpu_complete = complete_matrix and all(
         len(cohorts[key]["resources"]) == invocations_per_series
-        and all(not validate_resource_evidence(item) for item in cohorts[key]["resources"])
+        and all(
+            not validate_resource_evidence(item) for item in cohorts[key]["resources"]
+        )
         for key in required_matrix_keys
     )
     gates["complete CPU attribution"] = "pass" if cpu_complete else "incomplete"
     gates["stable owned-resource teardown"] = (
-        "pass" if teardown_results and all(teardown_results) else
-        "fail" if teardown_results else "incomplete"
+        "pass"
+        if teardown_results and all(teardown_results)
+        else "fail" if teardown_results else "incomplete"
     )
     required_external = set(plan["matrix"]["required_external_evidence"])
     failed_external = [
-        scenario for scenario, evidence in external_evidence.items()
+        scenario
+        for scenario, evidence in external_evidence.items()
         if scenario in required_external and evidence.get("status") == "fail"
     ]
     gates["required external process/main-root evidence"] = (
-        "fail" if failed_external else
-        "pass" if required_external <= {
-            scenario for scenario, evidence in external_evidence.items() if evidence.get("status") == "pass"
-        } else "incomplete"
+        "fail"
+        if failed_external
+        else (
+            "pass"
+            if required_external
+            <= {
+                scenario
+                for scenario, evidence in external_evidence.items()
+                if evidence.get("status") == "pass"
+            }
+            else "incomplete"
+        )
     )
-    decision = "pass" if gates and all(value == "pass" for value in gates.values()) else "fail" if any(value == "fail" for value in gates.values()) else "incomplete"
+    decision = (
+        "pass"
+        if gates and all(value == "pass" for value in gates.values())
+        else (
+            "fail" if any(value == "fail" for value in gates.values()) else "incomplete"
+        )
+    )
     aggregate_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     summary = {
-        "schema_version": SCHEMA_VERSION, "aggregate_id": aggregate_id, "created_at": utc_now(),
-        "plan_sha256": plan["plan_sha256"], "decision": decision, "gates": gates,
-        "cohorts": cohorts, "correctness": {
-            "campaign_count": len(correctness), "mismatch_count": mismatches,
+        "schema_version": SCHEMA_VERSION,
+        "aggregate_id": aggregate_id,
+        "created_at": utc_now(),
+        "plan_sha256": plan["plan_sha256"],
+        "decision": decision,
+        "gates": gates,
+        "cohorts": cohorts,
+        "correctness": {
+            "campaign_count": len(correctness),
+            "mismatch_count": mismatches,
             "covered_scenarios": sorted(covered_correctness),
         },
         "external_evidence": external_evidence,
         "invalid_attempted_samples": invalid,
         "invalid_retained_samples": sum(
-            1 for sample in samples if not sample.get("warmup") and not sample.get("valid")
+            1
+            for sample in samples
+            if not sample.get("warmup") and not sample.get("valid")
         ),
         "primary_invalid_attempted_samples": sum(
-            1 for sample in samples
+            1
+            for sample in samples
             if (sample.get("primary_performance") or {}).get("valid") is not True
         ),
         "follow_on_failed_attempted_samples": sum(
-            1 for sample in samples
+            1
+            for sample in samples
             if (sample.get("follow_on_acceptance") or {}).get("accepted") is not True
         ),
         "identity": {
-            "sample_count": len(samples), "unique_correlation_ids": len(correlation_ids),
+            "sample_count": len(samples),
+            "unique_correlation_ids": len(correlation_ids),
             "unique_session_ids": len(session_ids),
             "ordinal_mapping_count": len(ordinal_identity_map),
         },
@@ -11426,7 +15005,9 @@ def aggregate_command(args: argparse.Namespace) -> int:
     secure_write(output / "scoreboard-section.md", section.encode(), exclusive=True)
     if args.append_scoreboard:
         if not args.confirm_append_scoreboard:
-            raise BenchmarkError("--append-scoreboard requires --confirm-append-scoreboard")
+            raise BenchmarkError(
+                "--append-scoreboard requires --confirm-append-scoreboard"
+            )
         scoreboard = Path(args.append_scoreboard).expanduser().resolve(strict=True)
         existing = scoreboard.read_text(encoding="utf-8")
         if aggregate_id in existing:
@@ -11451,18 +15032,28 @@ def cleanup_live_worktree_inventory(value: Any) -> list[dict[str, str]]:
         if not isinstance(worktree, dict):
             continue
         worktree_id = worktree.get("worktree_id")
-        path, branch, head = worktree.get("path"), worktree.get("branch"), worktree.get("head")
+        path, branch, head = (
+            worktree.get("path"),
+            worktree.get("branch"),
+            worktree.get("head"),
+        )
         repository_id = find_value(worktree, "repository_id")
-        if all(isinstance(item, str) and item for item in (worktree_id, path, branch, head)):
+        if all(
+            isinstance(item, str) and item for item in (worktree_id, path, branch, head)
+        ):
             resolved_path = str(Path(path).resolve(strict=False))
-            records.append({
-                "worktree_id": worktree_id,
-                "path": resolved_path,
-                "path_sha256": sha256_bytes(resolved_path.encode()),
-                "branch": branch,
-                "head": head.lower(),
-                "repository_id": repository_id if isinstance(repository_id, str) else "",
-            })
+            records.append(
+                {
+                    "worktree_id": worktree_id,
+                    "path": resolved_path,
+                    "path_sha256": sha256_bytes(resolved_path.encode()),
+                    "branch": branch,
+                    "head": head.lower(),
+                    "repository_id": (
+                        repository_id if isinstance(repository_id, str) else ""
+                    ),
+                }
+            )
     return records
 
 
@@ -11476,11 +15067,22 @@ def cleanup_live_worktree_records(value: Any) -> set[tuple[str, str, str, str]]:
         if not isinstance(worktree, dict):
             continue
         worktree_id = worktree.get("worktree_id")
-        path, branch, head = worktree.get("path"), worktree.get("branch"), worktree.get("head")
-        if all(isinstance(item, str) and item for item in (worktree_id, path, branch, head)):
-            records.add((
-                worktree_id, str(Path(path).resolve(strict=False)), branch, head.lower(),
-            ))
+        path, branch, head = (
+            worktree.get("path"),
+            worktree.get("branch"),
+            worktree.get("head"),
+        )
+        if all(
+            isinstance(item, str) and item for item in (worktree_id, path, branch, head)
+        ):
+            records.add(
+                (
+                    worktree_id,
+                    str(Path(path).resolve(strict=False)),
+                    branch,
+                    head.lower(),
+                )
+            )
     return records
 
 
@@ -11513,10 +15115,17 @@ def cleanup_session_ownership_evidence(
         worktree_id = candidate.get("worktree_id")
         path = candidate.get("worktree_root_path")
         branch, head = candidate.get("branch"), candidate.get("head")
-        if all(isinstance(item, str) and item for item in (worktree_id, path, branch, head)):
-            bindings.add((
-                worktree_id, str(Path(path).resolve(strict=False)), branch, head.lower(),
-            ))
+        if all(
+            isinstance(item, str) and item for item in (worktree_id, path, branch, head)
+        ):
+            bindings.add(
+                (
+                    worktree_id,
+                    str(Path(path).resolve(strict=False)),
+                    branch,
+                    head.lower(),
+                )
+            )
     if len(bindings) != 1:
         return {"ok": False, "reason": "session_worktree_binding_ambiguous"}
     binding = next(iter(bindings))
@@ -11527,9 +15136,14 @@ def cleanup_session_ownership_evidence(
     ):
         return {"ok": False, "reason": "session_worktree_not_benchmark_owned"}
     return {
-        "ok": True, "session_id": actual_session_id, "worktree_id": binding[0],
-        "path": binding[1], "branch": binding[2], "head": binding[3],
-        "status": response_status(snapshot), "context_id": actual_context_id,
+        "ok": True,
+        "session_id": actual_session_id,
+        "worktree_id": binding[0],
+        "path": binding[1],
+        "branch": binding[2],
+        "head": binding[3],
+        "status": response_status(snapshot),
+        "context_id": actual_context_id,
     }
 
 
@@ -11549,30 +15163,50 @@ def cleanup_worktree_ownership_evidence(
     path = str(Path(raw_path).resolve(strict=False))
     branch_prefix = safe_name(f"rpce-bench-{artifact_name}") + "-i"
     live_matches = [
-        record for record in live_worktrees
-        if record[1] == path and record[2] == raw_branch
-        and record[2].startswith(branch_prefix) and record[3] == plan_commit_oid.lower()
+        record
+        for record in live_worktrees
+        if record[1] == path
+        and record[2] == raw_branch
+        and record[2].startswith(branch_prefix)
+        and record[3] == plan_commit_oid.lower()
     ]
     relationships = {
-        (proof.get("worktree_id"), proof.get("path"), proof.get("branch"), proof.get("head"))
-        for proof in proven_sessions if proof.get("ok") is True
+        (
+            proof.get("worktree_id"),
+            proof.get("path"),
+            proof.get("branch"),
+            proof.get("head"),
+        )
+        for proof in proven_sessions
+        if proof.get("ok") is True
     }
     if len(live_matches) != 1 or live_matches[0] not in relationships:
         return {"ok": False, "reason": "live_session_worktree_relationship_unproven"}
     match = live_matches[0]
     return {
-        "ok": True, "worktree_id": match[0], "path": match[1],
-        "branch": match[2], "head": match[3],
+        "ok": True,
+        "worktree_id": match[0],
+        "path": match[1],
+        "branch": match[2],
+        "head": match[3],
     }
 
 
 DRAIN_ZERO_COUNT_FIELDS = (
-    "installed_token_count", "provisional_token_count", "root_claim_count",
-    "path_reservation_count", "matching_live_root_count",
-    "matching_watcher_attachment_count", "pending_seeded_root_count",
-    "pending_visibility_waiter_count", "queued_publication_count",
-    "applying_publication_count", "outstanding_publication_count",
-    "publisher_waiter_count", "unloading_root_count", "reserved_load_flight_count",
+    "installed_token_count",
+    "provisional_token_count",
+    "root_claim_count",
+    "path_reservation_count",
+    "matching_live_root_count",
+    "matching_watcher_attachment_count",
+    "pending_seeded_root_count",
+    "pending_visibility_waiter_count",
+    "queued_publication_count",
+    "applying_publication_count",
+    "outstanding_publication_count",
+    "publisher_waiter_count",
+    "unloading_root_count",
+    "reserved_load_flight_count",
 )
 
 
@@ -11601,11 +15235,17 @@ def cleanup_benchmark_attempts(
     actions: list[dict[str, Any]] = []
     attempts = [item for item in state.get("attempts", []) if isinstance(item, dict)]
     inventory_response = runner.call(
-        "cleanup-live-worktrees", "manage_worktree",
+        "cleanup-live-worktrees",
+        "manage_worktree",
         {"op": "list", "repo_root": plan["scope"]["root_path"]},
-        check=False, timeout=30,
+        check=False,
+        timeout=30,
     )
-    inventory = cleanup_live_worktree_inventory(inventory_response) if call_succeeded(inventory_response) else []
+    inventory = (
+        cleanup_live_worktree_inventory(inventory_response)
+        if call_succeeded(inventory_response)
+        else []
+    )
     inventory_ok = call_succeeded(inventory_response)
     logical_safe = inventory_ok
 
@@ -11619,22 +15259,35 @@ def cleanup_benchmark_attempts(
             continue
         attempt["control_id"] = control_id
         common = diagnostic_payload(
-            plan, "start_recovery_snapshot", correlation_id=correlation,
+            plan,
+            "start_recovery_snapshot",
+            correlation_id=correlation,
             control_id=control_id,
         )
         try:
             snapshot_response = runner.call(
-                f"cleanup-recovery-{attempt.get('ordinal')}", DEBUG_TOOL,
-                common, check=False, timeout=15,
+                f"cleanup-recovery-{attempt.get('ordinal')}",
+                DEBUG_TOOL,
+                common,
+                check=False,
+                timeout=15,
             )
-            recovery = nested_response_object(snapshot_response, "recovery") if call_succeeded(snapshot_response) else {}
+            recovery = (
+                nested_response_object(snapshot_response, "recovery")
+                if call_succeeded(snapshot_response)
+                else {}
+            )
             abort_response = runner.call(
-                f"cleanup-abort-{attempt.get('ordinal')}", DEBUG_TOOL,
+                f"cleanup-abort-{attempt.get('ordinal')}",
+                DEBUG_TOOL,
                 diagnostic_payload(
-                    plan, "start_recovery_abort", correlation_id=correlation,
+                    plan,
+                    "start_recovery_abort",
+                    correlation_id=correlation,
                     control_id=control_id,
                 ),
-                check=False, timeout=15,
+                check=False,
+                timeout=15,
             )
             if call_succeeded(abort_response):
                 recovery = nested_response_object(abort_response, "recovery")
@@ -11642,7 +15295,9 @@ def cleanup_benchmark_attempts(
                 raise BenchmarkError("recoverable-start abort failed")
         except BaseException as error:
             attempt["manual_cleanup"] = True
-            attempt["cleanup_reason"] = f"recovery_failed:{operation_failure_type(error)}"
+            attempt["cleanup_reason"] = (
+                f"recovery_failed:{operation_failure_type(error)}"
+            )
             logical_safe = False
             continue
 
@@ -11653,10 +15308,13 @@ def cleanup_benchmark_attempts(
             "repository_id": recovery.get("repository_id"),
             "path_sha256": recovery.get("worktree_path_sha256"),
         }
-        matches = [item for item in inventory if all(
-            not expected[key] or item.get(key) == expected[key]
-            for key in expected
-        )]
+        matches = [
+            item
+            for item in inventory
+            if all(
+                not expected[key] or item.get(key) == expected[key] for key in expected
+            )
+        ]
         if expected["worktree_id"] and len(matches) != 1:
             attempt["manual_cleanup"] = True
             attempt["cleanup_reason"] = "ambiguous_status_free_inventory"
@@ -11664,29 +15322,41 @@ def cleanup_benchmark_attempts(
             continue
         matched = matches[0] if matches else None
         if matched:
-            attempt.update({
-                "worktree_id": matched["worktree_id"], "path": matched["path"],
-                "path_sha256": matched["path_sha256"], "branch": matched["branch"],
-                "head": matched["head"], "repository_id": matched["repository_id"],
-            })
+            attempt.update(
+                {
+                    "worktree_id": matched["worktree_id"],
+                    "path": matched["path"],
+                    "path_sha256": matched["path_sha256"],
+                    "branch": matched["branch"],
+                    "head": matched["head"],
+                    "repository_id": matched["repository_id"],
+                }
+            )
         session_id = recovery.get("agent_session_id")
         context_id = recovery.get("target_tab_id")
         requires_cancel = find_value(abort_response, "requires_agent_cancel") is True
         discard_completed = find_value(abort_response, "discard_completed") is True
         terminal = discard_completed
         status = "discarded" if discard_completed else None
-        if requires_cancel and isinstance(session_id, str) and isinstance(context_id, str):
+        if (
+            requires_cancel
+            and isinstance(session_id, str)
+            and isinstance(context_id, str)
+        ):
             try:
                 status = terminalize(runner, session_id, context_id)
                 terminal = status in TERMINAL_STATES
             except BaseException as error:
                 status = f"cleanup_error:{operation_failure_type(error)}"
-        actions.append({
-            "action": "terminalize_agent",
-            "session_id_sha256": sha256_bytes(str(session_id).encode()),
-            "status": status, "terminal": terminal,
-            "ownership_proven": isinstance(session_id, str),
-        })
+        actions.append(
+            {
+                "action": "terminalize_agent",
+                "session_id_sha256": sha256_bytes(str(session_id).encode()),
+                "status": status,
+                "terminal": terminal,
+                "ownership_proven": isinstance(session_id, str),
+            }
+        )
         if not terminal or not isinstance(session_id, str):
             attempt["manual_cleanup"] = True
             attempt["cleanup_reason"] = "agent_not_terminal"
@@ -11695,36 +15365,51 @@ def cleanup_benchmark_attempts(
         attempt["session_id"], attempt["context_id"] = session_id, context_id
         if not discard_completed:
             unbind = runner.call(
-                f"cleanup-unbind-{attempt.get('ordinal')}", "manage_worktree",
+                f"cleanup-unbind-{attempt.get('ordinal')}",
+                "manage_worktree",
                 {"op": "unbind", "session_id": session_id, "all": True},
-                check=False, timeout=30,
+                check=False,
+                timeout=30,
             )
-            actions.append({
-                "action": "unbind_session_worktree",
-                "session_id_sha256": sha256_bytes(session_id.encode()),
-                "ok": call_succeeded(unbind),
-            })
+            actions.append(
+                {
+                    "action": "unbind_session_worktree",
+                    "session_id_sha256": sha256_bytes(session_id.encode()),
+                    "ok": call_succeeded(unbind),
+                }
+            )
             if not call_succeeded(unbind):
                 attempt["manual_cleanup"] = True
                 attempt["cleanup_reason"] = "unbind_failed"
                 logical_safe = False
                 continue
         drain_response = runner.call(
-            f"cleanup-drain-{attempt.get('ordinal')}", DEBUG_TOOL,
+            f"cleanup-drain-{attempt.get('ordinal')}",
+            DEBUG_TOOL,
             diagnostic_payload(
-                plan, "session_worktree_drain_snapshot", correlation_id=correlation,
+                plan,
+                "session_worktree_drain_snapshot",
+                correlation_id=correlation,
                 control_id=control_id,
             ),
-            check=False, timeout=15,
+            check=False,
+            timeout=15,
         )
-        drain = nested_response_object(drain_response, "drain") if call_succeeded(drain_response) else {}
+        drain = (
+            nested_response_object(drain_response, "drain")
+            if call_succeeded(drain_response)
+            else {}
+        )
         attempt["drain"] = drain
         attempt["drained"] = valid_drain_snapshot(drain)
-        actions.append({
-            "action": "prove_session_worktree_drain",
-            "session_id_sha256": sha256_bytes(session_id.encode()),
-            "ok": attempt["drained"], "drain": drain,
-        })
+        actions.append(
+            {
+                "action": "prove_session_worktree_drain",
+                "session_id_sha256": sha256_bytes(session_id.encode()),
+                "ok": attempt["drained"],
+                "drain": drain,
+            }
+        )
         if not attempt["drained"]:
             attempt["manual_cleanup"] = True
             attempt["cleanup_reason"] = "store_not_drained"
@@ -11736,16 +15421,24 @@ def cleanup_benchmark_attempts(
             branch = attempt.get("branch")
             if not isinstance(path, str) or not isinstance(branch, str):
                 continue
-            actions.append(clean_owned_worktree(
-                Path(plan["scope"]["root_path"]), path, True,
-                expected_branch=branch, expected_path=path,
-                expected_head=plan["dataset"]["base_commit_oid"], ownership_proven=True,
-            ))
+            actions.append(
+                clean_owned_worktree(
+                    Path(plan["scope"]["root_path"]),
+                    path,
+                    True,
+                    expected_branch=branch,
+                    expected_path=path,
+                    expected_head=plan["dataset"]["base_commit_oid"],
+                    ownership_proven=True,
+                )
+            )
 
     final_inventory_response = runner.call(
-        "cleanup-final-live-worktrees", "manage_worktree",
+        "cleanup-final-live-worktrees",
+        "manage_worktree",
         {"op": "list", "repo_root": plan["scope"]["root_path"]},
-        check=False, timeout=30,
+        check=False,
+        timeout=30,
     )
     try:
         final_inventory = required_cleanup_worktree_inventory(final_inventory_response)
@@ -11757,7 +15450,9 @@ def cleanup_benchmark_attempts(
             attempt["cleanup_reason"] = "final_status_free_inventory_failed"
     for attempt in attempts:
         path_digest = attempt.get("path_sha256")
-        correlation, control_id = attempt.get("correlation_id"), attempt.get("control_id")
+        correlation, control_id = attempt.get("correlation_id"), attempt.get(
+            "control_id"
+        )
         absent = (
             final_inventory is not None
             and isinstance(path_digest, str)
@@ -11766,25 +15461,37 @@ def cleanup_benchmark_attempts(
         final_drain: dict[str, Any] = {}
         if isinstance(correlation, str) and isinstance(control_id, str):
             response = runner.call(
-                f"cleanup-final-drain-{attempt.get('ordinal')}", DEBUG_TOOL,
+                f"cleanup-final-drain-{attempt.get('ordinal')}",
+                DEBUG_TOOL,
                 diagnostic_payload(
-                    plan, "session_worktree_drain_snapshot", correlation_id=correlation,
+                    plan,
+                    "session_worktree_drain_snapshot",
+                    correlation_id=correlation,
                     control_id=control_id,
                 ),
-                check=False, timeout=15,
+                check=False,
+                timeout=15,
             )
-            final_drain = nested_response_object(response, "drain") if call_succeeded(response) else {}
+            final_drain = (
+                nested_response_object(response, "drain")
+                if call_succeeded(response)
+                else {}
+            )
         attempt["final_absent"] = absent
         attempt["final_drain"] = final_drain
-        actions.append({
-            "action": "final_session_worktree_proof",
-            "path_sha256": path_digest,
-            "worktree_absent": absent,
-            "drain": final_drain,
-            "ok": attempt.get("path") is None
+        actions.append(
+            {
+                "action": "final_session_worktree_proof",
+                "path_sha256": path_digest,
+                "worktree_absent": absent,
+                "drain": final_drain,
+                "ok": attempt.get("path") is None
                 or (absent and valid_drain_snapshot(final_drain)),
-        })
-        if attempt.get("path") is not None and (not absent or not valid_drain_snapshot(final_drain)):
+            }
+        )
+        if attempt.get("path") is not None and (
+            not absent or not valid_drain_snapshot(final_drain)
+        ):
             attempt["manual_cleanup"] = True
             logical_safe = False
     state["attempts"] = attempts
@@ -11794,7 +15501,9 @@ def cleanup_benchmark_attempts(
 
 def cleanup_command(args: argparse.Namespace) -> int:
     if not args.confirm_live_debug_app or not args.confirm_owned_resources:
-        raise BenchmarkError("cleanup requires live-app and owned-resource confirmations")
+        raise BenchmarkError(
+            "cleanup requires live-app and owned-resource confirmations"
+        )
     artifact = Path(args.artifact).expanduser().resolve(strict=True)
     state = json.loads((artifact / "state.json").read_text(encoding="utf-8"))
     plan = load_plan(artifact / "plan.json")
@@ -11805,14 +15514,22 @@ def cleanup_command(args: argparse.Namespace) -> int:
     )
     verify_disposable_target(runner, plan, require_only_planned_root=False)
     plan_commit_oid = plan["dataset"].get("base_commit_oid")
-    if not isinstance(plan_commit_oid, str) or re.fullmatch(r"[0-9a-f]{40,64}", plan_commit_oid) is None:
+    if (
+        not isinstance(plan_commit_oid, str)
+        or re.fullmatch(r"[0-9a-f]{40,64}", plan_commit_oid) is None
+    ):
         raise BenchmarkError("cleanup plan omitted a valid immutable base commit OID")
     worktree_inventory = runner.call(
-        "cleanup-live-worktrees", "manage_worktree",
-        {"op": "list", "repo_root": str(root)}, check=False, timeout=30,
+        "cleanup-live-worktrees",
+        "manage_worktree",
+        {"op": "list", "repo_root": str(root)},
+        check=False,
+        timeout=30,
     )
     live_worktrees = (
-        cleanup_live_worktree_records(worktree_inventory) if call_succeeded(worktree_inventory) else set()
+        cleanup_live_worktree_records(worktree_inventory)
+        if call_succeeded(worktree_inventory)
+        else set()
     )
     actions: list[dict[str, Any]] = []
     if state.get("attempts"):
@@ -11822,25 +15539,37 @@ def cleanup_command(args: argparse.Namespace) -> int:
             if not isinstance(hold, dict) or hold.get("released") is True:
                 continue
             hold_id = hold.get("hold_id")
-            response = runner.call(
-                f"cleanup-release-codemap-hold-{str(hold_id)[:8]}", DEBUG_TOOL,
-                diagnostic_payload(
-                    plan, "codemap_graph_index_hold_release", hold_id=hold_id,
-                    **({"target_root_id": hold.get("target_root_id")}
-                       if isinstance(hold.get("target_root_id"), str) else {}),
-                ),
-                check=False,
-            ) if isinstance(hold_id, str) else {}
-            released_or_expired = (
-                call_succeeded(response)
-                and (find_value(response, "released") is True or find_value(response, "hold_count") == 0)
+            response = (
+                runner.call(
+                    f"cleanup-release-codemap-hold-{str(hold_id)[:8]}",
+                    DEBUG_TOOL,
+                    diagnostic_payload(
+                        plan,
+                        "codemap_graph_index_hold_release",
+                        hold_id=hold_id,
+                        **(
+                            {"target_root_id": hold.get("target_root_id")}
+                            if isinstance(hold.get("target_root_id"), str)
+                            else {}
+                        ),
+                    ),
+                    check=False,
+                )
+                if isinstance(hold_id, str)
+                else {}
+            )
+            released_or_expired = call_succeeded(response) and (
+                find_value(response, "released") is True
+                or find_value(response, "hold_count") == 0
             )
             hold["released"] = released_or_expired
-            actions.append({
-                "action": "release_codemap_hold",
-                "hold_id_sha256": sha256_bytes(str(hold_id).encode()),
-                "ok": released_or_expired,
-            })
+            actions.append(
+                {
+                    "action": "release_codemap_hold",
+                    "hold_id_sha256": sha256_bytes(str(hold_id).encode()),
+                    "ok": released_or_expired,
+                }
+            )
 
     session_proofs: list[dict[str, Any]] = []
     for session in ([] if state.get("attempts") else state.get("sessions", [])):
@@ -11849,55 +15578,75 @@ def cleanup_command(args: argparse.Namespace) -> int:
         try:
             routed_context_id = (
                 validate_uuid(context_id, "cleanup session context-id")
-                if isinstance(context_id, str) else None
+                if isinstance(context_id, str)
+                else None
             )
         except BenchmarkError:
             routed_context_id = None
         snapshot = (
             runner.call(
-                f"cleanup-prove-session-{str(session_id)[:8]}", "agent_run",
-                {"op": "poll", "session_id": session_id}, check=False,
+                f"cleanup-prove-session-{str(session_id)[:8]}",
+                "agent_run",
+                {"op": "poll", "session_id": session_id},
+                check=False,
                 context_id=routed_context_id,
             )
-            if isinstance(session_id, str) and routed_context_id is not None else {}
+            if isinstance(session_id, str) and routed_context_id is not None
+            else {}
         )
         proof = cleanup_session_ownership_evidence(
-            snapshot, expected_session_id=str(session_id or ""),
-            expected_context_id=str(context_id or ""), live_worktrees=live_worktrees,
-            artifact_name=artifact.name, plan_commit_oid=plan_commit_oid,
+            snapshot,
+            expected_session_id=str(session_id or ""),
+            expected_context_id=str(context_id or ""),
+            live_worktrees=live_worktrees,
+            artifact_name=artifact.name,
+            plan_commit_oid=plan_commit_oid,
         )
         session_proofs.append(proof)
         if not proof["ok"]:
             if isinstance(session, dict):
                 session["terminal"] = False
-            actions.append({
-                "action": "terminalize_agent",
-                "session_id_sha256": sha256_bytes(str(session_id).encode()),
-                "terminal": False, "ownership_proven": False,
-                "manual_cleanup": True, "reason": proof["reason"],
-            })
+            actions.append(
+                {
+                    "action": "terminalize_agent",
+                    "session_id_sha256": sha256_bytes(str(session_id).encode()),
+                    "terminal": False,
+                    "ownership_proven": False,
+                    "manual_cleanup": True,
+                    "reason": proof["reason"],
+                }
+            )
             continue
         live_status = str(proof["status"])
         status = (
-            live_status if live_status in TERMINAL_STATES
+            live_status
+            if live_status in TERMINAL_STATES
             else terminalize(runner, session_id, context_id)
         )
         session["status"], session["terminal"] = status, status in TERMINAL_STATES
-        actions.append({
-            "action": "terminalize_agent",
-            "session_id_sha256": sha256_bytes(str(session["session_id"]).encode()),
-            "status": status, "terminal": session["terminal"], "ownership_proven": True,
-        })
+        actions.append(
+            {
+                "action": "terminalize_agent",
+                "session_id_sha256": sha256_bytes(str(session["session_id"]).encode()),
+                "status": status,
+                "terminal": session["terminal"],
+                "ownership_proven": True,
+            }
+        )
     if state.get("kind") == "codemap-gate":
         inventory = runner.call(
-            "cleanup-codemap-workspace-inventory", "manage_workspaces",
-            {"action": "list", "include_hidden": True}, check=False,
+            "cleanup-codemap-workspace-inventory",
+            "manage_workspaces",
+            {"action": "list", "include_hidden": True},
+            check=False,
         )
         current_roots = set()
         if call_succeeded(inventory):
-            current_roots = set(workspace_root_paths(
-                workspace_inventory_record(inventory, plan["scope"]["workspace_id"])
-            ))
+            current_roots = set(
+                workspace_root_paths(
+                    workspace_inventory_record(inventory, plan["scope"]["workspace_id"])
+                )
+            )
         all_recorded_agents_terminal = all(
             isinstance(item, dict) and item.get("terminal") is True
             for item in state.get("sessions", [])
@@ -11905,10 +15654,14 @@ def cleanup_command(args: argparse.Namespace) -> int:
         remaining_added_roots: list[dict[str, Any]] = []
         for item in state.get("added_roots", []):
             if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-                actions.append({
-                    "action": "remove_workspace_root", "ok": False,
-                    "manual_cleanup": True, "reason": "invalid_owned_root_record",
-                })
+                actions.append(
+                    {
+                        "action": "remove_workspace_root",
+                        "ok": False,
+                        "manual_cleanup": True,
+                        "reason": "invalid_owned_root_record",
+                    }
+                )
                 continue
             candidate = Path(item["path"]).resolve()
             root_proof: dict[str, Any]
@@ -11924,15 +15677,18 @@ def cleanup_command(args: argparse.Namespace) -> int:
                 }
             elif item.get("kind") == "git-worktree":
                 state_matches = [
-                    worktree for worktree in state.get("worktrees", [])
+                    worktree
+                    for worktree in state.get("worktrees", [])
                     if isinstance(worktree, dict)
                     and isinstance(worktree.get("path"), str)
                     and Path(worktree["path"]).resolve() == candidate
                 ]
                 root_proof = (
                     cleanup_worktree_ownership_evidence(
-                        state_matches[0], live_worktrees=live_worktrees,
-                        proven_sessions=session_proofs, artifact_name=artifact.name,
+                        state_matches[0],
+                        live_worktrees=live_worktrees,
+                        proven_sessions=session_proofs,
+                        artifact_name=artifact.name,
                         plan_commit_oid=plan_commit_oid,
                     )
                     if len(state_matches) == 1
@@ -11943,39 +15699,58 @@ def cleanup_command(args: argparse.Namespace) -> int:
                 ownership_proven = False
                 root_proof = {"ok": False, "reason": "unsupported_owned_root_kind"}
             if not ownership_proven or not all_recorded_agents_terminal:
-                reason = "ownership_not_proven" if not ownership_proven else "agents_not_terminal"
-                actions.append({
-                    "action": "remove_workspace_root",
-                    "path_sha256": sha256_bytes(str(candidate).encode()), "ok": False,
-                    "manual_cleanup": True, "reason": reason,
-                })
+                reason = (
+                    "ownership_not_proven"
+                    if not ownership_proven
+                    else "agents_not_terminal"
+                )
+                actions.append(
+                    {
+                        "action": "remove_workspace_root",
+                        "path_sha256": sha256_bytes(str(candidate).encode()),
+                        "ok": False,
+                        "manual_cleanup": True,
+                        "reason": reason,
+                    }
+                )
                 remaining_added_roots.append(item)
                 continue
             if str(candidate) not in current_roots:
-                actions.append({
-                    "action": "remove_workspace_root",
-                    "path_sha256": sha256_bytes(str(candidate).encode()),
-                    "ok": True, "reason": "already_absent",
-                })
+                actions.append(
+                    {
+                        "action": "remove_workspace_root",
+                        "path_sha256": sha256_bytes(str(candidate).encode()),
+                        "ok": True,
+                        "reason": "already_absent",
+                    }
+                )
                 continue
             response = runner.call(
-                f"cleanup-codemap-root-{safe_name(candidate.name)}", "manage_workspaces",
-                {"action": "remove_folder", "workspace": plan["scope"]["workspace_id"],
-                 "folder_path": str(candidate), "window_id": plan["scope"]["window_id"]},
+                f"cleanup-codemap-root-{safe_name(candidate.name)}",
+                "manage_workspaces",
+                {
+                    "action": "remove_folder",
+                    "workspace": plan["scope"]["workspace_id"],
+                    "folder_path": str(candidate),
+                    "window_id": plan["scope"]["window_id"],
+                },
                 check=False,
             )
             ok = call_succeeded(response)
-            actions.append({
-                "action": "remove_workspace_root",
-                "path_sha256": sha256_bytes(str(candidate).encode()), "ok": ok,
-                "ownership_proven": True,
-                "ownership_basis": (
-                    "live_cleanup_worktree_ownership_evidence"
-                    if item.get("kind") == "git-worktree"
-                    else "live_exclusive_non_git_marker"
-                ),
-                "ownership_proof_sha256": sha256_bytes(canonical_json(root_proof)),
-            })
+            actions.append(
+                {
+                    "action": "remove_workspace_root",
+                    "path_sha256": sha256_bytes(str(candidate).encode()),
+                    "ok": ok,
+                    "ownership_proven": True,
+                    "ownership_basis": (
+                        "live_cleanup_worktree_ownership_evidence"
+                        if item.get("kind") == "git-worktree"
+                        else "live_exclusive_non_git_marker"
+                    ),
+                    "ownership_proof_sha256": sha256_bytes(canonical_json(root_proof)),
+                }
+            )
             if ok and item.get("kind") == "non-git":
                 shutil.rmtree(candidate, ignore_errors=True)
             if not ok:
@@ -11991,50 +15766,78 @@ def cleanup_command(args: argparse.Namespace) -> int:
     control = state.get("control_id")
     if control and not state.get("route_restored"):
         response = runner.call(
-            "cleanup-restore-route", DEBUG_TOOL,
-            diagnostic_payload(plan, "restore_flags", control_id=control), check=False,
+            "cleanup-restore-route",
+            DEBUG_TOOL,
+            diagnostic_payload(plan, "restore_flags", control_id=control),
+            check=False,
         )
         state["route_restored"] = call_succeeded(response)
-    actions.append({"action": "restore_route", "ok": state.get("route_restored") is True})
+    actions.append(
+        {"action": "restore_route", "ok": state.get("route_restored") is True}
+    )
     if not state.get("scope_reset"):
         reset = runner.call(
             "cleanup-reset", DEBUG_TOOL, diagnostic_payload(plan, "reset"), check=False
         )
-        state["scope_reset"] = call_succeeded(reset) and isinstance(find_value(reset, "reset"), dict)
-    actions.append({"action": "reset_diagnostics", "ok": state.get("scope_reset") is True})
+        state["scope_reset"] = call_succeeded(reset) and isinstance(
+            find_value(reset, "reset"), dict
+        )
+    actions.append(
+        {"action": "reset_diagnostics", "ok": state.get("scope_reset") is True}
+    )
     try:
         require_benchmark_gate(runner)
         state["benchmark_gate_unchanged"] = True
     except BenchmarkError:
         state["benchmark_gate_unchanged"] = False
-    actions.append({
-        "action": "preserve_benchmark_setting", "ok": state["benchmark_gate_unchanged"],
-    })
+    actions.append(
+        {
+            "action": "preserve_benchmark_setting",
+            "ok": state["benchmark_gate_unchanged"],
+        }
+    )
     for item in ([] if state.get("attempts") else state.get("worktrees", [])):
         proof = cleanup_worktree_ownership_evidence(
-            item, live_worktrees=live_worktrees, proven_sessions=session_proofs,
-            artifact_name=artifact.name, plan_commit_oid=plan_commit_oid,
+            item,
+            live_worktrees=live_worktrees,
+            proven_sessions=session_proofs,
+            artifact_name=artifact.name,
+            plan_commit_oid=plan_commit_oid,
         )
         if not proof["ok"]:
             item_path = item.get("path") if isinstance(item, dict) else None
             item_branch = item.get("branch") if isinstance(item, dict) else None
-            actions.append({
-                "action": "remove_worktree",
-                "path_sha256": (
-                    sha256_bytes(str(item_path).encode()) if isinstance(item_path, str) else None
-                ),
-                "branch_sha256": (
-                    sha256_bytes(item_branch.encode()) if isinstance(item_branch, str) else None
-                ),
-                "removed": False, "ownership_proven": False, "manual_cleanup": True,
-                "reason": proof["reason"],
-            })
+            actions.append(
+                {
+                    "action": "remove_worktree",
+                    "path_sha256": (
+                        sha256_bytes(str(item_path).encode())
+                        if isinstance(item_path, str)
+                        else None
+                    ),
+                    "branch_sha256": (
+                        sha256_bytes(item_branch.encode())
+                        if isinstance(item_branch, str)
+                        else None
+                    ),
+                    "removed": False,
+                    "ownership_proven": False,
+                    "manual_cleanup": True,
+                    "reason": proof["reason"],
+                }
+            )
             continue
-        actions.append(clean_owned_worktree(
-            root, proof["path"], all(session.get("terminal") for session in state.get("sessions", [])),
-            expected_branch=proof["branch"], expected_path=proof["path"],
-            expected_head=plan_commit_oid, ownership_proven=True,
-        ))
+        actions.append(
+            clean_owned_worktree(
+                root,
+                proof["path"],
+                all(session.get("terminal") for session in state.get("sessions", [])),
+                expected_branch=proof["branch"],
+                expected_path=proof["path"],
+                expected_head=plan_commit_oid,
+                ownership_proven=True,
+            )
+        )
     final_roots_restored = False
     try:
         verify_disposable_target(runner, plan, require_only_planned_root=True)
@@ -12043,16 +15846,23 @@ def cleanup_command(args: argparse.Namespace) -> int:
         pass
     actions.append({"action": "restore_workspace_roots", "ok": final_roots_restored})
     cleanup_evidence_complete = validate_cleanup_evidence(
-        actions, run_artifact=True,
+        actions,
+        run_artifact=True,
         expected_agent_count=(
-            len(state.get("attempts", [])) if state.get("attempts")
+            len(state.get("attempts", []))
+            if state.get("attempts")
             else len(state.get("sessions", []))
         ),
         expected_worktree_count=(
-            len({
-                item.get("path") for item in state.get("attempts", [])
-                if isinstance(item, dict) and isinstance(item.get("path"), str)
-            }) if state.get("attempts") else len(state.get("worktrees", []))
+            len(
+                {
+                    item.get("path")
+                    for item in state.get("attempts", [])
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                }
+            )
+            if state.get("attempts")
+            else len(state.get("worktrees", []))
         ),
     )
     cleanup_complete = cleanup_command_acceptance(
@@ -12080,7 +15890,9 @@ def require_exact_projected_inference_identity(
         or summary.get("build_identity") != expected_build
         or projected_plan != plan
     ):
-        raise BenchmarkError("projected prerequisite plan/root/build identity was not exact")
+        raise BenchmarkError(
+            "projected prerequisite plan/root/build identity was not exact"
+        )
 
 
 def require_exact_projected_inference_cohort(
@@ -12120,8 +15932,12 @@ def require_exact_projected_inference_cohort(
         raise BenchmarkError("projected prerequisite cohort summary was not exact")
     for index, sample in enumerate(samples, start=1):
         primary = sample.get("primary_performance")
-        checkpoint = primary.get("diagnostic_checkpoint") if isinstance(primary, dict) else None
-        diagnostic_sample = checkpoint.get("sample") if isinstance(checkpoint, dict) else None
+        checkpoint = (
+            primary.get("diagnostic_checkpoint") if isinstance(primary, dict) else None
+        )
+        diagnostic_sample = (
+            checkpoint.get("sample") if isinstance(checkpoint, dict) else None
+        )
         identity = primary.get("identity") if isinstance(primary, dict) else None
         follow_on = sample.get("follow_on_acceptance")
         if (
@@ -12147,10 +15963,13 @@ def require_exact_projected_inference_cohort(
             or not isinstance(diagnostic_sample, dict)
             or diagnostic_sample.get("invocation") != invocation
             or diagnostic_sample.get("ordinal") != index
-            or diagnostic_sample.get("route_counts") != expected_actual_route_counts("projected")
+            or diagnostic_sample.get("route_counts")
+            != expected_actual_route_counts("projected")
             or diagnostic_sample.get("fallback_counts") != {}
         ):
-            raise BenchmarkError("projected prerequisite sample identity/routes/fallbacks were not exact")
+            raise BenchmarkError(
+                "projected prerequisite sample identity/routes/fallbacks were not exact"
+            )
 
 
 def projected_inference_prerequisite(
@@ -12158,7 +15977,13 @@ def projected_inference_prerequisite(
     plan: dict[str, Any],
     cli: Path,
 ) -> dict[str, Any]:
-    required_files = ("summary.json", "plan.json", "samples.ndjson", "resources.json", "cleanup.json")
+    required_files = (
+        "summary.json",
+        "plan.json",
+        "samples.ndjson",
+        "resources.json",
+        "cleanup.json",
+    )
     files = {name: projected / name for name in required_files}
     if not all(path.is_file() for path in files.values()):
         raise BenchmarkError("projected prerequisite omitted a required artifact file")
@@ -12199,14 +16024,17 @@ def projected_inference_prerequisite(
         "root_identity": root_identity,
         "root_identity_sha256": sha256_bytes(canonical_json(root_identity)),
         "artifact_sha256": {
-            name: sha256_bytes(path.read_bytes()) for name, path in sorted(files.items())
+            name: sha256_bytes(path.read_bytes())
+            for name, path in sorted(files.items())
         },
     }
 
 
 def live_inference_gate_command(args: argparse.Namespace) -> int:
     if not args.confirm_live_debug_app or not args.confirm_owned_resources:
-        raise BenchmarkError("live-inference-gate requires live-app and owned-resource confirmations")
+        raise BenchmarkError(
+            "live-inference-gate requires live-app and owned-resource confirmations"
+        )
     plan = load_plan(Path(args.plan))
     cli = resolve_cli(args.cli)
     root = Path(plan["scope"]["root_path"])
@@ -12219,10 +16047,16 @@ def live_inference_gate_command(args: argparse.Namespace) -> int:
     )
     save_json(artifact / "plan.json", plan, exclusive=True)
     state: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION, "plan_sha256": plan["plan_sha256"],
-        "kind": "live-inference-gate", "sessions": [], "worktrees": [],
-        "attempts": [], "control_id": None, "route_restored": False,
-        "scope_reset": False, "projected_prerequisite": prerequisite,
+        "schema_version": SCHEMA_VERSION,
+        "plan_sha256": plan["plan_sha256"],
+        "kind": "live-inference-gate",
+        "sessions": [],
+        "worktrees": [],
+        "attempts": [],
+        "control_id": None,
+        "route_restored": False,
+        "scope_reset": False,
+        "projected_prerequisite": prerequisite,
     }
     save_json(artifact / "state.json", state)
     verify_scope(runner, plan)
@@ -12242,11 +16076,18 @@ def live_inference_gate_command(args: argparse.Namespace) -> int:
             runner, plan, control_id, "projected", "warm", 1, 1, False, branch
         )
         attempt = {
-            "correlation_id": correlation, "control_id": control_id,
-            "invocation": 1, "ordinal": 1, "warmup": False,
-            "branch": branch, "expected_head": plan["dataset"]["base_commit_oid"],
-            "state": "armed", "session_id": None, "context_id": None,
-            "worktree_id": None, "path": None,
+            "correlation_id": correlation,
+            "control_id": control_id,
+            "invocation": 1,
+            "ordinal": 1,
+            "warmup": False,
+            "branch": branch,
+            "expected_head": plan["dataset"]["base_commit_oid"],
+            "state": "armed",
+            "session_id": None,
+            "context_id": None,
+            "worktree_id": None,
+            "path": None,
         }
         state["attempts"].append(attempt)
         save_json(artifact / "state.json", state)
@@ -12259,11 +16100,15 @@ def live_inference_gate_command(args: argparse.Namespace) -> int:
             f"After both results, reply exactly {sentinel}."
         )
         start = runner.call(
-            "live-inference-start", "agent_run",
+            "live-inference-start",
+            "agent_run",
             {
-                "op": "start", "detach": True, "message": message,
+                "op": "start",
+                "detach": True,
+                "message": message,
                 "session_name": "RPCE live inference gate",
-                "worktree_create": True, "worktree_branch": branch,
+                "worktree_create": True,
+                "worktree_branch": branch,
                 "worktree_base_ref": plan["dataset"]["base_commit_oid"],
                 "worktree_label": "RPCE live inference gate",
                 "context_id": plan["scope"]["context_id"],
@@ -12278,21 +16123,36 @@ def live_inference_gate_command(args: argparse.Namespace) -> int:
         worktree_id, bound_path = exact_response_worktree_binding(start, owned_worktree)
         if bound_path != str(owned_worktree):
             raise BenchmarkError("live inference worktree binding mismatch")
-        attempt.update({
-            "state": "started", "session_id": session_id, "context_id": context_id,
-            "worktree_id": worktree_id, "path": str(owned_worktree),
-            "path_sha256": sha256_bytes(str(owned_worktree).encode()),
-        })
-        state["sessions"].append({
-            "session_id": session_id, "context_id": context_id, "terminal": False,
-        })
-        state["worktrees"].append({
-            "path": str(owned_worktree), "worktree_id": worktree_id,
-            "owned": True, "branch": branch,
-        })
+        attempt.update(
+            {
+                "state": "started",
+                "session_id": session_id,
+                "context_id": context_id,
+                "worktree_id": worktree_id,
+                "path": str(owned_worktree),
+                "path_sha256": sha256_bytes(str(owned_worktree).encode()),
+            }
+        )
+        state["sessions"].append(
+            {
+                "session_id": session_id,
+                "context_id": context_id,
+                "terminal": False,
+            }
+        )
+        state["worktrees"].append(
+            {
+                "path": str(owned_worktree),
+                "worktree_id": worktree_id,
+                "owned": True,
+                "branch": branch,
+            }
+        )
         save_json(artifact / "state.json", state)
         transcript = wait_agent_success(
-            runner, session_id, expected_output=sentinel,
+            runner,
+            session_id,
+            expected_output=sentinel,
             expected_marker=plan["dataset"]["search_marker"],
             expected_file_path=plan["dataset"]["read_path"],
             context_id=context_id,
@@ -12313,19 +16173,23 @@ def live_inference_gate_command(args: argparse.Namespace) -> int:
             runner, plan, correlation, action="export", label="live-inference-export"
         )
         sample = export.get("sample") if isinstance(export, dict) else None
-        identity_ok = isinstance(sample, dict) and all((
-            str(sample.get("correlation_id", "")).upper() == correlation.upper(),
-            str(sample.get("agent_session_id", "")).upper() == session_id.upper(),
-            sample.get("invocation") == 1, sample.get("ordinal") == 1,
-            sample.get("route_counts") == {"diffSeedServing": 1},
-            sample.get("fallback_counts") == {},
-        ))
+        identity_ok = isinstance(sample, dict) and all(
+            (
+                str(sample.get("correlation_id", "")).upper() == correlation.upper(),
+                str(sample.get("agent_session_id", "")).upper() == session_id.upper(),
+                sample.get("invocation") == 1,
+                sample.get("ordinal") == 1,
+                sample.get("route_counts") == {"diffSeedServing": 1},
+                sample.get("fallback_counts") == {},
+            )
+        )
         result = {
             "ok": transcript.get("ok") is True
-                and correctness == {"search": True, "read": True}
-                and direct.get("search", {}).get("ok") is True
-                and direct.get("read", {}).get("ok") is True
-                and capture.get("ok") is True and identity_ok,
+            and correctness == {"search": True, "read": True}
+            and direct.get("search", {}).get("ok") is True
+            and direct.get("read", {}).get("ok") is True
+            and capture.get("ok") is True
+            and identity_ok,
             "transcript": transcript,
             "direct_bound_probes": direct,
             "diagnostic_identity_valid": identity_ok,
@@ -12335,12 +16199,17 @@ def live_inference_gate_command(args: argparse.Namespace) -> int:
         cleanup.extend(cleanup_benchmark_attempts(runner, plan, state, artifact.name))
         if control_id is not None:
             restored = runner.call(
-                "live-inference-restore", DEBUG_TOOL,
-                diagnostic_payload(plan, "restore_flags", control_id=control_id), check=False,
+                "live-inference-restore",
+                DEBUG_TOOL,
+                diagnostic_payload(plan, "restore_flags", control_id=control_id),
+                check=False,
             )
             state["route_restored"] = call_succeeded(restored)
         reset = runner.call(
-            "live-inference-reset", DEBUG_TOOL, diagnostic_payload(plan, "reset"), check=False
+            "live-inference-reset",
+            DEBUG_TOOL,
+            diagnostic_payload(plan, "reset"),
+            check=False,
         )
         state["scope_reset"] = call_succeeded(reset)
         sampler_cleanup = verify_resumed_memory_sampler_inactive(
@@ -12359,25 +16228,29 @@ def live_inference_gate_command(args: argparse.Namespace) -> int:
             roots_restored = True
         except BenchmarkError:
             pass
-        cleanup.extend([
-            sampler_cleanup,
-            {"action": "restore_route", "ok": state["route_restored"]},
-            {"action": "reset_diagnostics", "ok": state["scope_reset"]},
-            {
-                "action": "preserve_benchmark_setting",
-                "ok": state["benchmark_gate_unchanged"],
-            },
-            {"action": "restore_workspace_roots", "ok": roots_restored},
-        ])
+        cleanup.extend(
+            [
+                sampler_cleanup,
+                {"action": "restore_route", "ok": state["route_restored"]},
+                {"action": "reset_diagnostics", "ok": state["scope_reset"]},
+                {
+                    "action": "preserve_benchmark_setting",
+                    "ok": state["benchmark_gate_unchanged"],
+                },
+                {"action": "restore_workspace_roots", "ok": roots_restored},
+            ]
+        )
         cleanup_complete = validate_cleanup_evidence(
             cleanup,
             run_artifact=True,
             expected_agent_count=len(state.get("attempts", [])),
-            expected_worktree_count=len({
-                item.get("path")
-                for item in state.get("attempts", [])
-                if isinstance(item, dict) and isinstance(item.get("path"), str)
-            }),
+            expected_worktree_count=len(
+                {
+                    item.get("path")
+                    for item in state.get("attempts", [])
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                }
+            ),
         )
         state["cleanup_manual_required"] = (
             state.get("cleanup_manual_required", False) or not cleanup_complete
@@ -12403,7 +16276,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    marker = sub.add_parser("create-marker", help="create the exclusive disposable-root ownership marker offline")
+    marker = sub.add_parser(
+        "create-marker",
+        help="create the exclusive disposable-root ownership marker offline",
+    )
     marker.add_argument("--root-path", required=True)
     marker.add_argument("--workspace-id", required=True)
     marker.add_argument("--root-id", required=True)
@@ -12413,7 +16289,9 @@ def build_parser() -> argparse.ArgumentParser:
     marker.add_argument("--confirm-dedicated-workspace", action="store_true")
     marker.set_defaults(func=create_marker_command)
 
-    self_test = sub.add_parser("self-test", help="run deterministic offline contract validation")
+    self_test = sub.add_parser(
+        "self-test", help="run deterministic offline contract validation"
+    )
     self_test.set_defaults(func=self_test_command)
 
     plan = sub.add_parser("plan", help="write a non-live campaign plan")
@@ -12439,16 +16317,22 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--output", required=True)
     plan.set_defaults(func=plan_command)
 
-    preflight = sub.add_parser("preflight", help="discover schemas and verify exact scope")
+    preflight = sub.add_parser(
+        "preflight", help="discover schemas and verify exact scope"
+    )
     add_live_common(preflight)
     preflight.add_argument("--confirm-dedicated-workspace", action="store_true")
     preflight.set_defaults(func=preflight_command)
 
-    evidence = sub.add_parser("record-evidence", help="write one reviewed external-evidence record offline")
+    evidence = sub.add_parser(
+        "record-evidence", help="write one reviewed external-evidence record offline"
+    )
     evidence.add_argument("--plan", required=True)
     evidence.add_argument("--scenario", required=True)
     evidence.add_argument("--status", choices=("pass", "fail"), required=True)
-    evidence.add_argument("--details", help="optional JSON object with sanitized evidence details")
+    evidence.add_argument(
+        "--details", help="optional JSON object with sanitized evidence details"
+    )
     evidence.add_argument("--output", required=True)
     evidence.set_defaults(func=record_evidence_command)
 
@@ -12488,7 +16372,9 @@ def build_parser() -> argparse.ArgumentParser:
     policy_probe.add_argument("--confirm-dedicated-workspace", action="store_true")
     policy_probe.set_defaults(func=policy_digest_probe_command)
 
-    smoke = sub.add_parser("smoke", help="run correctness, watcher, inheritance, and root-churn checks")
+    smoke = sub.add_parser(
+        "smoke", help="run correctness, watcher, inheritance, and root-churn checks"
+    )
     add_live_common(smoke)
     smoke.add_argument("--confirm-dedicated-workspace", action="store_true")
     smoke.set_defaults(func=smoke_command)
@@ -12505,7 +16391,9 @@ def build_parser() -> argparse.ArgumentParser:
     codemap_gate.add_argument("--cold-samples", type=int, default=20)
     codemap_gate.add_argument("--warm-samples", type=int, default=40)
     codemap_gate.add_argument("--confirm-dedicated-workspace", action="store_true")
-    codemap_gate.add_argument("--confirm-synthetic-allowlisted-source", action="store_true")
+    codemap_gate.add_argument(
+        "--confirm-synthetic-allowlisted-source", action="store_true"
+    )
     codemap_gate.set_defaults(func=codemap_gate_command)
 
     aggregate = sub.add_parser("aggregate", help="aggregate existing artifacts offline")
@@ -12526,7 +16414,9 @@ def build_parser() -> argparse.ArgumentParser:
     inference.add_argument("--confirm-owned-resources", action="store_true")
     inference.set_defaults(func=live_inference_gate_command)
 
-    cleanup = sub.add_parser("cleanup", help="resume idempotent cleanup for an interrupted run")
+    cleanup = sub.add_parser(
+        "cleanup", help="resume idempotent cleanup for an interrupted run"
+    )
     cleanup.add_argument("--artifact", required=True)
     cleanup.add_argument("--cli")
     cleanup.add_argument("--confirm-live-debug-app", action="store_true")
@@ -12544,7 +16434,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("interrupted; run the cleanup subcommand for any recorded live artifact", file=sys.stderr)
+        print(
+            "interrupted; run the cleanup subcommand for any recorded live artifact",
+            file=sys.stderr,
+        )
         return 130
 
 

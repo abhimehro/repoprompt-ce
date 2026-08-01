@@ -35,7 +35,7 @@ struct CodeMapV6CacheDeletionExecutorHooks: @unchecked Sendable {
         beforeCompletionPublication: (() throws -> Void)? = nil,
         synchronize: @escaping (Int32, CodeMapV6CacheDeletionSynchronizationOperation) -> Int32 = {
             descriptor,
-            _ in fsync(descriptor)
+                _ in fsync(descriptor)
         },
         nowNanoseconds: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {

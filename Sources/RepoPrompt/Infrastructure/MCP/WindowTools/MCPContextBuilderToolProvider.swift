@@ -668,10 +668,10 @@ final class MCPContextBuilderToolProvider: MCPWindowToolProviding {
                 let selectionReply = renderedSelection.reply
                 let formattedSelection = renderedSelection.formatted
 
-                var planReply: ChatSendReply? = nil
-                var reviewReply: ChatSendReply? = nil
-                var followUpHint: String? = nil
-                var oracleExportFile: OracleExportFile? = nil
+                var planReply: ChatSendReply?
+                var reviewReply: ChatSendReply?
+                var followUpHint: String?
+                var oracleExportFile: OracleExportFile?
 
                 let responseDisposition = Self.responseDisposition(
                     responseType: responseType,

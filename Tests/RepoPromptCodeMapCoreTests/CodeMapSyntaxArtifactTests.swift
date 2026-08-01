@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
-import XCTest
 @testable import RepoPromptCodeMapCore
+import XCTest
 
 final class CodeMapSyntaxArtifactTests: XCTestCase {
     func testArtifactSerializationIsPathFreeAndRecomputesDerivedValues() throws {

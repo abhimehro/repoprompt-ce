@@ -1065,7 +1065,7 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
 
             // If path is absolute, route to owning repo; otherwise use primary
             var targetRepoURL = repoURL
-            var blameWarning: String? = nil
+            var blameWarning: String?
             if path.hasPrefix("/") {
                 // Find owning repo by longest-prefix match
                 let standardized = (path as NSString).standardizingPath

@@ -43,21 +43,21 @@ import re
 ## Mandatory Properties ##
 
 # The human name for the language, in English.
-name = 'Hungarian'
+name = "Hungarian"
 # Use 2-letter ISO 639-1 if possible, 3-letter ISO code otherwise,
 # or use another catalog as a last resort.
-code = 'hu'
+code = "hu"
 # Q, W, X, Y are only used for foreign words.
 use_ascii = False
 # The charsets we want to support and create data for.
-charsets = ['ISO-8859-2', 'WINDOWS-1250']
+charsets = ["ISO-8859-2", "WINDOWS-1250"]
 
 ## Optional Properties ##
 
 # Alphabet characters: I separate to make missing letters fully visible.
-alphabet = 'abcdefghijklmnop' + 'rstuv' + 'z' + 'áéíóöőúüű'
+alphabet = "abcdefghijklmnop" + "rstuv" + "z" + "áéíóöőúüű"
 # The start page. Though optional, it is advised to choose one yourself.
-start_pages = ['Kezdőlap']
+start_pages = ["Kezdőlap"]
 # give possibility to select another code for the Wikipedia URL.
 wikipedia_code = code
 # 'a' and 'A' will be considered the same character, and so on.

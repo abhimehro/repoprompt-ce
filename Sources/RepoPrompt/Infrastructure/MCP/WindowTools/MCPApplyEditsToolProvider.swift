@@ -77,7 +77,7 @@ final class MCPApplyEditsToolProvider: MCPWindowToolProviding {
     }
 
     private func executeApplyEdits(args: [String: Value]) async throws -> EditSummary {
-        var requestPath: String? = nil
+        var requestPath: String?
         do {
             let request = try EditFlowPerf.measure(EditFlowPerf.Stage.ApplyEdits.requestBuild) {
                 try ApplyEditsRequestBuilder().buildFromNormalizedPayload(args)

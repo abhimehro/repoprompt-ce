@@ -1,5 +1,5 @@
-import XCTest
 @testable import RepoPromptCodeMapCore
+import XCTest
 
 final class CodeMapGoldenTests: XCTestCase {
     func testFixturesMatchGoldenCodeMapDescriptions() throws {
