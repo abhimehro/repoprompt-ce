@@ -23,109 +23,121 @@
 import Dispatch
 import Foundation
 
-extension CharacterEncodingDetector {
-   /**
-    Detects the character encoding of a file.
+public extension CharacterEncodingDetector {
+    /**
+     Detects the character encoding of a file.
 
-    - Parameter fileURL: The URL of the target file. The file does not need to be seekable.
-    - Parameter queue: The dispatch queue on which to perform the analysis.
-    - Parameter completionQueue: The dispatch queue on which to call the completion handler.
-    - Parameter completionHandler: The closure to call after the potentially-asynchronous operation is finished.
-    - Parameter characterEncoding: The `iconv`-compatible identifier of the detected character encoding, or
-                                   `nil` if detection failed.
+     - Parameter fileURL: The URL of the target file. The file does not need to be seekable.
+     - Parameter queue: The dispatch queue on which to perform the analysis.
+     - Parameter completionQueue: The dispatch queue on which to call the completion handler.
+     - Parameter completionHandler: The closure to call after the potentially-asynchronous operation is finished.
+     - Parameter characterEncoding: The `iconv`-compatible identifier of the detected character encoding, or
+                                    `nil` if detection failed.
 
-    - Throws: An error if the file could not be opened.
+     - Throws: An error if the file could not be opened.
 
-    - Returns: A closure to cancel the operation. The completion handler will still be called even if the operation is canceled.
-    */
-   @discardableResult
-   public static func detectCharacterEncoding(ofFileAt fileURL: URL,
-                                              on queue: DispatchQueue,
-                                              completionQueue: DispatchQueue,
-                                              completionHandler: @escaping (_ characterEncoding: String?) -> Void) throws -> () -> Void {
-      precondition(fileURL.isFileURL)
-      let fileHandle = try FileHandle(forReadingFrom: fileURL)
+     - Returns: A closure to cancel the operation. The completion handler will still be called even if the operation is canceled.
+     */
+    @discardableResult
+    static func detectCharacterEncoding(
+        ofFileAt fileURL: URL,
+        on queue: DispatchQueue,
+        completionQueue: DispatchQueue,
+        completionHandler: @escaping (_ characterEncoding: String?) -> Void
+    ) throws -> () -> Void {
+        precondition(fileURL.isFileURL)
+        let fileHandle = try FileHandle(forReadingFrom: fileURL)
 
-      let completionHandlerWithCleanup: (String?) -> Void = { characterEncoding in
-         // Retain the file handle in the completion handler to prevent it from
-         // being deinitialized before we finish reading the data.
-         _ = fileHandle
+        let completionHandlerWithCleanup: (String?) -> Void = { characterEncoding in
+            // Retain the file handle in the completion handler to prevent it from
+            // being deinitialized before we finish reading the data.
+            _ = fileHandle
 
-         completionHandler(characterEncoding)
-      }
-
-      return detectCharacterEncoding(ofDataFromFileDescriptor: fileHandle.fileDescriptor,
-                                     on: queue,
-                                     completionQueue: completionQueue,
-                                     completionHandler: completionHandlerWithCleanup)
-   }
-
-   /**
-    Detects the character encoding of a file.
-
-    - Attention: This method may modify the file offset of the file descriptor.
-
-    - Parameter fileDescriptor: The file descriptor of the target file. The file descriptor does not need to be seekable.
-    - Parameter queue: The dispatch queue on which to perform the analysis.
-    - Parameter completionQueue: The dispatch queue on which to call the completion handler.
-    - Parameter completionHandler: The closure to call after the potentially-asynchronous operation is finished.
-    - Parameter characterEncoding: The `iconv`-compatible identifier of the detected character encoding, or
-                                   `nil` if detection failed.
-
-    - Returns: A closure to cancel the operation. The completion handler will still be called even if the operation is canceled.
-    */
-   @discardableResult
-   public static func detectCharacterEncoding(ofDataFromFileDescriptor fileDescriptor: Int32,
-                                              on queue: DispatchQueue,
-                                              completionQueue: DispatchQueue,
-                                              completionHandler: @escaping (_ characterEncoding: String?) -> Void) -> () -> Void {
-      let channel = DispatchIO(type: .stream,
-                               fileDescriptor: fileDescriptor,
-                               queue: queue,
-                               cleanupHandler: { _ in })
-
-      return detectCharacterEncoding(ofDataFromChannel: channel,
-                                     on: queue,
-                                     completionQueue: completionQueue,
-                                     completionHandler: completionHandler)
-   }
-
-   private static func detectCharacterEncoding(ofDataFromChannel channel: DispatchIO,
-                                               on queue: DispatchQueue,
-                                               completionQueue: DispatchQueue,
-                                               completionHandler: @escaping (_ characterEncoding: String?) -> Void) -> () -> Void {
-      // Set the maximum buffer size to 1 MiB. This value (along with the
-      // minimum buffer size and the handler interval) can be tuned.
-      // - If the value is too high, more memory is used and multithreading
-      //   is less efficient because the handler is called less frequently.
-      // - If the value is too low, reading is less efficient because memory
-      //   allocations are more frequent.
-      channel.setLimit(highWater: 1024 * 1024)
-
-      let dispatchGroup = DispatchGroup()
-      dispatchGroup.enter()
-
-      let detector = CharacterEncodingDetector()
-      channel.read(offset: 0, length: .max, queue: queue) { (done, data, error) in
-         if let data = data, detector.analyzeNextChunk(data) && !done && error == 0 {
-            return
-         }
-
-         dispatchGroup.leave()
-
-         let characterEncoding = detector.finish()
-         completionQueue.async {
             completionHandler(characterEncoding)
-         }
-      }
+        }
 
-      dispatchGroup.notify(queue: queue) {
-         // Retain the channel until it is done reading data.
-         _ = channel
-      }
+        return detectCharacterEncoding(
+            ofDataFromFileDescriptor: fileHandle.fileDescriptor,
+            on: queue,
+            completionQueue: completionQueue,
+            completionHandler: completionHandlerWithCleanup
+        )
+    }
 
-      return {
-         channel.close(flags: .stop)
-      }
-   }
+    /**
+     Detects the character encoding of a file.
+
+     - Attention: This method may modify the file offset of the file descriptor.
+
+     - Parameter fileDescriptor: The file descriptor of the target file. The file descriptor does not need to be seekable.
+     - Parameter queue: The dispatch queue on which to perform the analysis.
+     - Parameter completionQueue: The dispatch queue on which to call the completion handler.
+     - Parameter completionHandler: The closure to call after the potentially-asynchronous operation is finished.
+     - Parameter characterEncoding: The `iconv`-compatible identifier of the detected character encoding, or
+                                    `nil` if detection failed.
+
+     - Returns: A closure to cancel the operation. The completion handler will still be called even if the operation is canceled.
+     */
+    @discardableResult
+    static func detectCharacterEncoding(
+        ofDataFromFileDescriptor fileDescriptor: Int32,
+        on queue: DispatchQueue,
+        completionQueue: DispatchQueue,
+        completionHandler: @escaping (_ characterEncoding: String?) -> Void
+    ) -> () -> Void {
+        let channel = DispatchIO(
+            type: .stream,
+            fileDescriptor: fileDescriptor,
+            queue: queue,
+            cleanupHandler: { _ in }
+        )
+
+        return detectCharacterEncoding(
+            ofDataFromChannel: channel,
+            on: queue,
+            completionQueue: completionQueue,
+            completionHandler: completionHandler
+        )
+    }
+
+    private static func detectCharacterEncoding(
+        ofDataFromChannel channel: DispatchIO,
+        on queue: DispatchQueue,
+        completionQueue: DispatchQueue,
+        completionHandler: @escaping (_ characterEncoding: String?) -> Void
+    ) -> () -> Void {
+        // Set the maximum buffer size to 1 MiB. This value (along with the
+        // minimum buffer size and the handler interval) can be tuned.
+        // - If the value is too high, more memory is used and multithreading
+        //   is less efficient because the handler is called less frequently.
+        // - If the value is too low, reading is less efficient because memory
+        //   allocations are more frequent.
+        channel.setLimit(highWater: 1024 * 1024)
+
+        let dispatchGroup = DispatchGroup()
+        dispatchGroup.enter()
+
+        let detector = CharacterEncodingDetector()
+        channel.read(offset: 0, length: .max, queue: queue) { done, data, error in
+            if let data, detector.analyzeNextChunk(data), !done, error == 0 {
+                return
+            }
+
+            dispatchGroup.leave()
+
+            let characterEncoding = detector.finish()
+            completionQueue.async {
+                completionHandler(characterEncoding)
+            }
+        }
+
+        dispatchGroup.notify(queue: queue) {
+            // Retain the channel until it is done reading data.
+            _ = channel
+        }
+
+        return {
+            channel.close(flags: .stop)
+        }
+    }
 }

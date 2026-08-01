@@ -125,11 +125,11 @@ class AnthropicProvider: AIProvider {
                     // Track current thinking content
                     var currentThinking = ""
                     // Track token counts
-                    var promptTokens: Int? = nil
-                    var completionTokens: Int? = nil
+                    var promptTokens: Int?
+                    var completionTokens: Int?
 
                     for try await result in stream {
-                        var reasoning: String? = nil
+                        var reasoning: String?
 
                         // Handle different stream events
                         switch result.streamEvent {

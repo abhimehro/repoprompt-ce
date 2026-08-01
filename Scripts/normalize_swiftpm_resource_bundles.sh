@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_BUNDLE="${1:-}"
+APP_BUNDLE="${1-}"
 
 fail() {
-    printf 'ERROR: %s\n' "$*" >&2
-    exit 1
+	printf 'ERROR: %s\n' "$*" >&2
+	exit 1
 }
 
-[[ -n "$APP_BUNDLE" ]] || fail "Usage: $0 <app-bundle>"
+[[ -n $APP_BUNDLE ]] || fail "Usage: $0 <app-bundle>"
 
 python3 - "$APP_BUNDLE" <<'PYTHON'
 import shutil

@@ -26,7 +26,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def run(command: list[str], *, binary: bool = False) -> subprocess.CompletedProcess[Any]:
+def run(
+    command: list[str], *, binary: bool = False
+) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(command, capture_output=True, text=not binary, check=False)
 
 
@@ -34,7 +36,9 @@ def architectures(path: Path) -> list[str]:
     lipo = os.environ.get("LIPO", "lipo")
     result = run([lipo, "-archs", str(path)])
     if result.returncode != 0:
-        fail(f"could not read architectures for {path}: {(result.stderr or '').strip()}")
+        fail(
+            f"could not read architectures for {path}: {(result.stderr or '').strip()}"
+        )
     return sorted(set((result.stdout or "").split()))
 
 
@@ -66,10 +70,15 @@ def signing_details(
         if line.startswith("designated => "):
             designated_requirement = line.removeprefix("designated => ").strip()
             break
-    entitlements_result = run([codesign, "-d", "--entitlements", ":-", str(path)], binary=True)
+    entitlements_result = run(
+        [codesign, "-d", "--entitlements", ":-", str(path)], binary=True
+    )
     entitlement_hash = None
     if entitlements_result.returncode == 0:
-        candidates = [entitlements_result.stdout or b"", entitlements_result.stderr or b""]
+        candidates = [
+            entitlements_result.stdout or b"",
+            entitlements_result.stderr or b"",
+        ]
         for candidate in candidates:
             plist_start = candidate.find(b"<?xml")
             binary_start = candidate.find(b"bplist")
@@ -88,7 +97,9 @@ def signing_details(
     certificate_sha256 = None
     with tempfile.TemporaryDirectory() as temp_dir:
         prefix = Path(temp_dir) / "certificate"
-        extraction = run([codesign, "-d", f"--extract-certificates={prefix}", str(path)])
+        extraction = run(
+            [codesign, "-d", f"--extract-certificates={prefix}", str(path)]
+        )
         leaf = Path(f"{prefix}0")
         if extraction.returncode == 0 and leaf.is_file():
             certificate_sha256 = sha256(leaf)
@@ -101,9 +112,15 @@ def signing_details(
         if not allow_adhoc_without_requirement:
             fail(f"signed path did not expose a designated requirement: {path}")
         if team is not None or authorities or certificate_sha256 is not None:
-            fail(f"certificate-backed signed path did not expose a designated requirement: {path}")
-    if certificate_sha256 is None and (require_leaf_certificate or team is not None or authorities):
-        fail(f"certificate-backed signed path did not expose an extractable leaf certificate: {path}")
+            fail(
+                f"certificate-backed signed path did not expose a designated requirement: {path}"
+            )
+    if certificate_sha256 is None and (
+        require_leaf_certificate or team is not None or authorities
+    ):
+        fail(
+            f"certificate-backed signed path did not expose an extractable leaf certificate: {path}"
+        )
     return {
         "identifier": (values.get("Identifier") or [None])[0],
         "team_identifier": team,
@@ -136,7 +153,9 @@ def executable_entry(
     }
 
 
-def collect_manifest(app: Path, expected_architectures: list[str] | None) -> dict[str, Any]:
+def collect_manifest(
+    app: Path, expected_architectures: list[str] | None
+) -> dict[str, Any]:
     if not app.is_dir() or app.is_symlink():
         fail(f"app bundle must be a non-symlink directory: {app}")
     plist_path = app / "Contents" / "Info.plist"
@@ -172,7 +191,10 @@ def collect_manifest(app: Path, expected_architectures: list[str] | None) -> dic
     if len(architecture_sets) != 1:
         fail("app and helper architecture sets differ while writing artifact manifest")
     actual_architectures = list(next(iter(architecture_sets)))
-    if expected_architectures is not None and actual_architectures != expected_architectures:
+    if (
+        expected_architectures is not None
+        and actual_architectures != expected_architectures
+    ):
         fail(
             "artifact manifest architecture mismatch: "
             f"expected {expected_architectures}, got {actual_architectures}"
@@ -193,9 +215,11 @@ def collect_manifest(app: Path, expected_architectures: list[str] | None) -> dic
             "build_number": info.get("CFBundleVersion"),
             "signing_mode": signing_mode,
             "telemetry_enabled": telemetry_enabled,
-            "architecture_policy": "universal-public"
-            if actual_architectures == ["arm64", "x86_64"]
-            else "host-native",
+            "architecture_policy": (
+                "universal-public"
+                if actual_architectures == ["arm64", "x86_64"]
+                else "host-native"
+            ),
             "architectures": actual_architectures,
         },
         "bundle_signing": bundle_signing,

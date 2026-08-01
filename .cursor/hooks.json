@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/cursor-1password-hooks-bundle/bin/run-hook.sh 1password-validate-mounted-env-files"
+      }
+    ]
+  }
+}

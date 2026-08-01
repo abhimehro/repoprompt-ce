@@ -20,7 +20,9 @@ class ReleasePromotionTests(unittest.TestCase):
         result, _capture, _tools = self.run_promotion("verify")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("OK: reviewed source release assets verified for v1.0.0.", result.stdout)
+        self.assertIn(
+            "OK: reviewed source release assets verified for v1.0.0.", result.stdout
+        )
 
     def test_verify_enforces_exact_codex_verifier_command_and_paths(self) -> None:
         result, _capture, tools = self.run_promotion("verify")
@@ -34,7 +36,9 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         for call in calls:
             self.assertIn("--manifest", call)
-            self.assertIn("Vendor/Codex/manifest.json verify-bundle --arch all --bundle", call)
+            self.assertIn(
+                "Vendor/Codex/manifest.json verify-bundle --arch all --bundle", call
+            )
             self.assertTrue(
                 call.endswith(
                     "Contents/Resources/BundledRuntimes/Codex "
@@ -43,24 +47,32 @@ class ReleasePromotionTests(unittest.TestCase):
             )
 
     def test_verify_rejects_missing_codex_manifest(self) -> None:
-        result, _capture, _tools = self.run_promotion("verify", missing_codex_manifest=True)
+        result, _capture, _tools = self.run_promotion(
+            "verify", missing_codex_manifest=True
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Vendor/Codex/manifest.json", result.stderr)
 
     def test_verify_rejects_missing_embedded_codex_package_target(self) -> None:
-        result, _capture, _tools = self.run_promotion("verify", missing_codex_package=True)
+        result, _capture, _tools = self.run_promotion(
+            "verify", missing_codex_package=True
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing embedded Codex package targets", result.stderr)
 
-    def test_promote_mirrors_draft_before_publishing_and_runs_anonymous_smoke(self) -> None:
+    def test_promote_mirrors_draft_before_publishing_and_runs_anonymous_smoke(
+        self,
+    ) -> None:
         result, capture, tools = self.run_promotion("promote")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("OK: anonymous release smoke passed for v1.0.0.", result.stdout)
         calls = capture.read_text(encoding="utf-8").splitlines()
-        create = next(index for index, line in enumerate(calls) if "release create v1.0.0" in line)
+        create = next(
+            index for index, line in enumerate(calls) if "release create v1.0.0" in line
+        )
         publish_update = next(
             index
             for index, line in enumerate(calls)
@@ -73,10 +85,18 @@ class ReleasePromotionTests(unittest.TestCase):
         )
         self.assertLess(create, publish_update)
         self.assertLess(publish_update, publish_source)
-        sentry_calls = [line for line in tools.read_text(encoding="utf-8").splitlines() if line.startswith("sentry ")]
+        sentry_calls = [
+            line
+            for line in tools.read_text(encoding="utf-8").splitlines()
+            if line.startswith("sentry ")
+        ]
         self.assertEqual(sum(" GET " in call for call in sentry_calls), 2)
         self.assertEqual(sum(" POST " in call for call in sentry_calls), 1)
-        self.assertTrue(all("com.pvncher.repoprompt.ce%401.0.0%2B1" in call for call in sentry_calls))
+        self.assertTrue(
+            all(
+                "com.pvncher.repoprompt.ce%401.0.0%2B1" in call for call in sentry_calls
+            )
+        )
 
     def test_promote_resumes_matching_updater_draft_without_reupload(self) -> None:
         result, capture, _tools = self.run_promotion("promote", update_state="draft")
@@ -84,9 +104,13 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = capture.read_text(encoding="utf-8")
         self.assertNotIn("release create v1.0.0", calls)
-        self.assertIn("release edit v1.0.0 --repo repoprompt/repoprompt-ce-updates", calls)
+        self.assertIn(
+            "release edit v1.0.0 --repo repoprompt/repoprompt-ce-updates", calls
+        )
 
-    def test_verify_allows_published_source_for_partial_promotion_recovery(self) -> None:
+    def test_verify_allows_published_source_for_partial_promotion_recovery(
+        self,
+    ) -> None:
         result, _capture, _tools = self.run_promotion("verify", source_is_draft=False)
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -105,7 +129,9 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertIn("OK: recorded Sentry production deploy", result.stdout)
 
     def test_promote_skips_existing_exact_sentry_deploy(self) -> None:
-        result, _capture, tools = self.run_promotion("promote", sentry_deploy_state="exact")
+        result, _capture, tools = self.run_promotion(
+            "promote", sentry_deploy_state="exact"
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         sentry_calls = tools.read_text(encoding="utf-8")
@@ -113,12 +139,16 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertIn("already recorded", result.stdout)
 
     def test_promote_unrelated_sentry_deploy_does_not_suppress_create(self) -> None:
-        result, _capture, tools = self.run_promotion("promote", sentry_deploy_state="unrelated")
+        result, _capture, tools = self.run_promotion(
+            "promote", sentry_deploy_state="unrelated"
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("sentry POST", tools.read_text(encoding="utf-8"))
 
-    def test_promote_fails_closed_on_sentry_scope_failure_before_github_mutation(self) -> None:
+    def test_promote_fails_closed_on_sentry_scope_failure_before_github_mutation(
+        self,
+    ) -> None:
         result, capture, tools = self.run_promotion("promote", sentry_http_status="403")
 
         self.assertNotEqual(result.returncode, 0)
@@ -127,14 +157,18 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertNotIn("sentry POST", tools.read_text(encoding="utf-8"))
 
     def test_promote_fails_closed_on_malformed_sentry_deploy_list(self) -> None:
-        result, capture, tools = self.run_promotion("promote", sentry_deploy_state="malformed")
+        result, capture, tools = self.run_promotion(
+            "promote", sentry_deploy_state="malformed"
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("malformed JSON", result.stderr)
         self.assertNotIn("release edit", capture.read_text(encoding="utf-8"))
         self.assertNotIn("sentry POST", tools.read_text(encoding="utf-8"))
 
-    def test_promote_does_not_record_deploy_when_anonymous_verification_fails(self) -> None:
+    def test_promote_does_not_record_deploy_when_anonymous_verification_fails(
+        self,
+    ) -> None:
         result, _capture, tools = self.run_promotion("promote", anonymous_failure=True)
 
         self.assertNotEqual(result.returncode, 0)
@@ -147,7 +181,9 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertIn("must contain exactly", result.stderr)
 
     def test_verify_rejects_duplicate_appcast_items(self) -> None:
-        result, _capture, _tools = self.run_promotion("verify", duplicate_appcast_item=True)
+        result, _capture, _tools = self.run_promotion(
+            "verify", duplicate_appcast_item=True
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("appcast must contain exactly one item", result.stderr)
@@ -164,22 +200,32 @@ class ReleasePromotionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Stable promotion requires BUILD_NUMBER > 1", result.stderr)
 
-    def test_promote_rejects_latest_query_failure_other_than_first_release_404(self) -> None:
-        result, _capture, _tools = self.run_promotion("promote", latest_http_status="503")
+    def test_promote_rejects_latest_query_failure_other_than_first_release_404(
+        self,
+    ) -> None:
+        result, _capture, _tools = self.run_promotion(
+            "promote", latest_http_status="503"
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("HTTP 503", result.stderr)
 
     def test_promote_rejects_unreviewed_checksums_digest(self) -> None:
-        result, _capture, tool_capture = self.run_promotion("promote", reviewed_checksums_sha256="not-reviewed")
+        result, _capture, tool_capture = self.run_promotion(
+            "promote", reviewed_checksums_sha256="not-reviewed"
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Reviewed SHA256SUMS digest mismatch", result.stderr)
-        calls = tool_capture.read_text(encoding="utf-8") if tool_capture.exists() else ""
+        calls = (
+            tool_capture.read_text(encoding="utf-8") if tool_capture.exists() else ""
+        )
         self.assertEqual(calls, "")
 
     def test_verify_rejects_sparkle_private_key_mismatch(self) -> None:
-        result, _capture, _tools = self.run_promotion("verify", derived_public_key="different-public-key")
+        result, _capture, _tools = self.run_promotion(
+            "verify", derived_public_key="different-public-key"
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Protected Sparkle private key does not match", result.stderr)
@@ -240,8 +286,18 @@ class ReleasePromotionTests(unittest.TestCase):
             fake_bin,
             app / "Contents" / "MacOS",
             app / "Contents" / "Resources" / "bin",
-            app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "aarch64-apple-darwin",
-            app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "x86_64-apple-darwin",
+            app
+            / "Contents"
+            / "Resources"
+            / "BundledRuntimes"
+            / "Codex"
+            / "aarch64-apple-darwin",
+            app
+            / "Contents"
+            / "Resources"
+            / "BundledRuntimes"
+            / "Codex"
+            / "x86_64-apple-darwin",
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -250,11 +306,20 @@ class ReleasePromotionTests(unittest.TestCase):
             SCRIPT_DIR / "validate_embedded_mcp_helper_layout.sh",
             scripts / "validate_embedded_mcp_helper_layout.sh",
         )
-        shutil.copy2(SCRIPT_DIR / "validate_packaged_legal.sh", scripts / "validate_packaged_legal.sh")
-        shutil.copy2(SCRIPT_DIR / "load_release_metadata.sh", scripts / "load_release_metadata.sh")
-        shutil.copy2(SCRIPT_DIR / "verify_sparkle_signature.swift", scripts / "verify_sparkle_signature.swift")
+        shutil.copy2(
+            SCRIPT_DIR / "validate_packaged_legal.sh",
+            scripts / "validate_packaged_legal.sh",
+        )
+        shutil.copy2(
+            SCRIPT_DIR / "load_release_metadata.sh",
+            scripts / "load_release_metadata.sh",
+        )
+        shutil.copy2(
+            SCRIPT_DIR / "verify_sparkle_signature.swift",
+            scripts / "verify_sparkle_signature.swift",
+        )
         (scripts / "codex_runtime_artifact.py").write_text(
-            "#!/usr/bin/env python3\nimport os\nimport sys\nfrom pathlib import Path\n\nargs = sys.argv[1:]\nexpected_manifest = Path(os.environ[\"FAKE_CODEX_MANIFEST\"])\nif len(args) != 9 or args[:6] != [\n    \"--manifest\",\n    str(expected_manifest),\n    \"verify-bundle\",\n    \"--arch\",\n    \"all\",\n    \"--bundle\",\n] or args[7:] != [\"--signed-team-identifier\", \"648A27MST5\"]:\n    print(f\"ERROR: unexpected Codex verifier arguments: {args!r}\", file=sys.stderr)\n    raise SystemExit(64)\nbundle = Path(args[6])\nif not expected_manifest.is_file():\n    print(f\"ERROR: missing approved Codex manifest: {expected_manifest}\", file=sys.stderr)\n    raise SystemExit(65)\nexpected_targets = {\"aarch64-apple-darwin\", \"x86_64-apple-darwin\"}\nif not bundle.is_dir() or {path.name for path in bundle.iterdir()} != expected_targets:\n    print(f\"ERROR: missing embedded Codex package targets: {bundle}\", file=sys.stderr)\n    raise SystemExit(66)\nexpected_suffix = Path(\"Contents/Resources/BundledRuntimes/Codex\")\nif tuple(bundle.parts[-len(expected_suffix.parts):]) != expected_suffix.parts:\n    print(f\"ERROR: unexpected embedded Codex bundle path: {bundle}\", file=sys.stderr)\n    raise SystemExit(67)\nwith Path(os.environ[\"FAKE_TOOL_CAPTURE\"]).open(\"a\", encoding=\"utf-8\") as handle:\n    handle.write(\"codex \" + \" \".join(args) + \"\\n\")\nprint(\"OK: fixture Codex bundle contract.\")\n",
+            '#!/usr/bin/env python3\nimport os\nimport sys\nfrom pathlib import Path\n\nargs = sys.argv[1:]\nexpected_manifest = Path(os.environ["FAKE_CODEX_MANIFEST"])\nif len(args) != 9 or args[:6] != [\n    "--manifest",\n    str(expected_manifest),\n    "verify-bundle",\n    "--arch",\n    "all",\n    "--bundle",\n] or args[7:] != ["--signed-team-identifier", "648A27MST5"]:\n    print(f"ERROR: unexpected Codex verifier arguments: {args!r}", file=sys.stderr)\n    raise SystemExit(64)\nbundle = Path(args[6])\nif not expected_manifest.is_file():\n    print(f"ERROR: missing approved Codex manifest: {expected_manifest}", file=sys.stderr)\n    raise SystemExit(65)\nexpected_targets = {"aarch64-apple-darwin", "x86_64-apple-darwin"}\nif not bundle.is_dir() or {path.name for path in bundle.iterdir()} != expected_targets:\n    print(f"ERROR: missing embedded Codex package targets: {bundle}", file=sys.stderr)\n    raise SystemExit(66)\nexpected_suffix = Path("Contents/Resources/BundledRuntimes/Codex")\nif tuple(bundle.parts[-len(expected_suffix.parts):]) != expected_suffix.parts:\n    print(f"ERROR: unexpected embedded Codex bundle path: {bundle}", file=sys.stderr)\n    raise SystemExit(67)\nwith Path(os.environ["FAKE_TOOL_CAPTURE"]).open("a", encoding="utf-8") as handle:\n    handle.write("codex " + " ".join(args) + "\\n")\nprint("OK: fixture Codex bundle contract.")\n',
             encoding="utf-8",
         )
         codex_vendor = root / "Vendor" / "Codex"
@@ -265,38 +330,74 @@ class ReleasePromotionTests(unittest.TestCase):
         (scripts / "promote_release.sh").chmod(0o755)
         (scripts / "validate_embedded_mcp_helper_layout.sh").chmod(0o755)
         (scripts / "validate_packaged_legal.sh").chmod(0o755)
-        self.write_stub(scripts, "verify_remote_release_commit.sh", "printf 'OK: fixture remote tag remains bound.\\n'\n")
-        self.write_stub(scripts, "verify_sparkle_vendor.sh", "printf 'OK: fixture Sparkle payload matches.\\n'\n")
-        self.write_stub(scripts, "validate_app_architectures.sh", "printf 'OK: fixture universal architectures.\\n'\n")
-        self.write_stub(scripts, "write_app_artifact_manifest.py", "printf 'OK: fixture artifact manifest.\\n'\n")
+        self.write_stub(
+            scripts,
+            "verify_remote_release_commit.sh",
+            "printf 'OK: fixture remote tag remains bound.\\n'\n",
+        )
+        self.write_stub(
+            scripts,
+            "verify_sparkle_vendor.sh",
+            "printf 'OK: fixture Sparkle payload matches.\\n'\n",
+        )
+        self.write_stub(
+            scripts,
+            "validate_app_architectures.sh",
+            "printf 'OK: fixture universal architectures.\\n'\n",
+        )
+        self.write_stub(
+            scripts,
+            "write_app_artifact_manifest.py",
+            "printf 'OK: fixture artifact manifest.\\n'\n",
+        )
         (root / "version.env").write_text(
-            textwrap.dedent(
-                """\
+            textwrap.dedent("""\
                 APP_NAME=RepoPrompt
                 DISPLAY_NAME="RepoPrompt CE"
                 MARKETING_VERSION=1.0.0
                 BUILD_NUMBER=1
                 BUNDLE_ID=com.pvncher.repoprompt.ce
                 SIGNING_TEAM_ID=648A27MST5
-                """
-            ),
+                """),
             encoding="utf-8",
         )
-        (app / "Contents" / "Info.plist").write_text("fixture plist\n", encoding="utf-8")
+        (app / "Contents" / "Info.plist").write_text(
+            "fixture plist\n", encoding="utf-8"
+        )
         self.write_stub(
             app / "Contents" / "MacOS",
             "repoprompt-mcp",
             "printf 'ERROR: fixture packaged helper must not execute\\n' >&2\nexit 137\n",
         )
-        (app / "Contents" / "Resources" / "repoprompt-mcp").symlink_to("../MacOS/repoprompt-mcp")
-        (app / "Contents" / "Resources" / "bin" / "repoprompt-mcp").symlink_to("../../MacOS/repoprompt-mcp")
+        (app / "Contents" / "Resources" / "repoprompt-mcp").symlink_to(
+            "../MacOS/repoprompt-mcp"
+        )
+        (app / "Contents" / "Resources" / "bin" / "repoprompt-mcp").symlink_to(
+            "../../MacOS/repoprompt-mcp"
+        )
         self.write_legal_tree(root, app)
         shutil.copytree(app, dmg_app, symlinks=True)
         if missing_codex_package:
-            shutil.rmtree(app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "x86_64-apple-darwin")
-            shutil.rmtree(dmg_app / "Contents" / "Resources" / "BundledRuntimes" / "Codex" / "x86_64-apple-darwin")
+            shutil.rmtree(
+                app
+                / "Contents"
+                / "Resources"
+                / "BundledRuntimes"
+                / "Codex"
+                / "x86_64-apple-darwin"
+            )
+            shutil.rmtree(
+                dmg_app
+                / "Contents"
+                / "Resources"
+                / "BundledRuntimes"
+                / "Codex"
+                / "x86_64-apple-darwin"
+            )
         if mismatched_dmg_app:
-            (dmg_app / "Contents" / "dmg-only-drift.txt").write_text("drift\n", encoding="utf-8")
+            (dmg_app / "Contents" / "dmg-only-drift.txt").write_text(
+                "drift\n", encoding="utf-8"
+            )
 
         zip_path = assets / "RepoPrompt-1.0.0-1.zip"
         dmg_path = assets / "RepoPrompt-1.0.0-1.dmg"
@@ -307,36 +408,30 @@ class ReleasePromotionTests(unittest.TestCase):
         zip_path.write_text("fixture zip\n", encoding="utf-8")
         dmg_path.write_text("fixture dmg\n", encoding="utf-8")
         artifact_manifest_path.write_text('{"schema_version":1}\n', encoding="utf-8")
-        item = textwrap.dedent(
-            f"""\
+        item = textwrap.dedent(f"""\
             <item>
               <sparkle:version>1</sparkle:version>
               <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
               <enclosure url="{enclosure_url}" length="{zip_path.stat().st_size}" sparkle:edSignature="fixture-signature" />
             </item>
-            """
-        )
+            """)
         appcast_path.write_text(
-            textwrap.dedent(
-                f"""\
+            textwrap.dedent(f"""\
                 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
                   <channel>
                     {item}
                     {item if duplicate_appcast_item else ""}
                   </channel>
                 </rss>
-                """
-            ),
+                """),
             encoding="utf-8",
         )
         previous_appcast.write_text(
-            textwrap.dedent(
-                f"""\
+            textwrap.dedent(f"""\
                 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
                   <channel><item><sparkle:version>{latest_build or "0"}</sparkle:version></item></channel>
                 </rss>
-                """
-            ),
+                """),
             encoding="utf-8",
         )
         checksums_path.write_text(
@@ -577,7 +672,8 @@ class ReleasePromotionTests(unittest.TestCase):
                 "SOURCE_GITHUB_REPOSITORY": "repoprompt/repoprompt-ce",
                 "SOURCE_GH_TOKEN": "source-token",
                 "PUBLIC_UPDATE_GH_TOKEN": "update-token",
-                "REVIEWED_CHECKSUMS_SHA256": reviewed_checksums_sha256 or self.sha256(checksums_path),
+                "REVIEWED_CHECKSUMS_SHA256": reviewed_checksums_sha256
+                or self.sha256(checksums_path),
                 "SPARKLE_PRIVATE_KEY": "fixture-private-key",
                 "REPOPROMPT_SENTRY_AUTH_TOKEN_FILE": str(sentry_token_file),
                 "REPOPROMPT_SENTRY_ORG": "repoprompt",
@@ -596,7 +692,9 @@ class ReleasePromotionTests(unittest.TestCase):
                 "FAKE_LATEST_BUILD": latest_build,
                 "FAKE_LATEST_HTTP_STATUS": latest_http_status,
                 "FAKE_PROMOTION_PUBLISHED": str(promotion_published),
-                "FAKE_PROMOTION_ALREADY_PUBLISHED": "true" if promotion_already_published else "false",
+                "FAKE_PROMOTION_ALREADY_PUBLISHED": (
+                    "true" if promotion_already_published else "false"
+                ),
                 "FAKE_SENTRY_DEPLOY_STATE": sentry_deploy_state,
                 "FAKE_SENTRY_HTTP_STATUS": sentry_http_status,
                 "FAKE_SENTRY_DEPLOY_CREATED": str(sentry_deploy_created),
@@ -620,7 +718,9 @@ class ReleasePromotionTests(unittest.TestCase):
         (root / "ThirdPartyLicenses" / "fixture").mkdir(parents=True)
         (root / "LICENSE").write_text("root license\n", encoding="utf-8")
         (root / "THIRD_PARTY_NOTICES.md").write_text("root notices\n", encoding="utf-8")
-        (root / "ThirdPartyLicenses" / "fixture" / "LICENSE").write_text("fixture license\n", encoding="utf-8")
+        (root / "ThirdPartyLicenses" / "fixture" / "LICENSE").write_text(
+            "fixture license\n", encoding="utf-8"
+        )
         legal = app / "Contents" / "Resources" / "Legal"
         legal.mkdir(parents=True)
         shutil.copy2(root / "LICENSE", legal / "LICENSE")
@@ -634,7 +734,10 @@ class ReleasePromotionTests(unittest.TestCase):
     @staticmethod
     def write_stub(bin_dir: Path, name: str, body: str) -> None:
         path = bin_dir / name
-        path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + textwrap.dedent(body), encoding="utf-8")
+        path.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n" + textwrap.dedent(body),
+            encoding="utf-8",
+        )
         path.chmod(0o755)
 
 

@@ -56,7 +56,7 @@ enum SwiftCodeMapStrategy {
         _ category: SwiftStrategyAttributionCategory,
         duration: TimeInterval,
         count: Int = 1,
-		perfStats: CodeMapPerformanceCollector?
+        perfStats: CodeMapPerformanceCollector?
     ) {
         guard let perfStats else { return }
         switch category {
@@ -134,7 +134,7 @@ enum SwiftCodeMapStrategy {
                 }
 
                 // Fallback scan (should be rare if ranges are nested)
-                var bestDecl: CodeMapIndexedCapture? = nil
+                var bestDecl: CodeMapIndexedCapture?
                 for decl in declCaps where rangeContains(decl.range, nameCap.range) {
                     if bestDecl == nil || decl.range.length < bestDecl!.range.length {
                         bestDecl = decl
@@ -385,9 +385,9 @@ enum SwiftCodeMapStrategy {
         globalVariables: inout [VariableInfo],
         referencedTypes: inout ReferencedTypesAccumulator,
         captureDeclaration: (NSRange, Character) -> String,
-		perfStats: CodeMapPerformanceCollector? = nil
+        perfStats: CodeMapPerformanceCollector? = nil
     ) -> Bool {
-		let activePerfStats = perfStats
+        let activePerfStats = perfStats
         let perfEnabled = activePerfStats != nil
 
         switch cap.name {
@@ -397,12 +397,12 @@ enum SwiftCodeMapStrategy {
             // Top-level Swift functions go directly to globalFunctions
             // Use Swift-specific signature extraction to avoid semicolon heuristic issues
             let signatureStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let signature = extractSwiftFunctionSignature(
-				from: cap.range,
-				nsContent: nsContent,
-				boundaries: boundaries,
-				performanceCollector: activePerfStats
-			)
+            let signature = extractSwiftFunctionSignature(
+                from: cap.range,
+                nsContent: nsContent,
+                boundaries: boundaries,
+                performanceCollector: activePerfStats
+            )
             if perfEnabled {
                 record(.functionSignature, duration: CFAbsoluteTimeGetCurrent() - signatureStart, perfStats: activePerfStats)
             }
@@ -451,10 +451,10 @@ enum SwiftCodeMapStrategy {
             )
 
             if !containsFunction(
-                    in: globalFunctions,
-                    definitionLine: decl,
-                    performanceCollector: activePerfStats
-                ) {
+                in: globalFunctions,
+                definitionLine: decl,
+                performanceCollector: activePerfStats
+            ) {
                 globalFunctions.append(fnInfo)
             }
             if perfEnabled {
@@ -469,12 +469,12 @@ enum SwiftCodeMapStrategy {
             // Swift methods - use range-based containment to find enclosing type
             // Use Swift-specific signature extraction to avoid semicolon heuristic issues
             let signatureStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let signature = extractSwiftFunctionSignature(
-				from: cap.range,
-				nsContent: nsContent,
-				boundaries: boundaries,
-				performanceCollector: activePerfStats
-			)
+            let signature = extractSwiftFunctionSignature(
+                from: cap.range,
+                nsContent: nsContent,
+                boundaries: boundaries,
+                performanceCollector: activePerfStats
+            )
             if perfEnabled {
                 record(.functionSignature, duration: CFAbsoluteTimeGetCurrent() - signatureStart, perfStats: activePerfStats)
             }
@@ -515,11 +515,11 @@ enum SwiftCodeMapStrategy {
             }
             // Find enclosing type by range containment
             let enclosingTypeStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let resolvedEnclosingType = enclosingType(
-				for: cap.range,
-				in: context.typeBoundaries,
-				performanceCollector: activePerfStats
-			)
+            let resolvedEnclosingType = enclosingType(
+                for: cap.range,
+                in: context.typeBoundaries,
+                performanceCollector: activePerfStats
+            )
             if perfEnabled {
                 record(.enclosingTypeLookup, duration: CFAbsoluteTimeGetCurrent() - enclosingTypeStart, perfStats: activePerfStats)
             }
@@ -566,12 +566,12 @@ enum SwiftCodeMapStrategy {
             // Protocol methods go to interfaces
             // Use Swift-specific signature extraction to avoid semicolon heuristic issues
             let signatureStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let signature = extractSwiftFunctionSignature(
-				from: cap.range,
-				nsContent: nsContent,
-				boundaries: boundaries,
-				performanceCollector: activePerfStats
-			)
+            let signature = extractSwiftFunctionSignature(
+                from: cap.range,
+                nsContent: nsContent,
+                boundaries: boundaries,
+                performanceCollector: activePerfStats
+            )
             if perfEnabled {
                 record(.functionSignature, duration: CFAbsoluteTimeGetCurrent() - signatureStart, perfStats: activePerfStats)
             }
@@ -608,11 +608,11 @@ enum SwiftCodeMapStrategy {
             }
             // Find enclosing protocol
             let enclosingTypeStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let resolvedEnclosingProto = enclosingType(
-				for: cap.range,
-				in: context.typeBoundaries,
-				performanceCollector: activePerfStats
-			)
+            let resolvedEnclosingProto = enclosingType(
+                for: cap.range,
+                in: context.typeBoundaries,
+                performanceCollector: activePerfStats
+            )
             if perfEnabled {
                 record(.enclosingTypeLookup, duration: CFAbsoluteTimeGetCurrent() - enclosingTypeStart, perfStats: activePerfStats)
             }
@@ -645,14 +645,15 @@ enum SwiftCodeMapStrategy {
         case "swift.property.toplevel":
             // Top-level Swift properties go to globalVariables
             let propertyDeclarationStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let fullDecl = extractSwiftPropertyDeclaration(
-				from: cap.range,
-				index: index,
-				nsContent: nsContent,
-				performanceCollector: activePerfStats,
-				fallback: {
-                captureDeclaration(cap.range, "{")
-            })
+            let fullDecl = extractSwiftPropertyDeclaration(
+                from: cap.range,
+                index: index,
+                nsContent: nsContent,
+                performanceCollector: activePerfStats,
+                fallback: {
+                    captureDeclaration(cap.range, "{")
+                }
+            )
             if perfEnabled {
                 record(.propertyDeclaration, duration: CFAbsoluteTimeGetCurrent() - propertyDeclarationStart, perfStats: activePerfStats)
             }
@@ -668,10 +669,10 @@ enum SwiftCodeMapStrategy {
             let varInfo = VariableInfo(name: fullDecl, typeName: propType, definitionLine: fullDecl)
 
             if !containsVariable(
-                    in: globalVariables,
-                    definitionLine: fullDecl,
-                    performanceCollector: activePerfStats
-                ) {
+                in: globalVariables,
+                definitionLine: fullDecl,
+                performanceCollector: activePerfStats
+            ) {
                 globalVariables.append(varInfo)
             }
             if perfEnabled {
@@ -685,14 +686,15 @@ enum SwiftCodeMapStrategy {
         case "swift.property.member":
             // Swift member properties - use range-based containment
             let propertyDeclarationStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let fullDecl = extractSwiftPropertyDeclaration(
-				from: cap.range,
-				index: index,
-				nsContent: nsContent,
-				performanceCollector: activePerfStats,
-				fallback: {
-                captureDeclaration(cap.range, "{")
-            })
+            let fullDecl = extractSwiftPropertyDeclaration(
+                from: cap.range,
+                index: index,
+                nsContent: nsContent,
+                performanceCollector: activePerfStats,
+                fallback: {
+                    captureDeclaration(cap.range, "{")
+                }
+            )
             if perfEnabled {
                 record(.propertyDeclaration, duration: CFAbsoluteTimeGetCurrent() - propertyDeclarationStart, perfStats: activePerfStats)
             }
@@ -706,11 +708,11 @@ enum SwiftCodeMapStrategy {
             }
 
             let enclosingTypeStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let resolvedEnclosingType = enclosingType(
-				for: cap.range,
-				in: context.typeBoundaries,
-				performanceCollector: activePerfStats
-			)
+            let resolvedEnclosingType = enclosingType(
+                for: cap.range,
+                in: context.typeBoundaries,
+                performanceCollector: activePerfStats
+            )
             if perfEnabled {
                 record(.enclosingTypeLookup, duration: CFAbsoluteTimeGetCurrent() - enclosingTypeStart, perfStats: activePerfStats)
             }
@@ -750,14 +752,15 @@ enum SwiftCodeMapStrategy {
         case "swift.protocol.property":
             // Protocol properties go to interfaces
             let propertyDeclarationStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let fullDecl = extractSwiftPropertyDeclaration(
-				from: cap.range,
-				index: index,
-				nsContent: nsContent,
-				performanceCollector: activePerfStats,
-				fallback: {
-                captureDeclaration(cap.range, "{")
-            })
+            let fullDecl = extractSwiftPropertyDeclaration(
+                from: cap.range,
+                index: index,
+                nsContent: nsContent,
+                performanceCollector: activePerfStats,
+                fallback: {
+                    captureDeclaration(cap.range, "{")
+                }
+            )
             if perfEnabled {
                 record(.propertyDeclaration, duration: CFAbsoluteTimeGetCurrent() - propertyDeclarationStart, perfStats: activePerfStats)
             }
@@ -771,11 +774,11 @@ enum SwiftCodeMapStrategy {
             }
 
             let enclosingTypeStart = perfEnabled ? CFAbsoluteTimeGetCurrent() : 0
-			let resolvedEnclosingProto = enclosingType(
-				for: cap.range,
-				in: context.typeBoundaries,
-				performanceCollector: activePerfStats
-			)
+            let resolvedEnclosingProto = enclosingType(
+                for: cap.range,
+                in: context.typeBoundaries,
+                performanceCollector: activePerfStats
+            )
             if perfEnabled {
                 record(.enclosingTypeLookup, duration: CFAbsoluteTimeGetCurrent() - enclosingTypeStart, perfStats: activePerfStats)
             }
@@ -814,53 +817,53 @@ enum SwiftCodeMapStrategy {
 
     // MARK: - Helpers
 
-	private static func containsFunction(
-		in functions: [FunctionInfo],
-		definitionLine: String,
-		performanceCollector: CodeMapPerformanceCollector?
-	) -> Bool {
-		guard let performanceCollector else {
-			return functions.contains { $0.definitionLine == definitionLine }
-		}
-		performanceCollector.swiftFunctionDuplicateCheckCount += 1
-		for function in functions {
-			performanceCollector.swiftFunctionDuplicateCandidateVisits += 1
-			if function.definitionLine == definitionLine { return true }
-		}
-		return false
-	}
+    private static func containsFunction(
+        in functions: [FunctionInfo],
+        definitionLine: String,
+        performanceCollector: CodeMapPerformanceCollector?
+    ) -> Bool {
+        guard let performanceCollector else {
+            return functions.contains { $0.definitionLine == definitionLine }
+        }
+        performanceCollector.swiftFunctionDuplicateCheckCount += 1
+        for function in functions {
+            performanceCollector.swiftFunctionDuplicateCandidateVisits += 1
+            if function.definitionLine == definitionLine { return true }
+        }
+        return false
+    }
 
-	private static func containsVariable(
-		in variables: [VariableInfo],
-		definitionLine: String,
-		performanceCollector: CodeMapPerformanceCollector?
-	) -> Bool {
-		guard let performanceCollector else {
-			return variables.contains { $0.definitionLine == definitionLine }
-		}
-		performanceCollector.swiftPropertyDuplicateCheckCount += 1
-		for variable in variables {
-			performanceCollector.swiftPropertyDuplicateCandidateVisits += 1
-			if variable.definitionLine == definitionLine { return true }
-		}
-		return false
-	}
+    private static func containsVariable(
+        in variables: [VariableInfo],
+        definitionLine: String,
+        performanceCollector: CodeMapPerformanceCollector?
+    ) -> Bool {
+        guard let performanceCollector else {
+            return variables.contains { $0.definitionLine == definitionLine }
+        }
+        performanceCollector.swiftPropertyDuplicateCheckCount += 1
+        for variable in variables {
+            performanceCollector.swiftPropertyDuplicateCandidateVisits += 1
+            if variable.definitionLine == definitionLine { return true }
+        }
+        return false
+    }
 
-	private static func containsProperty(
-		in properties: [PropertyInfo],
-		name: String,
-		performanceCollector: CodeMapPerformanceCollector?
-	) -> Bool {
-		guard let performanceCollector else {
-			return properties.contains { $0.name == name }
-		}
-		performanceCollector.swiftPropertyDuplicateCheckCount += 1
-		for property in properties {
-			performanceCollector.swiftPropertyDuplicateCandidateVisits += 1
-			if property.name == name { return true }
-		}
-		return false
-	}
+    private static func containsProperty(
+        in properties: [PropertyInfo],
+        name: String,
+        performanceCollector: CodeMapPerformanceCollector?
+    ) -> Bool {
+        guard let performanceCollector else {
+            return properties.contains { $0.name == name }
+        }
+        performanceCollector.swiftPropertyDuplicateCheckCount += 1
+        for property in properties {
+            performanceCollector.swiftPropertyDuplicateCandidateVisits += 1
+            if property.name == name { return true }
+        }
+        return false
+    }
 
     /// Extracts Swift parameters from a function capture range
     private static func extractSwiftParameters(
@@ -888,13 +891,13 @@ enum SwiftCodeMapStrategy {
                 for: paramNode.range,
                 performanceCollector: performanceCollector
             ),
-               !NSEqualRanges(enclosingFn.range, functionRange)
+                !NSEqualRanges(enclosingFn.range, functionRange)
             {
                 continue
             }
-            var external: String? = nil
-            var local: String? = nil
-            var type: String? = nil
+            var external: String?
+            var local: String?
+            var type: String?
 
             // Get details from captures within this param node
             if let extCap = index.firstCapture(named: "swift.param.external", containedIn: paramNode.range) {
@@ -931,17 +934,17 @@ enum SwiftCodeMapStrategy {
         return params
     }
 
-	private static func signatureEndLocation(
-		forFunctionRange functionRange: NSRange,
-		nsContent: NSString,
-		performanceCollector: CodeMapPerformanceCollector?
-	) -> Int {
+    private static func signatureEndLocation(
+        forFunctionRange functionRange: NSRange,
+        nsContent: NSString,
+        performanceCollector: CodeMapPerformanceCollector?
+    ) -> Int {
         let end = NSMaxRange(functionRange)
-		var i = functionRange.location
-		defer {
-			let visited = max(0, min(i, end) - functionRange.location + (i < end ? 1 : 0))
-			performanceCollector?.swiftSignatureCodeUnitVisits += visited
-		}
+        var i = functionRange.location
+        defer {
+            let visited = max(0, min(i, end) - functionRange.location + (i < end ? 1 : 0))
+            performanceCollector?.swiftSignatureCodeUnitVisits += visited
+        }
         var parenDepth = 0
         var inString = false
         var escapeNext = false
@@ -1172,92 +1175,93 @@ enum SwiftCodeMapStrategy {
         return nil
     }
 
-	private static func firstTopLevelSwiftDelimiter(
-		_ target: Character,
-		in text: Substring
-	) -> String.Index? {
-		let characters = Array(text)
-		var delimiterStack: [Character] = []
-		var stringDelimiter: (pounds: Int, quotes: Int)?
-		var offset = 0
+    private static func firstTopLevelSwiftDelimiter(
+        _ target: Character,
+        in text: Substring
+    ) -> String.Index? {
+        let characters = Array(text)
+        var delimiterStack: [Character] = []
+        var stringDelimiter: (pounds: Int, quotes: Int)?
+        var offset = 0
 
-		while offset < characters.count {
-			if let activeStringDelimiter = stringDelimiter {
-				if characters[offset] == "\\", activeStringDelimiter.pounds == 0 {
-					offset = min(offset + 2, characters.count)
-					continue
-				}
-				if isSwiftStringTerminator(
-					at: offset,
-					characters: characters,
-					delimiter: activeStringDelimiter
-				) {
-					offset += activeStringDelimiter.quotes + activeStringDelimiter.pounds
-					stringDelimiter = nil
-					continue
-				}
-				offset += 1
-				continue
-			}
+        while offset < characters.count {
+            if let activeStringDelimiter = stringDelimiter {
+                if characters[offset] == "\\", activeStringDelimiter.pounds == 0 {
+                    offset = min(offset + 2, characters.count)
+                    continue
+                }
+                if isSwiftStringTerminator(
+                    at: offset,
+                    characters: characters,
+                    delimiter: activeStringDelimiter
+                ) {
+                    offset += activeStringDelimiter.quotes + activeStringDelimiter.pounds
+                    stringDelimiter = nil
+                    continue
+                }
+                offset += 1
+                continue
+            }
 
-			if let opening = swiftStringDelimiterStarting(at: offset, characters: characters) {
-				stringDelimiter = (opening.pounds, opening.quotes)
-				offset += opening.pounds + opening.quotes
-				continue
-			}
+            if let opening = swiftStringDelimiterStarting(at: offset, characters: characters) {
+                stringDelimiter = (opening.pounds, opening.quotes)
+                offset += opening.pounds + opening.quotes
+                continue
+            }
 
-			let character = characters[offset]
-			switch character {
-			case "(", "[", "{":
-				delimiterStack.append(character)
-			case ")":
-				if delimiterStack.last == "(" { delimiterStack.removeLast() }
-			case "]":
-				if delimiterStack.last == "[" { delimiterStack.removeLast() }
-			case "}":
-				if delimiterStack.last == "{" { delimiterStack.removeLast() }
-			default:
-				if character == target, delimiterStack.isEmpty {
-					return text.index(text.startIndex, offsetBy: offset)
-				}
-			}
-			offset += 1
-		}
+            let character = characters[offset]
+            switch character {
+            case "(", "[", "{":
+                delimiterStack.append(character)
+            case ")":
+                if delimiterStack.last == "(" { delimiterStack.removeLast() }
+            case "]":
+                if delimiterStack.last == "[" { delimiterStack.removeLast() }
+            case "}":
+                if delimiterStack.last == "{" { delimiterStack.removeLast() }
+            default:
+                if character == target, delimiterStack.isEmpty {
+                    return text.index(text.startIndex, offsetBy: offset)
+                }
+            }
+            offset += 1
+        }
 
-		return nil
-	}
+        return nil
+    }
 
-	private static func swiftStringDelimiterStarting(
-		at offset: Int,
-		characters: [Character]
-	) -> (pounds: Int, quotes: Int)? {
-		var quoteOffset = offset
-		while quoteOffset < characters.count, characters[quoteOffset] == "#" {
-			quoteOffset += 1
-		}
-		guard quoteOffset < characters.count, characters[quoteOffset] == "\"" else { return nil }
-		let quoteCount = quoteOffset + 2 < characters.count &&
-			characters[quoteOffset + 1] == "\"" && characters[quoteOffset + 2] == "\"" ? 3 : 1
-		return (quoteOffset - offset, quoteCount)
-	}
+    private static func swiftStringDelimiterStarting(
+        at offset: Int,
+        characters: [Character]
+    ) -> (pounds: Int, quotes: Int)? {
+        var quoteOffset = offset
+        while quoteOffset < characters.count, characters[quoteOffset] == "#" {
+            quoteOffset += 1
+        }
+        guard quoteOffset < characters.count, characters[quoteOffset] == "\"" else { return nil }
+        let quoteCount = quoteOffset + 2 < characters.count &&
+            characters[quoteOffset + 1] == "\"" && characters[quoteOffset + 2] == "\"" ? 3 : 1
+        return (quoteOffset - offset, quoteCount)
+    }
 
-	private static func isSwiftStringTerminator(
-		at offset: Int,
-		characters: [Character],
-		delimiter: (pounds: Int, quotes: Int)
-	) -> Bool {
-		guard offset + delimiter.quotes + delimiter.pounds <= characters.count else { return false }
-		for quoteOffset in 0 ..< delimiter.quotes where characters[offset + quoteOffset] != "\"" {
-			return false
-		}
-		for poundOffset in 0 ..< delimiter.pounds
-		where characters[offset + delimiter.quotes + poundOffset] != "#" {
-			return false
-		}
-		return true
-	}
+    private static func isSwiftStringTerminator(
+        at offset: Int,
+        characters: [Character],
+        delimiter: (pounds: Int, quotes: Int)
+    ) -> Bool {
+        guard offset + delimiter.quotes + delimiter.pounds <= characters.count else { return false }
+        for quoteOffset in 0 ..< delimiter.quotes where characters[offset + quoteOffset] != "\"" {
+            return false
+        }
+        for poundOffset in 0 ..< delimiter.pounds
+            where characters[offset + delimiter.quotes + poundOffset] != "#"
+        {
+            return false
+        }
+        return true
+    }
 
-	private static func extractSwiftReturnType(from signature: String, perfStats: CodeMapPerformanceCollector? = nil) -> String? {
+    private static func extractSwiftReturnType(from signature: String, perfStats: CodeMapPerformanceCollector? = nil) -> String? {
         if let fast = SwiftSignatureParser.extractReturnType(from: signature) {
             perfStats?.swiftReturnTypeFastPathHits += 1
             return fast
@@ -1271,84 +1275,84 @@ enum SwiftCodeMapStrategy {
         return nil
     }
 
-	enum SwiftASCIIPropertyTypeResolution: Equatable {
-		case type(String)
-		case noType
-		case fallback
-	}
+    enum SwiftASCIIPropertyTypeResolution: Equatable {
+        case type(String)
+        case noType
+        case fallback
+    }
 
-	private static let swiftPropertyModifierKeywords = [
-		"private(set)", "public", "private", "internal", "fileprivate", "open",
-		"class", "static", "final", "lazy", "override", "mutating", "actor", "inout",
-		"required", "convenience", "indirect", "weak", "unowned", "dynamic", "distributed", "isolated",
-	]
+    private static let swiftPropertyModifierKeywords = [
+        "private(set)", "public", "private", "internal", "fileprivate", "open",
+        "class", "static", "final", "lazy", "override", "mutating", "actor", "inout",
+        "required", "convenience", "indirect", "weak", "unowned", "dynamic", "distributed", "isolated"
+    ]
 
-	static func extractSwiftPropertyType(
-		from declaration: String,
-		perfStats: CodeMapPerformanceCollector? = nil
-	) -> String? {
-		let resolutionStart = perfStats == nil ? 0 : CFAbsoluteTimeGetCurrent()
-		perfStats?.swiftPropertyTypeResolutionCount += 1
-		defer {
-			if let perfStats {
-				perfStats.swiftPropertyTypeResolutionDuration +=
-					CFAbsoluteTimeGetCurrent() - resolutionStart
-			}
-		}
+    static func extractSwiftPropertyType(
+        from declaration: String,
+        perfStats: CodeMapPerformanceCollector? = nil
+    ) -> String? {
+        let resolutionStart = perfStats == nil ? 0 : CFAbsoluteTimeGetCurrent()
+        perfStats?.swiftPropertyTypeResolutionCount += 1
+        defer {
+            if let perfStats {
+                perfStats.swiftPropertyTypeResolutionDuration +=
+                    CFAbsoluteTimeGetCurrent() - resolutionStart
+            }
+        }
 
-		var inputUTF8ByteCount = 0
-		var containsNonASCII = false
-		for byte in declaration.utf8 {
-			inputUTF8ByteCount += 1
-			if byte >= 0x80 {
-				containsNonASCII = true
-			}
-		}
-		perfStats?.swiftPropertyTypeInputUTF8ByteCount += inputUTF8ByteCount
+        var inputUTF8ByteCount = 0
+        var containsNonASCII = false
+        for byte in declaration.utf8 {
+            inputUTF8ByteCount += 1
+            if byte >= 0x80 {
+                containsNonASCII = true
+            }
+        }
+        perfStats?.swiftPropertyTypeInputUTF8ByteCount += inputUTF8ByteCount
 
-		if containsNonASCII {
-			perfStats?.swiftPropertyTypeLegacyFallbackCount += 1
-			perfStats?.swiftPropertyTypeUnicodeLegacyFallbackCount += 1
-			let legacyStart = perfStats == nil ? 0 : CFAbsoluteTimeGetCurrent()
-			let result = extractSwiftPropertyTypeLegacy(from: declaration, perfStats: perfStats)
-			if let perfStats {
-				perfStats.swiftPropertyTypeLegacyFallbackDuration +=
-					CFAbsoluteTimeGetCurrent() - legacyStart
-			}
-			return result
-		}
+        if containsNonASCII {
+            perfStats?.swiftPropertyTypeLegacyFallbackCount += 1
+            perfStats?.swiftPropertyTypeUnicodeLegacyFallbackCount += 1
+            let legacyStart = perfStats == nil ? 0 : CFAbsoluteTimeGetCurrent()
+            let result = extractSwiftPropertyTypeLegacy(from: declaration, perfStats: perfStats)
+            if let perfStats {
+                perfStats.swiftPropertyTypeLegacyFallbackDuration +=
+                    CFAbsoluteTimeGetCurrent() - legacyStart
+            }
+            return result
+        }
 
-		let fastPathStart = perfStats == nil ? 0 : resolutionStart
-		let resolution = resolveSwiftASCIIPropertyType(in: declaration.utf8)
-		if let perfStats {
-			perfStats.swiftPropertyTypeASCIIFastPathDuration +=
-				CFAbsoluteTimeGetCurrent() - fastPathStart
-		}
+        let fastPathStart = perfStats == nil ? 0 : resolutionStart
+        let resolution = resolveSwiftASCIIPropertyType(in: declaration.utf8)
+        if let perfStats {
+            perfStats.swiftPropertyTypeASCIIFastPathDuration +=
+                CFAbsoluteTimeGetCurrent() - fastPathStart
+        }
 
-		switch resolution {
-		case let .type(type):
-			perfStats?.swiftPropertyTypeASCIIDirectTypeCount += 1
-			return type
-		case .noType:
-			perfStats?.swiftPropertyTypeASCIIDirectNilCount += 1
-			return nil
-		case .fallback:
-			perfStats?.swiftPropertyTypeLegacyFallbackCount += 1
-			perfStats?.swiftPropertyTypeASCIIIneligibleFallbackCount += 1
-			let legacyStart = perfStats == nil ? 0 : CFAbsoluteTimeGetCurrent()
-			let result = extractSwiftPropertyTypeLegacy(from: declaration, perfStats: perfStats)
-			if let perfStats {
-				perfStats.swiftPropertyTypeLegacyFallbackDuration +=
-					CFAbsoluteTimeGetCurrent() - legacyStart
-			}
-			return result
-		}
-	}
+        switch resolution {
+        case let .type(type):
+            perfStats?.swiftPropertyTypeASCIIDirectTypeCount += 1
+            return type
+        case .noType:
+            perfStats?.swiftPropertyTypeASCIIDirectNilCount += 1
+            return nil
+        case .fallback:
+            perfStats?.swiftPropertyTypeLegacyFallbackCount += 1
+            perfStats?.swiftPropertyTypeASCIIIneligibleFallbackCount += 1
+            let legacyStart = perfStats == nil ? 0 : CFAbsoluteTimeGetCurrent()
+            let result = extractSwiftPropertyTypeLegacy(from: declaration, perfStats: perfStats)
+            if let perfStats {
+                perfStats.swiftPropertyTypeLegacyFallbackDuration +=
+                    CFAbsoluteTimeGetCurrent() - legacyStart
+            }
+            return result
+        }
+    }
 
-	static func extractSwiftPropertyTypeLegacy(
-		from declaration: String,
-		perfStats: CodeMapPerformanceCollector? = nil
-	) -> String? {
+    static func extractSwiftPropertyTypeLegacy(
+        from declaration: String,
+        perfStats: CodeMapPerformanceCollector? = nil
+    ) -> String? {
         if let match = LanguageTypeExtractor.matchAnyVariableLine(declaration, language: .swift, stats: perfStats),
            let propType = match["type"],
            !propType.isEmpty
@@ -1358,216 +1362,216 @@ enum SwiftCodeMapStrategy {
         return nil
     }
 
-	static func resolveSwiftASCIIPropertyType(
-		in utf8: String.UTF8View
-	) -> SwiftASCIIPropertyTypeResolution {
-		var index = utf8.startIndex
-		let end = utf8.endIndex
+    static func resolveSwiftASCIIPropertyType(
+        in utf8: String.UTF8View
+    ) -> SwiftASCIIPropertyTypeResolution {
+        var index = utf8.startIndex
+        let end = utf8.endIndex
 
-		for byte in utf8 where byte >= 0x80 {
-			return .fallback
-		}
-		if containsAmbiguousSwiftPropertyByteSequence(in: utf8) {
-			return .fallback
-		}
+        for byte in utf8 where byte >= 0x80 {
+            return .fallback
+        }
+        if containsAmbiguousSwiftPropertyByteSequence(in: utf8) {
+            return .fallback
+        }
 
-		if index < end, utf8[index] == 0x2D || utf8[index] == 0x2A {
-			index = utf8.index(after: index)
-		}
-		skipASCIIWhitespace(in: utf8, index: &index)
+        if index < end, utf8[index] == 0x2D || utf8[index] == 0x2A {
+            index = utf8.index(after: index)
+        }
+        skipASCIIWhitespace(in: utf8, index: &index)
 
-		while index < end, utf8[index] == 0x40 {
-			index = utf8.index(after: index)
-			guard index < end, isASCIIIdentifierStart(utf8[index]) else { return .fallback }
-			index = utf8.index(after: index)
-			while index < end, isASCIIIdentifierContinuation(utf8[index]) {
-				index = utf8.index(after: index)
-			}
-			if index < end, utf8[index] == 0x28 {
-				index = utf8.index(after: index)
-				while index < end, utf8[index] != 0x29 {
-					let byte = utf8[index]
-					if byte == 0x28 || !isSafeASCIIAttributeArgumentByte(byte) {
-						return .fallback
-					}
-					index = utf8.index(after: index)
-				}
-				guard index < end else { return .fallback }
-				index = utf8.index(after: index)
-			}
-			skipASCIIWhitespace(in: utf8, index: &index)
-		}
+        while index < end, utf8[index] == 0x40 {
+            index = utf8.index(after: index)
+            guard index < end, isASCIIIdentifierStart(utf8[index]) else { return .fallback }
+            index = utf8.index(after: index)
+            while index < end, isASCIIIdentifierContinuation(utf8[index]) {
+                index = utf8.index(after: index)
+            }
+            if index < end, utf8[index] == 0x28 {
+                index = utf8.index(after: index)
+                while index < end, utf8[index] != 0x29 {
+                    let byte = utf8[index]
+                    if byte == 0x28 || !isSafeASCIIAttributeArgumentByte(byte) {
+                        return .fallback
+                    }
+                    index = utf8.index(after: index)
+                }
+                guard index < end else { return .fallback }
+                index = utf8.index(after: index)
+            }
+            skipASCIIWhitespace(in: utf8, index: &index)
+        }
 
-		while true {
-			if let afterKeyword = matchingASCIIKeyword("var", in: utf8, at: index),
-				afterKeyword < end,
-				isASCIIWhitespace(utf8[afterKeyword])
-			{
-				index = afterKeyword
-				skipASCIIWhitespace(in: utf8, index: &index)
-				break
-			}
-			if let afterKeyword = matchingASCIIKeyword("let", in: utf8, at: index),
-				afterKeyword < end,
-				isASCIIWhitespace(utf8[afterKeyword])
-			{
-				index = afterKeyword
-				skipASCIIWhitespace(in: utf8, index: &index)
-				break
-			}
+        while true {
+            if let afterKeyword = matchingASCIIKeyword("var", in: utf8, at: index),
+               afterKeyword < end,
+               isASCIIWhitespace(utf8[afterKeyword])
+            {
+                index = afterKeyword
+                skipASCIIWhitespace(in: utf8, index: &index)
+                break
+            }
+            if let afterKeyword = matchingASCIIKeyword("let", in: utf8, at: index),
+               afterKeyword < end,
+               isASCIIWhitespace(utf8[afterKeyword])
+            {
+                index = afterKeyword
+                skipASCIIWhitespace(in: utf8, index: &index)
+                break
+            }
 
-			var matchedModifier = false
-			for modifier in swiftPropertyModifierKeywords {
-				guard let afterModifier = matchingASCIIKeyword(modifier, in: utf8, at: index),
-						afterModifier < end,
-						isASCIIWhitespace(utf8[afterModifier])
-				else { continue }
-				index = afterModifier
-				skipASCIIWhitespace(in: utf8, index: &index)
-				matchedModifier = true
-				break
-			}
-			if !matchedModifier {
-				return .fallback
-			}
-		}
+            var matchedModifier = false
+            for modifier in swiftPropertyModifierKeywords {
+                guard let afterModifier = matchingASCIIKeyword(modifier, in: utf8, at: index),
+                      afterModifier < end,
+                      isASCIIWhitespace(utf8[afterModifier])
+                else { continue }
+                index = afterModifier
+                skipASCIIWhitespace(in: utf8, index: &index)
+                matchedModifier = true
+                break
+            }
+            if !matchedModifier {
+                return .fallback
+            }
+        }
 
-		guard index < end, isASCIIIdentifierStart(utf8[index]) else { return .fallback }
-		index = utf8.index(after: index)
-		while index < end, isASCIIIdentifierContinuation(utf8[index]) {
-			index = utf8.index(after: index)
-		}
-		skipASCIIWhitespace(in: utf8, index: &index)
-		guard index < end else { return .noType }
-		guard utf8[index] == 0x3A else { return .fallback }
-		index = utf8.index(after: index)
-		let afterColon = index
-		skipASCIIWhitespace(in: utf8, index: &index)
-		if index == end {
-			return afterColon == end ? .noType : .fallback
-		}
+        guard index < end, isASCIIIdentifierStart(utf8[index]) else { return .fallback }
+        index = utf8.index(after: index)
+        while index < end, isASCIIIdentifierContinuation(utf8[index]) {
+            index = utf8.index(after: index)
+        }
+        skipASCIIWhitespace(in: utf8, index: &index)
+        guard index < end else { return .noType }
+        guard utf8[index] == 0x3A else { return .fallback }
+        index = utf8.index(after: index)
+        let afterColon = index
+        skipASCIIWhitespace(in: utf8, index: &index)
+        if index == end {
+            return afterColon == end ? .noType : .fallback
+        }
 
-		let typeStart = index
-		var typeEnd = end
-		var delimiters: [UInt8] = []
-		var sawLineBreak = false
-		while index < end {
-			let byte = utf8[index]
-			if sawLineBreak, !isASCIIWhitespace(byte) {
-				return .fallback
-			}
-			if byte == 0x0A || byte == 0x0D {
-				sawLineBreak = true
-			}
+        let typeStart = index
+        var typeEnd = end
+        var delimiters: [UInt8] = []
+        var sawLineBreak = false
+        while index < end {
+            let byte = utf8[index]
+            if sawLineBreak, !isASCIIWhitespace(byte) {
+                return .fallback
+            }
+            if byte == 0x0A || byte == 0x0D {
+                sawLineBreak = true
+            }
 
-			switch byte {
-			case 0x28, 0x5B, 0x3C:
-				delimiters.append(byte)
-			case 0x29:
-				guard delimiters.last == 0x28 else { return .fallback }
-				delimiters.removeLast()
-			case 0x5D:
-				guard delimiters.last == 0x5B else { return .fallback }
-				delimiters.removeLast()
-			case 0x3E:
-				let previous = index > typeStart ? utf8[utf8.index(before: index)] : 0
-				if previous != 0x2D {
-					guard delimiters.last == 0x3C else { return .fallback }
-					delimiters.removeLast()
-				}
-			case 0x3D:
-				guard delimiters.isEmpty else { return .fallback }
-				let next = utf8.index(after: index)
-				guard next == end || utf8[next] != 0x3D else { return .fallback }
-				typeEnd = index
-				index = end
-				continue
-			case 0x2C:
-				guard !delimiters.isEmpty else { return .fallback }
-			default:
-				guard isSafeASCIIPropertyTypeByte(byte) else { return .fallback }
-			}
-			index = utf8.index(after: index)
-		}
-		guard delimiters.isEmpty else { return .fallback }
+            switch byte {
+            case 0x28, 0x5B, 0x3C:
+                delimiters.append(byte)
+            case 0x29:
+                guard delimiters.last == 0x28 else { return .fallback }
+                delimiters.removeLast()
+            case 0x5D:
+                guard delimiters.last == 0x5B else { return .fallback }
+                delimiters.removeLast()
+            case 0x3E:
+                let previous = index > typeStart ? utf8[utf8.index(before: index)] : 0
+                if previous != 0x2D {
+                    guard delimiters.last == 0x3C else { return .fallback }
+                    delimiters.removeLast()
+                }
+            case 0x3D:
+                guard delimiters.isEmpty else { return .fallback }
+                let next = utf8.index(after: index)
+                guard next == end || utf8[next] != 0x3D else { return .fallback }
+                typeEnd = index
+                index = end
+                continue
+            case 0x2C:
+                guard !delimiters.isEmpty else { return .fallback }
+            default:
+                guard isSafeASCIIPropertyTypeByte(byte) else { return .fallback }
+            }
+            index = utf8.index(after: index)
+        }
+        guard delimiters.isEmpty else { return .fallback }
 
-		let type = String(decoding: utf8[typeStart ..< typeEnd], as: UTF8.self)
-			.trimmingCharacters(in: .whitespacesAndNewlines)
-		return type.isEmpty ? .noType : .type(type)
-	}
+        let type = String(decoding: utf8[typeStart ..< typeEnd], as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return type.isEmpty ? .noType : .type(type)
+    }
 
-	private static func containsAmbiguousSwiftPropertyByteSequence(
-		in utf8: String.UTF8View
-	) -> Bool {
-		var index = utf8.startIndex
-		while index < utf8.endIndex {
-			switch utf8[index] {
-			case 0x22, 0x23, 0x5C, 0x7B, 0x7D:
-				return true
-			case 0x2F:
-				return true
-			default:
-				index = utf8.index(after: index)
-			}
-		}
-		return false
-	}
+    private static func containsAmbiguousSwiftPropertyByteSequence(
+        in utf8: String.UTF8View
+    ) -> Bool {
+        var index = utf8.startIndex
+        while index < utf8.endIndex {
+            switch utf8[index] {
+            case 0x22, 0x23, 0x5C, 0x7B, 0x7D:
+                return true
+            case 0x2F:
+                return true
+            default:
+                index = utf8.index(after: index)
+            }
+        }
+        return false
+    }
 
-	private static func skipASCIIWhitespace(
-		in utf8: String.UTF8View,
-		index: inout String.UTF8View.Index
-	) {
-		while index < utf8.endIndex, isASCIIWhitespace(utf8[index]) {
-			index = utf8.index(after: index)
-		}
-	}
+    private static func skipASCIIWhitespace(
+        in utf8: String.UTF8View,
+        index: inout String.UTF8View.Index
+    ) {
+        while index < utf8.endIndex, isASCIIWhitespace(utf8[index]) {
+            index = utf8.index(after: index)
+        }
+    }
 
-	private static func matchingASCIIKeyword(
-		_ keyword: String,
-		in utf8: String.UTF8View,
-		at start: String.UTF8View.Index
-	) -> String.UTF8View.Index? {
-		var index = start
-		for expected in keyword.utf8 {
-			guard index < utf8.endIndex, utf8[index] == expected else { return nil }
-			index = utf8.index(after: index)
-		}
-		return index
-	}
+    private static func matchingASCIIKeyword(
+        _ keyword: String,
+        in utf8: String.UTF8View,
+        at start: String.UTF8View.Index
+    ) -> String.UTF8View.Index? {
+        var index = start
+        for expected in keyword.utf8 {
+            guard index < utf8.endIndex, utf8[index] == expected else { return nil }
+            index = utf8.index(after: index)
+        }
+        return index
+    }
 
-	private static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
-		byte == 0x20 || (0x09 ... 0x0D).contains(byte)
-	}
+    private static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || (0x09 ... 0x0D).contains(byte)
+    }
 
-	private static func isASCIIIdentifierStart(_ byte: UInt8) -> Bool {
-		byte == 0x5F || (0x41 ... 0x5A).contains(byte) || (0x61 ... 0x7A).contains(byte)
-	}
+    private static func isASCIIIdentifierStart(_ byte: UInt8) -> Bool {
+        byte == 0x5F || (0x41 ... 0x5A).contains(byte) || (0x61 ... 0x7A).contains(byte)
+    }
 
-	private static func isASCIIIdentifierContinuation(_ byte: UInt8) -> Bool {
-		isASCIIIdentifierStart(byte) || (0x30 ... 0x39).contains(byte)
-	}
+    private static func isASCIIIdentifierContinuation(_ byte: UInt8) -> Bool {
+        isASCIIIdentifierStart(byte) || (0x30 ... 0x39).contains(byte)
+    }
 
-	private static func isSafeASCIIAttributeArgumentByte(_ byte: UInt8) -> Bool {
-		isASCIIIdentifierContinuation(byte) || isASCIIWhitespace(byte) || [
-			0x2C, 0x2E, 0x2D, 0x2B, 0x3A, 0x3D, 0x3F, 0x21, 0x26, 0x3C, 0x3E,
-			0x5B, 0x5D,
-		].contains(byte)
-	}
+    private static func isSafeASCIIAttributeArgumentByte(_ byte: UInt8) -> Bool {
+        isASCIIIdentifierContinuation(byte) || isASCIIWhitespace(byte) || [
+            0x2C, 0x2E, 0x2D, 0x2B, 0x3A, 0x3D, 0x3F, 0x21, 0x26, 0x3C, 0x3E,
+            0x5B, 0x5D
+        ].contains(byte)
+    }
 
-	private static func isSafeASCIIPropertyTypeByte(_ byte: UInt8) -> Bool {
-		isASCIIIdentifierContinuation(byte) || isASCIIWhitespace(byte) || [
-			0x2E, 0x3F, 0x21, 0x3A, 0x26, 0x2D, 0x40,
-		].contains(byte)
-	}
+    private static func isSafeASCIIPropertyTypeByte(_ byte: UInt8) -> Bool {
+        isASCIIIdentifierContinuation(byte) || isASCIIWhitespace(byte) || [
+            0x2E, 0x3F, 0x21, 0x3A, 0x26, 0x2D, 0x40
+        ].contains(byte)
+    }
 
     private static func extractSwiftPropertyDeclaration(
         from identifierRange: NSRange,
         index: CodeMapCaptureIndex,
-		nsContent: NSString,
-		performanceCollector: CodeMapPerformanceCollector?,
+        nsContent: NSString,
+        performanceCollector: CodeMapPerformanceCollector?,
         fallback: () -> String
     ) -> String {
-		let lookupStart = performanceCollector.map { _ in CFAbsoluteTimeGetCurrent() }
+        let lookupStart = performanceCollector.map { _ in CFAbsoluteTimeGetCurrent() }
         let declCap = index.smallestCapture(
             named: "swift.property.decl",
             containing: identifierRange
@@ -1575,27 +1579,27 @@ enum SwiftCodeMapStrategy {
             named: "swift.protocol.property.decl",
             containing: identifierRange
         )
-		if let lookupStart {
-			performanceCollector?.swiftPropertyDeclarationLookupDuration +=
-				CFAbsoluteTimeGetCurrent() - lookupStart
-		}
+        if let lookupStart {
+            performanceCollector?.swiftPropertyDeclarationLookupDuration +=
+                CFAbsoluteTimeGetCurrent() - lookupStart
+        }
         if let cap = declCap {
-			let substringStart = performanceCollector.map { _ in CFAbsoluteTimeGetCurrent() }
+            let substringStart = performanceCollector.map { _ in CFAbsoluteTimeGetCurrent() }
             var decl = nsContent.substring(with: cap.range)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let braceIndex = decl.firstIndex(of: "{") {
                 decl = String(decl[..<braceIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
             }
-			if let substringStart {
-				performanceCollector?.swiftPropertyDeclarationSubstringDuration +=
-					CFAbsoluteTimeGetCurrent() - substringStart
-			}
-			let initializerStart = performanceCollector.map { _ in CFAbsoluteTimeGetCurrent() }
+            if let substringStart {
+                performanceCollector?.swiftPropertyDeclarationSubstringDuration +=
+                    CFAbsoluteTimeGetCurrent() - substringStart
+            }
+            let initializerStart = performanceCollector.map { _ in CFAbsoluteTimeGetCurrent() }
             decl = stripSwiftInitializer(decl)
-			if let initializerStart {
-				performanceCollector?.swiftPropertyInitializerStripDuration +=
-					CFAbsoluteTimeGetCurrent() - initializerStart
-			}
+            if let initializerStart {
+                performanceCollector?.swiftPropertyInitializerStripDuration +=
+                    CFAbsoluteTimeGetCurrent() - initializerStart
+            }
             return decl
         }
         return fallback()
@@ -1611,15 +1615,15 @@ enum SwiftCodeMapStrategy {
 
     private static func smallestContainingRange(
         in ranges: [CodeMapIndexedCapture],
-		for target: NSRange,
-		performanceCollector: CodeMapPerformanceCollector?
+        for target: NSRange,
+        performanceCollector: CodeMapPerformanceCollector?
     ) -> CodeMapIndexedCapture? {
-		performanceCollector?.swiftNestedFunctionContainmentLookupCount += 1
+        performanceCollector?.swiftNestedFunctionContainmentLookupCount += 1
         let endIdx = ranges.binarySearch { $0.range.location <= target.location }
-		performanceCollector?.swiftNestedFunctionContainmentCandidateVisits += endIdx
+        performanceCollector?.swiftNestedFunctionContainmentCandidateVisits += endIdx
         guard endIdx > 0 else { return nil }
 
-        var best: CodeMapIndexedCapture? = nil
+        var best: CodeMapIndexedCapture?
         for i in stride(from: endIdx - 1, through: 0, by: -1) {
             let candidate = ranges[i]
             if rangeContains(candidate.range, target),
@@ -1632,16 +1636,16 @@ enum SwiftCodeMapStrategy {
     }
 
     /// Finds the smallest enclosing type boundary for a given range
-	private static func enclosingType(
-		for range: NSRange,
-		in typeBoundaries: [TypeBoundary],
-		performanceCollector: CodeMapPerformanceCollector?
-	) -> TypeBoundary? {
+    private static func enclosingType(
+        for range: NSRange,
+        in typeBoundaries: [TypeBoundary],
+        performanceCollector: CodeMapPerformanceCollector?
+    ) -> TypeBoundary? {
         let endIdx = typeBoundaries.binarySearch { $0.range.location <= range.location }
-		performanceCollector?.swiftEnclosingTypeCandidateVisits += endIdx
+        performanceCollector?.swiftEnclosingTypeCandidateVisits += endIdx
         guard endIdx > 0 else { return nil }
 
-        var smallestContaining: TypeBoundary? = nil
+        var smallestContaining: TypeBoundary?
         for i in stride(from: endIdx - 1, through: 0, by: -1) {
             let boundary = typeBoundaries[i]
             if rangeContains(boundary.range, range),

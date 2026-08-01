@@ -232,8 +232,8 @@ If `@unchecked Sendable` is unavoidable, encapsulate all state and synchronizati
 Record enough information for a later reviewer to re-prove or remove the escape hatch:
 
 ```markdown
-| ID | Location | Escape hatch | Protected state | Invariant | Verification | Audit/removal trigger |
-|---|---|---|---|---|---|---|
+| ID    | Location                         | Escape hatch        | Protected state               | Invariant                                                                                  | Verification                   | Audit/removal trigger                     |
+| ----- | -------------------------------- | ------------------- | ----------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------ | ----------------------------------------- |
 | C-014 | Sources/.../CallbackBox.swift:18 | @unchecked Sendable | continuation + terminal state | One lock guards every access; terminal transition happens once; callback runs after unlock | cancellation/success race test | Replace when dependency exposes async API |
 ```
 

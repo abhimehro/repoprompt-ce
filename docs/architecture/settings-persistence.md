@@ -23,15 +23,15 @@ same numeric version.
 
 ## Classification matrix
 
-| `schemaLineage` | `schemaVersion` | Behavior |
-| --- | --- | --- |
-| `repoprompt-ce.global-settings` | `<= currentSchemaVersion` | Load normally without rewriting merely because the schema is older. |
-| `repoprompt-ce.global-settings` | `> currentSchemaVersion` | Preserve and block saves as a same-lineage future CE file. The UI does not offer compatible import for this lane. |
-| any other non-empty value | any | Preserve and block saves as an incompatible/foreign schema. |
-| absent | `<= legacyUnlineagedSchemaVersionCeiling` | Accept as legacy OSS CE. |
-| absent | `> legacyUnlineagedSchemaVersionCeiling` | Preserve and block saves as incompatible/foreign, permanently. |
-| header is undecodable but bytes are valid JSON | n/a | Preserve and block saves as incompatible/foreign. |
-| bytes are not JSON | n/a | Back up as corrupt and write current defaults if the backup succeeds. |
+| `schemaLineage`                                | `schemaVersion`                           | Behavior                                                                                                          |
+| ---------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `repoprompt-ce.global-settings`                | `<= currentSchemaVersion`                 | Load normally without rewriting merely because the schema is older.                                               |
+| `repoprompt-ce.global-settings`                | `> currentSchemaVersion`                  | Preserve and block saves as a same-lineage future CE file. The UI does not offer compatible import for this lane. |
+| any other non-empty value                      | any                                       | Preserve and block saves as an incompatible/foreign schema.                                                       |
+| absent                                         | `<= legacyUnlineagedSchemaVersionCeiling` | Accept as legacy OSS CE.                                                                                          |
+| absent                                         | `> legacyUnlineagedSchemaVersionCeiling`  | Preserve and block saves as incompatible/foreign, permanently.                                                    |
+| header is undecodable but bytes are valid JSON | n/a                                       | Preserve and block saves as incompatible/foreign.                                                                 |
+| bytes are not JSON                             | n/a                                       | Back up as corrupt and write current defaults if the backup succeeds.                                             |
 
 ## Minimum schema stamping
 
@@ -185,14 +185,14 @@ These fields are grouped in `AgentModelsSettingsProfile`.
 
 The global Agent Models profile is not a separate JSON blob. It is projected from existing durable fields:
 
-| Profile field | Backing setting |
-| --- | --- |
-| `planningModelRaw` | `scalarPreferences.modelSelection.planningModel` |
-| `preferredComposeModelRaw` | `scalarPreferences.modelSelection.preferredComposeModel` |
-| `syncChatModelWithOracle` | `scalarPreferences.modelSelection.syncChatModelWithOracle` |
-| `contextBuilderAgentRaw` | `globalDefaults.discoverAgentRaw` |
-| `contextBuilderModelsByAgent` | `globalDefaults.discoverModelsByAgent` |
-| `mcpAgentRoleOverrides` | `globalDefaults.mcpAgentRoleOverrides` |
+| Profile field                           | Backing setting                                                     |
+| --------------------------------------- | ------------------------------------------------------------------- |
+| `planningModelRaw`                      | `scalarPreferences.modelSelection.planningModel`                    |
+| `preferredComposeModelRaw`              | `scalarPreferences.modelSelection.preferredComposeModel`            |
+| `syncChatModelWithOracle`               | `scalarPreferences.modelSelection.syncChatModelWithOracle`          |
+| `contextBuilderAgentRaw`                | `globalDefaults.discoverAgentRaw`                                   |
+| `contextBuilderModelsByAgent`           | `globalDefaults.discoverModelsByAgent`                              |
+| `mcpAgentRoleOverrides`                 | `globalDefaults.mcpAgentRoleOverrides`                              |
 | `restrictMCPAgentDiscoveryToRoleLabels` | `scalarPreferences.agentMode.restrictMCPAgentDiscoveryToRoleLabels` |
 
 Use `GlobalSettingsStore.globalAgentModelsProfile()` and `setGlobalAgentModelsProfile(_:contextBuilderWriteIntent:)` for whole-profile reads/writes. The write intent distinguishes user-owned Context Builder changes from automatic seeding while allowing unrelated model changes to preserve the existing ownership marker. User-driven Context Builder edits and workspace-to-global copies mark the selection as user-defined; automatic seeding stores an explicit unmarked state and never demotes an established user choice.

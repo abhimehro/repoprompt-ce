@@ -42,19 +42,19 @@ import re
 
 ## Mandatory Properties ##
 
-name = 'Irish'
-code = 'ga'
+name = "Irish"
+code = "ga"
 # ASCII characters are also used in French.
 use_ascii = True
 # The charsets we want to support and create data for.
-charsets = ['ISO-8859-15', 'ISO-8859-1', 'ISO-8859-9', 'WINDOWS-1252']
+charsets = ["ISO-8859-15", "ISO-8859-1", "ISO-8859-9", "WINDOWS-1252"]
 
 ## Optional Properties ##
 
 # XXX: Irish gaelic also uses sometimes the dotless 'i' but without any
 # semantic difference from the dotted 'i'. Only for stylistic reasons.
 # So I don't add it in the glyph list.
-alphabet = 'áéíóú'
-start_pages = ['Tracy Caldwell Dyson']
+alphabet = "áéíóú"
+start_pages = ["Tracy Caldwell Dyson"]
 wikipedia_code = code
 case_mapping = True

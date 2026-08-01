@@ -79,7 +79,7 @@ enum TypeScriptCodeMapStrategy {
                 }
 
                 // Fallback scan (should be rare if ranges are nested)
-                var bestDecl: CodeMapIndexedCapture? = nil
+                var bestDecl: CodeMapIndexedCapture?
                 for decl in orderedDecls where rangeContains(decl.range, nameCap.range) {
                     if bestDecl == nil || decl.range.length < bestDecl!.range.length {
                         bestDecl = decl
@@ -161,11 +161,11 @@ enum TypeScriptCodeMapStrategy {
         globalVariables: inout [VariableInfo],
         referencedTypes: inout ReferencedTypesAccumulator,
         extractionMemo: inout CodeMapExtractionMemo,
-		perfStats: CodeMapPerformanceCollector? = nil,
+        perfStats: CodeMapPerformanceCollector? = nil,
         perfOptions: CodeMapPerfOptions = .disabled
     ) -> Bool {
-		let activePerfStats = perfStats
-		let activePerfOptions = perfOptions
+        let activePerfStats = perfStats
+        let activePerfOptions = perfOptions
 
         switch cap.name {
         case "variable.global":
@@ -345,7 +345,7 @@ enum TypeScriptCodeMapStrategy {
         let endIdx = containerBoundaries.binarySearch { $0.range.location <= range.location }
         guard endIdx > 0 else { return nil }
 
-        var smallestContaining: ContainerBoundary? = nil
+        var smallestContaining: ContainerBoundary?
         for i in stride(from: endIdx - 1, through: 0, by: -1) {
             let boundary = containerBoundaries[i]
             if let k = kind, boundary.kind != k { continue }
@@ -360,7 +360,7 @@ enum TypeScriptCodeMapStrategy {
 
     private static func isBetter(_ candidate: NSRange, than current: NSRange) -> Bool {
         if candidate.length != current.length {
-			return candidate.length < current.length
+            return candidate.length < current.length
         }
         return candidate.location < current.location
     }
@@ -394,9 +394,9 @@ enum TypeScriptCodeMapStrategy {
         language: LanguageType,
         referencedTypes: inout ReferencedTypesAccumulator,
         extractionMemo: inout CodeMapExtractionMemo,
-		perfStats: CodeMapPerformanceCollector? = nil
+        perfStats: CodeMapPerformanceCollector? = nil
     ) -> (name: String, parameters: [ParameterInfo], returnType: String?) {
-		let activePerfStats = perfStats
+        let activePerfStats = perfStats
         guard let match = extractionMemo.matchFunctionLineParsed(line, language: language, stats: activePerfStats) else {
             return (fallbackName, [], nil)
         }
@@ -425,9 +425,9 @@ enum TypeScriptCodeMapStrategy {
         language: LanguageType,
         referencedTypes: inout ReferencedTypesAccumulator,
         extractionMemo: inout CodeMapExtractionMemo,
-		perfStats: CodeMapPerformanceCollector? = nil
+        perfStats: CodeMapPerformanceCollector? = nil
     ) -> String? {
-		let activePerfStats = perfStats
+        let activePerfStats = perfStats
         if language == .ts || language == .tsx {
             if let typeName = extractionMemo.tsTypeAnnotation(from: line, stats: activePerfStats) {
                 activePerfStats?.tsTypeAnnotationFastPathHits += 1
@@ -449,12 +449,12 @@ enum TypeScriptCodeMapStrategy {
         _ line: String,
         context: JSTSSignatureContext,
         extractionMemo: inout CodeMapExtractionMemo,
-		perfStats: CodeMapPerformanceCollector? = nil,
+        perfStats: CodeMapPerformanceCollector? = nil,
         perfOptions: CodeMapPerfOptions = .disabled
     ) -> String {
-		let activePerfStats = perfStats
-		let activePerfOptions = perfOptions
-		return extractionMemo.jstsSignature(
+        let activePerfStats = perfStats
+        let activePerfOptions = perfOptions
+        return extractionMemo.jstsSignature(
             from: line,
             context: context,
             perfStats: activePerfStats,
@@ -523,7 +523,7 @@ enum TypeScriptCodeMapStrategy {
             case "=":
                 if angleDepth == 0, parenDepth == 0, braceDepth == 0, squareDepth == 0 {
                     let next = input.index(after: i)
-					if next < input.endIndex {
+                    if next < input.endIndex {
                         let nextChar = input[next]
                         if nextChar == ">" || nextChar == "=" {
                             i = next
@@ -552,7 +552,7 @@ enum TypeScriptCodeMapStrategy {
         var parenDepth = 0
         var braceDepth = 0
         var squareDepth = 0
-        var segmentStart: String.Index? = nil
+        var segmentStart: String.Index?
         var i = head.startIndex
 
         func flushSegment(_ end: String.Index) {
