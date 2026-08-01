@@ -2705,7 +2705,7 @@ final class WindowRoutingService: Service {
                     }
 
                     // Resolve workspace: explicit param, or default to active workspace
-                    var targetWorkspace: WorkspaceModel? = nil
+                    var targetWorkspace: WorkspaceModel?
                     if let param = rawWorkspaceParam, !param.isEmpty {
                         if let targetID = UUID(uuidString: param) {
                             targetWorkspace = await MainActor.run {
@@ -2809,7 +2809,7 @@ final class WindowRoutingService: Service {
                     }
 
                     // Resolve workspace: explicit param, or default to active workspace
-                    var targetWorkspace: WorkspaceModel? = nil
+                    var targetWorkspace: WorkspaceModel?
                     if let param = rawWorkspaceParam, !param.isEmpty {
                         if let targetID = UUID(uuidString: param) {
                             targetWorkspace = await MainActor.run {

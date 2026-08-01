@@ -42,14 +42,14 @@ import re
 
 ## Mandatory Properties ##
 
-name = 'Greek'
-code = 'el'
+name = "Greek"
+code = "el"
 use_ascii = False
-charsets = ['ISO-8859-7', 'WINDOWS-1253']
+charsets = ["ISO-8859-7", "WINDOWS-1253"]
 
 ## Optional Properties ##
 
-alphabet = 'αβγδεζηθικλμνξοπρσςτυφχψωάέήίόύώ'
-start_pages = ['Πύλη:Κύρια']
+alphabet = "αβγδεζηθικλμνξοπρσςτυφχψωάέήίόύώ"
+start_pages = ["Πύλη:Κύρια"]
 wikipedia_code = code
 case_mapping = True

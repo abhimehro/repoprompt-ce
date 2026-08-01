@@ -126,10 +126,7 @@
     "median_seconds": 25.664114832878113,
     "noise_classification": "unstable",
     "observed_p95_seconds": 32.6055748462677,
-    "raw_execution_seconds": [
-      32.6055748462677,
-      18.722654819488525
-    ],
+    "raw_execution_seconds": [32.6055748462677, 18.722654819488525],
     "relative_mad": 0.270473385058928,
     "valid_samples": 2
   },

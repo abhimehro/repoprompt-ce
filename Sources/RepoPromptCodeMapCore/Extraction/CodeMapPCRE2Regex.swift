@@ -90,8 +90,8 @@ struct CodeMapPCRE2Pattern {
 
     func replacingMatches(in text: String, with replacement: String = "") -> String {
         let byteCount = text.utf8.count
-        var sourceBytes: [UInt8]? = nil
-        var replacementBytes: [UInt8]? = nil
+        var sourceBytes: [UInt8]?
+        var replacementBytes: [UInt8]?
         var output: [UInt8] = []
         var cursor = 0
 

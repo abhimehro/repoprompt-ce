@@ -30,9 +30,11 @@ enum LanguageTypeExtractor {
     // SAFETY: These immutable standard-library Regex values are initialized once
     // and used only through nonmutating matching. Their type-erased outputs do
     // not currently carry Sendable conformance.
+
     // MARK: - Swift Patterns
 
     /// Now allows optional `<...>` generics right after function name.
+
     // MARK: - Swift Patterns
 
     /// Now allows optional `<...>` generics right after function name,
@@ -1690,7 +1692,7 @@ enum LanguageTypeExtractor {
         var bracketDepth = 0
         var braceDepth = 0
         var angleDepth = 0
-        var inString: Character? = nil
+        var inString: Character?
         var escaped = false
 
         for ch in text {

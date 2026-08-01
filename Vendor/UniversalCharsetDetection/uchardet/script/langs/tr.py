@@ -43,25 +43,25 @@ import re
 ## Mandatory Properties ##
 
 # The human name for the language, in English.
-name = 'Turkish'
+name = "Turkish"
 # Use 2-letter ISO 639-1 if possible, 3-letter ISO code otherwise,
 # or use another catalog as a last resort.
-code = 'tr'
+code = "tr"
 # Turkish use most latin alphabet, but not all.
 # So I just use the alphabet variable below instead.
 use_ascii = False
 # The charsets we want to support and create data for.
-charsets = ['ISO-8859-3', 'ISO-8859-9']
+charsets = ["ISO-8859-3", "ISO-8859-9"]
 
 ## Optional Properties ##
 
 # Alphabet characters.
-alphabet = 'abcçdefgğhıijklmnoöprsştuüvyzâîû'
+alphabet = "abcçdefgğhıijklmnoöprsştuüvyzâîû"
 # The start page. Though optional, it is advised to choose one yourself.
-start_pages = ['Ana_Sayfa']
+start_pages = ["Ana_Sayfa"]
 # give possibility to select another code for the Wikipedia URL.
 wikipedia_code = code
 # Python algorithm will lower 'I' in 'i' and 'İ' into a decomposed 'ı' + dot.
 # This is wrong when it comes to Turkish.
-custom_case_mapping = { 'İ': 'i', 'I': 'ı' }
+custom_case_mapping = {"İ": "i", "I": "ı"}
 case_mapping = True

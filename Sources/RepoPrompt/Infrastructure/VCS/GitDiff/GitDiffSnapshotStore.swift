@@ -442,7 +442,7 @@ struct GitDiffSnapshotStore {
 
         let generatedAt = Date()
         var writtenPatches: [String: PatchInfo] = [:]
-        var allPatchPath: String? = nil
+        var allPatchPath: String?
 
         if mode != .quick {
             if let perFile = inputs.perFile, !perFile.isEmpty {

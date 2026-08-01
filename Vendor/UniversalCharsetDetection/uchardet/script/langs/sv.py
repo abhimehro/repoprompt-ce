@@ -42,15 +42,14 @@ import re
 
 ## Mandatory Properties ##
 
-name = 'Swedish'
-code = 'sv'
+name = "Swedish"
+code = "sv"
 use_ascii = True
-charsets = ['ISO-8859-1', 'ISO-8859-4', 'ISO-8859-9',
-            'ISO-8859-15', 'WINDOWS-1252']
+charsets = ["ISO-8859-1", "ISO-8859-4", "ISO-8859-9", "ISO-8859-15", "WINDOWS-1252"]
 
 ## Optional Properties ##
 
-alphabet = 'åäö'
-start_pages = ['Kakapo']
+alphabet = "åäö"
+start_pages = ["Kakapo"]
 wikipedia_code = code
 case_mapping = True

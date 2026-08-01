@@ -6,110 +6,111 @@ cd "$ROOT"
 
 failures=0
 fail() {
-  printf 'ERROR: %s\n' "$*" >&2
-  failures=$((failures + 1))
+	printf 'ERROR: %s\n' "$*" >&2
+	failures=$((failures + 1))
 }
 
 print_matches() {
-  local label="$1"
-  shift
-  local output
-  output="$($@ 2>/dev/null || true)"
-  if [[ -n "$output" ]]; then
-    fail "$label"
-    printf '%s\n' "$output" >&2
-  fi
+	local label="$1"
+	shift
+	local output
+	output="$($@ 2>/dev/null || true)"
+	if [[ -n $output ]]; then
+		fail "$label"
+		printf '%s\n' "$output" >&2
+	fi
 }
 
 # 0. Required layout roots/files should exist before negative scans run.
 required_dirs=(
-  "Sources/RepoPromptExecutable"
-  "Sources/RepoPrompt/Features"
-  "Sources/RepoPrompt/Infrastructure"
-  "Sources/RepoPrompt/Infrastructure/SyntaxParsing"
-  "Sources/RepoPromptShared/MCP"
-  "Sources/RepoPromptWorkspaceCore"
-  "Tests/RepoPromptTests"
-  "Tests/RepoPromptWorkspaceCoreTests"
+	"Sources/RepoPromptExecutable"
+	"Sources/RepoPrompt/Features"
+	"Sources/RepoPrompt/Infrastructure"
+	"Sources/RepoPrompt/Infrastructure/SyntaxParsing"
+	"Sources/RepoPromptShared/MCP"
+	"Sources/RepoPromptWorkspaceCore"
+	"Tests/RepoPromptTests"
+	"Tests/RepoPromptWorkspaceCoreTests"
 )
 for dir in "${required_dirs[@]}"; do
-  if [[ ! -d "$dir" ]]; then
-    fail "required source layout directory missing: $dir"
-  fi
+	if [[ ! -d $dir ]]; then
+		fail "required source layout directory missing: $dir"
+	fi
 done
 
 repo_prompt_entry="Sources/RepoPromptExecutable/RepoPromptExecutable.swift"
-if [[ ! -f "$repo_prompt_entry" ]]; then
-  fail "required thin RepoPrompt executable entry missing: $repo_prompt_entry"
+if [[ ! -f $repo_prompt_entry ]]; then
+	fail "required thin RepoPrompt executable entry missing: $repo_prompt_entry"
 fi
 unexpected_repo_prompt_executable_files=""
 if [[ -d "Sources/RepoPromptExecutable" ]]; then
-  unexpected_repo_prompt_executable_files="$(find Sources/RepoPromptExecutable -type f ! -path "$repo_prompt_entry" -print)"
+	unexpected_repo_prompt_executable_files="$(find Sources/RepoPromptExecutable -type f ! -path "$repo_prompt_entry" -print)"
 fi
-if [[ -n "$unexpected_repo_prompt_executable_files" ]]; then
-  fail "thin RepoPrompt executable target contains implementation files"
-  printf '%s\n' "$unexpected_repo_prompt_executable_files" >&2
+if [[ -n $unexpected_repo_prompt_executable_files ]]; then
+	fail "thin RepoPrompt executable target contains implementation files"
+	printf '%s\n' "$unexpected_repo_prompt_executable_files" >&2
 fi
 repo_prompt_app_main_declarations="$(grep -R -n -E '^[[:space:]]*@main([[:space:]]|$)' Sources/RepoPrompt --include='*.swift' || true)"
-if [[ -n "$repo_prompt_app_main_declarations" ]]; then
-  fail "RepoPromptApp implementation target must not declare @main"
-  printf '%s\n' "$repo_prompt_app_main_declarations" >&2
+if [[ -n $repo_prompt_app_main_declarations ]]; then
+	fail "RepoPromptApp implementation target must not declare @main"
+	printf '%s\n' "$repo_prompt_app_main_declarations" >&2
 fi
 repo_prompt_entry_main_count="$(grep -c -E '^[[:space:]]*@main([[:space:]]|$)' "$repo_prompt_entry" || true)"
-if [[ "$repo_prompt_entry_main_count" -ne 1 ]]; then
-  fail "thin RepoPrompt executable entry must declare exactly one @main"
+if [[ $repo_prompt_entry_main_count -ne 1 ]]; then
+	fail "thin RepoPrompt executable entry must declare exactly one @main"
 fi
 
 shared_mcp_required_files=(
-  "Sources/RepoPromptShared/MCP/MCPControlMessages.swift"
-  "Sources/RepoPromptShared/MCP/MCPFilesystemIdentity.swift"
-  "Sources/RepoPromptShared/MCP/MCPExternalClientEvent.swift"
+	"Sources/RepoPromptShared/MCP/MCPControlMessages.swift"
+	"Sources/RepoPromptShared/MCP/MCPFilesystemIdentity.swift"
+	"Sources/RepoPromptShared/MCP/MCPExternalClientEvent.swift"
 )
 for file in "${shared_mcp_required_files[@]}"; do
-  if [[ ! -f "$file" ]]; then
-    fail "required shared MCP file missing: $file"
-  fi
+	if [[ ! -f $file ]]; then
+		fail "required shared MCP file missing: $file"
+	fi
 done
 
 # Tree-sitter uses exact upstream package products plus a narrow scanner linker shim.
 if [[ -e "src/scanner.c" ]]; then
-  fail "retired root src/scanner.c manifest-probe sentinel exists"
+	fail "retired root src/scanner.c manifest-probe sentinel exists"
 fi
 tree_sitter_scanner_support_files=(
-  "Sources/TreeSitterScannerSupport/include/tree_sitter/alloc.h"
-  "Sources/TreeSitterScannerSupport/include/tree_sitter/array.h"
-  "Sources/TreeSitterScannerSupport/include/tree_sitter/parser.h"
-  "Sources/TreeSitterScannerSupport/src/javascript/scanner.c"
-  "Sources/TreeSitterScannerSupport/src/python/scanner.c"
-  "ThirdPartyLicenses/tree-sitter/scanner-support.sha256"
+	"Sources/TreeSitterScannerSupport/include/tree_sitter/alloc.h"
+	"Sources/TreeSitterScannerSupport/include/tree_sitter/array.h"
+	"Sources/TreeSitterScannerSupport/include/tree_sitter/parser.h"
+	"Sources/TreeSitterScannerSupport/src/javascript/scanner.c"
+	"Sources/TreeSitterScannerSupport/src/python/scanner.c"
+	"ThirdPartyLicenses/tree-sitter/scanner-support.sha256"
 )
 for file in "${tree_sitter_scanner_support_files[@]}"; do
-  if [[ ! -f "$file" ]]; then
-    fail "required TreeSitterScannerSupport compatibility file missing: $file"
-  elif ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 &&
-       [[ "$(git status --porcelain --untracked-files=all -- "$file")" != "?? $file" ]]; then
-    fail "TreeSitterScannerSupport compatibility file must be tracked or pending addition: $file"
-  fi
+	if [[ ! -f $file ]]; then
+		fail "required TreeSitterScannerSupport compatibility file missing: $file"
+	elif ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 &&
+		[[ "$(git status --porcelain --untracked-files=all -- "$file")" != "?? $file" ]]; then
+		fail "TreeSitterScannerSupport compatibility file must be tracked or pending addition: $file"
+	fi
 done
 if [[ -d "Sources/TreeSitterScannerSupport" ]]; then
-  unexpected_tree_sitter_scanner_support_files="$(find Sources/TreeSitterScannerSupport -type f \
-    ! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/alloc.h' \
-    ! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/array.h' \
-    ! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/parser.h' \
-    ! -path 'Sources/TreeSitterScannerSupport/src/javascript/scanner.c' \
-    ! -path 'Sources/TreeSitterScannerSupport/src/python/scanner.c' \
-    -print)"
-  if [[ -n "$unexpected_tree_sitter_scanner_support_files" ]]; then
-    fail "unexpected file found under narrow TreeSitterScannerSupport compatibility target"
-    printf '%s\n' "$unexpected_tree_sitter_scanner_support_files" >&2
-  fi
+	unexpected_tree_sitter_scanner_support_files="$(find Sources/TreeSitterScannerSupport -type f \
+		! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/alloc.h' \
+		! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/array.h' \
+		! -path 'Sources/TreeSitterScannerSupport/include/tree_sitter/parser.h' \
+		! -path 'Sources/TreeSitterScannerSupport/src/javascript/scanner.c' \
+		! -path 'Sources/TreeSitterScannerSupport/src/python/scanner.c' \
+		-print)"
+	if [[ -n $unexpected_tree_sitter_scanner_support_files ]]; then
+		fail "unexpected file found under narrow TreeSitterScannerSupport compatibility target"
+		printf '%s\n' "$unexpected_tree_sitter_scanner_support_files" >&2
+	fi
 fi
 if ! tree_sitter_scanner_support_checksum_output="$(shasum -a 256 -c ThirdPartyLicenses/tree-sitter/scanner-support.sha256 2>&1)"; then
-  fail "TreeSitterScannerSupport compatibility snapshots differ from curated checksums"
-  printf '%s\n' "$tree_sitter_scanner_support_checksum_output" >&2
+	fail "TreeSitterScannerSupport compatibility snapshots differ from curated checksums"
+	printf '%s\n' "$tree_sitter_scanner_support_checksum_output" >&2
 fi
 
-if ! tree_sitter_dependency_manifest_output="$(python3 <<'PY'
+if ! tree_sitter_dependency_manifest_output="$(
+	python3 <<'PY'
 import json
 import re
 import subprocess
@@ -277,167 +278,167 @@ if errors:
     raise SystemExit("\n".join(errors))
 PY
 )"; then
-  fail "Tree-sitter dependency, product, or scanner-support contract drifted"
-  printf '%s\n' "$tree_sitter_dependency_manifest_output" >&2
+	fail "Tree-sitter dependency, product, or scanner-support contract drifted"
+	printf '%s\n' "$tree_sitter_dependency_manifest_output" >&2
 fi
 
 retired_tree_sitter_grammar_dirs=(
-  "Sources/RepoPromptTreeSitterCGrammar"
-  "Sources/RepoPromptTreeSitterCSharpGrammar"
-  "Sources/RepoPromptTreeSitterCPPGrammar"
-  "Sources/RepoPromptTreeSitterGoGrammar"
-  "Sources/RepoPromptTreeSitterJavaGrammar"
-  "Sources/RepoPromptTreeSitterJavaScriptGrammar"
-  "Sources/RepoPromptTreeSitterPHPGrammar"
-  "Sources/RepoPromptTreeSitterPythonGrammar"
-  "Sources/RepoPromptTreeSitterRubyGrammar"
-  "Sources/RepoPromptTreeSitterRustGrammar"
-  "Sources/RepoPromptTreeSitterSwiftGrammar"
-  "Sources/RepoPromptTreeSitterTypeScriptGrammar"
+	"Sources/RepoPromptTreeSitterCGrammar"
+	"Sources/RepoPromptTreeSitterCSharpGrammar"
+	"Sources/RepoPromptTreeSitterCPPGrammar"
+	"Sources/RepoPromptTreeSitterGoGrammar"
+	"Sources/RepoPromptTreeSitterJavaGrammar"
+	"Sources/RepoPromptTreeSitterJavaScriptGrammar"
+	"Sources/RepoPromptTreeSitterPHPGrammar"
+	"Sources/RepoPromptTreeSitterPythonGrammar"
+	"Sources/RepoPromptTreeSitterRubyGrammar"
+	"Sources/RepoPromptTreeSitterRustGrammar"
+	"Sources/RepoPromptTreeSitterSwiftGrammar"
+	"Sources/RepoPromptTreeSitterTypeScriptGrammar"
 )
 for dir in "${retired_tree_sitter_grammar_dirs[@]}"; do
-  if [[ -e "$dir" ]]; then
-    fail "retired local Tree-sitter grammar directory exists: $dir"
-  fi
+	if [[ -e $dir ]]; then
+		fail "retired local Tree-sitter grammar directory exists: $dir"
+	fi
 done
 
 # RepoPromptWorkspaceCore is a Foundation-only path-policy boundary.
 workspace_core_source_dir="Sources/RepoPromptWorkspaceCore"
-if [[ -d "$workspace_core_source_dir" ]]; then
-  unexpected_workspace_core_files="$(find "$workspace_core_source_dir" -type f ! -name '*.swift' -print)"
-  if [[ -n "$unexpected_workspace_core_files" ]]; then
-    fail "RepoPromptWorkspaceCore contains non-Swift source files"
-    printf '%s\n' "$unexpected_workspace_core_files" >&2
-  fi
+if [[ -d $workspace_core_source_dir ]]; then
+	unexpected_workspace_core_files="$(find "$workspace_core_source_dir" -type f ! -name '*.swift' -print)"
+	if [[ -n $unexpected_workspace_core_files ]]; then
+		fail "RepoPromptWorkspaceCore contains non-Swift source files"
+		printf '%s\n' "$unexpected_workspace_core_files" >&2
+	fi
 
-  if ! workspace_core_imports="$(xcrun swiftc -frontend -emit-imported-modules "$workspace_core_source_dir"/*.swift 2>&1 | sort -u)"; then
-    fail "Swift compiler could not inspect RepoPromptWorkspaceCore imports"
-    printf '%s\n' "$workspace_core_imports" >&2
-  elif [[ "$workspace_core_imports" != "Foundation" ]]; then
-    fail "RepoPromptWorkspaceCore compiler import allowlist is Foundation only"
-    printf '%s\n' "$workspace_core_imports" >&2
-  fi
+	if ! workspace_core_imports="$(xcrun swiftc -frontend -emit-imported-modules "$workspace_core_source_dir"/*.swift 2>&1 | sort -u)"; then
+		fail "Swift compiler could not inspect RepoPromptWorkspaceCore imports"
+		printf '%s\n' "$workspace_core_imports" >&2
+	elif [[ $workspace_core_imports != "Foundation" ]]; then
+		fail "RepoPromptWorkspaceCore compiler import allowlist is Foundation only"
+		printf '%s\n' "$workspace_core_imports" >&2
+	fi
 fi
 
 # 1. Old top-level layer buckets should not receive files again.
 old_buckets=(
-  "Sources/RepoPrompt/ViewModels"
-  "Sources/RepoPrompt/Views"
-  "Sources/RepoPrompt/Services"
-  "Sources/RepoPrompt/Models"
-  "Sources/RepoPrompt/Notifications"
-  "Sources/RepoPrompt/Utils"
-  "Sources/RepoPrompt/Shared"
-  "Sources/RepoPrompt/Features/SynthaxParsing"
-  "Sources/RepoPrompt/Features/Benchmark"
+	"Sources/RepoPrompt/ViewModels"
+	"Sources/RepoPrompt/Views"
+	"Sources/RepoPrompt/Services"
+	"Sources/RepoPrompt/Models"
+	"Sources/RepoPrompt/Notifications"
+	"Sources/RepoPrompt/Utils"
+	"Sources/RepoPrompt/Shared"
+	"Sources/RepoPrompt/Features/SynthaxParsing"
+	"Sources/RepoPrompt/Features/Benchmark"
 )
 for bucket in "${old_buckets[@]}"; do
-  if [[ -d "$bucket" ]]; then
-    matches="$(find "$bucket" -type f -print)"
-    if [[ -n "$matches" ]]; then
-      fail "legacy bucket contains files: $bucket"
-      printf '%s\n' "$matches" >&2
-    fi
-  fi
+	if [[ -d $bucket ]]; then
+		matches="$(find "$bucket" -type f -print)"
+		if [[ -n $matches ]]; then
+			fail "legacy bucket contains files: $bucket"
+			printf '%s\n' "$matches" >&2
+		fi
+	fi
 done
 
 # 2. Test-only directories must stay out of the app source target.
 print_matches \
-  "Tests/TestSupport/Fixtures directory found under Sources/RepoPrompt" \
-  find Sources/RepoPrompt -type d \( -name Tests -o -name TestSupport -o -name Fixtures \) -print
+	"Tests/TestSupport/Fixtures directory found under Sources/RepoPrompt" \
+	find Sources/RepoPrompt -type d \( -name Tests -o -name TestSupport -o -name Fixtures \) -print
 
 # 3. MCPControlMessages.swift has exactly one source of truth.
 mcp_control_files=()
 while IFS= read -r file; do
-  mcp_control_files+=("$file")
+	mcp_control_files+=("$file")
 done < <(find Sources -name MCPControlMessages.swift -type f -print | sort)
-if [[ "${#mcp_control_files[@]}" -ne 1 || "${mcp_control_files[0]:-}" != "Sources/RepoPromptShared/MCP/MCPControlMessages.swift" ]]; then
-  fail "MCPControlMessages.swift must exist only at Sources/RepoPromptShared/MCP/MCPControlMessages.swift"
-  printf '%s\n' "${mcp_control_files[@]}" >&2
+if [[ ${#mcp_control_files[@]} -ne 1 || ${mcp_control_files[0]-} != "Sources/RepoPromptShared/MCP/MCPControlMessages.swift" ]]; then
+	fail "MCPControlMessages.swift must exist only at Sources/RepoPromptShared/MCP/MCPControlMessages.swift"
+	printf '%s\n' "${mcp_control_files[@]}" >&2
 fi
 
 # 3a. MCP filesystem and event wire identity also have one shared source of truth.
 mcp_identity_files=()
 while IFS= read -r file; do
-  mcp_identity_files+=("$file")
+	mcp_identity_files+=("$file")
 done < <(find Sources -name MCPFilesystemIdentity.swift -type f -print | sort)
-if [[ "${#mcp_identity_files[@]}" -ne 1 || "${mcp_identity_files[0]:-}" != "Sources/RepoPromptShared/MCP/MCPFilesystemIdentity.swift" ]]; then
-  fail "MCPFilesystemIdentity.swift must exist only under RepoPromptShared"
-  printf '%s\n' "${mcp_identity_files[@]}" >&2
+if [[ ${#mcp_identity_files[@]} -ne 1 || ${mcp_identity_files[0]-} != "Sources/RepoPromptShared/MCP/MCPFilesystemIdentity.swift" ]]; then
+	fail "MCPFilesystemIdentity.swift must exist only under RepoPromptShared"
+	printf '%s\n' "${mcp_identity_files[@]}" >&2
 fi
 
 mcp_event_declarations="$(grep -R -l -E '^(public )?struct MCPExternalClientEvent' Sources --include='*.swift' | sort || true)"
-if [[ "$mcp_event_declarations" != "Sources/RepoPromptShared/MCP/MCPExternalClientEvent.swift" ]]; then
-  fail "MCPExternalClientEvent wire DTO must be declared only under RepoPromptShared"
-  printf '%s\n' "$mcp_event_declarations" >&2
+if [[ $mcp_event_declarations != "Sources/RepoPromptShared/MCP/MCPExternalClientEvent.swift" ]]; then
+	fail "MCPExternalClientEvent wire DTO must be declared only under RepoPromptShared"
+	printf '%s\n' "$mcp_event_declarations" >&2
 fi
 
 # 4. Parser fixtures and sample parser inputs must not live in app source.
 print_matches \
-  "parser fixture/test directory found under app syntax parsing source" \
-  find Sources/RepoPrompt/Infrastructure/SyntaxParsing -type d \( -iname '*fixture*' -o -iname '*test*' \) -print
+	"parser fixture/test directory found under app syntax parsing source" \
+	find Sources/RepoPrompt/Infrastructure/SyntaxParsing -type d \( -iname '*fixture*' -o -iname '*test*' \) -print
 print_matches \
-  "parser fixture-like sample input found under app syntax parsing source" \
-  find Sources/RepoPrompt/Infrastructure/SyntaxParsing -type f \( \
-    -iname '*fixture*' -o -iname '*test*' -o \
-    -name '*.dart' -o -name '*.go' -o -name '*.java' -o -name '*.js' -o -name '*.jsx' -o \
-    -name '*.py' -o -name '*.rb' -o -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o \
-    -name '*.php' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' \
-  \) -print
+	"parser fixture-like sample input found under app syntax parsing source" \
+	find Sources/RepoPrompt/Infrastructure/SyntaxParsing -type f \( \
+	-iname '*fixture*' -o -iname '*test*' -o \
+	-name '*.dart' -o -name '*.go' -o -name '*.java' -o -name '*.js' -o -name '*.jsx' -o \
+	-name '*.py' -o -name '*.rb' -o -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o \
+	-name '*.php' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' \
+	\) -print
 
 # 5. Agent/MCP runtime paths must stay off WorkspaceFiles UI view-model dependencies.
 # UI views may still depend on WorkspaceFilesViewModel/FileViewModel/FolderViewModel until
 # the later UI-adapter simplification items, but runtime code must use WorkspaceContext values.
 print_matches \
-  "Agent/MCP runtime source references WorkspaceFilesViewModel/FileViewModel/FolderViewModel" \
-  grep -R -n -E 'WorkspaceFilesViewModel|FileViewModel|FolderViewModel' \
-    Sources/RepoPrompt/Features/AgentMode/ViewModels \
-    Sources/RepoPrompt/Features/ContextBuilder/ViewModels \
-    Sources/RepoPrompt/Infrastructure/MCP
+	"Agent/MCP runtime source references WorkspaceFilesViewModel/FileViewModel/FolderViewModel" \
+	grep -R -n -E 'WorkspaceFilesViewModel|FileViewModel|FolderViewModel' \
+	Sources/RepoPrompt/Features/AgentMode/ViewModels \
+	Sources/RepoPrompt/Features/ContextBuilder/ViewModels \
+	Sources/RepoPrompt/Infrastructure/MCP
 
 # 6. Removed native tree visualization, IDE-mode tree search, and eager root materialization
 # seams must not return. Keep unique deleted symbols global, but scope generic names to
 # their former owners.
 removed_artifact_paths=(
-  "Sources/RepoPrompt/Features/AgentMode/Views/AgentFileTreeBottomPanelView.swift"
-  "Sources/RepoPrompt/Features/WorkspaceFiles/Views/FileTree/NativeFileTree"
-  "Sources/RepoPrompt/Features/Search/ViewModels/SearchFileTreeViewModel.swift"
+	"Sources/RepoPrompt/Features/AgentMode/Views/AgentFileTreeBottomPanelView.swift"
+	"Sources/RepoPrompt/Features/WorkspaceFiles/Views/FileTree/NativeFileTree"
+	"Sources/RepoPrompt/Features/Search/ViewModels/SearchFileTreeViewModel.swift"
 )
 for path in "${removed_artifact_paths[@]}"; do
-  if [[ -e "$path" ]]; then
-    fail "removed native-tree/search artifact path exists: $path"
-  fi
+	if [[ -e $path ]]; then
+		fail "removed native-tree/search artifact path exists: $path"
+	fi
 done
 
 print_matches \
-  "removed native-tree/workspace-loading/search seam referenced in Sources" \
-  grep -R -n -E 'AgentFileTreeBottomPanelView|FileTreeViewWrapper|FileTreeViewController|NativeFileTree|SearchFileTreeViewModel|RootDescendantMaterialization|legacyMaterializedRootKeys|legacyMaterializeDescendantsRecursively|legacyEager' \
-    Sources/RepoPrompt
+	"removed native-tree/workspace-loading/search seam referenced in Sources" \
+	grep -R -n -E 'AgentFileTreeBottomPanelView|FileTreeViewWrapper|FileTreeViewController|NativeFileTree|SearchFileTreeViewModel|RootDescendantMaterialization|legacyMaterializedRootKeys|legacyMaterializeDescendantsRecursively|legacyEager' \
+	Sources/RepoPrompt
 print_matches \
-  "WindowState references removed searchViewModel wiring" \
-  grep -n -E 'searchViewModel' Sources/RepoPrompt/App/WindowState.swift
+	"WindowState references removed searchViewModel wiring" \
+	grep -n -E 'searchViewModel' Sources/RepoPrompt/App/WindowState.swift
 print_matches \
-  "WorkspaceFilesViewModel references removed recursive eager loading seam" \
-  grep -n -E 'loadContentsRecursively' Sources/RepoPrompt/Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift
+	"WorkspaceFilesViewModel references removed recursive eager loading seam" \
+	grep -n -E 'loadContentsRecursively' Sources/RepoPrompt/Features/WorkspaceFiles/ViewModels/WorkspaceFilesViewModel.swift
 
 # 7. Removed IDE-era Prompt selected-files panel and Prompt-owned preset bottom bar
 # artifacts must not return. The live compact selected-files surface is
 # SelectedFilesGrid/FilePreviewPopover, and Settings owns its chat preset picker.
 removed_prompt_cleanup_paths=(
-  "Sources/RepoPrompt/Features/Prompt/Views/Components/PresetBottomBar.swift"
-  "Sources/RepoPrompt/Features/Prompt/Views/Components/SelectedFileView.swift"
-  "Sources/RepoPrompt/Features/Prompt/ViewModels/Selection/SelectedFilesPanelViewModel.swift"
+	"Sources/RepoPrompt/Features/Prompt/Views/Components/PresetBottomBar.swift"
+	"Sources/RepoPrompt/Features/Prompt/Views/Components/SelectedFileView.swift"
+	"Sources/RepoPrompt/Features/Prompt/ViewModels/Selection/SelectedFilesPanelViewModel.swift"
 )
 for path in "${removed_prompt_cleanup_paths[@]}"; do
-  if [[ -e "$path" ]]; then
-    fail "removed Prompt UI cleanup artifact path exists: $path"
-  fi
+	if [[ -e $path ]]; then
+		fail "removed Prompt UI cleanup artifact path exists: $path"
+	fi
 done
 
 print_matches \
-  "removed Prompt selected-files/preset-bottom-bar symbol referenced in Sources" \
-  grep -R -n -E 'PresetBottomBar|SelectedFilesContentView|SelectedFilesPanelViewModel|PresetTwoPanePopover_Copy|CopyPresetPreviewView|PresetTwoPanePopover_Chat' \
-    Sources/RepoPrompt
+	"removed Prompt selected-files/preset-bottom-bar symbol referenced in Sources" \
+	grep -R -n -E 'PresetBottomBar|SelectedFilesContentView|SelectedFilesPanelViewModel|PresetTwoPanePopover_Copy|CopyPresetPreviewView|PresetTwoPanePopover_Chat' \
+	Sources/RepoPrompt
 
 # 8. Agent-authored reports and working notes stay local unless explicitly
 # promoted into the contributor-facing documentation set.
@@ -462,19 +463,19 @@ allowed_tracked_docs=(
   "docs/plans/test-coverage-value-audit-2026-05-29.md"
 )
 while IFS= read -r path; do
-  allowed_tracked_docs+=("$path")
+	allowed_tracked_docs+=("$path")
 done < <(git ls-files 'docs/test-suite-optimizer')
 unexpected_tracked_docs="$(comm -23 \
-  <(git ls-files docs | sort) \
-  <(printf '%s\n' "${allowed_tracked_docs[@]}" | sort))"
-if [[ -n "$unexpected_tracked_docs" ]]; then
-  fail "unexpected tracked docs found; keep agent-authored working documents local or add durable docs to the explicit allowlist"
-  printf '%s\n' "$unexpected_tracked_docs" >&2
+	<(git ls-files docs | sort) \
+	<(printf '%s\n' "${allowed_tracked_docs[@]}" | sort))"
+if [[ -n $unexpected_tracked_docs ]]; then
+	fail "unexpected tracked docs found; keep agent-authored working documents local or add durable docs to the explicit allowlist"
+	printf '%s\n' "$unexpected_tracked_docs" >&2
 fi
 
-if [[ "$failures" -ne 0 ]]; then
-  printf 'Source layout guardrails failed (%s issue%s).\n' "$failures" "$([[ "$failures" == 1 ]] && printf '' || printf 's')" >&2
-  exit 1
+if [[ $failures -ne 0 ]]; then
+	printf 'Source layout guardrails failed (%s issue%s).\n' "$failures" "$([[ $failures == 1 ]] && printf '' || printf 's')" >&2
+	exit 1
 fi
 
 printf 'OK: source layout guardrails passed.\n'

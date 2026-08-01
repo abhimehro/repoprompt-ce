@@ -40,4 +40,4 @@ mv "$OUTPUT_DIR/uchardet.h" "$OUTPUT_DIR/include/" || exit $?
 
 GIT_COMMIT_HASH="$(git rev-parse HEAD)"
 echo "Source code files copied by \`$SCRIPT_NAME\` from the \`uchardet\` Git repository at commit \`$GIT_COMMIT_HASH\`." \
-   >> "$OUTPUT_DIR/VERSION.md"
+	>>"$OUTPUT_DIR/VERSION.md"

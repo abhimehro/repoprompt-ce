@@ -10,155 +10,155 @@ Techniques used by universalchardet are described at http://www.mozilla.org/proj
 
 ## Supported Languages/Encodings
 
-  * International (Unicode)
-    * UTF-8
-    * UTF-16BE / UTF-16LE
-    * UTF-32BE / UTF-32LE / X-ISO-10646-UCS-4-34121 / X-ISO-10646-UCS-4-21431
-  * Arabic
-    * ISO-8859-6
-    * WINDOWS-1256
-  * Bulgarian
-    * ISO-8859-5
-    * WINDOWS-1251
-  * Chinese
-    * ISO-2022-CN
-    * BIG5
-    * EUC-TW
-    * GB18030
-    * HZ-GB-2312
-  * Croatian:
-    * ISO-8859-2
-    * ISO-8859-13
-    * ISO-8859-16
-    * Windows-1250
-    * IBM852
-    * MAC-CENTRALEUROPE
-  * Czech
-    * Windows-1250
-    * ISO-8859-2
-    * IBM852
-    * MAC-CENTRALEUROPE
-  * Danish
-    * ISO-8859-1
-    * ISO-8859-15
-    * WINDOWS-1252
-  * English
-    * ASCII
-  * Esperanto
-    * ISO-8859-3
-  * Estonian
-    * ISO-8859-4
-    * ISO-8859-13
-    * ISO-8859-13
-    * Windows-1252
-    * Windows-1257
-  * Finnish
-    * ISO-8859-1
-    * ISO-8859-4
-    * ISO-8859-9
-    * ISO-8859-13
-    * ISO-8859-15
-    * WINDOWS-1252
-  * French
-    * ISO-8859-1
-    * ISO-8859-15
-    * WINDOWS-1252
-  * German
-    * ISO-8859-1
-    * WINDOWS-1252
-  * Greek
-    * ISO-8859-7
-    * WINDOWS-1253
-  * Hebrew
-    * ISO-8859-8
-    * WINDOWS-1255
-  * Hungarian:
-    * ISO-8859-2
-    * WINDOWS-1250
-  * Irish Gaelic
-    * ISO-8859-1
-    * ISO-8859-9
-    * ISO-8859-15
-    * WINDOWS-1252
-  * Italian
-    * ISO-8859-1
-    * ISO-8859-3
-    * ISO-8859-9
-    * ISO-8859-15
-    * WINDOWS-1252
-  * Japanese
-    * ISO-2022-JP
-    * SHIFT_JIS
-    * EUC-JP
-  * Korean
-    * ISO-2022-KR
-    * EUC-KR / UHC
-  * Lithuanian
-    * ISO-8859-4
-    * ISO-8859-10
-    * ISO-8859-13
-  * Latvian
-    * ISO-8859-4
-    * ISO-8859-10
-    * ISO-8859-13
-  * Maltese
-    * ISO-8859-3
-  * Polish:
-    * ISO-8859-2
-    * ISO-8859-13
-    * ISO-8859-16
-    * Windows-1250
-    * IBM852
-    * MAC-CENTRALEUROPE
-  * Portuguese
-    * ISO-8859-1
-    * ISO-8859-9
-    * ISO-8859-15
-    * WINDOWS-1252
-  * Romanian:
-    * ISO-8859-2
-    * ISO-8859-16
-    * Windows-1250
-    * IBM852
-  * Russian
-    * ISO-8859-5
-    * KOI8-R
-    * WINDOWS-1251
-    * MAC-CYRILLIC
-    * IBM866
-    * IBM855
-  * Slovak
-    * Windows-1250
-    * ISO-8859-2
-    * IBM852
-    * MAC-CENTRALEUROPE
-  * Slovene
-    * ISO-8859-2
-    * ISO-8859-16
-    * Windows-1250
-    * IBM852
-    * MAC-CENTRALEUROPE
-  * Spanish
-    * ISO-8859-1
-    * ISO-8859-15
-    * WINDOWS-1252
-  * Swedish
-    * ISO-8859-1
-    * ISO-8859-4
-    * ISO-8859-9
-    * ISO-8859-15
-    * WINDOWS-1252
-  * Thai
-    * TIS-620
-    * ISO-8859-11
-  * Turkish:
-    * ISO-8859-3
-    * ISO-8859-9
-  * Vietnamese:
-    * VISCII
-    * Windows-1258
-  * Others
-    * WINDOWS-1252
+- International (Unicode)
+  - UTF-8
+  - UTF-16BE / UTF-16LE
+  - UTF-32BE / UTF-32LE / X-ISO-10646-UCS-4-34121 / X-ISO-10646-UCS-4-21431
+- Arabic
+  - ISO-8859-6
+  - WINDOWS-1256
+- Bulgarian
+  - ISO-8859-5
+  - WINDOWS-1251
+- Chinese
+  - ISO-2022-CN
+  - BIG5
+  - EUC-TW
+  - GB18030
+  - HZ-GB-2312
+- Croatian:
+  - ISO-8859-2
+  - ISO-8859-13
+  - ISO-8859-16
+  - Windows-1250
+  - IBM852
+  - MAC-CENTRALEUROPE
+- Czech
+  - Windows-1250
+  - ISO-8859-2
+  - IBM852
+  - MAC-CENTRALEUROPE
+- Danish
+  - ISO-8859-1
+  - ISO-8859-15
+  - WINDOWS-1252
+- English
+  - ASCII
+- Esperanto
+  - ISO-8859-3
+- Estonian
+  - ISO-8859-4
+  - ISO-8859-13
+  - ISO-8859-13
+  - Windows-1252
+  - Windows-1257
+- Finnish
+  - ISO-8859-1
+  - ISO-8859-4
+  - ISO-8859-9
+  - ISO-8859-13
+  - ISO-8859-15
+  - WINDOWS-1252
+- French
+  - ISO-8859-1
+  - ISO-8859-15
+  - WINDOWS-1252
+- German
+  - ISO-8859-1
+  - WINDOWS-1252
+- Greek
+  - ISO-8859-7
+  - WINDOWS-1253
+- Hebrew
+  - ISO-8859-8
+  - WINDOWS-1255
+- Hungarian:
+  - ISO-8859-2
+  - WINDOWS-1250
+- Irish Gaelic
+  - ISO-8859-1
+  - ISO-8859-9
+  - ISO-8859-15
+  - WINDOWS-1252
+- Italian
+  - ISO-8859-1
+  - ISO-8859-3
+  - ISO-8859-9
+  - ISO-8859-15
+  - WINDOWS-1252
+- Japanese
+  - ISO-2022-JP
+  - SHIFT_JIS
+  - EUC-JP
+- Korean
+  - ISO-2022-KR
+  - EUC-KR / UHC
+- Lithuanian
+  - ISO-8859-4
+  - ISO-8859-10
+  - ISO-8859-13
+- Latvian
+  - ISO-8859-4
+  - ISO-8859-10
+  - ISO-8859-13
+- Maltese
+  - ISO-8859-3
+- Polish:
+  - ISO-8859-2
+  - ISO-8859-13
+  - ISO-8859-16
+  - Windows-1250
+  - IBM852
+  - MAC-CENTRALEUROPE
+- Portuguese
+  - ISO-8859-1
+  - ISO-8859-9
+  - ISO-8859-15
+  - WINDOWS-1252
+- Romanian:
+  - ISO-8859-2
+  - ISO-8859-16
+  - Windows-1250
+  - IBM852
+- Russian
+  - ISO-8859-5
+  - KOI8-R
+  - WINDOWS-1251
+  - MAC-CYRILLIC
+  - IBM866
+  - IBM855
+- Slovak
+  - Windows-1250
+  - ISO-8859-2
+  - IBM852
+  - MAC-CENTRALEUROPE
+- Slovene
+  - ISO-8859-2
+  - ISO-8859-16
+  - Windows-1250
+  - IBM852
+  - MAC-CENTRALEUROPE
+- Spanish
+  - ISO-8859-1
+  - ISO-8859-15
+  - WINDOWS-1252
+- Swedish
+  - ISO-8859-1
+  - ISO-8859-4
+  - ISO-8859-9
+  - ISO-8859-15
+  - WINDOWS-1252
+- Thai
+  - TIS-620
+  - ISO-8859-11
+- Turkish:
+  - ISO-8859-3
+  - ISO-8859-9
+- Vietnamese:
+  - VISCII
+  - Windows-1258
+- Others
+  - WINDOWS-1252
 
 ## Installation
 
@@ -256,28 +256,28 @@ See [uchardet.h](https://cgit.freedesktop.org/uchardet/uchardet/tree/src/ucharde
 
 ## Related Projects
 
-  * [python-chardet](https://github.com/chardet/chardet) Python port
-  * [ruby-rchardet](http://rubyforge.org/projects/chardet/) Ruby port
-  * [juniversalchardet](http://code.google.com/p/juniversalchardet/) Java port of universalchardet
-  * [jchardet](http://jchardet.sourceforge.net/) Java port of chardet
-  * [nuniversalchardet](http://code.google.com/p/nuniversalchardet/) C# port of universalchardet
-  * [nchardet](http://www.conceptdevelopment.net/Localization/NCharDet/) C# port of chardet
-  * [uchardet-enhanced](https://bitbucket.org/medoc/uchardet-enhanced) A fork of mozilla universalchardet
-  * [rust-uchardet](https://github.com/emk/rust-uchardet) Rust language binding of uchardet
-  * [libchardet](https://ftp.oops.org/pub/oops/libchardet/) Another C/C++ API wrapping Mozilla code.
+- [python-chardet](https://github.com/chardet/chardet) Python port
+- [ruby-rchardet](http://rubyforge.org/projects/chardet/) Ruby port
+- [juniversalchardet](http://code.google.com/p/juniversalchardet/) Java port of universalchardet
+- [jchardet](http://jchardet.sourceforge.net/) Java port of chardet
+- [nuniversalchardet](http://code.google.com/p/nuniversalchardet/) C# port of universalchardet
+- [nchardet](http://www.conceptdevelopment.net/Localization/NCharDet/) C# port of chardet
+- [uchardet-enhanced](https://bitbucket.org/medoc/uchardet-enhanced) A fork of mozilla universalchardet
+- [rust-uchardet](https://github.com/emk/rust-uchardet) Rust language binding of uchardet
+- [libchardet](https://ftp.oops.org/pub/oops/libchardet/) Another C/C++ API wrapping Mozilla code.
 
 ## Used by
 
-* [mpv](https://mpv.io/) for subtitle detection
-* [Tepl](https://wiki.gnome.org/Projects/Tepl)
-* [Nextcloud IOS app](https://github.com/nextcloud/ios)
-* …
+- [mpv](https://mpv.io/) for subtitle detection
+- [Tepl](https://wiki.gnome.org/Projects/Tepl)
+- [Nextcloud IOS app](https://github.com/nextcloud/ios)
+- …
 
 ## Licenses
 
-* [Mozilla Public License Version 1.1](http://www.mozilla.org/MPL/1.1/)
-* [GNU General Public License, version 2.0](http://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html) or later.
-* [GNU Lesser General Public License, version 2.1](http://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html) or later.
+- [Mozilla Public License Version 1.1](http://www.mozilla.org/MPL/1.1/)
+- [GNU General Public License, version 2.0](http://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html) or later.
+- [GNU Lesser General Public License, version 2.1](http://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html) or later.
 
 See the file `COPYING` for the complete text of these 3 licenses.
 
