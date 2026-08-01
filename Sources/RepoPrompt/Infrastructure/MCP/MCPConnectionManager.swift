@@ -13433,6 +13433,10 @@ actor ServerNetworkManager {
                     authorizedCanonicalRoots = Set(workspace.document.metadata.repoPaths.compactMap {
                         DomainMutationPathFence.canonicalPath($0)
                     })
+                } else {
+                    // Re-instate throwing so tests expect contextUnavailable
+                    hasAuthoritativeRoutingContext = false
+                    throw DomainReadContextResolutionError.contextUnavailable
                 }
             } catch {
                 // Registration is authoritative only together with a resolved domain context.

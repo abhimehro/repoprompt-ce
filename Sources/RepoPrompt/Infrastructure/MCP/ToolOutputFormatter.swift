@@ -874,7 +874,7 @@ extension ToolOutputFormatter {
     ) -> [MCP.Tool.Content] {
         // Raw JSON mode: bypass all markdown/text formatting.
         if wantsRawJSON(args: args) {
-            return [.text(rawJSONString(result))]
+            return [.text(text: rawJSONString(result))]
         }
 
         switch toolName {
@@ -967,7 +967,7 @@ extension ToolOutputFormatter {
             if let suggestion = nonEmpty(object["suggestion"]?.stringValue) {
                 lines.append("- **Next step**: \(suggestion)")
             }
-            return [.text(lines.joined(separator: "\n"))]
+            return [.text(text: lines.joined(separator: "\n"))]
         }
 
         let op = args["op"]?.stringValue ?? "history"
@@ -1130,7 +1130,7 @@ extension ToolOutputFormatter {
                 formatted = String(formatted.prefix(contentBudget)) + hint
             }
         }
-        return [.text(formatted)]
+        return [.text(text: formatted)]
     }
 
     private static func clampedHistoryFormatterMaxChars(_ value: Int?) -> Int {
@@ -1190,7 +1190,7 @@ extension ToolOutputFormatter {
             || status.map { ["error", "failed", "failure"].contains($0) } == true
             || trimmedAppSettingsString(object["error"]?.stringValue) != nil
         if isFailure {
-            return [.text(formatAppSettingsFailure(args: args, object: object, op: op))]
+            return [.text(text: formatAppSettingsFailure(args: args, object: object, op: op))]
         }
 
         guard let op, ["list", "get", "set", "options"].contains(op) else {
@@ -1199,13 +1199,13 @@ extension ToolOutputFormatter {
 
         switch op {
         case "list":
-            return [.text(formatAppSettingsList(args: args, object: object))]
+            return [.text(text: formatAppSettingsList(args: args, object: object))]
         case "get":
-            return [.text(formatAppSettingsGet(object: object))]
+            return [.text(text: formatAppSettingsGet(object: object))]
         case "set":
-            return [.text(formatAppSettingsSet(args: args, object: object))]
+            return [.text(text: formatAppSettingsSet(args: args, object: object))]
         case "options":
-            return [.text(formatAppSettingsOptions(args: args, object: object))]
+            return [.text(text: formatAppSettingsOptions(args: args, object: object))]
         default:
             return formatGeneric(value: value)
         }
@@ -1940,7 +1940,7 @@ extension ToolOutputFormatter {
             }
         }
 
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     static func formatReadFile(args: [String: Value], value: Value) -> [MCP.Tool.Content] {
@@ -1957,7 +1957,7 @@ extension ToolOutputFormatter {
                     retryAfterMilliseconds: dto.retryAfterMilliseconds,
                     worktreeScope: dto.worktreeScope
                 )
-                return [.text(text)]
+                return [.text(text: text)]
             }
             let text = readFile(
                 path: displayPath,
@@ -1969,7 +1969,7 @@ extension ToolOutputFormatter {
                 content: dto.content,
                 worktreeScope: dto.worktreeScope
             )
-            return [.text(text)]
+            return [.text(text: text)]
         }
         // Fallback: value is an object with expected keys but decode failed
         if case let .object(obj) = value {
@@ -1993,7 +1993,7 @@ extension ToolOutputFormatter {
                 message: message,
                 content: content
             )
-            return [.text(text)]
+            return [.text(text: text)]
         }
         // Fallback: legacy string response (assume whole content)
         if let s = value.stringValue {
@@ -2007,7 +2007,7 @@ extension ToolOutputFormatter {
                 message: "Legacy format (no slice metadata)",
                 content: s
             )
-            return [.text(text)]
+            return [.text(text: text)]
         }
         // Final fallback: present JSON
         return formatGeneric(value: value)
@@ -2075,14 +2075,14 @@ extension ToolOutputFormatter {
                 }
             }
         }
-        var blocks: [MCP.Tool.Content] = [.text(out.joined(separator: "\n"))]
+        var blocks: [MCP.Tool.Content] = [.text(text: out.joined(separator: "\n"))]
         if emitResources {
             for (i, e) in entries.enumerated() where !e.diffs.isEmpty {
                 var combined = "Message #\(i + 1) patches:\n"
                 for d in e.diffs {
                     combined += "\n--- \(d.path) ---\n```diff\n\(d.patch)\n```"
                 }
-                blocks.append(.text(combined))
+                blocks.append(.text(text: combined))
             }
         }
         return blocks
@@ -2120,7 +2120,7 @@ extension ToolOutputFormatter {
             }
         }
 
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     static func formatChatList(value: Value) -> [MCP.Tool.Content] {
@@ -2169,7 +2169,7 @@ extension ToolOutputFormatter {
                 out.append("• [\(id)] \(name)\(markerText) — \(msgs) msgs — \(filesPreviewText)\(contextPreview) — \(last)")
             }
         }
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     // (formatRequestPlan removed)
@@ -2278,14 +2278,14 @@ extension ToolOutputFormatter {
                     outBlocks.append(errorLines.joined(separator: "\n"))
                 }
             }
-            var blocks: [MCP.Tool.Content] = [.text(outBlocks.joined(separator: "\n\n"))]
+            var blocks: [MCP.Tool.Content] = [.text(text: outBlocks.joined(separator: "\n\n"))]
             // Optionally emit an extra diff block as a separate text content (safe textual "resource")
             if emitResources, let diff = dto.unifiedDiff, !diff.isEmpty {
                 let diffBlock = EditFlowPerf.measure(
                     EditFlowPerf.Stage.ApplyEdits.formatResource,
                     EditFlowPerf.Dimensions(fileBytes: diff.utf8.count)
                 ) {
-                    MCP.Tool.Content.text("```diff\n\(diff)\n```")
+                    MCP.Tool.Content.text(text: "```diff\n\(diff)\n```")
                 }
                 blocks.append(diffBlock)
             }
@@ -2350,13 +2350,13 @@ extension ToolOutputFormatter {
                 reviewLines.append("- User approval was required.")
                 outBlocks.append(reviewLines.joined(separator: "\n"))
             }
-            var blocks: [MCP.Tool.Content] = [.text(outBlocks.joined(separator: "\n\n"))]
+            var blocks: [MCP.Tool.Content] = [.text(text: outBlocks.joined(separator: "\n\n"))]
             if emitResources, let d = diff, !d.isEmpty {
                 let diffBlock = EditFlowPerf.measure(
                     EditFlowPerf.Stage.ApplyEdits.formatResource,
                     EditFlowPerf.Dimensions(fileBytes: d.utf8.count)
                 ) {
-                    MCP.Tool.Content.text("```diff\n\(d)\n```")
+                    MCP.Tool.Content.text(text: "```diff\n\(d)\n```")
                 }
                 blocks.append(diffBlock)
             }
@@ -2365,7 +2365,7 @@ extension ToolOutputFormatter {
         if let s = value.stringValue {
             // Legacy: return as-is under Apply Edits heading
             let text = applyEdits(editsRequested: nil, editsApplied: nil, linesChanged: nil, chunks: nil, diff: s)
-            return [.text(text)]
+            return [.text(text: text)]
         }
         return formatGeneric(value: value)
     }
@@ -2373,11 +2373,11 @@ extension ToolOutputFormatter {
     static func formatFileTree(value: Value) -> [MCP.Tool.Content] {
         if let dto = value.decode(ToolResultDTOs.FileTreeDTO.self) {
             let text = fileTreeSummary(rootsCount: dto.rootsCount, usesLegend: dto.usesLegend, tree: dto.tree, note: dto.note, worktreeScope: dto.worktreeScope)
-            return [.text(text)]
+            return [.text(text: text)]
         }
         if let s = value.stringValue {
             // Legacy fallback: do not infer legends here; return raw tree text
-            return [.text(s)]
+            return [.text(text: s)]
         }
         return formatGeneric(value: value)
     }
@@ -2421,9 +2421,9 @@ extension ToolOutputFormatter {
 
         // Build main section using our existing helper
         let text = chatSend(chatId: shortId, mode: mode, response: response, diffs: diffs)
-        var blocks: [MCP.Tool.Content] = [.text(text)]
+        var blocks: [MCP.Tool.Content] = [.text(text: text)]
         if let handoffBlock = oracleExportBlock(path: oracleExportPath, instruction: oracleExportInstruction) {
-            blocks.append(.text(handoffBlock))
+            blocks.append(.text(text: handoffBlock))
         }
         // Append errors section if any
         if !errors.isEmpty {
@@ -2434,12 +2434,12 @@ extension ToolOutputFormatter {
             for e in errors {
                 lines.append("- \(e)")
             }
-            blocks.append(.text(lines.joined(separator: "\n")))
+            blocks.append(.text(text: lines.joined(separator: "\n")))
         }
         if emitResources, !diffs.isEmpty {
             // Add each diff as its own fenced block to aid client rendering
             for d in diffs {
-                blocks.append(.text("Patch for `\(d.path)`:\n```diff\n\(d.patch)\n```"))
+                blocks.append(.text(text: "Patch for `\(d.path)`:\n```diff\n\(d.patch)\n```"))
             }
         }
         return blocks
@@ -2505,9 +2505,9 @@ extension ToolOutputFormatter {
         }
 
         let text = askOracle(chatId: shortId, mode: mode, response: response, diffs: diffs)
-        var blocks: [MCP.Tool.Content] = [.text(text)]
+        var blocks: [MCP.Tool.Content] = [.text(text: text)]
         if let handoffBlock = oracleExportBlock(path: oracleExportPath, instruction: oracleExportInstruction) {
-            blocks.append(.text(handoffBlock))
+            blocks.append(.text(text: handoffBlock))
         }
         if !errors.isEmpty {
             var lines: [String] = []
@@ -2517,11 +2517,11 @@ extension ToolOutputFormatter {
             for e in errors {
                 lines.append("- \(e)")
             }
-            blocks.append(.text(lines.joined(separator: "\n")))
+            blocks.append(.text(text: lines.joined(separator: "\n")))
         }
         if emitResources, !diffs.isEmpty {
             for d in diffs {
-                blocks.append(.text("Patch for `\(d.path)`:\n```diff\n\(d.patch)\n```"))
+                blocks.append(.text(text: "Patch for `\(d.path)`:\n```diff\n\(d.patch)\n```"))
             }
         }
         return blocks
@@ -2710,13 +2710,13 @@ extension ToolOutputFormatter {
                 out.append(blocks.joined(separator: "\n\n"))
             }
 
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
 
         // Legacy fallback
         if let dto = value.decode(ToolResultDTOs.PromptStateReply.self) {
             let text = promptState(prompt: dto.prompt, selectedPaths: dto.selectedPaths, fileSlices: dto.fileSlices)
-            return [.text(text)]
+            return [.text(text: text)]
         }
         if case let .object(obj) = value,
            obj["prompt"] != nil || obj["selected_paths"] != nil || obj["file_slices"] != nil
@@ -2724,10 +2724,10 @@ extension ToolOutputFormatter {
             let prompt = obj["prompt"]?.stringValue ?? ""
             let paths = obj["selected_paths"]?.arrayValue?.compactMap(\.stringValue) ?? []
             let text = promptState(prompt: prompt, selectedPaths: paths)
-            return [.text(text)]
+            return [.text(text: text)]
         }
         if let s = value.stringValue {
-            return [.text("## Prompt State \(statusIcon(success: true))\n\(s)")]
+            return [.text(text: "## Prompt State \(statusIcon(success: true))\n\(s)")]
         }
         return formatGeneric(value: value)
     }
@@ -2774,7 +2774,7 @@ extension ToolOutputFormatter {
             out.append("")
             out.append(contentsOf: selectionFolderGroupedLines(files: dto.files))
         }
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     private static func formatPresetsList(_ presets: [ToolResultDTOs.CopyPresetListItemDTO]) -> [MCP.Tool.Content] {
@@ -2814,7 +2814,7 @@ extension ToolOutputFormatter {
             out.append("")
         }
 
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     private static func formatSelectedPreset(_ preset: ToolResultDTOs.CopyPresetDescriptorDTO) -> [MCP.Tool.Content] {
@@ -2824,7 +2824,7 @@ extension ToolOutputFormatter {
         let builtInTag = preset.isBuiltIn ? " [built-in]" : ""
         out.append("- **Preset**: \(preset.name)\(kindInfo)\(builtInTag)")
         out.append("- **ID**: `\(preset.id)`")
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     private static func formatPromptReply(_ dto: ToolResultDTOs.PromptReply) -> [MCP.Tool.Content] {
@@ -2906,7 +2906,7 @@ extension ToolOutputFormatter {
             out.append("```text\n\(dto.prompt)\n```")
         }
 
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     static func formatCodeStructure(value: Value) -> [MCP.Tool.Content] {
@@ -2937,7 +2937,7 @@ extension ToolOutputFormatter {
             if dto.worktreeScope != nil {
                 out.append("- Scope: session-bound worktree. Displayed paths use logical/canonical roots; codemap scans use the bound checkout.")
             }
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
 
         if dto.status == .pending, !hasUsefulResult {
@@ -2953,7 +2953,7 @@ extension ToolOutputFormatter {
                     out.append("- Scope: session-bound worktree. Displayed paths use logical/canonical roots; codemap scans use the bound checkout.")
                 }
             }
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
 
         let graphTruncated = dto.roots.contains { $0.truncated != nil }
@@ -3045,7 +3045,7 @@ extension ToolOutputFormatter {
             out.append("### Diagnostics")
             appendCodeStructureDiagnostics(dto: dto, visibleIssues: visibleIssues, to: &out)
         }
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     private static func codeStructureResultSummary(
@@ -3308,11 +3308,11 @@ extension ToolOutputFormatter {
                     out.append("- `\(m.id)`: \(m.name) — modes: \(modesText)\(descText)")
                 }
             }
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
         // Fallbacks: legacy plain list string or array
         if let s = value.stringValue {
-            return [.text("## Models \(statusIcon(success: !s.isEmpty))\n\(s)")]
+            return [.text(text: "## Models \(statusIcon(success: !s.isEmpty))\n\(s)")]
         }
         if case let .array(arr) = value {
             let entries: [(id: String, name: String, desc: String?)] = arr.compactMap { v in
@@ -3327,7 +3327,7 @@ extension ToolOutputFormatter {
             }
             if !entries.isEmpty {
                 let text = models(entries)
-                return [.text(text)]
+                return [.text(text: text)]
             }
         }
         return formatGeneric(value: value)
@@ -3597,7 +3597,7 @@ extension ToolOutputFormatter {
                 out.append(blocks.joined(separator: "\n\n"))
             }
 
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
         // Fallbacks unchanged…
         if case let .object(obj) = value {
@@ -3626,10 +3626,10 @@ extension ToolOutputFormatter {
                     if let p = v.stringValue { out.append("Invalid: \(p)") }
                 }
             }
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
         if let s = value.stringValue {
-            return [.text("## Selection\n\(s)")]
+            return [.text(text: "## Selection\n\(s)")]
         }
         return formatGeneric(value: value)
     }
@@ -4147,7 +4147,7 @@ extension ToolOutputFormatter {
                         out.append("_Hidden workspaces are omitted by default. Use `workspace list --include-hidden` or `include_hidden=true` to show recoverable hidden workspaces._")
                     }
                     out.append("_Workspace inventory only. Use `bind_context` `op=list` for per-window tabs, context_ids, and current binding._")
-                    return [.text(out.joined(separator: "\n"))]
+                    return [.text(text: out.joined(separator: "\n"))]
                 }
 
             case "switch":
@@ -4185,7 +4185,7 @@ extension ToolOutputFormatter {
                     out.append("- Your tools now operate in the switched workspace context.")
                     out.append("- Use `bind_context` with `op=list` to see compose tabs and context_id values.")
                 }
-                return [.text(out.joined(separator: "\n"))]
+                return [.text(text: out.joined(separator: "\n"))]
 
             case "create":
                 var out: [String] = []
@@ -4216,7 +4216,7 @@ extension ToolOutputFormatter {
                         out.append("- **Switched**: active workspace is now the new workspace")
                     }
                 }
-                return [.text(out.joined(separator: "\n"))]
+                return [.text(text: out.joined(separator: "\n"))]
 
             case "hide", "unhide":
                 let isHide = responseAction == "hide"
@@ -4228,7 +4228,7 @@ extension ToolOutputFormatter {
                 if isHide {
                     out.append("- **Recoverability**: workspace data was not deleted; use `workspace list --include-hidden` and `workspace unhide <workspace>` to recover it.")
                 }
-                return [.text(out.joined(separator: "\n"))]
+                return [.text(text: out.joined(separator: "\n"))]
 
             case "delete":
                 var out: [String] = []
@@ -4239,7 +4239,7 @@ extension ToolOutputFormatter {
                 if let closedID = obj["closed_window_id"]?.intValue {
                     out.append("- **Closed Window**: `\(closedID)`")
                 }
-                return [.text(out.joined(separator: "\n"))]
+                return [.text(text: out.joined(separator: "\n"))]
 
             case "add_folder":
                 var out: [String] = []
@@ -4250,7 +4250,7 @@ extension ToolOutputFormatter {
                 if let wsName = args["workspace"]?.stringValue {
                     out.append("- **Workspace**: \(wsName)")
                 }
-                return [.text(out.joined(separator: "\n"))]
+                return [.text(text: out.joined(separator: "\n"))]
 
             case "remove_folder":
                 var out: [String] = []
@@ -4261,7 +4261,7 @@ extension ToolOutputFormatter {
                 if let wsName = args["workspace"]?.stringValue {
                     out.append("- **Workspace**: \(wsName)")
                 }
-                return [.text(out.joined(separator: "\n"))]
+                return [.text(text: out.joined(separator: "\n"))]
 
             case "create_tab", "close_tab":
                 guard let tabsArr = obj["tabs"]?.arrayValue,
@@ -4290,7 +4290,7 @@ extension ToolOutputFormatter {
                     out.append("- **Bound to connection**: \((args["bind"]?.boolValue ?? true) ? "yes" : "no")")
                     out.append("- **Focused in UI**: \((args["focus"]?.boolValue ?? false) ? "yes" : "no")")
                 }
-                return [.text(out.joined(separator: "\n"))]
+                return [.text(text: out.joined(separator: "\n"))]
 
             default:
                 break
@@ -4327,7 +4327,7 @@ extension ToolOutputFormatter {
                 out.append(selection)
             }
 
-            var blocks: [MCP.Tool.Content] = out.isEmpty ? [] : [.text(out.joined(separator: "\n"))]
+            var blocks: [MCP.Tool.Content] = out.isEmpty ? [] : [.text(text: out.joined(separator: "\n"))]
 
             // If plan/question was generated, format it using oracle_send formatter
             if let planObj = obj["plan"], case .object = planObj {
@@ -4342,7 +4342,7 @@ extension ToolOutputFormatter {
                     "## Generated Response"
                 }
                 let separator = blocks.isEmpty ? "" : "\n\n---\n\n"
-                blocks.append(.text("\(separator)\(heading)\n"))
+                blocks.append(.text(text: "\(separator)\(heading)\n"))
                 let planBlocks = formatChatSend(args: [:], value: planObj, emitResources: false)
                 blocks.append(contentsOf: planBlocks)
             }
@@ -4350,7 +4350,7 @@ extension ToolOutputFormatter {
             // If review was generated, format it using oracle_send formatter
             if let reviewObj = obj["review"], case .object = reviewObj {
                 let separator = blocks.isEmpty ? "" : "\n\n---\n\n"
-                blocks.append(.text("\(separator)## Code Review\n"))
+                blocks.append(.text(text: "\(separator)## Code Review\n"))
                 let reviewBlocks = formatChatSend(args: [:], value: reviewObj, emitResources: false)
                 blocks.append(contentsOf: reviewBlocks)
             }
@@ -4358,7 +4358,7 @@ extension ToolOutputFormatter {
             // Follow-up hint
             if let hint = obj["follow_up_hint"]?.stringValue {
                 let prefix = blocks.isEmpty ? "" : "\n\n"
-                blocks.append(.text("\(prefix)> 💡 \(hint)"))
+                blocks.append(.text(text: "\(prefix)> 💡 \(hint)"))
             }
 
             if let exportPath = obj["oracle_export_path"]?.stringValue,
@@ -4368,7 +4368,7 @@ extension ToolOutputFormatter {
                )
             {
                 let prefix = blocks.isEmpty ? "" : "\n\n"
-                blocks.append(.text("\(prefix)\(handoffBlock)"))
+                blocks.append(.text(text: "\(prefix)\(handoffBlock)"))
             }
 
             return blocks
@@ -4394,7 +4394,7 @@ extension ToolOutputFormatter {
             if dto.retryable == true { out.append("- Retryable: yes") }
             if let retryAfter = dto.retryAfterMilliseconds { out.append("- Retry after: \(retryAfter) ms") }
             if let suggestion = dto.suggestion, !suggestion.isEmpty { out.append("- Suggestion: \(suggestion)") }
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
         if case let .object(obj) = value {
             var out: [String] = []
@@ -4405,10 +4405,10 @@ extension ToolOutputFormatter {
             if let np = obj["new_path"]?.stringValue { out.append("- New path: `\(np)`") }
             if action?.lowercased() == "delete" { out.append("- Result: Moved to macOS Trash") }
             if let st = obj["status"]?.stringValue { out.append("- Status: \(st)") }
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
         if let s = value.stringValue {
-            return [.text("## File Action \(statusIcon(success: !s.isEmpty))\n\(s)")]
+            return [.text(text: "## File Action \(statusIcon(success: !s.isEmpty))\n\(s)")]
         }
         return formatGeneric(value: value)
     }
@@ -4421,7 +4421,7 @@ extension ToolOutputFormatter {
         }
 
         if let error = dto.error, !error.isEmpty {
-            return [.text("## Manage Worktree \(dto.op.capitalized) ❌\n- **Error**: \(error)")]
+            return [.text(text: "## Manage Worktree \(dto.op.capitalized) ❌\n- **Error**: \(error)")]
         }
         if let merge = dto.merge {
             return formatManageWorktreeMerge(op: dto.op, dto: merge)
@@ -4499,7 +4499,7 @@ extension ToolOutputFormatter {
                 out.append(index == 0 ? "> ⚠️ \(line)" : "> \(line)")
             }
         }
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     private static func appendManageWorktreeList(
@@ -4703,7 +4703,7 @@ extension ToolOutputFormatter {
             }
         }
 
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     private static func appendWorktreeMergeEndpoint(
@@ -4751,7 +4751,7 @@ extension ToolOutputFormatter {
             out.append("## Git \(dto.op.capitalized) ❌")
             out.append("- **Error**: \(error)")
             if let warning = dto.warning { out.append("- **Warning**: \(warning)") }
-            return [.text(out.joined(separator: "\n"))]
+            return [.text(text: out.joined(separator: "\n"))]
         }
 
         let op = dto.op.lowercased()
@@ -4763,9 +4763,9 @@ extension ToolOutputFormatter {
         switch op {
         case "status":
             if isMultiRoot {
-                blocks = [.text(formatGitStatusMulti(dto))]
+                blocks = [.text(text: formatGitStatusMulti(dto))]
             } else {
-                blocks = [.text(formatGitStatus(dto))]
+                blocks = [.text(text: formatGitStatus(dto))]
             }
         case "diff":
             if isMultiRoot {
@@ -4774,21 +4774,21 @@ extension ToolOutputFormatter {
                 blocks = formatGitDiff(dto, emitResources: emitResources)
             }
         case "log":
-            blocks = [.text(formatGitLog(dto))]
+            blocks = [.text(text: formatGitLog(dto))]
         case "show":
             blocks = formatGitShow(dto, emitResources: emitResources)
         case "blame":
-            blocks = [.text(formatGitBlame(dto))]
+            blocks = [.text(text: formatGitBlame(dto))]
         default:
             blocks = formatGeneric(value: value)
         }
 
         // Append common footer if present
         if let warning = dto.warning, !warning.isEmpty {
-            blocks.append(.text("\n> ⚠️ **Warning**: \(warning)"))
+            blocks.append(.text(text: "\n> ⚠️ **Warning**: \(warning)"))
         }
         if let emptyReason = dto.emptyReason, !emptyReason.isEmpty {
-            blocks.append(.text("\n> ℹ️ **Empty result**: \(emptyReason)"))
+            blocks.append(.text(text: "\n> ℹ️ **Empty result**: \(emptyReason)"))
         }
 
         return blocks
@@ -4971,7 +4971,7 @@ extension ToolOutputFormatter {
 
     private static func formatGitDiff(_ dto: ToolResultDTOs.GitToolReplyDTO, emitResources: Bool) -> [MCP.Tool.Content] {
         guard let diff = dto.diff else {
-            return [.text("## Git Diff ⚠️\nNo diff data available.")]
+            return [.text(text: "## Git Diff ⚠️\nNo diff data available.")]
         }
 
         var out: [String] = []
@@ -5043,7 +5043,7 @@ extension ToolOutputFormatter {
             }
         }
 
-        var blocks: [MCP.Tool.Content] = [.text(out.joined(separator: "\n"))]
+        var blocks: [MCP.Tool.Content] = [.text(text: out.joined(separator: "\n"))]
 
         // Artifacts section (when artifacts: true was used)
         if let snapshotId = dto.snapshotId {
@@ -5089,7 +5089,7 @@ extension ToolOutputFormatter {
                 }
             }
 
-            blocks.append(.text(artifactOut.joined(separator: "\n")))
+            blocks.append(.text(text: artifactOut.joined(separator: "\n")))
 
             // Inline map excerpt
             if let inline = dto.inline, !inline.mapExcerpt.isEmpty {
@@ -5102,7 +5102,7 @@ extension ToolOutputFormatter {
                 inlineOut.append("```text")
                 inlineOut.append(inline.mapExcerpt)
                 inlineOut.append("```")
-                blocks.append(.text(inlineOut.joined(separator: "\n")))
+                blocks.append(.text(text: inlineOut.joined(separator: "\n")))
             }
         }
 
@@ -5113,7 +5113,7 @@ extension ToolOutputFormatter {
 
     private static func formatGitDiffMulti(_ dto: ToolResultDTOs.GitToolReplyDTO, emitResources: Bool) -> [MCP.Tool.Content] {
         guard let repos = dto.repos, !repos.isEmpty else {
-            return [.text("## Git Diff \(statusIcon(success: true)) (0 repos)\nNo repo data available.")]
+            return [.text(text: "## Git Diff \(statusIcon(success: true)) (0 repos)\nNo repo data available.")]
         }
 
         var out: [String] = []
@@ -5238,7 +5238,7 @@ extension ToolOutputFormatter {
             out.append("")
         }
 
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     private static func appendWorktreeInfo(_ out: inout [String], worktree: ToolResultDTOs.GitToolReplyDTO.WorktreeDTO) {
@@ -5291,7 +5291,7 @@ extension ToolOutputFormatter {
 
     private static func formatGitShow(_ dto: ToolResultDTOs.GitToolReplyDTO, emitResources: Bool) -> [MCP.Tool.Content] {
         guard let show = dto.show else {
-            return [.text("## Git Show ⚠️\nNo commit data available.")]
+            return [.text(text: "## Git Show ⚠️\nNo commit data available.")]
         }
 
         var out: [String] = []
@@ -5349,7 +5349,7 @@ extension ToolOutputFormatter {
             out.append("```")
         }
 
-        return [.text(out.joined(separator: "\n"))]
+        return [.text(text: out.joined(separator: "\n"))]
     }
 
     // MARK: Git Blame
@@ -5434,14 +5434,14 @@ extension ToolOutputFormatter {
     static func formatSearch(value: Value) -> [MCP.Tool.Content] {
         if let dto = value.decode(ToolResultDTOs.SearchResultDTO.self) {
             if let error = dto.errorMessage, !error.isEmpty {
-                return [.text(searchErrorResults(dto: dto, error: error))]
+                return [.text(text: searchErrorResults(dto: dto, error: error))]
             }
             let text = searchResults(dto: dto)
-            return [.text(text)]
+            return [.text(text: text)]
         }
         if let s = value.stringValue {
             // Legacy plain text
-            return [.text("## Search Results \(statusIcon(success: !s.isEmpty))\n\(s)")]
+            return [.text(text: "## Search Results \(statusIcon(success: !s.isEmpty))\n\(s)")]
         }
         return formatGeneric(value: value)
     }
@@ -5563,7 +5563,7 @@ extension ToolOutputFormatter {
     /// Fallback: present Value as a single fenced JSON block.
     static func formatGeneric(value: Value) -> [MCP.Tool.Content] {
         let json = prettyJSON(value)
-        return [.text("```json\n\(json)\n```")]
+        return [.text(text: "```json\n\(json)\n```")]
     }
 
     static func formatAgentRun(args: [String: Value], value: Value) -> [MCP.Tool.Content] {
@@ -5784,7 +5784,7 @@ extension ToolOutputFormatter {
             let heading = isTerminal ? "Output" : "Preview"
             lines.append("\n**\(heading)**\n\n\(assistantText)")
         }
-        return [.text(lines.joined(separator: "\n"))]
+        return [.text(text: lines.joined(separator: "\n"))]
     }
 
     private static func agentRunWorktreeObjects(from object: [String: Value]) -> [[String: Value]] {
@@ -5871,7 +5871,7 @@ extension ToolOutputFormatter {
             }
             lines.append(line)
         }
-        return [.text(lines.joined(separator: "\n"))]
+        return [.text(text: lines.joined(separator: "\n"))]
     }
 
     private static func formatMultiPoll(object: [String: Value], pollMeta: [String: Value], title: String) -> [MCP.Tool.Content] {
@@ -5902,7 +5902,7 @@ extension ToolOutputFormatter {
             }
             lines.append(line)
         }
-        return [.text(lines.joined(separator: "\n"))]
+        return [.text(text: lines.joined(separator: "\n"))]
     }
 
     private static func agentListGroupingEffort(modelID: String, reasoningEffort: String?) -> String? {
@@ -6004,7 +6004,7 @@ extension ToolOutputFormatter {
             let outputPath = object["output_path"]?.stringValue
             let handoffXML = object["handoff_xml"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             if outputPath == nil, let handoffXML, !handoffXML.isEmpty {
-                return [.text(handoffXML)]
+                return [.text(text: handoffXML)]
             }
 
             var handoffLines = ["**Agent manage · Extract Handoff**"]
@@ -6030,7 +6030,7 @@ extension ToolOutputFormatter {
             if let handoffXML, !handoffXML.isEmpty {
                 handoffLines.append("\n**Handoff XML**\n\n```xml\n\(handoffXML)\n```")
             }
-            return [.text(handoffLines.joined(separator: "\n"))]
+            return [.text(text: handoffLines.joined(separator: "\n"))]
         }
 
         let op = prettifiedAgentControlOperation(args["op"]?.stringValue, fallback: "manage")
@@ -6190,7 +6190,7 @@ extension ToolOutputFormatter {
         if lines.count == 1 {
             return formatGeneric(value: value)
         }
-        return [.text(lines.joined(separator: "\n"))]
+        return [.text(text: lines.joined(separator: "\n"))]
     }
 
     private static func humanizedAgentDelivery(_ raw: String?) -> String? {
