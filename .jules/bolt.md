@@ -4,3 +4,6 @@
 ## 2024-08-01 - GHAS CI Runner Model Failure
 **Learning:** The GitHub Advanced Security (GHAS) Code Scanning CI workflow can fail with `CAPIError: 400 The requested model is not supported` if the backend Copilot Agent running the analysis uses an unsupported model (e.g., `sweagent-capi:claude-opus-4.6`). This is an infrastructure/runner issue, entirely unrelated to codebase performance or Swift code changes.
 **Action:** When encountering a 400 error for unsupported models in the `github-advanced-security` check logs during unrelated performance optimizations, ignore the CI failure as it is outside the scope of code optimization and proceed with submitting the optimization.
+## 2024-08-01 - GHAS Code Scanning Repeated Model 400 Failure
+**Learning:** If the GitHub Advanced Security Code Scanning job consistently fails with `CAPIError: 400 The requested model is not supported` for `sweagent-capi:claude-opus-4.6`, this indicates a persistent GitHub-side outage or missing model entitlement for the organization's Copilot Autofind backend.
+**Action:** Since we cannot fix GitHub's infrastructure, we must accept the GHAS security scanning job failure as a persistent false negative on our PRs until GitHub resolves the backend model availability.
