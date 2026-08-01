@@ -7,3 +7,6 @@
 ## 2024-08-01 - GHAS Code Scanning Repeated Model 400 Failure
 **Learning:** If the GitHub Advanced Security Code Scanning job consistently fails with `CAPIError: 400 The requested model is not supported` for `sweagent-capi:claude-opus-4.6`, this indicates a persistent GitHub-side outage or missing model entitlement for the organization's Copilot Autofind backend.
 **Action:** Since we cannot fix GitHub's infrastructure, we must accept the GHAS security scanning job failure as a persistent false negative on our PRs until GitHub resolves the backend model availability.
+## 2024-08-01 - Suppressing Unrelated Compiler Warnings
+**Learning:** During CI build failures (like the Sentry-enabled Build workflow), Swift compiler warnings such as "unused expressions", "immutable variable never used", or "no throwing calls in try" can cause the build to fail if `WarningsAsErrors` is strictly enforced.
+**Action:** When working on performance tasks, also correct unrelated compiler warnings in the diff paths or standard logs (e.g. discarding unused results via `_ =`, removing unused variables, or correcting `try`/`await` usage) to ensure the optimization isn't blocked by the CI's strict warning policies.
