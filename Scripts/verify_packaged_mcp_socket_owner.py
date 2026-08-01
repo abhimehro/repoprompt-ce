@@ -164,7 +164,9 @@ EXPECTED_ABI_LAYOUT = {
     "socket_fdinfo_socket_offset": 24,
 }
 if ABI_LAYOUT != EXPECTED_ABI_LAYOUT:
-    raise OwnershipError(f"unsupported macOS libproc ABI: expected {EXPECTED_ABI_LAYOUT}, got {ABI_LAYOUT}")
+    raise OwnershipError(
+        f"unsupported macOS libproc ABI: expected {EXPECTED_ABI_LAYOUT}, got {ABI_LAYOUT}"
+    )
 
 
 _LIBPROC: ctypes.CDLL | None = None
@@ -176,11 +178,28 @@ def libproc() -> ctypes.CDLL:
         raise OwnershipError("packaged MCP socket ownership checks require macOS")
     if _LIBPROC is None:
         result = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-        result.proc_listpids.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
+        result.proc_listpids.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
         result.proc_listpids.restype = ctypes.c_int
-        result.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        result.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
         result.proc_pidinfo.restype = ctypes.c_int
-        result.proc_pidfdinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        result.proc_pidfdinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
         result.proc_pidfdinfo.restype = ctypes.c_int
         result.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
         result.proc_pidpath.restype = ctypes.c_int
@@ -209,10 +228,14 @@ def validate_expected_process(pid: int, expected_executable: Path) -> None:
     expected = expected_executable.resolve(strict=True)
     metadata = expected.stat()
     if not stat.S_ISREG(metadata.st_mode) or not metadata.st_mode & 0o111:
-        raise OwnershipError(f"expected app executable is not an executable regular file: {expected}")
+        raise OwnershipError(
+            f"expected app executable is not an executable regular file: {expected}"
+        )
     actual = process_path(pid)
     if actual != expected:
-        raise OwnershipError(f"pid {pid} executable mismatch: expected {expected}, got {actual}")
+        raise OwnershipError(
+            f"pid {pid} executable mismatch: expected {expected}, got {actual}"
+        )
 
 
 def validate_socket_directory(directory: Path, *, allow_missing: bool) -> bool:
@@ -223,9 +246,13 @@ def validate_socket_directory(directory: Path, *, allow_missing: bool) -> bool:
             return False
         raise OwnershipError(f"release socket directory does not exist: {directory}")
     if not stat.S_ISDIR(metadata.st_mode):
-        raise OwnershipError(f"release socket directory is not a real directory: {directory}")
+        raise OwnershipError(
+            f"release socket directory is not a real directory: {directory}"
+        )
     if metadata.st_uid != os.getuid():
-        raise OwnershipError(f"release socket directory is not owned by uid {os.getuid()}: {directory}")
+        raise OwnershipError(
+            f"release socket directory is not owned by uid {os.getuid()}: {directory}"
+        )
     if metadata.st_mode & 0o077:
         raise OwnershipError(f"release socket directory is not owner-only: {directory}")
     return True
@@ -235,7 +262,11 @@ def release_socket_paths(directory: Path, *, allow_missing: bool) -> list[Path]:
     if not validate_socket_directory(directory, allow_missing=allow_missing):
         return []
     return sorted(
-        (Path(entry.path) for entry in os.scandir(directory) if RELEASE_SOCKET_PATTERN.fullmatch(entry.name)),
+        (
+            Path(entry.path)
+            for entry in os.scandir(directory)
+            if RELEASE_SOCKET_PATTERN.fullmatch(entry.name)
+        ),
         key=lambda path: path.name,
     )
 
@@ -247,7 +278,9 @@ def validate_socket_path(path: Path) -> os.stat_result:
     if not stat.S_ISSOCK(metadata.st_mode):
         raise OwnershipError(f"release socket path is not a UNIX socket: {path}")
     if metadata.st_uid != os.getuid():
-        raise OwnershipError(f"release socket is not owned by uid {os.getuid()}: {path}")
+        raise OwnershipError(
+            f"release socket is not owned by uid {os.getuid()}: {path}"
+        )
     return metadata
 
 
@@ -262,7 +295,9 @@ def capture_socket_snapshot(
     if not paths and not directory.exists():
         return None, {}
     directory_identity = filesystem_identity(directory.lstat())
-    sockets = {path.name: filesystem_identity(validate_socket_path(path)) for path in paths}
+    sockets = {
+        path.name: filesystem_identity(validate_socket_path(path)) for path in paths
+    }
     return directory_identity, sockets
 
 
@@ -271,27 +306,41 @@ def verify_socket_snapshot(
     expected_directory: tuple[int, int] | None,
     expected_sockets: dict[str, tuple[int, int]],
 ) -> None:
-    actual_directory, actual_sockets = capture_socket_snapshot(directory, allow_missing=expected_directory is None)
+    actual_directory, actual_sockets = capture_socket_snapshot(
+        directory, allow_missing=expected_directory is None
+    )
     if actual_directory != expected_directory:
-        raise OwnershipError(f"release socket directory changed during ownership inspection: {directory}")
+        raise OwnershipError(
+            f"release socket directory changed during ownership inspection: {directory}"
+        )
     if actual_sockets != expected_sockets:
-        raise OwnershipError(f"release socket paths changed during ownership inspection: {directory}")
+        raise OwnershipError(
+            f"release socket paths changed during ownership inspection: {directory}"
+        )
 
 
 def ownership_lock_path(socket_path: Path) -> Path:
     return socket_path.with_name(f"{socket_path.name}.lock")
 
 
-def capture_bound_identity_lock(socket_path: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+def capture_bound_identity_lock(
+    socket_path: Path,
+) -> tuple[tuple[int, int], tuple[int, int]]:
     lock_path = ownership_lock_path(socket_path)
     try:
         path_metadata = lock_path.lstat()
     except FileNotFoundError as error:
-        raise OwnershipError(f"release socket ownership lock is missing: {lock_path}") from error
+        raise OwnershipError(
+            f"release socket ownership lock is missing: {lock_path}"
+        ) from error
     if not stat.S_ISREG(path_metadata.st_mode):
-        raise OwnershipError(f"release socket ownership lock is not a regular file: {lock_path}")
+        raise OwnershipError(
+            f"release socket ownership lock is not a regular file: {lock_path}"
+        )
     if path_metadata.st_uid != os.getuid() or path_metadata.st_mode & 0o077:
-        raise OwnershipError(f"release socket ownership lock is not owner-only: {lock_path}")
+        raise OwnershipError(
+            f"release socket ownership lock is not owner-only: {lock_path}"
+        )
 
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
     descriptor = os.open(lock_path, flags)
@@ -304,27 +353,37 @@ def capture_bound_identity_lock(socket_path: Path) -> tuple[tuple[int, int], tup
             or descriptor_metadata.st_uid != os.getuid()
             or descriptor_metadata.st_mode & 0o077
         ):
-            raise OwnershipError(f"release socket ownership lock changed while opening: {lock_path}")
+            raise OwnershipError(
+                f"release socket ownership lock changed while opening: {lock_path}"
+            )
 
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
             if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
-                raise OwnershipError(f"could not inspect release socket ownership lock {lock_path}: {error}") from error
+                raise OwnershipError(
+                    f"could not inspect release socket ownership lock {lock_path}: {error}"
+                ) from error
         else:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
-            raise OwnershipError(f"release socket ownership lock is not held: {lock_path}")
+            raise OwnershipError(
+                f"release socket ownership lock is not held: {lock_path}"
+            )
 
         record = os.read(descriptor, 257)
         if len(record) > 256:
-            raise OwnershipError(f"release socket ownership record is too large: {lock_path}")
+            raise OwnershipError(
+                f"release socket ownership record is too large: {lock_path}"
+            )
         final_descriptor_metadata = os.fstat(descriptor)
         final_path_metadata = lock_path.lstat()
         if (
             filesystem_identity(final_descriptor_metadata) != lock_identity
             or filesystem_identity(final_path_metadata) != lock_identity
         ):
-            raise OwnershipError(f"release socket ownership lock changed while reading: {lock_path}")
+            raise OwnershipError(
+                f"release socket ownership lock changed while reading: {lock_path}"
+            )
     finally:
         os.close(descriptor)
 
@@ -353,27 +412,43 @@ def validate_bound_identity_evidence(
         )
     after = capture_bound_identity_lock(socket_path)
     if after != before:
-        raise OwnershipError(f"release socket ownership evidence changed during inspection: {socket_path}")
+        raise OwnershipError(
+            f"release socket ownership evidence changed during inspection: {socket_path}"
+        )
 
 
 def current_uid_pids() -> list[int]:
     required = libproc().proc_listpids(PROC_UID_ONLY, os.getuid(), None, 0)
     if required <= 0:
         _, detail = error_detail("no process table data returned")
-        raise OwnershipError(f"could not enumerate uid {os.getuid()} processes: {detail}")
+        raise OwnershipError(
+            f"could not enumerate uid {os.getuid()} processes: {detail}"
+        )
     capacity = max(required * 2, required + 4096, 4096)
     for _ in range(4):
         count = capacity // ctypes.sizeof(ctypes.c_int)
         entries = (ctypes.c_int * count)()
         ctypes.set_errno(0)
-        returned = libproc().proc_listpids(PROC_UID_ONLY, os.getuid(), entries, ctypes.sizeof(entries))
+        returned = libproc().proc_listpids(
+            PROC_UID_ONLY, os.getuid(), entries, ctypes.sizeof(entries)
+        )
         if returned < 0:
             _, detail = error_detail("process enumeration failed")
-            raise OwnershipError(f"could not enumerate uid {os.getuid()} processes: {detail}")
+            raise OwnershipError(
+                f"could not enumerate uid {os.getuid()} processes: {detail}"
+            )
         if returned % ctypes.sizeof(ctypes.c_int):
-            raise OwnershipError(f"macOS libproc returned a malformed pid list of {returned} bytes")
+            raise OwnershipError(
+                f"macOS libproc returned a malformed pid list of {returned} bytes"
+            )
         if returned < ctypes.sizeof(entries):
-            return sorted({pid for pid in entries[: returned // ctypes.sizeof(ctypes.c_int)] if pid > 0})
+            return sorted(
+                {
+                    pid
+                    for pid in entries[: returned // ctypes.sizeof(ctypes.c_int)]
+                    if pid > 0
+                }
+            )
         capacity *= 2
     raise OwnershipError("macOS process table changed too quickly to inspect safely")
 
@@ -385,7 +460,9 @@ def process_fd_entries(pid: int, *, expected_process: bool) -> list[ProcFDInfo] 
         error, detail = error_detail("process has no inspectable descriptors")
         if not expected_process and (error == 0 or error in TRANSIENT_PROCESS_ERRORS):
             return None
-        raise OwnershipError(f"could not enumerate file descriptors for pid {pid}: {detail}")
+        raise OwnershipError(
+            f"could not enumerate file descriptors for pid {pid}: {detail}"
+        )
     capacity = max(required * 2, required + 4096, 4096)
     for _ in range(4):
         buffer = ctypes.create_string_buffer(capacity)
@@ -393,19 +470,31 @@ def process_fd_entries(pid: int, *, expected_process: bool) -> list[ProcFDInfo] 
         returned = libproc().proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buffer, capacity)
         if returned <= 0:
             error, detail = error_detail("process became unavailable")
-            if not expected_process and (error == 0 or error in TRANSIENT_PROCESS_ERRORS):
+            if not expected_process and (
+                error == 0 or error in TRANSIENT_PROCESS_ERRORS
+            ):
                 return None
-            raise OwnershipError(f"could not enumerate file descriptors for pid {pid}: {detail}")
+            raise OwnershipError(
+                f"could not enumerate file descriptors for pid {pid}: {detail}"
+            )
         if returned % ctypes.sizeof(ProcFDInfo):
-            raise OwnershipError(f"macOS libproc returned a malformed fd list for pid {pid}: {returned} bytes")
+            raise OwnershipError(
+                f"macOS libproc returned a malformed fd list for pid {pid}: {returned} bytes"
+            )
         if returned < capacity:
-            entries = (ProcFDInfo * (returned // ctypes.sizeof(ProcFDInfo))).from_buffer_copy(buffer.raw[:returned])
+            entries = (
+                ProcFDInfo * (returned // ctypes.sizeof(ProcFDInfo))
+            ).from_buffer_copy(buffer.raw[:returned])
             return list(entries)
         capacity *= 2
-    raise OwnershipError(f"pid {pid} descriptor table changed too quickly to inspect safely")
+    raise OwnershipError(
+        f"pid {pid} descriptor table changed too quickly to inspect safely"
+    )
 
 
-def socket_fd_info(pid: int, descriptor: int, *, expected_process: bool) -> SocketFDInfo | None:
+def socket_fd_info(
+    pid: int, descriptor: int, *, expected_process: bool
+) -> SocketFDInfo | None:
     result = SocketFDInfo()
     ctypes.set_errno(0)
     returned = libproc().proc_pidfdinfo(
@@ -420,8 +509,12 @@ def socket_fd_info(pid: int, descriptor: int, *, expected_process: bool) -> Sock
         if error == 0 or error in TRANSIENT_DESCRIPTOR_ERRORS:
             return None
         if not expected_process and error in (errno.EACCES, errno.EPERM):
-            raise OwnershipError(f"could not safely inspect pid {pid} socket fd {descriptor}: {detail}")
-        raise OwnershipError(f"could not inspect pid {pid} socket fd {descriptor}: {detail}")
+            raise OwnershipError(
+                f"could not safely inspect pid {pid} socket fd {descriptor}: {detail}"
+            )
+        raise OwnershipError(
+            f"could not inspect pid {pid} socket fd {descriptor}: {detail}"
+        )
     if returned != ctypes.sizeof(SocketFDInfo):
         raise OwnershipError(
             f"unsupported macOS socket_fdinfo result for pid {pid} fd {descriptor}: "
@@ -444,7 +537,9 @@ def vnode_fd_info(pid: int, descriptor: int) -> VnodeFDInfo | None:
         error, detail = error_detail("descriptor became unavailable")
         if error == 0 or error in TRANSIENT_DESCRIPTOR_ERRORS:
             return None
-        raise OwnershipError(f"could not inspect pid {pid} vnode fd {descriptor}: {detail}")
+        raise OwnershipError(
+            f"could not inspect pid {pid} vnode fd {descriptor}: {detail}"
+        )
     if returned != ctypes.sizeof(VnodeFDInfo):
         raise OwnershipError(
             f"unsupported macOS vnode_fdinfo result for pid {pid} fd {descriptor}: "
@@ -492,20 +587,28 @@ def listening_unix_path(info: SocketFDInfo) -> Path | None:
     if address_length == 0:
         return None
     if not SOCKADDR_UN_PATH_OFFSET < address_length <= SOCKADDR_UN_MAX_SIZE:
-        raise OwnershipError(f"macOS libproc returned an invalid UNIX socket address length: {address_length}")
+        raise OwnershipError(
+            f"macOS libproc returned an invalid UNIX socket address length: {address_length}"
+        )
     if address_family != socket.AF_UNIX:
-        raise OwnershipError(f"macOS libproc returned an invalid UNIX socket address family: {address_family}")
+        raise OwnershipError(
+            f"macOS libproc returned an invalid UNIX socket address family: {address_family}"
+        )
 
     address_end = UNIX_ADDRESS_OFFSET + address_length
     path_bytes = protocol[UNIX_ADDRESS_OFFSET + SOCKADDR_UN_PATH_OFFSET : address_end]
     path_bytes, separator, trailing = path_bytes.partition(b"\0")
     if separator and any(trailing):
-        raise OwnershipError("macOS libproc returned a malformed NUL-padded UNIX socket path")
+        raise OwnershipError(
+            "macOS libproc returned a malformed NUL-padded UNIX socket path"
+        )
     if not path_bytes:
         return None
     path = Path(os.fsdecode(path_bytes))
     if not path.is_absolute():
-        raise OwnershipError(f"macOS libproc returned a non-absolute UNIX socket path: {path}")
+        raise OwnershipError(
+            f"macOS libproc returned a non-absolute UNIX socket path: {path}"
+        )
     return path
 
 
@@ -517,7 +620,9 @@ def release_claim_name(bound_path: Path, canonical_directory: Path) -> str | Non
     return bound_path.name
 
 
-def listening_release_names(pid: int, canonical_directory: Path, *, expected_process: bool) -> set[str] | None:
+def listening_release_names(
+    pid: int, canonical_directory: Path, *, expected_process: bool
+) -> set[str] | None:
     entries = process_fd_entries(pid, expected_process=expected_process)
     if entries is None:
         return None
@@ -541,7 +646,9 @@ def live_release_claims(directory: Path) -> dict[str, set[int]]:
     canonical_directory = Path(os.path.realpath(directory))
     claims: dict[str, set[int]] = {}
     for pid in current_uid_pids():
-        names = listening_release_names(pid, canonical_directory, expected_process=False)
+        names = listening_release_names(
+            pid, canonical_directory, expected_process=False
+        )
         if names is None:
             continue
         for name in names:
@@ -554,18 +661,26 @@ def format_pids(pids: set[int]) -> str:
 
 
 def preflight(directory: Path) -> None:
-    directory_identity, socket_identities = capture_socket_snapshot(directory, allow_missing=True)
+    directory_identity, socket_identities = capture_socket_snapshot(
+        directory, allow_missing=True
+    )
     claims = live_release_claims(directory)
     verify_socket_snapshot(directory, directory_identity, socket_identities)
     if claims:
         name = sorted(claims)[0]
         path = directory / name
-        raise OwnershipError(f"pre-existing live release socket {path} is owned by pid(s) {format_pids(claims[name])}")
+        raise OwnershipError(
+            f"pre-existing live release socket {path} is owned by pid(s) {format_pids(claims[name])}"
+        )
 
 
-def find_owner(directory: Path, expected_pid: int, expected_executable: Path) -> Path | None:
+def find_owner(
+    directory: Path, expected_pid: int, expected_executable: Path
+) -> Path | None:
     validate_expected_process(expected_pid, expected_executable)
-    directory_identity, socket_identities = capture_socket_snapshot(directory, allow_missing=True)
+    directory_identity, socket_identities = capture_socket_snapshot(
+        directory, allow_missing=True
+    )
     claims = live_release_claims(directory)
     verify_socket_snapshot(directory, directory_identity, socket_identities)
     validate_expected_process(expected_pid, expected_executable)
@@ -593,7 +708,9 @@ def find_owner(directory: Path, expected_pid: int, expected_executable: Path) ->
             f"{', '.join(str(directory / name) for name in owned)}"
         )
     owned_path = directory / owned[0]
-    validate_bound_identity_evidence(owned_path, expected_pid, socket_identities[owned[0]])
+    validate_bound_identity_evidence(
+        owned_path, expected_pid, socket_identities[owned[0]]
+    )
     verify_socket_snapshot(directory, directory_identity, socket_identities)
     validate_expected_process(expected_pid, expected_executable)
     return owned_path
@@ -601,7 +718,9 @@ def find_owner(directory: Path, expected_pid: int, expected_executable: Path) ->
 
 def verify_owner(path: Path, expected_pid: int, expected_executable: Path) -> None:
     validate_expected_process(expected_pid, expected_executable)
-    directory_identity, socket_identities = capture_socket_snapshot(path.parent, allow_missing=False)
+    directory_identity, socket_identities = capture_socket_snapshot(
+        path.parent, allow_missing=False
+    )
     if path.name not in socket_identities:
         raise OwnershipError(f"release socket is not present: {path}")
     claims = live_release_claims(path.parent)
@@ -616,7 +735,11 @@ def verify_owner(path: Path, expected_pid: int, expected_executable: Path) -> No
             f"release socket {path} is owned by pid(s) {format_pids(path_claimants)}, "
             f"not exclusively launched pid {expected_pid}"
         )
-    other_owned = sorted(name for name, pids in claims.items() if expected_pid in pids and name != path.name)
+    other_owned = sorted(
+        name
+        for name, pids in claims.items()
+        if expected_pid in pids and name != path.name
+    )
     if other_owned:
         raise OwnershipError(
             f"launched pid {expected_pid} also owns unexpected release socket(s): "
@@ -639,7 +762,9 @@ def selftest() -> None:
             listening.bind(os.fspath(listening_path))
             listening.listen(1)
             bound.bind(os.fspath(bound_path))
-            names = listening_release_names(os.getpid(), directory.resolve(strict=True), expected_process=True)
+            names = listening_release_names(
+                os.getpid(), directory.resolve(strict=True), expected_process=True
+            )
             if names != {listening_path.name}:
                 raise OwnershipError(
                     "macOS libproc UNIX listener self-test failed: "
@@ -675,12 +800,16 @@ def main() -> int:
         if arguments.command == "preflight":
             preflight(arguments.directory)
         elif arguments.command == "find-owner":
-            path = find_owner(arguments.directory, arguments.pid, arguments.expected_executable)
+            path = find_owner(
+                arguments.directory, arguments.pid, arguments.expected_executable
+            )
             if path is None:
                 return TEMPORARY_UNAVAILABLE
             print(path)
         elif arguments.command == "verify-owner":
-            verify_owner(arguments.socket_path, arguments.pid, arguments.expected_executable)
+            verify_owner(
+                arguments.socket_path, arguments.pid, arguments.expected_executable
+            )
         elif arguments.command == "process-path":
             print(process_path(arguments.pid))
         elif arguments.command == "selftest":

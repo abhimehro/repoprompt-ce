@@ -154,6 +154,7 @@ final class CodeBlockTextView: NSTextView {
     /// **Important**: the text container's `widthTracksTextView` must be
     /// `false` so that this method is the sole authority for the container
     /// width.
+
     // MARK: Frame-driven container sync --------------------------------
 
     /// Keeps the text container width in sync with the actual frame width

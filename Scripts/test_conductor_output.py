@@ -18,8 +18,12 @@ if str(SCRIPT_DIR) not in sys.path:
 import conductor  # noqa: E402
 
 
-def summarize(operation: str, state: str, exit_code: Optional[int], lines: list[str]) -> dict:
-    return conductor.OutputSummarizer.summarize_lines(operation, {}, state, exit_code, False, lines)
+def summarize(
+    operation: str, state: str, exit_code: Optional[int], lines: list[str]
+) -> dict:
+    return conductor.OutputSummarizer.summarize_lines(
+        operation, {}, state, exit_code, False, lines
+    )
 
 
 def section(summary: dict, title: str) -> list[str]:
@@ -29,7 +33,9 @@ def section(summary: dict, title: str) -> list[str]:
     return []
 
 
-def app_payload(subcommand: str, state: str, exit_code: int, lines: list[str], **extra: object) -> dict:
+def app_payload(
+    subcommand: str, state: str, exit_code: int, lines: list[str], **extra: object
+) -> dict:
     payload = {
         "ticket": "ticket",
         "operation": "app",
@@ -62,7 +68,9 @@ class OutputSummarizerTests(unittest.TestCase):
         summary = summarize("build", "completed", 0, lines)
 
         self.assertIn("Created: /tmp/RepoPrompt.app", section(summary, "Artifacts"))
-        rendered = "\n".join(line for item in summary["sections"] for line in item["lines"])
+        rendered = "\n".join(
+            line for item in summary["sections"] for line in item["lines"]
+        )
         self.assertNotIn("CompileSwift noisy file", rendered)
 
     def test_swift_compiler_failure_extracts_file_error_and_context(self) -> None:
@@ -78,7 +86,9 @@ class OutputSummarizerTests(unittest.TestCase):
         summary = summarize("swift-build", "failed", 1, lines)
         swift_errors = section(summary, "Swift compiler errors")
 
-        self.assertTrue(any("Sources/Foo.swift:10:5: error" in line for line in swift_errors))
+        self.assertTrue(
+            any("Sources/Foo.swift:10:5: error" in line for line in swift_errors)
+        )
         self.assertIn("previous context two", swift_errors)
         self.assertIn("let y = x", swift_errors)
 
@@ -111,19 +121,26 @@ class OutputSummarizerTests(unittest.TestCase):
 
         findings = section(summary, "Style findings")
         self.assertTrue(any("SwiftLint" in line for line in findings))
-        self.assertTrue(any("Sources/Foo.swift:12:3: warning" in line for line in findings))
+        self.assertTrue(
+            any("Sources/Foo.swift:12:3: warning" in line for line in findings)
+        )
 
     def test_timeout_lines_are_prioritized(self) -> None:
         summary = summarize(
             "test",
             "failed",
             124,
-            ["timed out after 300.0s\n", "terminating process group: timed out after 300.0s\n"],
+            [
+                "timed out after 300.0s\n",
+                "terminating process group: timed out after 300.0s\n",
+            ],
         )
 
         timeout_lines = section(summary, "Timeout or cancellation")
         self.assertTrue(any("timed out after 300.0s" in line for line in timeout_lines))
-        self.assertTrue(any("terminating process group" in line for line in timeout_lines))
+        self.assertTrue(
+            any("terminating process group" in line for line in timeout_lines)
+        )
 
     def test_progress_line_selection_filters_noise_and_caps_output(self) -> None:
         lines = ["CompileSwift noisy file\n", "==> Build\n"]
@@ -138,7 +155,9 @@ class OutputSummarizerTests(unittest.TestCase):
         self.assertFalse(any("CompileSwift noisy file" in line for line in selected))
         self.assertFalse(any("plain final noise" in line for line in selected))
 
-    def test_app_lifecycle_summary_and_progress_prioritize_confirmed_transition(self) -> None:
+    def test_app_lifecycle_summary_and_progress_prioritize_confirmed_transition(
+        self,
+    ) -> None:
         lines = [
             "==> Stopping existing RepoPrompt CE debug app instance\n",
             "==> Waiting for existing RepoPrompt CE debug app process to exit\n",
@@ -153,7 +172,10 @@ class OutputSummarizerTests(unittest.TestCase):
         titles = [item["title"] for item in summary["sections"]]
         progress = conductor.select_progress_lines(
             "run",
-            ["RepoPrompt CE debug app stop confirmed.\n", "Observed launched RepoPrompt CE debug PID(s): 123\n"],
+            [
+                "RepoPrompt CE debug app stop confirmed.\n",
+                "Observed launched RepoPrompt CE debug PID(s): 123\n",
+            ],
         )
 
         self.assertIn("RepoPrompt CE debug app stop confirmed.", lifecycle)
@@ -166,10 +188,17 @@ class OutputSummarizerTests(unittest.TestCase):
         self.assertIn("Observed launched RepoPrompt CE debug PID(s): 123", progress)
 
     def test_app_operation_display_name_is_precise(self) -> None:
-        self.assertEqual(conductor.operation_display_name("app", {"subcommand": "stop"}), "app stop")
-        self.assertEqual(conductor.operation_display_name("app", {"subcommand": "relaunch"}), "app relaunch")
+        self.assertEqual(
+            conductor.operation_display_name("app", {"subcommand": "stop"}), "app stop"
+        )
+        self.assertEqual(
+            conductor.operation_display_name("app", {"subcommand": "relaunch"}),
+            "app relaunch",
+        )
 
-    def test_failed_relaunch_before_transition_reports_safe_rebuild_failure_and_source_edit_guidance(self) -> None:
+    def test_failed_relaunch_before_transition_reports_safe_rebuild_failure_and_source_edit_guidance(
+        self,
+    ) -> None:
         payload = app_payload(
             "relaunch",
             "failed",
@@ -185,13 +214,18 @@ class OutputSummarizerTests(unittest.TestCase):
 
         self.assertFalse(summary["launchLifecycle"]["transitionStarted"])
         self.assertTrue(summary["launchLifecycle"]["sourceChangedDuringBuild"])
-        self.assertIn("Rebuild/package failed before this relaunch ticket reached app stop/open.", rendered)
+        self.assertIn(
+            "Rebuild/package failed before this relaunch ticket reached app stop/open.",
+            rendered,
+        )
         self.assertIn("This ticket did not stop or reopen RepoPrompt.", rendered)
         self.assertIn("source files changed during the build", rendered)
         self.assertIn("retry after edits settle", rendered)
         self.assertNotIn("superseded", rendered)
 
-    def test_failed_relaunch_after_transition_advises_status_instead_of_preservation(self) -> None:
+    def test_failed_relaunch_after_transition_advises_status_instead_of_preservation(
+        self,
+    ) -> None:
         payload = app_payload(
             "relaunch",
             "failed",
@@ -205,12 +239,18 @@ class OutputSummarizerTests(unittest.TestCase):
 
         rendered = rendered_terminal_output(payload)
 
-        self.assertTrue(payload["outputSummary"]["launchLifecycle"]["transitionStarted"])
-        self.assertIn("failed after this ticket began app stop/open lifecycle work", rendered)
+        self.assertTrue(
+            payload["outputSummary"]["launchLifecycle"]["transitionStarted"]
+        )
+        self.assertIn(
+            "failed after this ticket began app stop/open lifecycle work", rendered
+        )
         self.assertIn("Check app status before retrying.", rendered)
         self.assertNotIn("did not stop or reopen", rendered)
 
-    def test_canceled_lifecycle_output_distinguishes_supersession_from_cancellation(self) -> None:
+    def test_canceled_lifecycle_output_distinguishes_supersession_from_cancellation(
+        self,
+    ) -> None:
         superseded = rendered_terminal_output(
             app_payload(
                 "relaunch",
@@ -231,14 +271,23 @@ class OutputSummarizerTests(unittest.TestCase):
                 supersededByTicket="replacement",
             )
         )
-        canceled = rendered_terminal_output(app_payload("stop", "canceled", 130, ["job canceled before start\n"]))
+        canceled = rendered_terminal_output(
+            app_payload("stop", "canceled", 130, ["job canceled before start\n"])
+        )
 
-        self.assertIn("superseded by newer app stop intent (ticket replacement)", superseded)
-        self.assertIn("superseded by newer app relaunch intent (ticket replacement)", superseded_stop)
+        self.assertIn(
+            "superseded by newer app stop intent (ticket replacement)", superseded
+        )
+        self.assertIn(
+            "superseded by newer app relaunch intent (ticket replacement)",
+            superseded_stop,
+        )
         self.assertIn("This app stop ticket was canceled before completion.", canceled)
         self.assertNotIn("superseded", canceled)
 
-    def test_failed_relaunch_recomputes_legacy_summary_for_lifecycle_classification(self) -> None:
+    def test_failed_relaunch_recomputes_legacy_summary_for_lifecycle_classification(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "job.log"
             log.write_text(
@@ -254,7 +303,10 @@ class OutputSummarizerTests(unittest.TestCase):
                 "exitCode": 1,
                 "timedOut": False,
                 "logPath": str(log),
-                "outputSummary": {"headline": "failed with exit code 1", "sections": []},
+                "outputSummary": {
+                    "headline": "failed with exit code 1",
+                    "sections": [],
+                },
             }
 
             summary = conductor.output_summary_for_payload(payload)
@@ -262,14 +314,23 @@ class OutputSummarizerTests(unittest.TestCase):
 
         self.assertTrue(summary["launchLifecycle"]["sourceChangedDuringBuild"])
         self.assertFalse(summary["launchLifecycle"]["transitionStarted"])
-        self.assertTrue(enriched["outputSummary"]["launchLifecycle"]["sourceChangedDuringBuild"])
-        self.assertFalse(enriched["outputSummary"]["launchLifecycle"]["transitionStarted"])
+        self.assertTrue(
+            enriched["outputSummary"]["launchLifecycle"]["sourceChangedDuringBuild"]
+        )
+        self.assertFalse(
+            enriched["outputSummary"]["launchLifecycle"]["transitionStarted"]
+        )
 
     def test_huge_log_is_capped(self) -> None:
-        lines = [f"Sources/Foo.swift:{index}:1: error: boom {index}\n" for index in range(500)]
+        lines = [
+            f"Sources/Foo.swift:{index}:1: error: boom {index}\n"
+            for index in range(500)
+        ]
         summary = summarize("swift-build", "failed", 1, lines)
 
-        rendered_lines = [line for item in summary["sections"] for line in item["lines"]]
+        rendered_lines = [
+            line for item in summary["sections"] for line in item["lines"]
+        ]
         rendered_chars = sum(len(line) for line in rendered_lines)
         self.assertLessEqual(len(rendered_lines), conductor.SUMMARY_FAILURE_MAX_LINES)
         self.assertLessEqual(rendered_chars, conductor.SUMMARY_MAX_CHARS)
@@ -307,13 +368,20 @@ class OutputSummarizerTests(unittest.TestCase):
             "build",
             "failed",
             1,
-            ["setup\n", "ERROR: command failed\n", "tail detail one\n", "tail detail two\n"],
+            [
+                "setup\n",
+                "ERROR: command failed\n",
+                "tail detail one\n",
+                "tail detail two\n",
+            ],
         )
 
         self.assertIn("ERROR: command failed", section(summary, "Failure highlights"))
         self.assertIn("tail detail two", section(summary, "Recent output"))
 
-    def test_payload_with_output_summary_adds_client_side_json_fallback_without_log_tail(self) -> None:
+    def test_payload_with_output_summary_adds_client_side_json_fallback_without_log_tail(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "job.log"
             log.write_text("==> Package\nCreated: /tmp/App.app\n", encoding="utf-8")
@@ -332,11 +400,15 @@ class OutputSummarizerTests(unittest.TestCase):
 
         self.assertIsNot(enriched, payload)
         self.assertIn("outputSummary", enriched)
-        self.assertIn("Created: /tmp/App.app", section(enriched["outputSummary"], "Artifacts"))
+        self.assertIn(
+            "Created: /tmp/App.app", section(enriched["outputSummary"], "Artifacts")
+        )
         self.assertNotIn("logTail", enriched)
         self.assertEqual(str(log), enriched["logPath"])
 
-    def test_payload_with_output_summary_can_preserve_trimmed_log_tail_for_compatibility(self) -> None:
+    def test_payload_with_output_summary_can_preserve_trimmed_log_tail_for_compatibility(
+        self,
+    ) -> None:
         payload = {
             "ticket": "ticket",
             "operation": "build",
@@ -353,7 +425,9 @@ class OutputSummarizerTests(unittest.TestCase):
         self.assertEqual(len(enriched["logTail"]), conductor.LOG_TAIL_LINES)
         self.assertEqual(enriched["logTail"][0], "line 10\n")
 
-    def test_payload_with_output_summary_drops_existing_tail_when_summary_is_present(self) -> None:
+    def test_payload_with_output_summary_drops_existing_tail_when_summary_is_present(
+        self,
+    ) -> None:
         payload = {
             "ticket": "ticket",
             "operation": "build",
@@ -368,7 +442,9 @@ class OutputSummarizerTests(unittest.TestCase):
         self.assertIn("outputSummary", enriched)
         self.assertNotIn("logTail", enriched)
 
-    def test_job_payload_exposes_additive_process_timing_and_lifecycle_metadata(self) -> None:
+    def test_job_payload_exposes_additive_process_timing_and_lifecycle_metadata(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             diagnostic = root / "stall.sample.txt"
@@ -408,7 +484,9 @@ class OutputSummarizerTests(unittest.TestCase):
         self.assertFalse(payload["measurementInvalid"])
         self.assertEqual(payload["progressTransport"], "pty")
         self.assertEqual(payload["progressSequence"], 17)
-        self.assertEqual(payload["lastProgressTest"], "RepoPromptTests.ExampleTests.testProgress")
+        self.assertEqual(
+            payload["lastProgressTest"], "RepoPromptTests.ExampleTests.testProgress"
+        )
         self.assertEqual(payload["lastProgressAction"], "started")
         self.assertEqual(payload["lastProgressObservedAt"], 18.75)
         self.assertEqual(payload["diagnosticPaths"], [str(diagnostic)])
@@ -454,7 +532,9 @@ class OutputSummarizerTests(unittest.TestCase):
             payload = state.job_status("ticket", None)
 
         self.assertIn("outputSummary", payload)
-        self.assertIn("Created: /tmp/App.app", section(payload["outputSummary"], "Artifacts"))
+        self.assertIn(
+            "Created: /tmp/App.app", section(payload["outputSummary"], "Artifacts")
+        )
 
     def test_json_full_log_is_rejected(self) -> None:
         with self.assertRaises(conductor.ConductorError):

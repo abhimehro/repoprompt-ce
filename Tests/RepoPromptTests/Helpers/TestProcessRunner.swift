@@ -244,7 +244,7 @@ enum TestProcessRunner {
             }
 
             #if os(macOS)
-                var fileActions: posix_spawn_file_actions_t? = nil
+                var fileActions: posix_spawn_file_actions_t?
             #else
                 var fileActions = posix_spawn_file_actions_t()
             #endif
@@ -287,7 +287,7 @@ enum TestProcessRunner {
             }
 
             #if os(macOS)
-                var attributes: posix_spawnattr_t? = nil
+                var attributes: posix_spawnattr_t?
             #else
                 var attributes = posix_spawnattr_t()
             #endif

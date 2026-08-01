@@ -84,7 +84,7 @@ package protocol CodeMapSyntaxPerformanceQuerying: CodeMapSyntaxQuerying {
 package struct CodeMapSyntaxEngine: CodeMapSyntaxPerformanceQuerying, Sendable {
     package static let shared = CodeMapSyntaxEngine()
 
-    package static let parseLineLimit = 25_000
+    package static let parseLineLimit = 25000
     package static let parseUTF16Limit = 1_500_000
     package static let parseUTF8Limit = 5_000_000
 

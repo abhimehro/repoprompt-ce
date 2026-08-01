@@ -262,8 +262,8 @@ class OpenAIProvider: AIProvider {
         return AsyncThrowingStream { continuation in
             let bridgeTask = Task {
                 do {
-                    var promptTokens: Int? = nil
-                    var completionTokens: Int? = nil
+                    var promptTokens: Int?
+                    var completionTokens: Int?
 
                     for try await result in stream {
                         // Check cancellation to exit promptly when consumer stops reading
@@ -326,8 +326,8 @@ class OpenAIProvider: AIProvider {
                 throw AIProviderError.invalidResponse(detail: "Responses API call completed but returned no text content.")
             }
 
-            var promptTokens: Int? = nil
-            var completionTokens: Int? = nil
+            var promptTokens: Int?
+            var completionTokens: Int?
 
             if let usage = response.usage {
                 promptTokens = usage.inputTokens

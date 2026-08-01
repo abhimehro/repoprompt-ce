@@ -25,20 +25,20 @@ SLJIT is a low-level, platform-independent JIT compiler, which is very well suit
   - `LoongArch` 64
   - `MIPS` 32 / 64
 - Supports a large number of operations
-    - Self-modifying code
-    - Tail calls
-    - Fast calls
-    - Byte order reverse (endianness switching)
-    - Unaligned memory accesses
-    - SIMD
-    - Atomic operations
+  - Self-modifying code
+  - Tail calls
+  - Fast calls
+  - Byte order reverse (endianness switching)
+  - Unaligned memory accesses
+  - SIMD
+  - Atomic operations
 - Allows direct access to registers (both integer and floating point)
 - Supports stack space allocation for function local variables
 - Supports all-in-one compilation
   - Allows SLJIT's API to be completely hidden from external use
 - Allows serializing the compiler into a byte buffer
-    - Useful for ahead-of-time (AOT) compilation
-    - Code generation can be resumed after deserialization (partial AOT compilation)
+  - Useful for ahead-of-time (AOT) compilation
+  - Code generation can be resumed after deserialization (partial AOT compilation)
 
 ## Documentation
 
@@ -64,11 +64,11 @@ SLJIT is licensed under the [Simplified BSD License](./LICENSE).
 - H.J. Lu
 - James Cowgill
 - Jason Hood
-- Jiong Wang (*TileGX support*)
+- Jiong Wang (_TileGX support_)
 - Marc Mutz
 - Martin Storsjö
 - Michael McConville
-- Mingtao Zhou (*LoongArch support*)
+- Mingtao Zhou (_LoongArch support_)
 - Walter Lee
 - Wen Xichang
 - YunQiang Su

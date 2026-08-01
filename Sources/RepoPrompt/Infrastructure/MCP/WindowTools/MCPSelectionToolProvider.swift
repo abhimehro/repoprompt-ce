@@ -268,10 +268,11 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                 ? buildResult.selection
                 : selectionWithArtifacts
             var combinedInvalid = buildResult.invalidPaths
-            for msg in buildResult.codemapUnavailable where !combinedInvalid.contains(msg) {
+            var seenInvalid = Set(combinedInvalid)
+            for msg in buildResult.codemapUnavailable where seenInvalid.insert(msg).inserted {
                 combinedInvalid.append(msg)
             }
-            for error in extraInvalid where !combinedInvalid.contains(error) {
+            for error in extraInvalid where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
             let previewCodeMapOverride: CodeMapUsage? = (!resolvedContext.usesActiveTabCompatibility && context.runID != nil) ? .auto : nil
@@ -344,13 +345,14 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                 .add
             )
             var combinedInvalid = setBuildResult.invalidPaths
-            for error in extraInvalid where !combinedInvalid.contains(error) {
+            var seenInvalid = Set(combinedInvalid)
+            for error in extraInvalid where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
             if !combinedInvalid.isEmpty {
                 throw MCPError.invalidParams("Invalid selection inputs: \(combinedInvalid.joined(separator: ", "))")
             }
-            for msg in setBuildResult.codemapUnavailable where !combinedInvalid.contains(msg) {
+            for msg in setBuildResult.codemapUnavailable where seenInvalid.insert(msg).inserted {
                 combinedInvalid.append(msg)
             }
             return try await persistAndReply(
@@ -438,13 +440,14 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                 .add
             )
             var combinedInvalid = invalid
-            for error in extraInvalid where !combinedInvalid.contains(error) {
+            var seenInvalid = Set(combinedInvalid)
+            for error in extraInvalid where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
-            for error in sliceParseErrors where !combinedInvalid.contains(error) {
+            for error in sliceParseErrors where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
-            for msg in codemapUnavailableMsgs where !combinedInvalid.contains(msg) {
+            for msg in codemapUnavailableMsgs where seenInvalid.insert(msg).inserted {
                 combinedInvalid.append(msg)
             }
             return try await persistAndReply(
@@ -515,10 +518,11 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
                 .remove
             )
             var combinedInvalid = invalid
-            for error in extraInvalid where !combinedInvalid.contains(error) {
+            var seenInvalid = Set(combinedInvalid)
+            for error in extraInvalid where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
-            for error in sliceParseErrors where !combinedInvalid.contains(error) {
+            for error in sliceParseErrors where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
             return try await persistAndReply(
@@ -542,7 +546,8 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             let (newSelection, invalid, mutated) = await dependencies.promoteStoredSelectionPaths(context.selection, physicalSelectionPaths, rawPaths, strict, lookupRootScope)
             try Task.checkCancellation()
             var combinedInvalid = invalid
-            for error in extraInvalid where !combinedInvalid.contains(error) {
+            var seenInvalid = Set(combinedInvalid)
+            for error in extraInvalid where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
             if strict, !mutated {
@@ -558,10 +563,11 @@ final class MCPSelectionToolProvider: MCPWindowToolProviding {
             let demoteResult = await dependencies.demoteStoredSelectionPaths(context.selection, physicalSelectionPaths, rawPaths, strict, lookupRootScope)
             try Task.checkCancellation()
             var combinedInvalid = demoteResult.invalidPaths
-            for error in extraInvalid where !combinedInvalid.contains(error) {
+            var seenInvalid = Set(combinedInvalid)
+            for error in extraInvalid where seenInvalid.insert(error).inserted {
                 combinedInvalid.append(error)
             }
-            for msg in demoteResult.codemapUnavailable where !combinedInvalid.contains(msg) {
+            for msg in demoteResult.codemapUnavailable where seenInvalid.insert(msg).inserted {
                 combinedInvalid.append(msg)
             }
             if strict, !demoteResult.mutated {

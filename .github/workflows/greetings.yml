@@ -1,0 +1,36 @@
+name: Greetings
+
+on: [pull_request_target, issues]
+
+jobs:
+  greeting:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/first-interaction@v3
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          issue_message: |
+            Hey — thanks for opening your first issue! 👋 We really appreciate you taking the time. To help us triage this quickly, could you:
+
+            1. Give a short summary of the problem in one sentence.
+            2. Share steps to reproduce and what you expected vs what happened.
+            3. Paste any error messages, logs, screenshots, or a minimal code snippet (use a Gist if it’s long).
+
+            Please avoid including passwords, API keys, tokens, or other sensitive information in logs, screenshots, or code snippets.
+
+            If you’re not sure about any of the above, no worries — we’ll help you fill in the gaps. For tips, see CONTRIBUTING.md and CODE_OF_CONDUCT.md in this repo. Thanks again — we’ll review it as soon as we can! 🙏
+          pr_message: |
+            Hey — thanks for opening your first pull request! 👋 We appreciate your contribution. To help us review it quickly, please include:
+
+            1. A short summary of what this PR changes and why.
+            2. Any relevant issue number (e.g., fixes #123) or context.
+            3. Steps to test the change and any special setup.
+            4. Screenshots, logs, or code snippets if relevant.
+            5. Note if this introduces breaking changes or migrations.
+
+            Please avoid including passwords, API keys, tokens, or other sensitive information in logs, screenshots, or code snippets.
+
+            If you need help polishing the PR, we can assist — thanks again — we’ll review it as soon as we can! 🙏

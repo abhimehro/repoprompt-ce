@@ -18,7 +18,9 @@ import ci_app_test_runner
 class FakeProcess:
     next_pid = 1000
 
-    def __init__(self, lines: list[str] | None = None, *, returncode: int | None = None) -> None:
+    def __init__(
+        self, lines: list[str] | None = None, *, returncode: int | None = None
+    ) -> None:
         self.lines = lines or []
         self.returncode = returncode
         self.pid = FakeProcess.next_pid
@@ -46,7 +48,9 @@ class FakeProcess:
 
 
 class CIAppTestRunnerTests(unittest.TestCase):
-    def write_policy(self, directory: Path, groups: dict[str, dict[str, str]] | None = None) -> Path:
+    def write_policy(
+        self, directory: Path, groups: dict[str, dict[str, str]] | None = None
+    ) -> Path:
         path = directory / "policy.json"
         path.write_text(
             json.dumps(
@@ -136,11 +140,15 @@ class CIAppTestRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "policy.json"
             path.write_text(
-                json.dumps({"version": 99, "default_mode": "parallel_eligible", "groups": {}}),
+                json.dumps(
+                    {"version": 99, "default_mode": "parallel_eligible", "groups": {}}
+                ),
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "unsupported serial group policy version"):
+            with self.assertRaisesRegex(
+                ValueError, "unsupported serial group policy version"
+            ):
                 ci_app_test_runner.load_serial_group_policy(path)
 
     def test_serial_group_policy_rejects_malformed_group(self) -> None:
@@ -223,7 +231,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
         self.assertEqual([suite.suite for suite in plan.parallel_eligible], [])
         self.assertEqual(plan.pinned_serial[0].estimated_runtime_seconds, 3.5)
         self.assertTrue(plan.pinned_serial[0].heavy_tier_present)
-        self.assertEqual(plan.pinned_serial[1].matched_serial_tags, ("UserDefaults.standard",))
+        self.assertEqual(
+            plan.pinned_serial[1].matched_serial_tags, ("UserDefaults.standard",)
+        )
 
     def test_main_print_suite_plan_json_emits_stable_groups(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -322,7 +332,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             "::error::ledger is missing discovered suites: ['RepoPromptTests.Unknown']",
         )
 
-    def test_main_print_suite_plan_json_rejects_missing_suite_with_parallel_workers(self) -> None:
+    def test_main_print_suite_plan_json_rejects_missing_suite_with_parallel_workers(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             ledger = self.write_ledger(
@@ -364,7 +376,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             "::error::ledger is missing discovered suites: ['RepoPromptTests.Unknown']",
         )
 
-    def test_main_print_suite_plan_json_preserves_non_strict_missing_suite_fallback(self) -> None:
+    def test_main_print_suite_plan_json_preserves_non_strict_missing_suite_fallback(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             ledger = self.write_ledger(
@@ -412,7 +426,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
         output = io.StringIO()
         with (
             tempfile.TemporaryDirectory() as temp,
-            mock.patch.object(ci_app_test_runner, "list_suites", return_value=["RepoPromptTests.A"]),
+            mock.patch.object(
+                ci_app_test_runner, "list_suites", return_value=["RepoPromptTests.A"]
+            ),
             mock.patch("sys.stdout", output),
         ):
             policy = self.write_policy(Path(temp))
@@ -433,7 +449,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
         output = io.StringIO()
         with (
             tempfile.TemporaryDirectory() as temp,
-            mock.patch.object(ci_app_test_runner, "list_suites", return_value=["RepoPromptTests.A"]),
+            mock.patch.object(
+                ci_app_test_runner, "list_suites", return_value=["RepoPromptTests.A"]
+            ),
             mock.patch("sys.stdout", output),
         ):
             ledger = self.write_ledger(
@@ -485,7 +503,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             ),
             "RepoPromptTests.S testExample",
         )
-        self.assertIsNone(ci_app_test_runner.parse_started_test("Test Suite started.\n"))
+        self.assertIsNone(
+            ci_app_test_runner.parse_started_test("Test Suite started.\n")
+        )
 
     def test_cleanup_groups_never_include_runner_process_group(self) -> None:
         original_getpgrp = ci_app_test_runner.os.getpgrp
@@ -623,7 +643,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
     def test_cancellation_event_stops_running_suite_process(self) -> None:
         stopped: list[FakeProcess] = []
         cancellation = threading.Event()
-        process = FakeProcess(["Test Case '-[RepoPromptTests.S testExample]' started.\n"])
+        process = FakeProcess(
+            ["Test Case '-[RepoPromptTests.S testExample]' started.\n"]
+        )
         timer = threading.Timer(0.02, cancellation.set)
         timer.start()
         try:
@@ -658,11 +680,19 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 return FakeCompletedProcess(str(fake_bin_dir) + "\n")
             raise AssertionError(f"unexpected call: {args}")
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
-            with mock.patch.object(ci_app_test_runner.Path, "is_dir", return_value=True):
-                with mock.patch.object(ci_app_test_runner.Path, "glob", return_value=[
-                    fake_bin_dir / "RepoPromptCEPackageTests.xctest",
-                ]):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
+            with mock.patch.object(
+                ci_app_test_runner.Path, "is_dir", return_value=True
+            ):
+                with mock.patch.object(
+                    ci_app_test_runner.Path,
+                    "glob",
+                    return_value=[
+                        fake_bin_dir / "RepoPromptCEPackageTests.xctest",
+                    ],
+                ):
                     bundle = ci_app_test_runner.discover_test_bundle("swift", None)
 
         self.assertEqual(bundle, fake_bin_dir / "RepoPromptCEPackageTests.xctest")
@@ -677,8 +707,12 @@ class CIAppTestRunnerTests(unittest.TestCase):
         def fake_run(args, **kwargs):
             return FakeCompletedProcess("/nonexistent/path\n")
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
-            with mock.patch.object(ci_app_test_runner.Path, "is_dir", return_value=False):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
+            with mock.patch.object(
+                ci_app_test_runner.Path, "is_dir", return_value=False
+            ):
                 bundle = ci_app_test_runner.discover_test_bundle("swift", None)
 
         self.assertIsNone(bundle)
@@ -689,7 +723,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
         def fake_run(args, **kwargs):
             raise sp.CalledProcessError(returncode=1, cmd=args)
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
             bundle = ci_app_test_runner.discover_test_bundle("swift", None)
 
         self.assertIsNone(bundle)
@@ -708,19 +744,28 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 return FakeCompletedProcess(str(fake_bin_dir) + "\n")
             raise AssertionError(f"unexpected call: {args}")
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
-            with mock.patch.object(ci_app_test_runner.Path, "is_dir", return_value=True):
-                with mock.patch.object(ci_app_test_runner.Path, "glob", return_value=[
-                    fake_bin_dir / "RepoPromptTests.xctest",
-                    fake_bin_dir / "RepoPromptWorkspaceTests.xctest",
-                ]):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
+            with mock.patch.object(
+                ci_app_test_runner.Path, "is_dir", return_value=True
+            ):
+                with mock.patch.object(
+                    ci_app_test_runner.Path,
+                    "glob",
+                    return_value=[
+                        fake_bin_dir / "RepoPromptTests.xctest",
+                        fake_bin_dir / "RepoPromptWorkspaceTests.xctest",
+                    ],
+                ):
                     bundles = ci_app_test_runner.discover_test_bundles("swift", None)
 
         self.assertEqual(
             bundles,
             {
                 "RepoPromptTests": fake_bin_dir / "RepoPromptTests.xctest",
-                "RepoPromptWorkspaceTests": fake_bin_dir / "RepoPromptWorkspaceTests.xctest",
+                "RepoPromptWorkspaceTests": fake_bin_dir
+                / "RepoPromptWorkspaceTests.xctest",
             },
         )
 
@@ -731,12 +776,18 @@ class CIAppTestRunnerTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            ci_app_test_runner.bundle_for_suite("RepoPromptWorkspaceTests.WorkspaceTests", bundles),
+            ci_app_test_runner.bundle_for_suite(
+                "RepoPromptWorkspaceTests.WorkspaceTests", bundles
+            ),
             Path("/fake/RepoPromptWorkspaceTests.xctest"),
         )
-        self.assertIsNone(ci_app_test_runner.bundle_for_suite("MissingTarget.Tests", bundles))
+        self.assertIsNone(
+            ci_app_test_runner.bundle_for_suite("MissingTarget.Tests", bundles)
+        )
 
-    def test_target_bundles_for_suites_ignores_stale_bundles_when_targets_covered(self) -> None:
+    def test_target_bundles_for_suites_ignores_stale_bundles_when_targets_covered(
+        self,
+    ) -> None:
         bundles = {
             "RepoPromptTests": Path("/fake/RepoPromptTests.xctest"),
             "RepoPromptCEPackageTests": Path("/fake/RepoPromptCEPackageTests.xctest"),
@@ -751,19 +802,27 @@ class CIAppTestRunnerTests(unittest.TestCase):
             {"RepoPromptTests": Path("/fake/RepoPromptTests.xctest")},
         )
 
-    def test_package_test_bundle_selects_unambiguous_combined_swiftpm_bundle(self) -> None:
+    def test_package_test_bundle_selects_unambiguous_combined_swiftpm_bundle(
+        self,
+    ) -> None:
         bundle = Path("/fake/RepoPromptCEPackageTests.xctest")
         self.assertEqual(
-            ci_app_test_runner.package_test_bundle({
-                "RepoPromptCEPackageTests": bundle,
-                "StaleTests": Path("/fake/StaleTests.xctest"),
-            }),
+            ci_app_test_runner.package_test_bundle(
+                {
+                    "RepoPromptCEPackageTests": bundle,
+                    "StaleTests": Path("/fake/StaleTests.xctest"),
+                }
+            ),
             bundle,
         )
-        self.assertIsNone(ci_app_test_runner.package_test_bundle({
-            "OnePackageTests": Path("/fake/OnePackageTests.xctest"),
-            "TwoPackageTests": Path("/fake/TwoPackageTests.xctest"),
-        }))
+        self.assertIsNone(
+            ci_app_test_runner.package_test_bundle(
+                {
+                    "OnePackageTests": Path("/fake/OnePackageTests.xctest"),
+                    "TwoPackageTests": Path("/fake/TwoPackageTests.xctest"),
+                }
+            )
+        )
 
     def test_create_suite_process_uses_xctest_when_bundle_provided(self) -> None:
         captured_args: list[list[str]] = []
@@ -776,7 +835,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 self.returncode = 0
 
         bundle = Path("/fake/Tests.xctest")
-        with mock.patch.object(ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen
+        ):
             ci_app_test_runner.create_suite_process(
                 "RepoPromptTests.S",
                 swift_binary="swift",
@@ -786,9 +847,14 @@ class CIAppTestRunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(len(captured_args), 1)
-        self.assertEqual(captured_args[0], ["/usr/bin/xctest", "-XCTest", "RepoPromptTests.S", str(bundle)])
+        self.assertEqual(
+            captured_args[0],
+            ["/usr/bin/xctest", "-XCTest", "RepoPromptTests.S", str(bundle)],
+        )
 
-    def test_create_suite_process_xctest_fallback_uses_xcrun_xctest_prefix(self) -> None:
+    def test_create_suite_process_xctest_fallback_uses_xcrun_xctest_prefix(
+        self,
+    ) -> None:
         captured_args: list[list[str]] = []
 
         class FakePopen:
@@ -799,7 +865,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 self.returncode = 0
 
         bundle = Path("/fake/Tests.xctest")
-        with mock.patch.object(ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen
+        ):
             ci_app_test_runner.create_suite_process(
                 "RepoPromptTests.S",
                 swift_binary="swift",
@@ -814,7 +882,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             ["xcrun", "xctest", "-XCTest", "RepoPromptTests.S", str(bundle)],
         )
 
-    def test_xctest_binary_path_returns_resolved_path_as_single_element_list(self) -> None:
+    def test_xctest_binary_path_returns_resolved_path_as_single_element_list(
+        self,
+    ) -> None:
         class FakeCompletedProcess:
             def __init__(self, stdout: str) -> None:
                 self.stdout = stdout
@@ -836,7 +906,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
         def fake_run(args, **kwargs):
             raise sp.CalledProcessError(returncode=1, cmd=args)
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
             result = ci_app_test_runner.xctest_binary_path()
 
         self.assertEqual(result, ["xcrun", "xctest"])
@@ -855,12 +927,20 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 return FakeCompletedProcess(str(fake_bin_dir) + "\n")
             raise AssertionError(f"unexpected call: {args}")
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
-            with mock.patch.object(ci_app_test_runner.Path, "is_dir", return_value=True):
-                with mock.patch.object(ci_app_test_runner.Path, "glob", return_value=[
-                    fake_bin_dir / "RepoPromptCEPackageTests.xctest",
-                    fake_bin_dir / "OtherTests.xctest",
-                ]):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
+            with mock.patch.object(
+                ci_app_test_runner.Path, "is_dir", return_value=True
+            ):
+                with mock.patch.object(
+                    ci_app_test_runner.Path,
+                    "glob",
+                    return_value=[
+                        fake_bin_dir / "RepoPromptCEPackageTests.xctest",
+                        fake_bin_dir / "OtherTests.xctest",
+                    ],
+                ):
                     with self.assertRaises(ValueError):
                         ci_app_test_runner.discover_test_bundle("swift", None)
 
@@ -878,12 +958,20 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 return FakeCompletedProcess(str(fake_bin_dir) + "\n")
             raise AssertionError(f"unexpected call: {args}")
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
-            with mock.patch.object(ci_app_test_runner.Path, "is_dir", return_value=True):
-                with mock.patch.object(ci_app_test_runner.Path, "glob", return_value=[
-                    fake_bin_dir / "RepoPromptTests.xctest",
-                    fake_bin_dir / "RepoPromptWorkspaceTests.xctest",
-                ]):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
+            with mock.patch.object(
+                ci_app_test_runner.Path, "is_dir", return_value=True
+            ):
+                with mock.patch.object(
+                    ci_app_test_runner.Path,
+                    "glob",
+                    return_value=[
+                        fake_bin_dir / "RepoPromptTests.xctest",
+                        fake_bin_dir / "RepoPromptWorkspaceTests.xctest",
+                    ],
+                ):
                     bundle = ci_app_test_runner.discover_test_bundle(
                         "swift",
                         None,
@@ -892,7 +980,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
 
         self.assertEqual(bundle, fake_bin_dir / "RepoPromptWorkspaceTests.xctest")
 
-    def test_discover_test_bundle_returns_none_when_requested_bundle_missing(self) -> None:
+    def test_discover_test_bundle_returns_none_when_requested_bundle_missing(
+        self,
+    ) -> None:
         fake_bin_dir = Path("/fake/.build/arm64-apple-macosx/debug")
 
         class FakeCompletedProcess:
@@ -906,11 +996,19 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 return FakeCompletedProcess(str(fake_bin_dir) + "\n")
             raise AssertionError(f"unexpected call: {args}")
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "run", side_effect=fake_run):
-            with mock.patch.object(ci_app_test_runner.Path, "is_dir", return_value=True):
-                with mock.patch.object(ci_app_test_runner.Path, "glob", return_value=[
-                    fake_bin_dir / "RepoPromptTests.xctest",
-                ]):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "run", side_effect=fake_run
+        ):
+            with mock.patch.object(
+                ci_app_test_runner.Path, "is_dir", return_value=True
+            ):
+                with mock.patch.object(
+                    ci_app_test_runner.Path,
+                    "glob",
+                    return_value=[
+                        fake_bin_dir / "RepoPromptTests.xctest",
+                    ],
+                ):
                     bundle = ci_app_test_runner.discover_test_bundle(
                         "swift",
                         None,
@@ -944,7 +1042,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 output=output,
                 test_bundles={
                     "RepoPromptTests": Path("/fake/RepoPromptTests.xctest"),
-                    "RepoPromptWorkspaceTests": Path("/fake/RepoPromptWorkspaceTests.xctest"),
+                    "RepoPromptWorkspaceTests": Path(
+                        "/fake/RepoPromptWorkspaceTests.xctest"
+                    ),
                 },
                 xctest_binary=["/usr/bin/xctest"],
             )
@@ -953,7 +1053,10 @@ class CIAppTestRunnerTests(unittest.TestCase):
         self.assertEqual(
             selected,
             [
-                ("RepoPromptTests.ModelPickerStringOrderingTests", Path("/fake/RepoPromptTests.xctest")),
+                (
+                    "RepoPromptTests.ModelPickerStringOrderingTests",
+                    Path("/fake/RepoPromptTests.xctest"),
+                ),
                 (
                     "RepoPromptWorkspaceTests.WorkspaceCodemapBindingEngineTests",
                     Path("/fake/RepoPromptWorkspaceTests.xctest"),
@@ -978,7 +1081,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
         )
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("No XCTest bundle found for suite target UnknownTarget", output.getvalue())
+        self.assertIn(
+            "No XCTest bundle found for suite target UnknownTarget", output.getvalue()
+        )
 
     def test_workers_one_preserves_current_serial_execution_order(self) -> None:
         calls: list[str] = []
@@ -998,7 +1103,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             )
 
         output = io.StringIO()
-        with mock.patch.object(ci_app_test_runner, "run_suite", side_effect=fake_run_suite):
+        with mock.patch.object(
+            ci_app_test_runner, "run_suite", side_effect=fake_run_suite
+        ):
             exit_code = ci_app_test_runner.run_all_suites(
                 ["RepoPromptTests.B", "RepoPromptTests.A"],
                 timeout_seconds=1.0,
@@ -1072,7 +1179,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             )
 
         with (
-            mock.patch.object(ci_app_test_runner, "run_suite_buffered", side_effect=fake_buffered),
+            mock.patch.object(
+                ci_app_test_runner, "run_suite_buffered", side_effect=fake_buffered
+            ),
             mock.patch.object(
                 ci_app_test_runner,
                 "run_suite_group_and_report",
@@ -1108,7 +1217,11 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 method_count=1,
                 heavy_tier_present=False,
             )
-            for name in ["RepoPromptTests.AFail", "RepoPromptTests.BNotSubmitted", "RepoPromptTests.CAlsoNotSubmitted"]
+            for name in [
+                "RepoPromptTests.AFail",
+                "RepoPromptTests.BNotSubmitted",
+                "RepoPromptTests.CAlsoNotSubmitted",
+            ]
         ]
         calls: list[str] = []
 
@@ -1130,7 +1243,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 f"{group.label} {state}\n",
             )
 
-        with mock.patch.object(ci_app_test_runner, "run_suite_buffered", side_effect=fake_buffered):
+        with mock.patch.object(
+            ci_app_test_runner, "run_suite_buffered", side_effect=fake_buffered
+        ):
             exit_code = ci_app_test_runner.run_all_suites(
                 [suite.suite for suite in suites],
                 timeout_seconds=1.0,
@@ -1202,7 +1317,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 f"{group.label} cancelled\n",
             )
 
-        with mock.patch.object(ci_app_test_runner, "run_suite_buffered", side_effect=fake_buffered):
+        with mock.patch.object(
+            ci_app_test_runner, "run_suite_buffered", side_effect=fake_buffered
+        ):
             exit_code = ci_app_test_runner.run_all_suites(
                 [suite.suite for suite in suites],
                 timeout_seconds=1.0,
@@ -1226,7 +1343,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 self.stdout = None
                 self.returncode = 0
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen
+        ):
             ci_app_test_runner.create_suite_process(
                 "RepoPromptTests.S",
                 swift_binary="swift",
@@ -1234,9 +1353,14 @@ class CIAppTestRunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(len(captured_args), 1)
-        self.assertEqual(captured_args[0], ["swift", "test", "--skip-build", "--filter", "RepoPromptTests.S"])
+        self.assertEqual(
+            captured_args[0],
+            ["swift", "test", "--skip-build", "--filter", "RepoPromptTests.S"],
+        )
 
-    def test_main_routes_discovered_multiple_bundles_without_explicit_name(self) -> None:
+    def test_main_routes_discovered_multiple_bundles_without_explicit_name(
+        self,
+    ) -> None:
         captured: dict[str, object] = {}
 
         def fake_run_all_suites(suites, **kwargs):
@@ -1256,19 +1380,31 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 "list_suites",
                 return_value=["RepoPromptTests.A", "RepoPromptWorkspaceTests.B"],
             ),
-            mock.patch.object(ci_app_test_runner, "discover_test_bundles", return_value=bundles),
-            mock.patch.object(ci_app_test_runner, "xctest_binary_path", return_value=["/usr/bin/xctest"]),
-            mock.patch.object(ci_app_test_runner, "run_all_suites", side_effect=fake_run_all_suites),
+            mock.patch.object(
+                ci_app_test_runner, "discover_test_bundles", return_value=bundles
+            ),
+            mock.patch.object(
+                ci_app_test_runner,
+                "xctest_binary_path",
+                return_value=["/usr/bin/xctest"],
+            ),
+            mock.patch.object(
+                ci_app_test_runner, "run_all_suites", side_effect=fake_run_all_suites
+            ),
         ):
             exit_code = ci_app_test_runner.main([])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(captured["suites"], ["RepoPromptTests.A", "RepoPromptWorkspaceTests.B"])
+        self.assertEqual(
+            captured["suites"], ["RepoPromptTests.A", "RepoPromptWorkspaceTests.B"]
+        )
         self.assertIsNone(captured["test_bundle"])
         self.assertEqual(captured["test_bundles"], bundles)
         self.assertEqual(captured["xctest_binary"], ["/usr/bin/xctest"])
 
-    def test_main_prefers_combined_package_bundle_when_cache_contains_stale_bundle(self) -> None:
+    def test_main_prefers_combined_package_bundle_when_cache_contains_stale_bundle(
+        self,
+    ) -> None:
         captured: dict[str, object] = {}
 
         def fake_run_all_suites(suites, **kwargs):
@@ -1288,19 +1424,31 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 ci_app_test_runner,
                 "discover_test_bundles",
                 return_value={
-                    "RepoPromptCEPackageTests": Path("/fake/RepoPromptCEPackageTests.xctest"),
+                    "RepoPromptCEPackageTests": Path(
+                        "/fake/RepoPromptCEPackageTests.xctest"
+                    ),
                     "RepoPromptTests": Path("/fake/stale/RepoPromptTests.xctest"),
-                    "RepoPromptWorkspaceTests": Path("/fake/stale/RepoPromptWorkspaceTests.xctest"),
+                    "RepoPromptWorkspaceTests": Path(
+                        "/fake/stale/RepoPromptWorkspaceTests.xctest"
+                    ),
                     "StaleTests": Path("/fake/StaleTests.xctest"),
                 },
             ),
-            mock.patch.object(ci_app_test_runner, "xctest_binary_path", return_value=["/usr/bin/xctest"]),
-            mock.patch.object(ci_app_test_runner, "run_all_suites", side_effect=fake_run_all_suites),
+            mock.patch.object(
+                ci_app_test_runner,
+                "xctest_binary_path",
+                return_value=["/usr/bin/xctest"],
+            ),
+            mock.patch.object(
+                ci_app_test_runner, "run_all_suites", side_effect=fake_run_all_suites
+            ),
         ):
             exit_code = ci_app_test_runner.main([])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(captured["suites"], ["RepoPromptTests.A", "RepoPromptWorkspaceTests.B"])
+        self.assertEqual(
+            captured["suites"], ["RepoPromptTests.A", "RepoPromptWorkspaceTests.B"]
+        )
         self.assertEqual(
             captured["test_bundle"], Path("/fake/RepoPromptCEPackageTests.xctest")
         )
@@ -1329,10 +1477,20 @@ class CIAppTestRunnerTests(unittest.TestCase):
             mock.patch.object(
                 ci_app_test_runner,
                 "discover_test_bundles",
-                return_value={"RepoPromptCEPackageTests": Path("/fake/RepoPromptCEPackageTests.xctest")},
+                return_value={
+                    "RepoPromptCEPackageTests": Path(
+                        "/fake/RepoPromptCEPackageTests.xctest"
+                    )
+                },
             ),
-            mock.patch.object(ci_app_test_runner, "xctest_binary_path", return_value=["/usr/bin/xctest"]),
-            mock.patch.object(ci_app_test_runner, "run_all_suites", side_effect=fake_run_all_suites),
+            mock.patch.object(
+                ci_app_test_runner,
+                "xctest_binary_path",
+                return_value=["/usr/bin/xctest"],
+            ),
+            mock.patch.object(
+                ci_app_test_runner, "run_all_suites", side_effect=fake_run_all_suites
+            ),
         ):
             exit_code = ci_app_test_runner.main([])
 
@@ -1356,7 +1514,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             ),
             mock.patch("sys.stdout", output),
         ):
-            exit_code = ci_app_test_runner.main(["--test-bundle-name", "RepoPromptTests"])
+            exit_code = ci_app_test_runner.main(
+                ["--test-bundle-name", "RepoPromptTests"]
+            )
 
         self.assertEqual(exit_code, 1)
         self.assertIn("cannot run suites from other targets", output.getvalue())
@@ -1369,11 +1529,15 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 "list_suites",
                 return_value=["RepoPromptWorkspaceTests.A"],
             ),
-            mock.patch.object(ci_app_test_runner, "discover_test_bundle", return_value=None),
+            mock.patch.object(
+                ci_app_test_runner, "discover_test_bundle", return_value=None
+            ),
             mock.patch.object(ci_app_test_runner, "run_all_suites") as run_all_suites,
             mock.patch("sys.stdout", output),
         ):
-            exit_code = ci_app_test_runner.main(["--test-bundle-name", "RepoPromptWorkspaceTests"])
+            exit_code = ci_app_test_runner.main(
+                ["--test-bundle-name", "RepoPromptWorkspaceTests"]
+            )
 
         self.assertEqual(exit_code, 1)
         self.assertIn("did not match any built XCTest bundle", output.getvalue())
@@ -1432,15 +1596,36 @@ class CIAppTestRunnerTests(unittest.TestCase):
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
-    def test_plan_selected_suites_uses_runtime_balanced_shard_and_slow_first(self) -> None:
+    def test_plan_selected_suites_uses_runtime_balanced_shard_and_slow_first(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ledger = self.write_ledger(Path(tmp), [
-                {"suite": "RepoPromptTests.Slow", "method": "testOne", "runtime_seconds": "10.0"},
-                {"suite": "RepoPromptTests.Medium", "method": "testOne", "runtime_seconds": "6.0"},
-                {"suite": "RepoPromptTests.Fast", "method": "testOne", "runtime_seconds": "1.0"},
-            ])
+            ledger = self.write_ledger(
+                Path(tmp),
+                [
+                    {
+                        "suite": "RepoPromptTests.Slow",
+                        "method": "testOne",
+                        "runtime_seconds": "10.0",
+                    },
+                    {
+                        "suite": "RepoPromptTests.Medium",
+                        "method": "testOne",
+                        "runtime_seconds": "6.0",
+                    },
+                    {
+                        "suite": "RepoPromptTests.Fast",
+                        "method": "testOne",
+                        "runtime_seconds": "1.0",
+                    },
+                ],
+            )
             selected, plan = ci_app_test_runner.plan_selected_suites(
-                ["RepoPromptTests.Fast", "RepoPromptTests.Medium", "RepoPromptTests.Slow"],
+                [
+                    "RepoPromptTests.Fast",
+                    "RepoPromptTests.Medium",
+                    "RepoPromptTests.Slow",
+                ],
                 ledger=ledger,
                 shard_count=2,
                 shard_index=2,
@@ -1458,9 +1643,16 @@ class CIAppTestRunnerTests(unittest.TestCase):
 
     def test_strict_ledger_rejects_missing_discovered_suite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ledger = self.write_ledger(Path(tmp), [
-                {"suite": "RepoPromptTests.Known", "method": "testOne", "runtime_seconds": "1.0"},
-            ])
+            ledger = self.write_ledger(
+                Path(tmp),
+                [
+                    {
+                        "suite": "RepoPromptTests.Known",
+                        "method": "testOne",
+                        "runtime_seconds": "1.0",
+                    },
+                ],
+            )
             with self.assertRaisesRegex(ValueError, "missing discovered suites"):
                 ci_app_test_runner.plan_selected_suites(
                     ["RepoPromptTests.Known", "RepoPromptTests.Unknown"],
@@ -1475,9 +1667,16 @@ class CIAppTestRunnerTests(unittest.TestCase):
 
     def test_workers_greater_than_one_enables_strict_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ledger = self.write_ledger(Path(tmp), [
-                {"suite": "RepoPromptTests.Known", "method": "testOne", "runtime_seconds": "1.0"},
-            ])
+            ledger = self.write_ledger(
+                Path(tmp),
+                [
+                    {
+                        "suite": "RepoPromptTests.Known",
+                        "method": "testOne",
+                        "runtime_seconds": "1.0",
+                    },
+                ],
+            )
             output = io.StringIO()
             exit_code = ci_app_test_runner.run_all_suites(
                 ["RepoPromptTests.Known", "RepoPromptTests.Unknown"],
@@ -1496,11 +1695,20 @@ class CIAppTestRunnerTests(unittest.TestCase):
         self.assertIn("enables --strict-ledger", text)
         self.assertIn("missing discovered suites", text)
 
-    def test_non_strict_ledger_includes_missing_discovered_suite_with_defaults(self) -> None:
+    def test_non_strict_ledger_includes_missing_discovered_suite_with_defaults(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ledger = self.write_ledger(Path(tmp), [
-                {"suite": "RepoPromptTests.Known", "method": "testOne", "runtime_seconds": "1.0"},
-            ])
+            ledger = self.write_ledger(
+                Path(tmp),
+                [
+                    {
+                        "suite": "RepoPromptTests.Known",
+                        "method": "testOne",
+                        "runtime_seconds": "1.0",
+                    },
+                ],
+            )
             selected, plan = ci_app_test_runner.plan_selected_suites(
                 ["RepoPromptTests.Known", "RepoPromptTests.Unknown"],
                 ledger=ledger,
@@ -1517,11 +1725,15 @@ class CIAppTestRunnerTests(unittest.TestCase):
             [entry.suite for entry in selected],
             ["RepoPromptTests.Known", "RepoPromptTests.Unknown"],
         )
-        missing = next(entry for entry in selected if entry.suite == "RepoPromptTests.Unknown")
+        missing = next(
+            entry for entry in selected if entry.suite == "RepoPromptTests.Unknown"
+        )
         self.assertEqual(missing.estimated_seconds, 1.0)
         self.assertFalse(missing.batch_eligible)
 
-    def test_batch_suite_entries_groups_only_adjacent_eligible_same_bundle(self) -> None:
+    def test_batch_suite_entries_groups_only_adjacent_eligible_same_bundle(
+        self,
+    ) -> None:
         entries = [
             ci_app_test_runner.SuitePlanEntry("RepoPromptTests.A", 1.0, True),
             ci_app_test_runner.SuitePlanEntry("RepoPromptTests.B", 1.5, True),
@@ -1549,7 +1761,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
             ],
         )
 
-    def test_create_suite_group_process_uses_single_comma_separated_xctest_filter_for_batch(self) -> None:
+    def test_create_suite_group_process_uses_single_comma_separated_xctest_filter_for_batch(
+        self,
+    ) -> None:
         captured_args: list[list[str]] = []
 
         class FakePopen:
@@ -1560,7 +1774,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 self.returncode = 0
 
         bundle = Path("/fake/Tests.xctest")
-        with mock.patch.object(ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen
+        ):
             ci_app_test_runner.create_suite_group_process(
                 ["RepoPromptTests.A", "RepoPromptTests.B"],
                 swift_binary="swift",
@@ -1579,15 +1795,20 @@ class CIAppTestRunnerTests(unittest.TestCase):
             ],
         )
 
-    def test_run_all_suites_batches_multiple_xctest_filters_through_one_process(self) -> None:
+    def test_run_all_suites_batches_multiple_xctest_filters_through_one_process(
+        self,
+    ) -> None:
         launched: list[tuple[tuple[str, ...], Path | None]] = []
 
         def fake_create_suite_group_process(suites, **kwargs):
             launched.append((tuple(suites), kwargs["test_bundle"]))
-            return FakeProcess([
-                "Test Case '-[RepoPromptTests.A testOne]' started.\n",
-                "Test Case '-[RepoPromptTests.B testOne]' started.\n",
-            ], returncode=0)
+            return FakeProcess(
+                [
+                    "Test Case '-[RepoPromptTests.A testOne]' started.\n",
+                    "Test Case '-[RepoPromptTests.B testOne]' started.\n",
+                ],
+                returncode=0,
+            )
 
         entries = [
             ci_app_test_runner.SuitePlanEntry("RepoPromptTests.A", 1.0, True),
@@ -1623,13 +1844,20 @@ class CIAppTestRunnerTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(
             launched,
-            [(("RepoPromptTests.A", "RepoPromptTests.B"), Path("/fake/RepoPromptCEPackageTests.xctest"))],
+            [
+                (
+                    ("RepoPromptTests.A", "RepoPromptTests.B"),
+                    Path("/fake/RepoPromptCEPackageTests.xctest"),
+                )
+            ],
         )
         self.assertIn("::group::RepoPromptTests.A+RepoPromptTests.B", output.getvalue())
         self.assertIn("RepoPromptTests.B testOne", output.getvalue())
 
     def test_suite_filter_regex_matches_swiftpm_suite_method_identifiers(self) -> None:
-        pattern = ci_app_test_runner.suite_filter_regex(["RepoPromptTests.A", "RepoPromptTests.B"])
+        pattern = ci_app_test_runner.suite_filter_regex(
+            ["RepoPromptTests.A", "RepoPromptTests.B"]
+        )
 
         self.assertRegex("RepoPromptTests.A/testOne", pattern)
         self.assertRegex("RepoPromptTests.B/testTwo", pattern)
@@ -1637,7 +1865,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
         self.assertNotRegex("RepoPromptTests.Ab/testOne", pattern)
         self.assertNotRegex("OtherTests.A/testOne", pattern)
 
-    def test_create_suite_group_process_uses_suite_prefix_swift_filter_without_bundle(self) -> None:
+    def test_create_suite_group_process_uses_suite_prefix_swift_filter_without_bundle(
+        self,
+    ) -> None:
         captured_args: list[list[str]] = []
 
         class FakePopen:
@@ -1647,7 +1877,9 @@ class CIAppTestRunnerTests(unittest.TestCase):
                 self.stdout = None
                 self.returncode = 0
 
-        with mock.patch.object(ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen):
+        with mock.patch.object(
+            ci_app_test_runner.subprocess, "Popen", side_effect=FakePopen
+        ):
             ci_app_test_runner.create_suite_group_process(
                 ["RepoPromptTests.A", "RepoPromptTests.B"],
                 swift_binary="swift",
