@@ -1,0 +1,3 @@
+## 2024-05-19 - Expensive DateFormatter Instantiation in Swift
+**Learning:** Instantiating `ISO8601DateFormatter` (or `DateFormatter`) in Swift is an expensive operation. In `Changelog.swift`, an `ISO8601DateFormatter` is being instantiated 216 times statically when the application loads, causing unnecessary overhead. On macOS 10.9+, `ISO8601DateFormatter` is thread-safe, making it safe to extract and share a single static instance.
+**Action:** Extract repeated instantiations of `DateFormatter` and `ISO8601DateFormatter` into static shared properties, especially when the formatting style is constant.
