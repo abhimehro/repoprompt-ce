@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
 
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "Vendor" / "Codex" / "manifest.json"
 DEFAULT_CACHE_ROOT = ROOT / ".build" / "codex-runtime"
@@ -105,68 +106,44 @@ def load_manifest(
 ) -> dict[str, Any]:
     effective_version = expected_version or SUPPORTED_VERSION
     if STABLE_VERSION_PATTERN.fullmatch(effective_version) is None:
-        raise ContractError(
-            f"expected Codex version must be a stable numeric triplet: {effective_version!r}"
-        )
+        raise ContractError(f"expected Codex version must be a stable numeric triplet: {effective_version!r}")
     effective_tag = f"rust-v{effective_version}"
     effective_release_url = f"{OFFICIAL_REPOSITORY_URL}/releases/tag/{effective_tag}"
-    effective_download_url = (
-        f"{OFFICIAL_REPOSITORY_URL}/releases/download/{effective_tag}"
-    )
+    effective_download_url = f"{OFFICIAL_REPOSITORY_URL}/releases/download/{effective_tag}"
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ContractError(f"could not read pinned manifest {path}: {exc}") from exc
     if manifest.get("schemaVersion") != MANIFEST_SCHEMA_VERSION:
         raise ContractError("unsupported Codex manifest schema")
-    if (
-        manifest.get("version") != effective_version
-        or manifest.get("tag") != effective_tag
-    ):
-        raise ContractError(
-            f"pinned manifest must describe Codex {effective_version} / {effective_tag}"
-        )
+    if manifest.get("version") != effective_version or manifest.get("tag") != effective_tag:
+        raise ContractError(f"pinned manifest must describe Codex {effective_version} / {effective_tag}")
     if manifest.get("releaseURL") != effective_release_url:
-        raise ContractError(
-            f"pinned manifest releaseURL must be {effective_release_url}"
-        )
+        raise ContractError(f"pinned manifest releaseURL must be {effective_release_url}")
     packages = manifest.get("packages")
     if not isinstance(packages, dict) or set(packages) != set(BUNDLE_TARGETS):
-        raise ContractError(
-            "pinned manifest must contain exactly both macOS package targets"
-        )
+        raise ContractError("pinned manifest must contain exactly both macOS package targets")
     if set(manifest.get("requiredLayout", [])) != REQUIRED_LAYOUT:
-        raise ContractError(
-            "pinned manifest requiredLayout is incomplete or unexpected"
-        )
+        raise ContractError("pinned manifest requiredLayout is incomplete or unexpected")
     checksums = manifest.get("checksums")
-    if (
-        not isinstance(checksums, dict)
-        or checksums.get("asset") != "codex-package_SHA256SUMS"
-    ):
+    if not isinstance(checksums, dict) or checksums.get("asset") != "codex-package_SHA256SUMS":
         raise ContractError("pinned manifest has an invalid official checksum asset")
     validate_digest(checksums.get("sha256"), "official checksum asset")
     expected_checksums_url = f"{effective_download_url}/{checksums['asset']}"
     if checksums.get("url") != expected_checksums_url:
-        raise ContractError(
-            f"official checksum asset URL must be {expected_checksums_url}"
-        )
+        raise ContractError(f"official checksum asset URL must be {expected_checksums_url}")
     for target, package in packages.items():
         if not isinstance(package, dict):
             raise ContractError(f"{target}: package contract is not an object")
         expected_archive = f"codex-package-{target}.tar.gz"
         if package.get("archive") != expected_archive:
-            raise ContractError(
-                f"{target}: expected official archive {expected_archive}"
-            )
+            raise ContractError(f"{target}: expected official archive {expected_archive}")
         if package.get("architecture") != TARGET_ARCHITECTURES[target]:
             raise ContractError(f"{target}: architecture policy mismatch")
         validate_digest(package.get("sha256"), f"{target} archive")
         expected_package_url = f"{effective_download_url}/{expected_archive}"
         if package.get("url") != expected_package_url:
-            raise ContractError(
-                f"{target}: official archive URL must be {expected_package_url}"
-            )
+            raise ContractError(f"{target}: official archive URL must be {expected_package_url}")
         entries = package.get("tree")
         if not isinstance(entries, list):
             raise ContractError(f"{target}: missing tree contract")
@@ -174,49 +151,29 @@ def load_manifest(
         if len(paths) != len(set(paths)):
             raise ContractError(f"{target}: duplicate paths in tree contract")
         if not REQUIRED_LAYOUT.issubset(set(paths)):
-            raise ContractError(
-                f"{target}: tree contract omits required package layout"
-            )
+            raise ContractError(f"{target}: tree contract omits required package layout")
         for entry in entries:
             validate_relative_path(entry.get("path"), f"{target} manifest path")
             if entry.get("kind") not in {"directory", "file"}:
                 raise ContractError(f"{target}: unsupported manifest entry kind")
             if entry.get("kind") == "file":
-                validate_digest(
-                    entry.get("sha256"), f"{target} file {entry.get('path')}"
-                )
+                validate_digest(entry.get("sha256"), f"{target} file {entry.get('path')}")
                 if not isinstance(entry.get("executable"), bool):
-                    raise ContractError(
-                        f"{target}: missing executable policy for {entry.get('path')}"
-                    )
+                    raise ContractError(f"{target}: missing executable policy for {entry.get('path')}")
     mach_o_files = manifest.get("machOFiles")
-    if (
-        not isinstance(mach_o_files, list)
-        or not mach_o_files
-        or len(mach_o_files) != len(set(mach_o_files))
-    ):
-        raise ContractError(
-            "pinned manifest must contain a unique, non-empty Mach-O inventory"
-        )
+    if not isinstance(mach_o_files, list) or not mach_o_files or len(mach_o_files) != len(set(mach_o_files)):
+        raise ContractError("pinned manifest must contain a unique, non-empty Mach-O inventory")
     for relative in mach_o_files:
         validate_relative_path(relative, "Mach-O manifest path")
     for target, package in packages.items():
         entries_by_path = {entry["path"]: entry for entry in package["tree"]}
         for relative in mach_o_files:
             entry = entries_by_path.get(relative)
-            if (
-                not entry
-                or entry.get("kind") != "file"
-                or entry.get("executable") is not True
-            ):
-                raise ContractError(
-                    f"{target}: Mach-O policy path is not a pinned executable file: {relative}"
-                )
+            if not entry or entry.get("kind") != "file" or entry.get("executable") is not True:
+                raise ContractError(f"{target}: Mach-O policy path is not a pinned executable file: {relative}")
             normalized_digest = entry.get("normalizedSha256")
             if require_normalized_digests or normalized_digest is not None:
-                validate_digest(
-                    normalized_digest, f"{target} normalized Mach-O {relative}"
-                )
+                validate_digest(normalized_digest, f"{target} normalized Mach-O {relative}")
         for entry in package["tree"]:
             if entry["path"] not in mach_o_files and "normalizedSha256" in entry:
                 raise ContractError(
@@ -224,9 +181,7 @@ def load_manifest(
                 )
     release_entitlements = manifest.get("releaseSigningEntitlements")
     if not isinstance(release_entitlements, dict):
-        raise ContractError(
-            "pinned manifest must contain the release-signing entitlement profile"
-        )
+        raise ContractError("pinned manifest must contain the release-signing entitlement profile")
     if set(release_entitlements) != set(mach_o_files):
         raise ContractError(
             "release-signing entitlement profile must cover exactly the Mach-O inventory"
@@ -234,19 +189,13 @@ def load_manifest(
             f"\nextra={sorted(set(release_entitlements) - set(mach_o_files))}"
         )
     for relative, profile in release_entitlements.items():
-        validate_entitlement_profile(
-            profile, f"release-signing entitlements for {relative}"
-        )
+        validate_entitlement_profile(profile, f"release-signing entitlements for {relative}")
     signed = manifest.get("signedExecutables")
-    if not isinstance(signed, list) or {
-        item.get("path") for item in signed if isinstance(item, dict)
-    } != {
+    if not isinstance(signed, list) or {item.get("path") for item in signed if isinstance(item, dict)} != {
         "bin/codex",
         "bin/codex-code-mode-host",
     }:
-        raise ContractError(
-            "pinned manifest must contain both primary executable signature policies"
-        )
+        raise ContractError("pinned manifest must contain both primary executable signature policies")
     for policy in signed:
         if not isinstance(policy, dict):
             raise ContractError("invalid executable signature policy")
@@ -256,9 +205,7 @@ def load_manifest(
         if policy.get("requiresHardenedRuntime") is not True:
             raise ContractError(f"{policy['path']}: hardened runtime must be required")
         if policy.get("requiresTimestamp") is not True:
-            raise ContractError(
-                f"{policy['path']}: a trusted signing timestamp must be required"
-            )
+            raise ContractError(f"{policy['path']}: a trusted signing timestamp must be required")
         validate_entitlement_profile(
             policy.get("entitlements"),
             f"vendor signature policy entitlements for {policy['path']}",
@@ -281,17 +228,11 @@ def signing_plan_profile_label(profile: dict[str, bool], context: str) -> str:
     for label, expected in SIGNING_PLAN_PROFILE_LABELS.items():
         if profile == expected:
             return label
-    raise ContractError(
-        f"{context}: unsupported release-signing entitlement profile {profile!r}"
-    )
+    raise ContractError(f"{context}: unsupported release-signing entitlement profile {profile!r}")
 
 
 def validate_digest(raw: object, context: str) -> str:
-    if (
-        not isinstance(raw, str)
-        or len(raw) != 64
-        or any(char not in "0123456789abcdef" for char in raw)
-    ):
+    if not isinstance(raw, str) or len(raw) != 64 or any(char not in "0123456789abcdef" for char in raw):
         raise ContractError(f"invalid SHA-256 for {context}")
     return raw
 
@@ -300,12 +241,7 @@ def validate_relative_path(raw: object, context: str) -> PurePosixPath:
     if not isinstance(raw, str) or not raw:
         raise ContractError(f"{context}: empty path")
     path = PurePosixPath(raw)
-    if (
-        path.is_absolute()
-        or ".." in path.parts
-        or "." in path.parts
-        or str(path) != raw
-    ):
+    if path.is_absolute() or ".." in path.parts or "." in path.parts or str(path) != raw:
         raise ContractError(f"{context}: unsafe path {raw!r}")
     return path
 
@@ -338,17 +274,11 @@ def normalize_target(value: str) -> str:
 
 
 def download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "RepoPrompt-CE-Codex-artifact/1"}
-    )
+    request = urllib.request.Request(url, headers={"User-Agent": "RepoPrompt-CE-Codex-artifact/1"})
     try:
-        with urllib.request.urlopen(request, timeout=120) as response, destination.open(
-            "wb"
-        ) as output:
+        with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as output:
             if urlparse(response.geturl()).scheme != "https":
-                raise ContractError(
-                    f"download redirected away from HTTPS: {response.geturl()}"
-                )
+                raise ContractError(f"download redirected away from HTTPS: {response.geturl()}")
             shutil.copyfileobj(response, output)
     except Exception as exc:
         raise ContractError(f"download failed for {url}: {exc}") from exc
@@ -361,9 +291,7 @@ def official_digest(sums_path: Path, asset: str) -> str:
         if len(fields) == 2 and fields[1].lstrip("*") == asset:
             matches.append(fields[0].lower())
     if len(matches) != 1:
-        raise ContractError(
-            f"official checksum file must contain exactly one entry for {asset}"
-        )
+        raise ContractError(f"official checksum file must contain exactly one entry for {asset}")
     digest = matches[0]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise ContractError(f"official checksum for {asset} is not a SHA-256 digest")
@@ -372,16 +300,12 @@ def official_digest(sums_path: Path, asset: str) -> str:
 
 def run_tool(argv: list[str], description: str) -> str:
     try:
-        result = subprocess.run(
-            argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        result = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
         raise ContractError(f"could not run {description}: {exc}") from exc
     output = result.stdout + result.stderr
     if result.returncode != 0:
-        raise ContractError(
-            f"{description} failed ({' '.join(argv)}):\n{output.strip()}"
-        )
+        raise ContractError(f"{description} failed ({' '.join(argv)}):\n{output.strip()}")
     return output
 
 
@@ -390,14 +314,10 @@ def is_mach_o_file(path: Path) -> bool:
         with path.open("rb") as handle:
             return handle.read(4) in MACH_O_MAGICS
     except OSError as exc:
-        raise ContractError(
-            f"could not inspect Mach-O magic for {path}: {exc}"
-        ) from exc
+        raise ContractError(f"could not inspect Mach-O magic for {path}: {exc}") from exc
 
 
-def parse_thin_mach_o_64(
-    data: bytes | bytearray, context: str
-) -> tuple[int, list[tuple[int, int, int]]]:
+def parse_thin_mach_o_64(data: bytes | bytearray, context: str) -> tuple[int, list[tuple[int, int, int]]]:
     if len(data) < 32:
         raise ContractError(f"{context}: truncated Mach-O header")
     magic, cpu_type = struct.unpack_from("<Ii", data, 0)
@@ -436,26 +356,18 @@ def read_mach_o_load_commands(path: Path) -> tuple[int, list[tuple[int, int, int
             if len(load_commands) != command_bytes:
                 raise ContractError(f"{context}: truncated Mach-O load-command table")
     except OSError as exc:
-        raise ContractError(
-            f"could not read Mach-O load commands for {path}: {exc}"
-        ) from exc
+        raise ContractError(f"could not read Mach-O load commands for {path}: {exc}") from exc
     return parse_thin_mach_o_64(header + load_commands, context)
 
 
 def normalized_mach_o_sha256(path: Path, codesign: str) -> str:
     context = str(path)
     _cpu_type, original_commands = read_mach_o_load_commands(path)
-    signature_commands = [
-        command for command in original_commands if command[0] == LC_CODE_SIGNATURE
-    ]
+    signature_commands = [command for command in original_commands if command[0] == LC_CODE_SIGNATURE]
     if len(signature_commands) > 1:
-        raise ContractError(
-            f"{context}: multiple LC_CODE_SIGNATURE commands are unsupported"
-        )
+        raise ContractError(f"{context}: multiple LC_CODE_SIGNATURE commands are unsupported")
 
-    with tempfile.TemporaryDirectory(
-        prefix="repoprompt-codex-normalize-"
-    ) as temp_value:
+    with tempfile.TemporaryDirectory(prefix="repoprompt-codex-normalize-") as temp_value:
         safe_copy = Path(temp_value) / path.name
         shutil.copy2(path, safe_copy)
         if signature_commands:
@@ -465,9 +377,7 @@ def normalized_mach_o_sha256(path: Path, codesign: str) -> str:
             )
         cpu_type, commands = read_mach_o_load_commands(safe_copy)
         if any(command == LC_CODE_SIGNATURE for command, _offset, _size in commands):
-            raise ContractError(
-                f"{context}: signature removal left LC_CODE_SIGNATURE present"
-            )
+            raise ContractError(f"{context}: signature removal left LC_CODE_SIGNATURE present")
         with safe_copy.open("rb") as handle:
             header = handle.read(32)
             command_bytes = struct.unpack_from("<I", header, 20)[0]
@@ -483,14 +393,10 @@ def normalized_mach_o_sha256(path: Path, codesign: str) -> str:
         linkedit_offset, linkedit_size = linkedit_commands[0]
         if linkedit_size < 72:
             raise ContractError(f"{context}: truncated __LINKEDIT segment command")
-        file_offset, file_size = struct.unpack_from(
-            "<QQ", commands_data, linkedit_offset + 40
-        )
+        file_offset, file_size = struct.unpack_from("<QQ", commands_data, linkedit_offset + 40)
         normalized_size = safe_copy.stat().st_size
         if file_offset + file_size > normalized_size:
-            raise ContractError(
-                f"{context}: __LINKEDIT file range exceeds normalized Mach-O"
-            )
+            raise ContractError(f"{context}: __LINKEDIT file range exceeds normalized Mach-O")
         page_size = TARGET_PAGE_SIZES[cpu_type]
         # codesign --remove-signature restores the unsigned file range but leaves
         # __LINKEDIT.vmsize rounded from the former signature size. Re-derive the
@@ -508,16 +414,12 @@ def normalized_mach_o_sha256(path: Path, codesign: str) -> str:
         return digest.hexdigest()
 
 
-def signed_entitlements_dictionary(
-    binary: Path, codesign: str, context: str
-) -> dict[str, Any]:
+def signed_entitlements_dictionary(binary: Path, codesign: str, context: str) -> dict[str, Any]:
     argv = [codesign, "-d", "--entitlements", ":-", str(binary)]
     try:
         result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
-        raise ContractError(
-            f"could not run entitlement inspection for {context}: {exc}"
-        ) from exc
+        raise ContractError(f"could not run entitlement inspection for {context}: {exc}") from exc
     if result.returncode != 0:
         diagnostics = result.stderr.decode("utf-8", errors="replace").strip()
         raise ContractError(
@@ -531,9 +433,7 @@ def signed_entitlements_dictionary(
     except Exception as exc:
         raise ContractError(f"{context}: malformed signed entitlements: {exc}") from exc
     if not isinstance(value, dict):
-        raise ContractError(
-            f"{context}: signed entitlements must decode to a dictionary"
-        )
+        raise ContractError(f"{context}: signed entitlements must decode to a dictionary")
     return value
 
 
@@ -574,9 +474,7 @@ def parse_codesign_metadata(details: str) -> dict[str, list[str]]:
 def verify_directory_mode(path: Path, context: str) -> None:
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode != EXPECTED_DIRECTORY_MODE:
-        raise ContractError(
-            f"{context} directory mode must be 0755, got {mode:04o}: {path}"
-        )
+        raise ContractError(f"{context} directory mode must be 0755, got {mode:04o}: {path}")
 
 
 def snapshot_tree(root: Path) -> dict[str, dict[str, Any]]:
@@ -587,9 +485,7 @@ def snapshot_tree(root: Path) -> dict[str, dict[str, Any]]:
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
         if path.is_symlink():
-            raise ContractError(
-                f"package contains an unsupported symbolic link: {relative}"
-            )
+            raise ContractError(f"package contains an unsupported symbolic link: {relative}")
         if path.is_dir():
             verify_directory_mode(path, f"package directory {relative}")
             snapshot[relative] = {"path": relative, "kind": "directory"}
@@ -601,9 +497,7 @@ def snapshot_tree(root: Path) -> dict[str, dict[str, Any]]:
                 "executable": bool(path.stat().st_mode & 0o111),
             }
         else:
-            raise ContractError(
-                f"package contains an unsupported file type: {relative}"
-            )
+            raise ContractError(f"package contains an unsupported file type: {relative}")
     return snapshot
 
 
@@ -618,9 +512,7 @@ def verify_package(
 ) -> None:
     package = manifest["packages"][target]
     expected = {
-        entry["path"]: {
-            key: value for key, value in entry.items() if key != "normalizedSha256"
-        }
+        entry["path"]: {key: value for key, value in entry.items() if key != "normalizedSha256"}
         for entry in package["tree"]
     }
     actual = snapshot_tree(root)
@@ -636,15 +528,10 @@ def verify_package(
             f"\nunlisted={sorted(discovered_mach_o_files - manifested_mach_o_files)}"
             f"\nmissing={sorted(manifested_mach_o_files - discovered_mach_o_files)}"
         )
-
     def tree_mismatch() -> ContractError:
         missing = sorted(set(expected) - set(actual))
         extra = sorted(set(actual) - set(expected))
-        changed = sorted(
-            path
-            for path in set(actual) & set(expected)
-            if actual[path] != expected[path]
-        )
+        changed = sorted(path for path in set(actual) & set(expected) if actual[path] != expected[path])
         return ContractError(
             f"{target}: package tree does not match pinned manifest"
             f"\nmissing={missing}\nextra={extra}\nchanged={changed}"
@@ -685,9 +572,7 @@ def verify_package(
         raise ContractError(f"{target}: codex-package.json metadata mismatch")
     expected_arch = package["architecture"]
     for relative in manifest["machOFiles"]:
-        output = run_tool(
-            [lipo, "-archs", str(root / relative)], f"architecture check for {relative}"
-        )
+        output = run_tool([lipo, "-archs", str(root / relative)], f"architecture check for {relative}")
         architectures = output.strip().split()
         if architectures != [expected_arch]:
             raise ContractError(
@@ -728,35 +613,21 @@ def verify_package(
                 )
         authorities = fields.get("Authority", [])
         if signed_team_identifier is None:
-            valid_authority = (
-                bool(authorities) and authorities[0] == policy["authority"]
-            )
+            valid_authority = bool(authorities) and authorities[0] == policy["authority"]
             authority_requirement = f"must equal {policy['authority']!r}"
         else:
-            valid_authority = bool(authorities) and authorities[0].startswith(
-                policy["authorityPrefix"]
-            )
+            valid_authority = bool(authorities) and authorities[0].startswith(policy["authorityPrefix"])
             authority_requirement = "must be a Developer ID Application certificate"
         if not valid_authority:
             raise ContractError(
                 f"{target}: {policy['path']} leaf signing authority {authority_requirement}, "
                 f"got {authorities!r}"
             )
-        if not re.search(
-            r"^CodeDirectory .*flags=.*\([^)]*\bruntime\b[^)]*\)", details, re.MULTILINE
-        ):
-            raise ContractError(
-                f"{target}: {policy['path']} is missing the hardened-runtime signing flag"
-            )
+        if not re.search(r"^CodeDirectory .*flags=.*\([^)]*\bruntime\b[^)]*\)", details, re.MULTILINE):
+            raise ContractError(f"{target}: {policy['path']} is missing the hardened-runtime signing flag")
         timestamps = fields.get("Timestamp", [])
-        if (
-            len(timestamps) != 1
-            or not timestamps[0].strip()
-            or timestamps[0].strip().casefold() == "none"
-        ):
-            raise ContractError(
-                f"{target}: {policy['path']} is missing a trusted signing timestamp"
-            )
+        if len(timestamps) != 1 or not timestamps[0].strip() or timestamps[0].strip().casefold() == "none":
+            raise ContractError(f"{target}: {policy['path']} is missing a trusted signing timestamp")
         verify_signed_entitlements(
             binary,
             policy["entitlements"],
@@ -779,13 +650,9 @@ def safe_extract(archive: Path, destination: Path, expected_paths: set[str]) -> 
             if relative not in expected_paths:
                 raise ContractError(f"archive contains unpinned member: {relative}")
             if not (member.isdir() or member.isfile()):
-                raise ContractError(
-                    f"archive contains unsupported member type: {relative}"
-                )
+                raise ContractError(f"archive contains unsupported member type: {relative}")
         if seen != expected_paths:
-            raise ContractError(
-                f"archive layout mismatch: missing={sorted(expected_paths - seen)} extra={sorted(seen - expected_paths)}"
-            )
+            raise ContractError(f"archive layout mismatch: missing={sorted(expected_paths - seen)} extra={sorted(seen - expected_paths)}")
         for member in members:
             relative = member.name.rstrip("/")
             output = destination / relative
@@ -803,23 +670,15 @@ def safe_extract(archive: Path, destination: Path, expected_paths: set[str]) -> 
                 output.chmod(0o755 if member.mode & 0o111 else 0o644)
 
 
-def verify_sources(
-    sums: Path, archive: Path, package: dict[str, Any], checksums: dict[str, Any]
-) -> None:
+def verify_sources(sums: Path, archive: Path, package: dict[str, Any], checksums: dict[str, Any]) -> None:
     if sha256(sums) != checksums["sha256"]:
-        raise ContractError(
-            "official checksum asset does not match the repository-pinned digest"
-        )
+        raise ContractError("official checksum asset does not match the repository-pinned digest")
     published = official_digest(sums, package["archive"])
     if published != package["sha256"]:
-        raise ContractError(
-            "official checksum and repository-pinned archive digest disagree"
-        )
+        raise ContractError("official checksum and repository-pinned archive digest disagree")
     actual = sha256(archive)
     if actual != published:
-        raise ContractError(
-            f"archive checksum mismatch: expected {published}, got {actual}"
-        )
+        raise ContractError(f"archive checksum mismatch: expected {published}, got {actual}")
 
 
 def acquire_target(
@@ -876,16 +735,10 @@ def verify_bundle(
     for target in targets:
         package = root / target
         if not package.is_dir() or package.is_symlink():
-            raise ContractError(
-                f"Codex bundle target is not a real directory: {package}"
-            )
-        verify_package(
-            package, target, manifest, lipo, codesign, signed_team_identifier
-        )
+            raise ContractError(f"Codex bundle target is not a real directory: {package}")
+        verify_package(package, target, manifest, lipo, codesign, signed_team_identifier)
     signing_label = (
-        f" release signatures for team {signed_team_identifier}"
-        if signed_team_identifier is not None
-        else ""
+        f" release signatures for team {signed_team_identifier}" if signed_team_identifier is not None else ""
     )
     print(
         f"OK: verified bundled Codex {manifest['version']} targets{signing_label}: "
@@ -900,9 +753,7 @@ def stage_bundle(args: argparse.Namespace, manifest: dict[str, Any]) -> None:
     if destination.exists() or destination.is_symlink():
         raise ContractError(f"Codex bundle destination already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temp = Path(
-        tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
-    )
+    temp = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
     try:
         temp.chmod(EXPECTED_DIRECTORY_MODE)
         for target in targets:
@@ -940,17 +791,13 @@ def acquire(args: argparse.Namespace, manifest: dict[str, Any]) -> None:
             print(f"Downloading official checksum asset for {manifest['tag']}...")
             download(manifest["checksums"]["url"], sums)
             if sha256(sums) != manifest["checksums"]["sha256"]:
-                raise ContractError(
-                    "official checksum asset does not match the repository-pinned digest"
-                )
+                raise ContractError("official checksum asset does not match the repository-pinned digest")
             for target in missing:
                 package = manifest["packages"][target]
                 print(f"Downloading official {package['archive']}...")
                 download(package["url"], source / package["archive"])
         for target in missing:
-            acquire_target(
-                target, manifest, cache_root, source, args.lipo, args.codesign
-            )
+            acquire_target(target, manifest, cache_root, source, args.lipo, args.codesign)
 
 
 def refresh_normalized_digests(
@@ -963,9 +810,7 @@ def refresh_normalized_digests(
     for target in targets:
         package_root = cache_root / manifest["version"] / target
         if not package_root.is_dir():
-            raise ContractError(
-                f"missing verified Codex package for normalized digest refresh: {package_root}"
-            )
+            raise ContractError(f"missing verified Codex package for normalized digest refresh: {package_root}")
         verify_package(
             package_root,
             target,
@@ -1017,9 +862,7 @@ def status(args: argparse.Namespace, manifest: dict[str, Any]) -> None:
         else:
             print(f"OK: {target}: {path}")
     if failed:
-        raise ContractError(
-            "one or more pinned Codex packages are unavailable or invalid"
-        )
+        raise ContractError("one or more pinned Codex packages are unavailable or invalid")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1028,20 +871,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lipo", default=os.environ.get("LIPO", "lipo"))
     parser.add_argument("--codesign", default=os.environ.get("CODESIGN", "codesign"))
     subparsers = parser.add_subparsers(dest="command", required=True)
-    acquire_parser = subparsers.add_parser(
-        "acquire", help="download, verify, and atomically cache official packages"
-    )
-    acquire_parser.add_argument(
-        "--arch", default="all", help="all, host, arm64, x86_64, or an exact target"
-    )
+    acquire_parser = subparsers.add_parser("acquire", help="download, verify, and atomically cache official packages")
+    acquire_parser.add_argument("--arch", default="all", help="all, host, arm64, x86_64, or an exact target")
     acquire_parser.add_argument("--cache-root", default=str(DEFAULT_CACHE_ROOT))
-    acquire_parser.add_argument(
-        "--archive-dir",
-        help="offline directory containing the official checksum asset and archives",
-    )
-    verify_parser = subparsers.add_parser(
-        "verify", help="verify an extracted package without network access"
-    )
+    acquire_parser.add_argument("--archive-dir", help="offline directory containing the official checksum asset and archives")
+    verify_parser = subparsers.add_parser("verify", help="verify an extracted package without network access")
     verify_parser.add_argument("--arch", required=True)
     verify_parser.add_argument("--package", required=True)
     stage_bundle_parser = subparsers.add_parser(
@@ -1071,9 +905,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="list every pinned Mach-O in bundle signing order with its release entitlement profile",
     )
     signing_plan_parser.add_argument("--arch", default="all")
-    status_parser = subparsers.add_parser(
-        "status", help="verify both cached packages without network access"
-    )
+    status_parser = subparsers.add_parser("status", help="verify both cached packages without network access")
     status_parser.add_argument("--cache-root", default=str(DEFAULT_CACHE_ROOT))
     refresh_parser = subparsers.add_parser(
         "refresh-normalized-digests",
@@ -1081,14 +913,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     refresh_parser.add_argument("--arch", default="all")
     refresh_parser.add_argument("--cache-root", default=str(DEFAULT_CACHE_ROOT))
-    subparsers.add_parser(
-        "validate-manifest",
-        help="validate the repository pin without network or cached packages",
-    )
-    subparsers.add_parser(
-        "manifest-version",
-        help="print the validated pinned version for packaging paths",
-    )
+    subparsers.add_parser("validate-manifest", help="validate the repository pin without network or cached packages")
+    subparsers.add_parser("manifest-version", help="print the validated pinned version for packaging paths")
     return parser
 
 
@@ -1104,13 +930,7 @@ def main() -> int:
         if args.command == "acquire":
             acquire(args, manifest)
         elif args.command == "verify":
-            verify_package(
-                Path(args.package),
-                normalize_target(args.arch),
-                manifest,
-                args.lipo,
-                args.codesign,
-            )
+            verify_package(Path(args.package), normalize_target(args.arch), manifest, args.lipo, args.codesign)
             print(f"OK: verified pinned Codex package: {args.package}")
         elif args.command == "stage-bundle":
             stage_bundle(args, manifest)

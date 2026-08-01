@@ -32,17 +32,13 @@ class CodexUpdateWorkflowValidatorTests(unittest.TestCase):
                 "  workflow_dispatch:\n  push:\n    branches: [main]\n",
                 1,
             ),
-            "write permission": self.baseline.replace(
-                "contents: read", "contents: write", 1
-            ),
+            "write permission": self.baseline.replace("contents: read", "contents: write", 1),
             "job permission override": self.baseline.replace(
                 "    runs-on: macos-26\n",
                 "    runs-on: macos-26\n    permissions:\n      contents: write\n",
                 1,
             ),
-            "non-main gate": self.baseline.replace(
-                "refs/heads/main", "refs/heads/candidate", 1
-            ),
+            "non-main gate": self.baseline.replace("refs/heads/main", "refs/heads/candidate", 1),
             "persisted checkout credentials": self.baseline.replace(
                 "persist-credentials: false",
                 "persist-credentials: true",

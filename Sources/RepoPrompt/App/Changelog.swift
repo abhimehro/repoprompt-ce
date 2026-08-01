@@ -11,7 +11,9 @@ struct Version: Identifiable {
     let changes: String
 }
 
-enum Changelog {
+class Changelog {
+    private static let isoFormatter = ISO8601DateFormatter()
+
     static let current = Version(
         id: "2.1.24",
         buildNumber: 326,

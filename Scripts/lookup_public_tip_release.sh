@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# != 3 ]]; then
-	printf '%s\n' \
-		'GitHub public tip lookup classification=invalid-input status=000 request_id=unavailable rate_limit_remaining=unavailable rate_limit_reset=unavailable retry_after=unavailable' \
-		>&2
-	exit 1
+if [[ "$#" != 3 ]]; then
+    printf '%s\n' \
+        'GitHub public tip lookup classification=invalid-input status=000 request_id=unavailable rate_limit_remaining=unavailable rate_limit_reset=unavailable retry_after=unavailable' \
+        >&2
+    exit 1
 fi
 
 REPOSITORY="$1"
@@ -19,8 +19,8 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 header_value() {
-	local wanted="$1"
-	awk -v wanted="$wanted" '
+    local wanted="$1"
+    awk -v wanted="$wanted" '
         {
             line = $0
             sub(/\r$/, "", line)
@@ -41,7 +41,7 @@ header_value() {
 }
 
 classify_403_body() {
-	python3 - "$RESPONSE_BODY" <<'PYTHON'
+    python3 - "$RESPONSE_BODY" <<'PYTHON'
 import json
 import sys
 
@@ -61,7 +61,7 @@ PYTHON
 }
 
 classify_found_body() {
-	python3 - "$RESPONSE_BODY" "$ARCHIVE_BASENAME" <<'PYTHON'
+    python3 - "$RESPONSE_BODY" "$ARCHIVE_BASENAME" <<'PYTHON'
 import json
 import sys
 
@@ -93,88 +93,88 @@ PYTHON
 }
 
 curl_headers=(
-	--header 'Accept: application/vnd.github+json'
-	--header 'X-GitHub-Api-Version: 2022-11-28'
+    --header 'Accept: application/vnd.github+json'
+    --header 'X-GitHub-Api-Version: 2022-11-28'
 )
-if [[ -n ${TIP_GH_TOKEN-} ]]; then
-	curl_headers+=(--header "Authorization: Bearer $TIP_GH_TOKEN")
+if [[ -n "${TIP_GH_TOKEN:-}" ]]; then
+    curl_headers+=(--header "Authorization: Bearer $TIP_GH_TOKEN")
 fi
 
 classification=transport-failure
 status=000
 for attempt in 1 2 3; do
-	: >"$RESPONSE_BODY"
-	: >"$RESPONSE_HEADERS"
-	request_id=unavailable
-	rate_limit_remaining=unavailable
-	rate_limit_reset=unavailable
-	retry_after=unavailable
+    : > "$RESPONSE_BODY"
+    : > "$RESPONSE_HEADERS"
+    request_id=unavailable
+    rate_limit_remaining=unavailable
+    rate_limit_reset=unavailable
+    retry_after=unavailable
 
-	if status="$(curl --location --silent \
-		--connect-timeout 10 \
-		--max-time 30 \
-		"${curl_headers[@]}" \
-		--dump-header "$RESPONSE_HEADERS" \
-		--output "$RESPONSE_BODY" \
-		--write-out '%{http_code}' \
-		"https://api.github.com/repos/$REPOSITORY/releases/tags/$TAG" \
-		2>/dev/null)"; then
-		[[ $status =~ ^[0-9]{3}$ ]] || status=000
-		request_id="$(header_value x-github-request-id)"
-		rate_limit_remaining="$(header_value x-ratelimit-remaining)"
-		rate_limit_reset="$(header_value x-ratelimit-reset)"
-		retry_after="$(header_value retry-after)"
-		request_id="${request_id:-unavailable}"
-		rate_limit_remaining="${rate_limit_remaining:-unavailable}"
-		rate_limit_reset="${rate_limit_reset:-unavailable}"
-		retry_after="${retry_after:-unavailable}"
+    if status="$(curl --location --silent \
+        --connect-timeout 10 \
+        --max-time 30 \
+        "${curl_headers[@]}" \
+        --dump-header "$RESPONSE_HEADERS" \
+        --output "$RESPONSE_BODY" \
+        --write-out '%{http_code}' \
+        "https://api.github.com/repos/$REPOSITORY/releases/tags/$TAG" \
+        2>/dev/null)"; then
+        [[ "$status" =~ ^[0-9]{3}$ ]] || status=000
+        request_id="$(header_value x-github-request-id)"
+        rate_limit_remaining="$(header_value x-ratelimit-remaining)"
+        rate_limit_reset="$(header_value x-ratelimit-reset)"
+        retry_after="$(header_value retry-after)"
+        request_id="${request_id:-unavailable}"
+        rate_limit_remaining="${rate_limit_remaining:-unavailable}"
+        rate_limit_reset="${rate_limit_reset:-unavailable}"
+        retry_after="${retry_after:-unavailable}"
 
-		case "$status" in
-		200) classification="$(classify_found_body)" ;;
-		404) classification=not-found ;;
-		403)
-			if [[ $rate_limit_remaining == "0" || $retry_after != "unavailable" ]]; then
-				classification=rate-limited
-			else
-				classification="$(classify_403_body)"
-			fi
-			;;
-		429) classification=rate-limited ;;
-		5??) classification=server-failure ;;
-		*) classification=unexpected-failure ;;
-		esac
-	else
-		status=000
-		classification=transport-failure
-	fi
+        case "$status" in
+            200) classification="$(classify_found_body)" ;;
+            404) classification=not-found ;;
+            403)
+                if [[ "$rate_limit_remaining" == "0" || "$retry_after" != "unavailable" ]]; then
+                    classification=rate-limited
+                else
+                    classification="$(classify_403_body)"
+                fi
+                ;;
+            429) classification=rate-limited ;;
+            5??) classification=server-failure ;;
+            *) classification=unexpected-failure ;;
+        esac
+    else
+        status=000
+        classification=transport-failure
+    fi
 
-	printf '%s\n' \
-		"GitHub public tip lookup classification=$classification status=$status request_id=$request_id rate_limit_remaining=$rate_limit_remaining rate_limit_reset=$rate_limit_reset retry_after=$retry_after" \
-		>&2
+    printf '%s\n' \
+        "GitHub public tip lookup classification=$classification status=$status request_id=$request_id rate_limit_remaining=$rate_limit_remaining rate_limit_reset=$rate_limit_reset retry_after=$retry_after" \
+        >&2
 
-	case "$classification" in
-	found | not-found | malformed | unexpected-failure)
-		break
-		;;
-	rate-limited | server-failure | transport-failure)
-		if ((attempt == 3)); then
-			break
-		fi
-		retry_delay="$attempt"
-		if [[ $retry_after =~ ^[0-9]+$ ]]; then
-			retry_delay="$retry_after"
-			((retry_delay <= 10)) || retry_delay=10
-		fi
-		sleep "$retry_delay"
-		;;
-	esac
+    case "$classification" in
+        found|not-found|malformed|unexpected-failure)
+            break
+            ;;
+        rate-limited|server-failure|transport-failure)
+            if (( attempt == 3 )); then
+                break
+            fi
+            retry_delay="$attempt"
+            if [[ "$retry_after" =~ ^[0-9]+$ ]]; then
+                retry_delay="$retry_after"
+                (( retry_delay <= 10 )) || retry_delay=10
+            fi
+            sleep "$retry_delay"
+            ;;
+    esac
 done
 
 case "$classification" in
-found | not-found)
-	printf '%s\n' "$classification"
-	;;
-*)
-	exit 1
-	;;
+    found|not-found)
+        printf '%s\n' "$classification"
+        ;;
+    *)
+        exit 1
+        ;;
 esac

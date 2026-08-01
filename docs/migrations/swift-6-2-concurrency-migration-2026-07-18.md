@@ -156,7 +156,7 @@ The CodeMap scope is settled: stop at parsing/extraction unless a later proposal
 - `.agents/skills/rpce-swift-6-concurrency-migration/references/{migration-inventory,validation-matrix,official-swift-6-2}.md`
 - `docs/architecture/source-layout.md`
 - `docs/architecture/provider-plugins.md`
-- [SwiftPM target-level Swift language mode](<https://docs.swift.org/swiftpm/documentation/packagedescription/swiftsetting/swiftlanguagemode(_:_:)>)
+- [SwiftPM target-level Swift language mode](https://docs.swift.org/swiftpm/documentation/packagedescription/swiftsetting/swiftlanguagemode(_:_:))
 - [SE-0461: caller-actor execution for nonisolated async functions](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md)
 - [SE-0466: control default actor isolation inference](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md)
 - [SE-0470: global-actor isolated conformances](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0470-isolated-conformances.md)

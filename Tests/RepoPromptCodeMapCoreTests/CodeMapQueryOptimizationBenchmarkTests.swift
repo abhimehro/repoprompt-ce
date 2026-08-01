@@ -1,6 +1,6 @@
 import Foundation
-@testable import RepoPromptCodeMapCore
 import XCTest
+@testable import RepoPromptCodeMapCore
 
 final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
     #if RPCE_BENCHMARK_TESTS
@@ -45,7 +45,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             for _ in 0 ..< 5 {
                 let start = ProcessInfo.processInfo.systemUptime
                 let artifacts = try SwiftCodeMapPipelineBenchmarkSupport.buildArtifacts(files: files)
-                samplesMS.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                samplesMS.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
                 XCTAssertEqual(artifacts, expected)
             }
 
@@ -148,7 +148,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
                 collector.typeCleanerExtractCalls,
                 collector.typeCleanerCacheHits + collector.typeCleanerCacheMisses
             )
-            XCTAssertLessThan(collector.typeCleanerExtractCalls, 1497)
+            XCTAssertLessThan(collector.typeCleanerExtractCalls, 1_497)
             XCTAssertLessThan(collector.typeCleanerCacheHits, 759)
             XCTAssertEqual(collector.typeCleanerCacheMisses, 738)
             XCTAssertEqual(collector.typeCleanerSwiftCalls, 738)
@@ -175,7 +175,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
                 "capture_sha256=\(evidence.reference.captureDigest)",
                 "artifact_sha256=\(evidence.reference.artifactDigest)",
                 "reference_mode=\(SwiftCodeMapPipelineBenchmarkSupport.referenceMode)",
-                "artifact_parity=true"
+                "artifact_parity=true",
             ].joined(separator: " "))
             print(SwiftCodeMapPipelineBenchmarkSupport.attributionRecord(
                 collector: collector,
@@ -417,7 +417,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             "const\u{2003}value: Type = item;",
             "const emoji = \"🙂  value;\";",
             "前  const value: Type;",
-            "const value: Type;  後"
+            "const value: Type;  後",
         ]
         let collector = CodeMapPerformanceCollector()
 
@@ -444,9 +444,9 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
             0x22, 0x27, 0x60, 0x2F, 0x5C,
             0x28, 0x29, 0x5B, 0x5D, 0x7B, 0x7D, 0x3C, 0x3E,
-            0x3A, 0x3D, 0x2D, 0x2C, 0x2E, 0x3F, 0x21, 0x26, 0x7C, 0x3B
+            0x3A, 0x3D, 0x2D, 0x2C, 0x2E, 0x3F, 0x21, 0x26, 0x7C, 0x3B,
         ]
-        let caseCount = 2000
+        let caseCount = 2_000
         var state: UInt64 = 0xA5C1_17E5_51A6_0001
         let collector = CodeMapPerformanceCollector()
 
@@ -527,7 +527,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
                     return <section>{props.title}</section>;
                 }
                 """
-            )
+            ),
         ]
 
         for testCase in cases {
@@ -578,7 +578,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             ("braces colons arrows", #"func value(_ text: String = "{  key:  -> }")"#),
             ("non-ASCII identifier", "func café(_ value: Int)"),
             ("nonbreaking space", "func\u{00A0}value()"),
-            ("em space", "func\u{2003}value()")
+            ("em space", "func\u{2003}value()"),
         ]
 
         for testCase in cases {
@@ -598,7 +598,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
         let inputs = [
             "func value() -> Int",
             "func\tvalue(\n_ item: Int)",
-            "func café(\u{2003}_ value: Int)"
+            "func café(\u{2003}_ value: Int)",
         ]
         let collector = CodeMapPerformanceCollector()
         let outputs = inputs.map {
@@ -663,7 +663,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             ("empty type", "value:", nil),
             ("whitespace type", "value: \t\n\u{000B}\u{000C}\r", nil),
             ("angle brackets stay untracked", "value: Result<A = B, C>", "Result<A"),
-            ("nested equal", "value: (A = B)", "(A = B)")
+            ("nested equal", "value: (A = B)", "(A = B)"),
         ]
 
         for testCase in cases {
@@ -682,9 +682,9 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
             0x3A, 0x3D, 0x23, 0x22, 0x5C, 0x2F,
             0x28, 0x29, 0x5B, 0x5D, 0x7B, 0x7D,
-            0x3C, 0x3E, 0x2C, 0x2E, 0x2D, 0x2A
+            0x3C, 0x3E, 0x2C, 0x2E, 0x2D, 0x2A,
         ]
-        let caseCount = 2000
+        let caseCount = 2_000
         var state: UInt64 = 0x5F93_1049_D4C0_0400
         var totalUTF8ByteCount = 0
         let collector = CodeMapPerformanceCollector()
@@ -726,7 +726,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             "value:\u{00A0}Type",
             "value:\u{2003}Type",
             "@Wrapper(label: \"🙂:x\") value: Int",
-            "café(: Int"
+            "café(: Int",
         ]
         let collector = CodeMapPerformanceCollector()
 
@@ -771,7 +771,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             ("composition", "var value: P & Q", .type("P & Q")),
             ("initializer", "var value: Int = 42", .type("Int")),
             ("newline after colon", "var value:\n Int", .type("Int")),
-            ("trailing newlines", "var value: Int\r\n", .type("Int"))
+            ("trailing newlines", "var value: Int\r\n", .type("Int")),
         ]
 
         for (name, declaration, expectedResolution) in directCases {
@@ -791,7 +791,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
         let modifiers = [
             "private(set)", "public", "private", "internal", "fileprivate", "open",
             "class", "static", "final", "lazy", "override", "mutating", "actor", "inout",
-            "required", "convenience", "indirect", "weak", "unowned", "dynamic", "distributed", "isolated"
+            "required", "convenience", "indirect", "weak", "unowned", "dynamic", "distributed", "isolated",
         ]
         for modifier in modifiers {
             let declaration = "\(modifier) var value: Int"
@@ -823,7 +823,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             "var value: Int = \"text\"",
             "var value: Result<String, Error",
             "var value: Int\nlet other: String",
-            "var value): Int"
+            "var value): Int",
         ]
         for declaration in fallbackCases {
             XCTAssertEqual(
@@ -844,13 +844,13 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
             0x3A, 0x3D, 0x23, 0x22, 0x5C, 0x2F, 0x40,
             0x28, 0x29, 0x5B, 0x5D, 0x7B, 0x7D,
-            0x3C, 0x3E, 0x2C, 0x2E, 0x2D, 0x2A, 0x3F, 0x21, 0x26
+            0x3C, 0x3E, 0x2C, 0x2E, 0x2D, 0x2A, 0x3F, 0x21, 0x26,
         ]
         let directTypes = [
             "Int", "String?", "Result<String, Error>", "[String: Int]",
-            "(Int, String)", "(Int) -> Void", "any Sendable", "P & Q"
+            "(Int, String)", "(Int) -> Void", "any Sendable", "P & Q",
         ]
-        let caseCount = 2000
+        let caseCount = 2_000
         var state: UInt64 = 0x6006_5A17_C0DE_0060
         var totalUTF8ByteCount = 0
         let collector = CodeMapPerformanceCollector()
@@ -930,7 +930,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             "var value:\u{2003}Type",
             "@Wrapper(label: \"🙂\") var value: Int",
             "var value: String = \"🙂\"",
-            "var mixed: Result<Café, Error>"
+            "var mixed: Result<Café, Error>",
         ]
         let collector = CodeMapPerformanceCollector()
 
@@ -1005,30 +1005,30 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             ("case-sensitive", ["Widget", "widget", "Widget"]),
             ("complex generics", [
                 "Outer<Inner<Payload>, Result<Value, Failure>>",
-                "Outer<Inner<Payload>, Result<Value, Failure>>"
+                "Outer<Inner<Payload>, Result<Value, Failure>>",
             ]),
             ("functions", [
                 "(Input, @escaping (Nested) -> Output) async throws -> Result<Value, Failure>",
-                "(Input, @escaping (Nested) -> Output) async throws -> Result<Value, Failure>"
+                "(Input, @escaping (Nested) -> Output) async throws -> Result<Value, Failure>",
             ]),
             ("tuples arrays dictionaries", [
                 "(Left, Right)",
                 "[Element]",
                 "[Key: Value]",
-                "(Left, Right)"
+                "(Left, Right)",
             ]),
             ("compositions opaque existential", [
                 "FirstProtocol & SecondProtocol",
                 "some Shape",
                 "any Shape",
-                "FirstProtocol & SecondProtocol"
+                "FirstProtocol & SecondProtocol",
             ]),
             ("unicode", [
                 "Résultat<Élément, Ошибка>",
                 "Résultat<Élément, Ошибка>",
-                "résultat<Élément, Ошибка>"
+                "résultat<Élément, Ошибка>",
             ]),
-            ("prefilter and empty", [nil, "", " \n\t", "Int", "Void", "Array", "Payload", "Payload"])
+            ("prefilter and empty", [nil, "", " \n\t", "Int", "Void", "Array", "Payload", "Payload"]),
         ]
 
         for sequence in sequences {
@@ -1046,7 +1046,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             "some Shape",
             "any Shape",
             "Résultat<Élément>",
-            "Result<Payload, Failure>"
+            "Result<Payload, Failure>",
         ]
         assertSwiftReferencedTypesSequenceMatchesFreshAuthority(ordered, name: "forward order")
         assertSwiftReferencedTypesSequenceMatchesFreshAuthority(Array(ordered.reversed()), name: "reverse order")
@@ -1212,7 +1212,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
         let cases: [(name: String, language: LanguageType, source: String)] = [
             ("swift", .swift, Self.swiftSource(declarationCount: 200)),
             ("typescript", .ts, Self.typeScriptSource(declarationCount: 200)),
-            ("tsx", .tsx, Self.typeScriptXSource(declarationCount: 200))
+            ("tsx", .tsx, Self.typeScriptXSource(declarationCount: 200)),
         ]
 
         for benchmark in cases {
@@ -1249,7 +1249,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
                     content: benchmark.source,
                     language: benchmark.language
                 )
-                samplesMS.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                samplesMS.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
                 XCTAssertEqual(artifact, expectedArtifact)
             }
 
@@ -1286,7 +1286,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
                 "p95_ms=\(Self.formattedMilliseconds(Self.percentile95(samplesMS)))",
                 "max_ms=\(Self.formattedMilliseconds(samplesMS.max() ?? 0))",
                 "captures=\(captures.count)",
-                "repeat_artifact_equality=\(repeatArtifactEquality)"
+                "repeat_artifact_equality=\(repeatArtifactEquality)",
             ]
             record.append(contentsOf: Self.codeMapAttributionFields(collector))
             print(record.joined(separator: " "))
@@ -1297,7 +1297,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
         let cases: [(name: String, language: LanguageType, source: String)] = [
             ("swift", .swift, Self.swiftSource(declarationCount: 200)),
             ("typescript", .ts, Self.typeScriptSource(declarationCount: 200)),
-            ("tsx", .tsx, Self.typeScriptXSource(declarationCount: 200))
+            ("tsx", .tsx, Self.typeScriptXSource(declarationCount: 200)),
         ]
 
         for benchmark in cases {
@@ -1314,7 +1314,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             for _ in 0 ..< 5 {
                 let start = ProcessInfo.processInfo.systemUptime
                 let artifact = try build(source: benchmark.source, language: benchmark.language)
-                samplesMS.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                samplesMS.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
                 XCTAssertEqual(artifact, expectedArtifact)
             }
 
@@ -1356,7 +1356,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
                 "swift_bodies=\(collector.syntaxCaptureCountsByName["swift.function.body", default: 0])",
                 "swift_returns=\(collector.syntaxCaptureCountsByName["swift.function.return_type", default: 0])",
                 "swift_property_types=\(collector.syntaxCaptureCountsByName["swift.property.type", default: 0])",
-                "ts_variables=\(collector.syntaxCaptureCountsByName["variable.global", default: 0])"
+                "ts_variables=\(collector.syntaxCaptureCountsByName["variable.global", default: 0])",
             ]
             record.append(contentsOf: Self.codeMapAttributionFields(collector))
             print(record.joined(separator: " "))
@@ -1483,7 +1483,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             "property_signature",
             "call_signature",
             "construct_signature",
-            "index_signature"
+            "index_signature",
         ]
         let index = CodeMapCaptureIndex(captures)
         let targetCaptures = index.all.filter { targetNames.contains($0.name) }
@@ -1582,7 +1582,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
     }
 
     private static func milliseconds(_ duration: TimeInterval) -> String {
-        String(format: "%.3f", duration * 1000)
+        String(format: "%.3f", duration * 1_000)
     }
 
     private static func formattedMilliseconds(_ milliseconds: Double) -> String {
@@ -1647,7 +1647,7 @@ final class CodeMapQueryOptimizationBenchmarkTests: XCTestCase {
             "artifact_classes=\(collector.artifactFinalClassCount)",
             "artifact_interfaces=\(collector.artifactFinalInterfaceCount)",
             "artifact_functions=\(collector.artifactFinalFunctionCount)",
-            "artifact_globals=\(collector.artifactFinalGlobalVariableCount)"
+            "artifact_globals=\(collector.artifactFinalGlobalVariableCount)",
         ]
     }
 

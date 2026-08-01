@@ -2076,7 +2076,7 @@ struct AgentModeChatDetailView: View {
                     }
                 }
                 #if DEBUG
-                    .onReceive(NotificationCenter.default.publisher(for: AgentChatStressHarness.forceDetachRequestedNotification)) { notification in
+                .onReceive(NotificationCenter.default.publisher(for: AgentChatStressHarness.forceDetachRequestedNotification)) { notification in
                         guard let stressHarness,
                               notification.object as AnyObject === stressHarness else { return }
                         handleStressForceDetach(proxy: proxy)

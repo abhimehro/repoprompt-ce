@@ -771,7 +771,7 @@ enum CodeMapExtractor {
         let tokenBudget = shouldApplyMCPBudget ? mcpTokenBudget : nil
 
         // Precompute selected-folder IDs for all roots lazily (only when needed).
-        var _selectedFolderIDs: Set<UUID>?
+        var _selectedFolderIDs: Set<UUID>? = nil
         @inline(__always)
         func selectedFolderIDs() -> Set<UUID> {
             if let s = _selectedFolderIDs { return s }

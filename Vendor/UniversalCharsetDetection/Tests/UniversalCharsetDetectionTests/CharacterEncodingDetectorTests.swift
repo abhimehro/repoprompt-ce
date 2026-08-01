@@ -26,38 +26,38 @@ import Foundation
 import XCTest
 
 final class CharacterDecodingDetectorTests: XCTestCase {
-    // MARK: - Private Properties
+   // MARK: - Private Properties
 
-    private let characterEncodingDetector = CharacterEncodingDetector()
+   private let characterEncodingDetector = CharacterEncodingDetector()
 
-    // MARK: - Tests
+   // MARK: - Tests
 
-    func testNoData() {
-        let characterEncoding = characterEncodingDetector.finish()
+   func testNoData() {
+      let characterEncoding = characterEncodingDetector.finish()
 
-        XCTAssertNil(characterEncoding)
-    }
+      XCTAssertNil(characterEncoding)
+   }
 
-    func testDetection() {
-        let nonASCIIText = "こんにちは世界！"
-        let shiftJISBytes = nonASCIIText.data(using: .shiftJIS)!
+   func testDetection() {
+      let nonASCIIText = "こんにちは世界！"
+      let shiftJISBytes = nonASCIIText.data(using: .shiftJIS)!
 
-        XCTAssertTrue(characterEncodingDetector.analyzeNextChunk(shiftJISBytes))
-        let characterEncoding = characterEncodingDetector.finish()
+      XCTAssertTrue(characterEncodingDetector.analyzeNextChunk(shiftJISBytes))
+      let characterEncoding = characterEncodingDetector.finish()
 
-        XCTAssertEqual(characterEncoding, "SHIFT_JIS")
-    }
+      XCTAssertEqual(characterEncoding, "SHIFT_JIS")
+   }
 
-    func testReset() {
-        let nonASCIIText = "こんにちは世界！"
-        let shiftJISBytes = nonASCIIText.data(using: .shiftJIS)!
-        let utf8Bytes = nonASCIIText.data(using: .utf8)!
+   func testReset() {
+      let nonASCIIText = "こんにちは世界！"
+      let shiftJISBytes = nonASCIIText.data(using: .shiftJIS)!
+      let utf8Bytes = nonASCIIText.data(using: .utf8)!
 
-        XCTAssertTrue(characterEncodingDetector.analyzeNextChunk(shiftJISBytes))
-        characterEncodingDetector.reset()
-        XCTAssertTrue(characterEncodingDetector.analyzeNextChunk(utf8Bytes))
-        let characterEncoding = characterEncodingDetector.finish()
+      XCTAssertTrue(characterEncodingDetector.analyzeNextChunk(shiftJISBytes))
+      characterEncodingDetector.reset()
+      XCTAssertTrue(characterEncodingDetector.analyzeNextChunk(utf8Bytes))
+      let characterEncoding = characterEncodingDetector.finish()
 
-        XCTAssertEqual(characterEncoding, "UTF-8")
-    }
+      XCTAssertEqual(characterEncoding, "UTF-8")
+   }
 }

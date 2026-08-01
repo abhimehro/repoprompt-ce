@@ -661,9 +661,9 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
             ),
             sourceReaderOverride: WorkspaceCodemapValidatedSourceReaderClient {
                 identity,
-                    expected,
-                    maximumBytes,
-                    ownerID in
+                expected,
+                maximumBytes,
+                ownerID in
                 await gate.enter()
                 return try await fileSystem.loadValidatedRawContent(
                     ofRelativePath: identity.standardizedRelativePath,

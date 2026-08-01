@@ -1,6 +1,6 @@
 # Open-Source and Release Readiness Notes
 
-Current as of 2026-07-30. This is a contributor/maintainer inventory for RepoPrompt CE's public-readiness work. It documents the current state and follow-ups; it is not legal advice or a substitute for legal review.
+Current as of 2026-06-01. This is a contributor/maintainer inventory for RepoPrompt CE's public-readiness work. It documents the current state and follow-ups; it is not legal advice or a substitute for legal review.
 
 ## Release metadata and signing
 
@@ -8,8 +8,8 @@ Release/debug packaging currently derives app identity from [`version.env`](../v
 
 - `APP_NAME=RepoPrompt`
 - `DISPLAY_NAME="RepoPrompt CE"`
-- `MARKETING_VERSION=1.1.1`
-- `BUILD_NUMBER=32`
+- `MARKETING_VERSION=1.0.0`
+- `BUILD_NUMBER=1`
 - `BUNDLE_ID=com.pvncher.repoprompt.ce`
 - `SIGNING_TEAM_ID=648A27MST5`
 
@@ -46,12 +46,12 @@ public GitHub Release assets in that repository rather than Pages.
 
 The root [`Package.swift`](../Package.swift) uses exact versions or fixed revisions. The CE fork dependencies previously expressed as branch references are now pinned to the resolved revisions:
 
-| Dependency                                            | Current manifest form | Current `Package.resolved` state           | Readiness note                                          |
-| ----------------------------------------------------- | --------------------- | ------------------------------------------ | ------------------------------------------------------- |
-| `https://github.com/repoprompt/swift-sdk.git`         | `revision`            | `85dec2fc7a27252bc33dc7728be6af6b3bd398c0` | Pinned.                                                 |
-| `https://github.com/repoprompt/swift-tree-sitter.git` | `revision`            | `a778ef4fb7f0d3ad00185f42ce83c688373c4361` | Customized wrapper fork pinned to one remote authority. |
-| `https://github.com/jamesrochabrun/SwiftAnthropic`    | `revision`            | `b7d030cd7453f314c780f5492385f73d704cbd5d` | Pinned.                                                 |
-| `https://github.com/repoprompt/SwiftOpenAI`           | `revision`            | `1211782eb337e7968124448a20d9260df1952012` | Pinned.                                                 |
+| Dependency | Current manifest form | Current `Package.resolved` state | Readiness note |
+| --- | --- | --- | --- |
+| `https://github.com/repoprompt/swift-sdk.git` | `revision` | `85dec2fc7a27252bc33dc7728be6af6b3bd398c0` | Pinned. |
+| `https://github.com/repoprompt/swift-tree-sitter.git` | `revision` | `a778ef4fb7f0d3ad00185f42ce83c688373c4361` | Customized wrapper fork pinned to one remote authority. |
+| `https://github.com/jamesrochabrun/SwiftAnthropic` | `revision` | `b7d030cd7453f314c780f5492385f73d704cbd5d` | Pinned. |
+| `https://github.com/repoprompt/SwiftOpenAI` | `revision` | `1211782eb337e7968124448a20d9260df1952012` | Pinned. |
 
 Released, buildable Tree-sitter grammar packages use source-preserving exact semantic-version requirements, while committed `Package.resolved` revisions continue to define the precise resolved snapshots and CodeMap cache identity. The customized `SwiftTreeSitter` wrapper is pinned directly to the RepoPrompt fork revision `a778ef4fb7f0d3ad00185f42ce83c688373c4361`. The curated [`ThirdPartyLicenses/tree-sitter/`](../ThirdPartyLicenses/tree-sitter/) bundle maps that wrapper revision, the grammar requirements and revisions, its resolved Tree-sitter 0.25.10 runtime, and the runtime's ICU subset notice. `Package.resolved` should stay committed so local and CI resolutions match unless maintainers intentionally update dependency versions.
 
@@ -63,15 +63,15 @@ The in-repo provider package at [`Packages/RepoPromptAgentProviders`](../Package
 
 Contributor-visible license expectations before public distribution:
 
-| Component                                                                                 | Location                                                                                                     | Current notice source                                                                                                                                                                                                                                          | Follow-up                                                                                                                                                                            |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Sparkle                                                                                   | `Vendor/Sparkle/Sparkle.xcframework`                                                                         | Sparkle 2.9.2 license, release asset provenance, downloaded-archive SHA-256, and a closed-world typed manifest for the installed framework and trusted tools are copied under `Vendor/Sparkle`; the license is also copied under `ThirdPartyLicenses/sparkle`. | Included in packaged legal files.                                                                                                                                                    |
-| UniversalCharsetDetection / uchardet                                                      | `Vendor/UniversalCharsetDetection`                                                                           | License and author notices are copied under `ThirdPartyLicenses/universal-charset-detection`.                                                                                                                                                                  | Included in packaged legal files.                                                                                                                                                    |
-| PCRE2                                                                                     | `Sources/CSwiftPCRE2/src`                                                                                    | License header is copied to `ThirdPartyLicenses/pcre2/LICENSE.txt`.                                                                                                                                                                                            | Included in packaged legal files.                                                                                                                                                    |
-| SLJIT                                                                                     | `Sources/CSwiftPCRE2/deps/sljit`                                                                             | License is copied to `ThirdPartyLicenses/sljit/LICENSE`.                                                                                                                                                                                                       | Included in packaged legal files.                                                                                                                                                    |
-| wildmatch / OpenBSD-derived fnmatch material                                              | `Sources/RepoPromptC/src/wildmatch/wildmatch.c`, `Sources/RepoPromptC/include/wildmatch.h`                   | Both checked-in files contain BSD-style notice blocks; `wildmatch.h` includes its existing advertising acknowledgement condition.                                                                                                                              | Source headers remain preserved. Their full checked-in notice text is reproduced in root `THIRD_PARTY_NOTICES.md` and bundled under `Contents/Resources/Legal` during app packaging. |
-| Tree-sitter grammar packages, `SwiftTreeSitter`, resolved runtime, and runtime ICU subset | `Package.swift`, `Package.resolved`, [`ThirdPartyLicenses/tree-sitter/`](../ThirdPartyLicenses/tree-sitter/) | The curated Tree-sitter README maps the fixed wrapper revision and exact grammar/runtime pins to full copied license files, including the runtime's ICU subset notice.                                                                                         | Included under `Contents/Resources/Legal/ThirdPartyLicenses/tree-sitter/` during app packaging.                                                                                      |
-| Resolved SwiftPM dependency graph                                                         | `Package.resolved`, [`ThirdPartyLicenses/swiftpm/`](../ThirdPartyLicenses/swiftpm/)                          | The machine-checkable inventory maps every remote resolved package to copied upstream license and notice files or to the separately curated Tree-sitter bundle. Checksums protect every copied file.                                                           | Included under `Contents/Resources/Legal/ThirdPartyLicenses/swiftpm/` during app packaging.                                                                                          |
+| Component | Location | Current notice source | Follow-up |
+| --- | --- | --- | --- |
+| Sparkle | `Vendor/Sparkle/Sparkle.xcframework` | Sparkle 2.9.2 license, release asset provenance, downloaded-archive SHA-256, and a closed-world typed manifest for the installed framework and trusted tools are copied under `Vendor/Sparkle`; the license is also copied under `ThirdPartyLicenses/sparkle`. | Included in packaged legal files. |
+| UniversalCharsetDetection / uchardet | `Vendor/UniversalCharsetDetection` | License and author notices are copied under `ThirdPartyLicenses/universal-charset-detection`. | Included in packaged legal files. |
+| PCRE2 | `Sources/CSwiftPCRE2/src` | License header is copied to `ThirdPartyLicenses/pcre2/LICENSE.txt`. | Included in packaged legal files. |
+| SLJIT | `Sources/CSwiftPCRE2/deps/sljit` | License is copied to `ThirdPartyLicenses/sljit/LICENSE`. | Included in packaged legal files. |
+| wildmatch / OpenBSD-derived fnmatch material | `Sources/RepoPromptC/src/wildmatch/wildmatch.c`, `Sources/RepoPromptC/include/wildmatch.h` | Both checked-in files contain BSD-style notice blocks; `wildmatch.h` includes its existing advertising acknowledgement condition. | Source headers remain preserved. Their full checked-in notice text is reproduced in root `THIRD_PARTY_NOTICES.md` and bundled under `Contents/Resources/Legal` during app packaging. |
+| Tree-sitter grammar packages, `SwiftTreeSitter`, resolved runtime, and runtime ICU subset | `Package.swift`, `Package.resolved`, [`ThirdPartyLicenses/tree-sitter/`](../ThirdPartyLicenses/tree-sitter/) | The curated Tree-sitter README maps the fixed wrapper revision and exact grammar/runtime pins to full copied license files, including the runtime's ICU subset notice. | Included under `Contents/Resources/Legal/ThirdPartyLicenses/tree-sitter/` during app packaging. |
+| Resolved SwiftPM dependency graph | `Package.resolved`, [`ThirdPartyLicenses/swiftpm/`](../ThirdPartyLicenses/swiftpm/) | The machine-checkable inventory maps every remote resolved package to copied upstream license and notice files or to the separately curated Tree-sitter bundle. Checksums protect every copied file. | Included under `Contents/Resources/Legal/ThirdPartyLicenses/swiftpm/` during app packaging. |
 
 The root [`LICENSE`](../LICENSE) provides the Apache License, Version 2.0 for
 original RepoPrompt CE code. The root

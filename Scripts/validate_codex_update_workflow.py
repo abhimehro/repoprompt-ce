@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKFLOW = ROOT / ".github" / "workflows" / "codex-update-candidate.yml"
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
@@ -66,23 +67,15 @@ def mapping_at(lines: Sequence[str], indent: int) -> dict[str, tuple[str, int]]:
     result: dict[str, tuple[str, int]] = {}
     prefix = " " * indent
     for index, line in enumerate(lines):
-        if (
-            not line.strip()
-            or line.lstrip().startswith("#")
-            or indentation(line) != indent
-        ):
+        if not line.strip() or line.lstrip().startswith("#") or indentation(line) != indent:
             continue
         raw = line[len(prefix) :]
         match = MAPPING_PATTERN.fullmatch(raw)
         if match is None:
-            raise WorkflowContractError(
-                f"expected a mapping at line {index + 1}: {line!r}"
-            )
+            raise WorkflowContractError(f"expected a mapping at line {index + 1}: {line!r}")
         key, value = match.group(1), match.group(2) or ""
         if key in result:
-            raise WorkflowContractError(
-                f"duplicate workflow key at indentation {indent}: {key}"
-            )
+            raise WorkflowContractError(f"duplicate workflow key at indentation {indent}: {key}")
         result[key] = value, index
     return result
 
@@ -148,9 +141,7 @@ def validate_workflow(path: Path = DEFAULT_WORKFLOW) -> None:
 
     root = mapping_at(lines, 0)
     if set(root) != {"name", "on", "permissions", "jobs"}:
-        raise WorkflowContractError(
-            f"unexpected root workflow keys: {sorted(set(root))}"
-        )
+        raise WorkflowContractError(f"unexpected root workflow keys: {sorted(set(root))}")
 
     triggers = mapping_at(block_for(lines, "on", 0)[1:], 2)
     if set(triggers) != {"workflow_dispatch"}:
@@ -159,9 +150,7 @@ def validate_workflow(path: Path = DEFAULT_WORKFLOW) -> None:
         )
 
     permissions = mapping_at(block_for(lines, "permissions", 0)[1:], 2)
-    permission_values = {
-        key: scalar(value) for key, (value, _index) in permissions.items()
-    }
+    permission_values = {key: scalar(value) for key, (value, _index) in permissions.items()}
     if permission_values != {"contents": "read"}:
         raise WorkflowContractError(
             f"Codex candidate workflow permissions must be exactly contents: read; found {permission_values}"
@@ -170,15 +159,11 @@ def validate_workflow(path: Path = DEFAULT_WORKFLOW) -> None:
     jobs_block = block_for(lines, "jobs", 0)
     jobs = mapping_at(jobs_block[1:], 2)
     if set(jobs) != {"evidence"}:
-        raise WorkflowContractError(
-            f"workflow must contain only the evidence job; found {sorted(jobs)}"
-        )
+        raise WorkflowContractError(f"workflow must contain only the evidence job; found {sorted(jobs)}")
     evidence = block_for(jobs_block[1:], "evidence", 2)
     evidence_mapping = mapping_at(evidence[1:], 4)
     if set(evidence_mapping) != {"name", "if", "runs-on", "steps"}:
-        raise WorkflowContractError(
-            f"unexpected evidence job keys: {sorted(evidence_mapping)}"
-        )
+        raise WorkflowContractError(f"unexpected evidence job keys: {sorted(evidence_mapping)}")
     if scalar(evidence_mapping["if"][0]) != "github.ref == 'refs/heads/main'":
         raise WorkflowContractError("evidence job must be gated to refs/heads/main")
     if scalar(evidence_mapping["runs-on"][0]) != "macos-26":
@@ -186,9 +171,7 @@ def validate_workflow(path: Path = DEFAULT_WORKFLOW) -> None:
 
     steps = step_blocks(block_for(evidence[1:], "steps", 4)[1:])
     if tuple(name for name, _block in steps) != EXPECTED_STEP_NAMES:
-        raise WorkflowContractError(
-            f"unexpected workflow steps: {[name for name, _block in steps]}"
-        )
+        raise WorkflowContractError(f"unexpected workflow steps: {[name for name, _block in steps]}")
     by_name = {name: block for name, block in steps}
 
     checkout = by_name[EXPECTED_STEP_NAMES[0]]
@@ -220,9 +203,7 @@ def validate_workflow(path: Path = DEFAULT_WORKFLOW) -> None:
         "path": ".build/codex-update-candidate/evidence",
         "if-no-files-found": "error",
     }:
-        raise WorkflowContractError(
-            f"upload evidence contract drifted: {upload_values}"
-        )
+        raise WorkflowContractError(f"upload evidence contract drifted: {upload_values}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -234,9 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except WorkflowContractError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    print(
-        f"OK: Codex update workflow is manual, main-only, read-only, and artifact-only: {args.workflow}"
-    )
+    print(f"OK: Codex update workflow is manual, main-only, read-only, and artifact-only: {args.workflow}")
     return 0
 
 

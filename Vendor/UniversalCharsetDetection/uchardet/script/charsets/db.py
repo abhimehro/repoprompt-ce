@@ -39,12 +39,11 @@
 # ##### END LICENSE BLOCK #####
 
 import importlib
-import os
 import sys
-
+import os
 
 def load(charset_names):
-    """
+    '''
     Load a list of charsets.
 
     This function will return a dictionary of charsets from our
@@ -53,22 +52,20 @@ def load(charset_names):
     :param charset_names: a list of supported charset names.
     :return: a dictionary with all the loaded charsets.
     :rtype: dict
-    """
+    '''
     charsets = {}
 
     # Temporarily change the search path for modules.
     sys_path_backup = sys.path
     current_dir = os.path.dirname(os.path.realpath(__file__))
-    sys.path = [current_dir + "/../charsets"]
+    sys.path = [current_dir + '/../charsets']
 
     for name in charset_names:
         try:
             charset = importlib.import_module(name.lower())
         except ImportError:
-            print(
-                'Unknown charset "{}": '
-                'file "charsets/{}.py" does not exist.'.format(name, name.lower())
-            )
+            print('Unknown charset "{}": '
+                  'file "charsets/{}.py" does not exist.'.format(name, name.lower()))
             exit(1)
         charsets[charset.name] = charset
     # Set back the default module paths.

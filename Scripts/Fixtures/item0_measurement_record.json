@@ -53,7 +53,9 @@
     "valid_private_key_backed_identity_count": 1,
     "certificate_without_private_key_count": 0,
     "duplicate_certificate_count": 0,
-    "sha1_fingerprints": ["29755530491CF1B92EE6D3DED3E57AB641A25B39"],
+    "sha1_fingerprints": [
+      "29755530491CF1B92EE6D3DED3E57AB641A25B39"
+    ],
     "sha256_fingerprints": [],
     "expiration_details": "not recorded in the preserved measurement"
   }

@@ -39,7 +39,7 @@ import MCP
                 // Optional diagnostic-only session snapshot collection. Lets scripted
                 // multi-window validation populate `latest_session_snapshots` without
                 // forcing focus cycling through every Agent tab. No UI sync runs.
-                var snapshotSummary: [String: Any]?
+                var snapshotSummary: [String: Any]? = nil
                 if debugBool(arguments, "snapshot_sessions") == true {
                     guard let parsedTabIDs = debugUUIDSet(arguments, "tab_ids", op: op) else {
                         return debugDiagnosticsError(op: op, code: "invalid_params", message: "`tab_ids` must be an array of UUID strings.")

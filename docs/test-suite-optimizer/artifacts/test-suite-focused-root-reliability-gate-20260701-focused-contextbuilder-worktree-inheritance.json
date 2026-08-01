@@ -191,7 +191,9 @@
       "execution_seconds": 121.78777885437012,
       "exit_code": 0,
       "index": 7,
-      "invalid_reasons": ["measurement source changed during execution"],
+      "invalid_reasons": [
+        "measurement source changed during execution"
+      ],
       "log_path": "/Users/pvncher/Library/Application Support/RepoPrompt CE/Conductor/6eb29133d54d75306f7c1d83cf6ce787643dd42843b1af4ff800cdd8d9846ccb/jobs/3a58fb84-8f68-4b44-87cb-ffb599e2779d.log",
       "measurement_invalid": false,
       "parsed_test_case_timings": 5,
@@ -655,8 +657,11 @@
     "noise_classification": "unstable",
     "observed_p95_seconds": 318.65827083587646,
     "raw_execution_seconds": [
-      211.00679802894592, 149.90047216415405, 172.95901203155518,
-      318.65827083587646, 266.69174098968506
+      211.00679802894592,
+      149.90047216415405,
+      172.95901203155518,
+      318.65827083587646,
+      266.69174098968506
     ],
     "relative_mad": 0.26390117987146683,
     "valid_samples": 5
