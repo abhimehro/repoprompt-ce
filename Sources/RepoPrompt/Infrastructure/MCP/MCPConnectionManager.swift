@@ -13427,17 +13427,15 @@ actor ServerNetworkManager {
         if let registration {
             do {
                 let handle = try await runtime.routingCoordinator.resolveReadContext(connection: registration)
-                workspaceID = handle.context.workspaceID
-                workspaceRevision = handle.workspaceRevision
-                if let workspace = await runtime.contextStore.workspaceSnapshot(handle.context.workspaceID) {
-                    authorizedCanonicalRoots = Set(workspace.document.metadata.repoPaths.compactMap {
-                        DomainMutationPathFence.canonicalPath($0)
-                    })
-                } else {
-                    // Re-instate throwing so tests expect contextUnavailable
+                guard let workspace = await runtime.contextStore.workspaceSnapshot(handle.context.workspaceID) else {
                     hasAuthoritativeRoutingContext = false
                     throw DomainReadContextResolutionError.contextUnavailable
                 }
+                workspaceID = handle.context.workspaceID
+                workspaceRevision = handle.workspaceRevision
+                authorizedCanonicalRoots = Set(workspace.document.metadata.repoPaths.compactMap {
+                    DomainMutationPathFence.canonicalPath($0)
+                })
             } catch {
                 // Registration is authoritative only together with a resolved domain context.
                 // Never normalize stale, unbound, or unavailable routing into an empty root set.
