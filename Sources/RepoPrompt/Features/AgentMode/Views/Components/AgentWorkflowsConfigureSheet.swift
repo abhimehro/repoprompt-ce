@@ -61,6 +61,8 @@ struct AgentWorkflowsConfigureSheet: View {
                     .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
+            .hoverTooltip("Close", .top)
+            .accessibilityLabel("Close")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

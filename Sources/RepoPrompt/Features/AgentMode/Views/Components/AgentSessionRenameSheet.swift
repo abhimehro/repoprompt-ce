@@ -46,6 +46,8 @@ struct AgentSessionRenameSheet: View {
                     }
                     .buttonStyle(.plain)
                     .onHover { isClearHovered = $0 }
+                    .hoverTooltip("Clear text", .top)
+                    .accessibilityLabel("Clear text")
                 }
             }
             .padding(.horizontal, 12)
