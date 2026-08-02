@@ -280,7 +280,16 @@ public enum MCPTerminalRecordStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(record).write(to: fileURL, options: .atomic)
+        let recordData = try encoder.encode(record)
+        let tempURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".tmp")
+        guard fileManager.createFile(atPath: tempURL.path, contents: recordData, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        if fileManager.fileExists(atPath: fileURL.path) {
+            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+        } else {
+            try fileManager.moveItem(at: tempURL, to: fileURL)
+        }
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         // Retention is best-effort: never discard the terminal event we just
         // captured merely because an older diagnostic could not be removed.
