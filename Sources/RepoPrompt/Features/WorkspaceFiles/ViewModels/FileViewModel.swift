@@ -500,7 +500,6 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
     }
 
     // ─────────────────────────────────────────────────────────────
-
     // MARK: - DEBUG aid: fallback-return telemetry (lightweight)
 
     // ─────────────────────────────────────────────────────────────
@@ -1085,7 +1084,7 @@ class FileViewModel: ObservableObject, Identifiable, FileSystemItemViewModel, Eq
         let end = utf8.endIndex
 
         var lineEndsFound = 0
-        var cutUTF8Index: String.UTF8View.Index?
+        var cutUTF8Index: String.UTF8View.Index? = nil
         var truncatedByBytes = false
 
         var lfCount = 0

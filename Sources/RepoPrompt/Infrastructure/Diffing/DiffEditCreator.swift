@@ -13,7 +13,7 @@ struct DiffEdit {
     let lines: [String]
 }
 
-enum DiffEditCreator {
+class DiffEditCreator {
     static func myersDiff(
         oldLines: [String],
         newLines: [String],

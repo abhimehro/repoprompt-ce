@@ -1120,7 +1120,7 @@ extension FileSystemService {
                     _ = fs.fileExists(atPath: url.path, isDirectory: &isDirFlag)
 
                     let isSym = (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false
-                    if skipSymlinks, isSym {
+                    if skipSymlinks && isSym {
                         continue
                     }
 

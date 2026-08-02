@@ -42,24 +42,18 @@ import re
 
 ## Mandatory Properties ##
 
-name = "Croatian"
-code = "hr"
+name = 'Croatian'
+code = 'hr'
 use_ascii = True
-charsets = [
-    "ISO-8859-2",
-    "ISO-8859-13",
-    "ISO-8859-16",
-    "Windows-1250",
-    "IBM852",
-    "MAC-CENTRALEUROPE",
-]
+charsets = ['ISO-8859-2', 'ISO-8859-13', 'ISO-8859-16',
+            'Windows-1250', 'IBM852', 'MAC-CENTRALEUROPE']
 
 ## Optional Properties ##
 
 # Alphabet characters.
-alphabet = "čćđšž"
+alphabet = 'čćđšž'
 # The starred page which was rewarded on the main page when I created
 # the data.
-start_pages = ["Fizika čvrstog stanja"]
+start_pages = ['Fizika čvrstog stanja']
 wikipedia_code = code
 case_mapping = True

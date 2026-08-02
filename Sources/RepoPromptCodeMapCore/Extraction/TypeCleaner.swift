@@ -632,7 +632,7 @@ enum TypeCleaner {
 
         // NEW: If we have an unclosed '<', truncate at the outermost unmatched '<'
         var depth = 0
-        var outermostUnclosedAtDepth0: String.Index?
+        var outermostUnclosedAtDepth0: String.Index? = nil
 
         var i = cleaned.startIndex
         while i < cleaned.endIndex {

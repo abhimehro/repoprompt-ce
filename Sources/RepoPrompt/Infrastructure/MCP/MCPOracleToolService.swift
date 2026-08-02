@@ -295,7 +295,7 @@ struct MCPOracleToolService {
         }
         let metadata = await captureRequestMetadata()
         let resolvedContext = try resolveTabContextSnapshot(metadata)
-        var tabContext: OracleViewModel.OracleSendTabContext?
+        var tabContext: OracleViewModel.OracleSendTabContext? = nil
 
         if !resolvedContext.usesActiveTabCompatibility {
             if runPurpose != .agentModeRun,

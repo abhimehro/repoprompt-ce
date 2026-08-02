@@ -1018,7 +1018,7 @@ enum DiffParserUtils {
             let lineContent = nsContent.substring(with: match.range(at: 5))
 
             var indentLevel = (Int(indentLevelStr) ?? 0)
-            if indentLevel != 0, indentTypeChar != "s" {
+            if indentLevel != 0 && indentTypeChar != "s" {
                 indentLevel /= 4
             }
 

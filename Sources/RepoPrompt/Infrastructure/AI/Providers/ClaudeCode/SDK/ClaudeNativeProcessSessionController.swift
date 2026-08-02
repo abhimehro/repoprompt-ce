@@ -1491,7 +1491,7 @@ final actor ClaudeNativeProcessSessionController {
     /// Returns `nil` if the payload is not a `system/init` event.
     private static func parseSystemInitFields(from payload: [String: Any]) -> (tools: [String], mcpStatuses: [String: String])? {
         guard (payload["type"] as? String) == "system",
-              (payload["subtype"] as? String)?.lowercased() == "init"
+              ((payload["subtype"] as? String)?.lowercased() == "init")
         else {
             return nil
         }

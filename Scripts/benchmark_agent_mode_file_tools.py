@@ -4,15 +4,18 @@
 Requires an already-running RepoPrompt CE DEBUG app. This script never launches,
 stops, or relaunches the app.
 """
-
 from __future__ import annotations
 
 import argparse
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import hashlib
 import html
 import json
 import math
 import os
+from pathlib import Path
 import re
 import shutil
 import signal
@@ -21,10 +24,6 @@ import sys
 import tempfile
 import threading
 import uuid
-from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
@@ -32,14 +31,7 @@ DEBUG_TOOL = "__repoprompt_debug_diagnostics"
 RECEIVED = "MCP.ToolCall.Received"
 MAIN_ACTOR_EXITED = "MCP.ToolCall.MainActorExited"
 RELEVANT_TOOLS = {"file_search", "read_file"}
-TERMINAL_STATUSES = {
-    "completed",
-    "failed",
-    "cancelled",
-    "canceled",
-    "stopped",
-    "expired",
-}
+TERMINAL_STATUSES = {"completed", "failed", "cancelled", "canceled", "stopped", "expired"}
 
 
 class BenchmarkError(RuntimeError):
@@ -95,9 +87,7 @@ def walk_json(value: Any) -> Iterable[Any]:
             pass
 
 
-def find_object(
-    value: Any, required_key: str, expected_op: str | None = None
-) -> dict[str, Any]:
+def find_object(value: Any, required_key: str, expected_op: str | None = None) -> dict[str, Any]:
     for candidate in walk_json(value):
         if not isinstance(candidate, dict) or required_key not in candidate:
             continue
@@ -179,62 +169,40 @@ def build_samples(capture: dict[str, Any]) -> list[dict[str, Any]]:
         if tool not in RELEVANT_TOOLS:
             continue
         exits = [
-            event
-            for event in ordered
+            event for event in ordered
             if event.get("event_name") == MAIN_ACTOR_EXITED
-            and parse_dimensions(str(event.get("sanitized_dimensions", ""))).get(
-                "observerType"
-            )
-            == "event_completion"
+            and parse_dimensions(str(event.get("sanitized_dimensions", ""))).get("observerType") == "event_completion"
         ]
         if len(exits) != 1:
-            raise BenchmarkError(
-                f"{tool} timeline {join_key} requires exactly one event_completion MainActorExited"
-            )
+            raise BenchmarkError(f"{tool} timeline {join_key} requires exactly one event_completion MainActorExited")
         last = exits[0]
         start = float(first["offset_ms"])
         end = float(last["offset_ms"])
         envelope = [
-            event
-            for event in ordered
-            if int(first.get("ordinal", 0))
-            <= int(event.get("ordinal", 0))
-            <= int(last.get("ordinal", 0))
+            event for event in ordered
+            if int(first.get("ordinal", 0)) <= int(event.get("ordinal", 0)) <= int(last.get("ordinal", 0))
         ]
         previous = start
         stages = []
         for event in envelope:
             offset = float(event["offset_ms"])
-            stages.append(
-                {
-                    "event": event.get("event_name"),
-                    "from_received_ms": round(offset - start, 3),
-                    "delta_ms": round(offset - previous, 3),
-                    "dimensions": parse_dimensions(
-                        str(event.get("sanitized_dimensions", ""))
-                    ),
-                }
-            )
+            stages.append({
+                "event": event.get("event_name"),
+                "from_received_ms": round(offset - start, 3),
+                "delta_ms": round(offset - previous, 3),
+                "dimensions": parse_dimensions(str(event.get("sanitized_dimensions", ""))),
+            })
             previous = offset
-        identity = (
-            first.get("request_identity")
-            if isinstance(first.get("request_identity"), dict)
-            else {}
-        )
-        completion_dimensions = parse_dimensions(
-            str(last.get("sanitized_dimensions", ""))
-        )
+        identity = first.get("request_identity") if isinstance(first.get("request_identity"), dict) else {}
+        completion_dimensions = parse_dimensions(str(last.get("sanitized_dimensions", "")))
         run_id = completion_dimensions.get("runID")
         if not isinstance(run_id, str) or not run_id:
-            raise BenchmarkError(
-                f"{tool} timeline {join_key} event_completion omitted runID"
-            )
+            raise BenchmarkError(f"{tool} timeline {join_key} event_completion omitted runID")
         worktree_projection: bool | None = None
         search_match_count: int | None = None
         if tool == "file_search":
             projection_events = [
-                stage
-                for stage in stages
+                stage for stage in stages
                 if stage.get("event") == "Search.ProviderDTOReady"
                 and isinstance(stage.get("dimensions"), dict)
                 and stage["dimensions"].get("outcome") in {"completed", "capped"}
@@ -243,44 +211,32 @@ def build_samples(capture: dict[str, Any]) -> list[dict[str, Any]]:
                 stage["dimensions"].get("usesWorktreeProjection")
                 for stage in projection_events
             }
-            if len(projections) != 1 or not all(
-                isinstance(value, bool) for value in projections
-            ):
+            if len(projections) != 1 or not all(isinstance(value, bool) for value in projections):
                 raise BenchmarkError(
                     f"{tool} timeline {join_key} requires one successful usesWorktreeProjection value"
                 )
             worktree_projection = projections.pop()
-            match_counts = {
-                stage["dimensions"].get("matchCount") for stage in projection_events
-            }
-            if len(match_counts) != 1 or not all(
-                isinstance(value, int) for value in match_counts
-            ):
-                raise BenchmarkError(
-                    f"{tool} timeline {join_key} requires one successful matchCount value"
-                )
+            match_counts = {stage["dimensions"].get("matchCount") for stage in projection_events}
+            if len(match_counts) != 1 or not all(isinstance(value, int) for value in match_counts):
+                raise BenchmarkError(f"{tool} timeline {join_key} requires one successful matchCount value")
             search_match_count = match_counts.pop()
-        samples.append(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "join_key": join_key,
-                "route": None,
-                "tool": tool,
-                "connection_id": identity.get("connection_id"),
-                "run_id": run_id,
-                "uses_worktree_projection": worktree_projection,
-                "search_match_count": search_match_count,
-                "request_identity": identity,
-                "received_offset_ms": start,
-                "main_actor_exited_offset_ms": end,
-                "envelope_ms": round(end - start, 3),
-                "stages": stages,
-                "event_names": [event.get("event_name") for event in envelope],
-            }
-        )
-    return sorted(
-        samples, key=lambda item: (item["received_offset_ms"], item["join_key"])
-    )
+        samples.append({
+            "schema_version": SCHEMA_VERSION,
+            "join_key": join_key,
+            "route": None,
+            "tool": tool,
+            "connection_id": identity.get("connection_id"),
+            "run_id": run_id,
+            "uses_worktree_projection": worktree_projection,
+            "search_match_count": search_match_count,
+            "request_identity": identity,
+            "received_offset_ms": start,
+            "main_actor_exited_offset_ms": end,
+            "envelope_ms": round(end - start, 3),
+            "stages": stages,
+            "event_names": [event.get("event_name") for event in envelope],
+        })
+    return sorted(samples, key=lambda item: (item["received_offset_ms"], item["join_key"]))
 
 
 def classify_routes(
@@ -296,9 +252,7 @@ def classify_routes(
             raise BenchmarkError("sample omitted connection_id")
         grouped[str(connection)].append(sample)
     if len(grouped) != 2:
-        raise BenchmarkError(
-            f"expected two file-tool connections, found {len(grouped)}"
-        )
+        raise BenchmarkError(f"expected two file-tool connections, found {len(grouped)}")
     expected = {
         "local": ["file_search"] * search_count + ["read_file"] * read_count,
         "worktree": ["read_file"] * read_count + ["file_search"] * search_count,
@@ -307,28 +261,15 @@ def classify_routes(
     for connection, group in grouped.items():
         run_ids = {str(sample.get("run_id") or "") for sample in group}
         if len(run_ids) != 1:
-            raise BenchmarkError(
-                f"connection {connection} spans multiple agent runs: {sorted(run_ids)}"
-            )
+            raise BenchmarkError(f"connection {connection} spans multiple agent runs: {sorted(run_ids)}")
         run_id = run_ids.pop()
-        matches = [
-            route
-            for route, expected_run_id in expected_run_ids.items()
-            if run_id == expected_run_id
-        ]
+        matches = [route for route, expected_run_id in expected_run_ids.items() if run_id == expected_run_id]
         if len(matches) != 1:
-            raise BenchmarkError(
-                f"connection {connection} belongs to unexpected agent run {run_id!r}"
-            )
+            raise BenchmarkError(f"connection {connection} belongs to unexpected agent run {run_id!r}")
         route = matches[0]
-        signature = [
-            sample["tool"]
-            for sample in sorted(group, key=lambda item: item["received_offset_ms"])
-        ]
+        signature = [sample["tool"] for sample in sorted(group, key=lambda item: item["received_offset_ms"])]
         if signature != expected[route]:
-            raise BenchmarkError(
-                f"{route} connection {connection} has unexpected signature {signature}"
-            )
+            raise BenchmarkError(f"{route} connection {connection} has unexpected signature {signature}")
         routes[connection] = route
     if set(routes.values()) != {"local", "worktree"}:
         raise BenchmarkError("route signatures were not unique")
@@ -345,9 +286,7 @@ def sequential_call_failures(samples: list[dict[str, Any]]) -> list[str]:
     for connection, group in grouped.items():
         ordered = sorted(group, key=lambda item: float(item["received_offset_ms"]))
         for previous, current in zip(ordered, ordered[1:]):
-            if float(current["received_offset_ms"]) < float(
-                previous["main_actor_exited_offset_ms"]
-            ):
+            if float(current["received_offset_ms"]) < float(previous["main_actor_exited_offset_ms"]):
                 failures.append(
                     f"connection {connection} overlapped {previous['join_key']} and {current['join_key']}"
                 )
@@ -373,9 +312,7 @@ def search_projection_failures(samples: list[dict[str, Any]]) -> list[str]:
 
 
 def transcript_tool_calls(transcript_xml: str) -> list[tuple[str, dict[str, Any]]]:
-    pattern = re.compile(
-        r'<tool_call name="([^"]+)"(?:>(.*?)</tool_call>|/>)', re.DOTALL
-    )
+    pattern = re.compile(r'<tool_call name="([^"]+)"(?:>(.*?)</tool_call>|/>)', re.DOTALL)
     calls: list[tuple[str, dict[str, Any]]] = []
     for match in pattern.finditer(transcript_xml):
         name = match.group(1).split("__")[-1]
@@ -386,23 +323,15 @@ def transcript_tool_calls(transcript_xml: str) -> list[tuple[str, dict[str, Any]
         try:
             value = json.loads(html.unescape(raw))
         except json.JSONDecodeError as error:
-            raise BenchmarkError(
-                f"invalid {name} transcript arguments: {error}"
-            ) from error
+            raise BenchmarkError(f"invalid {name} transcript arguments: {error}") from error
         if not isinstance(value, dict):
-            raise BenchmarkError(
-                f"invalid {name} transcript arguments: expected object"
-            )
+            raise BenchmarkError(f"invalid {name} transcript arguments: expected object")
         calls.append((name, value))
     return calls
 
 
 def tool_calls_from_transcript(transcript_xml: str, tool: str) -> list[dict[str, Any]]:
-    return [
-        arguments
-        for name, arguments in transcript_tool_calls(transcript_xml)
-        if name == tool
-    ]
+    return [arguments for name, arguments in transcript_tool_calls(transcript_xml) if name == tool]
 
 
 def final_agent_response(wait_response: Any, transcript_xml: str) -> str | None:
@@ -422,18 +351,10 @@ def agent_worktree_paths(response: Any) -> list[str]:
             explicit = value.get("worktree_root_path") or value.get("worktreeRootPath")
             if isinstance(explicit, str) and explicit.strip():
                 paths.append(explicit)
-            if (
-                worktree_context
-                and isinstance(value.get("path"), str)
-                and value["path"].strip()
-            ):
+            if worktree_context and isinstance(value.get("path"), str) and value["path"].strip():
                 paths.append(value["path"])
             for key, child in value.items():
-                visit(
-                    child,
-                    worktree_context
-                    or key in {"worktree", "worktree_binding", "worktree_bindings"},
-                )
+                visit(child, worktree_context or key in {"worktree", "worktree_binding", "worktree_bindings"})
         elif isinstance(value, list):
             for child in value:
                 visit(child, worktree_context)
@@ -463,20 +384,12 @@ def validate_route_binding_metadata(
             reported = agent_worktree_paths(response)
             if route == "local":
                 if reported:
-                    failures.append(
-                        f"local agent unexpectedly reported worktree binding in {response_name}"
-                    )
+                    failures.append(f"local agent unexpectedly reported worktree binding in {response_name}")
                 continue
             if not reported:
-                failures.append(
-                    f"worktree agent omitted worktree binding in {response_name}"
-                )
+                failures.append(f"worktree agent omitted worktree binding in {response_name}")
                 continue
-            mismatches = [
-                path
-                for path in reported
-                if Path(path).expanduser().resolve() != expected
-            ]
+            mismatches = [path for path in reported if Path(path).expanduser().resolve() != expected]
             if mismatches:
                 failures.append(
                     f"worktree agent reported mismatched binding in {response_name}: {mismatches}"
@@ -484,30 +397,20 @@ def validate_route_binding_metadata(
     return failures
 
 
-def validate_agent_completion(
-    agent_results: dict[str, dict[str, Any]], transcripts: dict[str, str]
-) -> list[str]:
+def validate_agent_completion(agent_results: dict[str, dict[str, Any]], transcripts: dict[str, str]) -> list[str]:
     failures: list[str] = []
     for route in ("local", "worktree"):
         result = agent_results.get(route, {})
         status = str(result.get("status") or "").lower()
         if status != "completed":
-            failures.append(
-                f"{route} agent status was {status or 'missing'}, not completed"
-            )
-        response = final_agent_response(
-            result.get("wait_response", {}), transcripts.get(route, "")
-        )
+            failures.append(f"{route} agent status was {status or 'missing'}, not completed")
+        response = final_agent_response(result.get("wait_response", {}), transcripts.get(route, ""))
         if response != "AGENT_FILE_TOOL_DIAGNOSTIC_OK":
-            failures.append(
-                f"{route} agent final response did not match diagnostic token"
-            )
+            failures.append(f"{route} agent final response did not match diagnostic token")
     return failures
 
 
-def validate_agent_session_identity(
-    agent_results: dict[str, dict[str, Any]],
-) -> list[str]:
+def validate_agent_session_identity(agent_results: dict[str, dict[str, Any]]) -> list[str]:
     failures: list[str] = []
     seen_session_ids: set[str] = set()
     for route in ("local", "worktree"):
@@ -515,19 +418,13 @@ def validate_agent_session_identity(
         expected = result.get("session_id")
         start_ids = response_session_ids(result.get("start_response"))
         wait_ids = response_session_ids(result.get("wait_response"))
-        session_ids = {str(value) for value in (expected,) if value}.union(
-            start_ids, wait_ids
-        )
+        session_ids = {str(value) for value in (expected,) if value}.union(start_ids, wait_ids)
         if len(session_ids) != 1 or len(start_ids) != 1 or len(wait_ids) != 1:
-            failures.append(
-                f"{route} agent start/wait session identity mismatch: {sorted(session_ids)}"
-            )
+            failures.append(f"{route} agent start/wait session identity mismatch: {sorted(session_ids)}")
             continue
         seen_session_ids.update(session_ids)
     if len(seen_session_ids) != 2:
-        failures.append(
-            "local and worktree agents did not report two distinct session IDs"
-        )
+        failures.append("local and worktree agents did not report two distinct session IDs")
     return failures
 
 
@@ -551,22 +448,16 @@ def validate_transcript_arguments(
     read_limit: int,
 ) -> None:
     calls = transcript_tool_calls(transcript_xml)
-    extra_tools = [
-        name for name, _ in calls if name not in RELEVANT_TOOLS and name != "set_status"
-    ]
+    extra_tools = [name for name, _ in calls if name not in RELEVANT_TOOLS and name != "set_status"]
     if extra_tools:
         raise BenchmarkError(f"unexpected transcript tools: {extra_tools}")
     set_status_count = sum(name == "set_status" for name, _ in calls)
     if set_status_count > 1:
-        raise BenchmarkError(
-            f"unexpected duplicate set_status calls: {set_status_count}"
-        )
+        raise BenchmarkError(f"unexpected duplicate set_status calls: {set_status_count}")
     searches = [arguments for name, arguments in calls if name == "file_search"]
     reads = [arguments for name, arguments in calls if name == "read_file"]
     if not searches or not reads:
-        raise BenchmarkError(
-            "transcript must surface at least one file_search and read_file call"
-        )
+        raise BenchmarkError("transcript must surface at least one file_search and read_file call")
     expected_search = {
         "pattern": marker,
         "regex": False,
@@ -577,33 +468,22 @@ def validate_transcript_arguments(
     }
     required_read = {"path": path, "start_line": 1, "limit": read_limit}
     if any(call != expected_search for call in searches):
-        raise BenchmarkError(
-            "surfaced search calls did not use the exact configured workload"
-        )
+        raise BenchmarkError("surfaced search calls did not use the exact configured workload")
     for call in reads:
         if any(call.get(key) != value for key, value in required_read.items()):
-            raise BenchmarkError(
-                "surfaced read calls did not use the configured workload"
-            )
+            raise BenchmarkError("surfaced read calls did not use the configured workload")
         unexpected_keys = set(call) - set(required_read) - {"key_paths"}
         if unexpected_keys:
-            raise BenchmarkError(
-                f"surfaced read calls used unknown enrichment: {sorted(unexpected_keys)}"
-            )
+            raise BenchmarkError(f"surfaced read calls used unknown enrichment: {sorted(unexpected_keys)}")
 
 
 def positive_search_projection_counts(capture: dict[str, Any]) -> Counter[bool]:
     counts: Counter[bool] = Counter()
     for stage in capture.get("stages", []):
-        if (
-            not isinstance(stage, dict)
-            or stage.get("stage_name") != "EditFlow.Search.DTOBuild"
-        ):
+        if not isinstance(stage, dict) or stage.get("stage_name") != "EditFlow.Search.DTOBuild":
             continue
         dimensions = parse_dimensions(str(stage.get("sanitized_dimensions", "")))
-        if int(dimensions.get("matchCount", 0)) <= 0 or dimensions.get(
-            "outcome"
-        ) not in {"completed", "capped"}:
+        if int(dimensions.get("matchCount", 0)) <= 0 or dimensions.get("outcome") not in {"completed", "capped"}:
             continue
         projection = dimensions.get("usesWorktreeProjection")
         if not isinstance(projection, bool):
@@ -626,22 +506,14 @@ def validate_integrity(
 ) -> list[str]:
     failures: list[str] = []
     counts = Counter(sample["tool"] for sample in samples)
-    if counts != Counter(
-        {"file_search": 2 * search_count, "read_file": 2 * read_count}
-    ):
+    if counts != Counter({"file_search": 2 * search_count, "read_file": 2 * read_count}):
         failures.append(f"unexpected sample counts: {dict(counts)}")
     if int(capture.get("dropped_lifecycle_event_count", 0)):
         failures.append("capture dropped lifecycle events")
     for sample in samples:
-        success_event = (
-            "Search.ProviderResultReady"
-            if sample["tool"] == "file_search"
-            else "ReadFile.ProviderResultReady"
-        )
+        success_event = "Search.ProviderResultReady" if sample["tool"] == "file_search" else "ReadFile.ProviderResultReady"
         if success_event not in sample["event_names"]:
-            failures.append(
-                f"{sample['route']} {sample['tool']} omitted {success_event}"
-            )
+            failures.append(f"{sample['route']} {sample['tool']} omitted {success_event}")
     projection_counts = positive_search_projection_counts(capture)
     expected_projection_counts = Counter({False: search_count, True: search_count})
     if projection_counts != expected_projection_counts:
@@ -665,9 +537,7 @@ def validate_integrity(
 def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
     for sample in samples:
-        grouped[(str(sample["route"]), str(sample["tool"]))].append(
-            float(sample["envelope_ms"])
-        )
+        grouped[(str(sample["route"]), str(sample["tool"]))].append(float(sample["envelope_ms"]))
     return {
         "schema_version": SCHEMA_VERSION,
         "sample_count": len(samples),
@@ -685,22 +555,16 @@ def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def cancellation_failure_messages(
-    route: str, cancel_error: BaseException | None, settled_status: str
-) -> list[str]:
+def cancellation_failure_messages(route: str, cancel_error: BaseException | None, settled_status: str) -> list[str]:
     failures: list[str] = []
     if cancel_error is not None:
         failures.append(f"{route} cancellation failed: {cancel_error}")
     if settled_status not in TERMINAL_STATUSES:
-        failures.append(
-            f"{route} remained nonterminal after cancellation: {settled_status or 'unknown'}"
-        )
+        failures.append(f"{route} remained nonterminal after cancellation: {settled_status or 'unknown'}")
     return failures
 
 
-def cleanup_decision(
-    auto_created: bool, exists: bool, clean: bool, sessions_terminal: bool = True
-) -> str:
+def cleanup_decision(auto_created: bool, exists: bool, clean: bool, sessions_terminal: bool = True) -> str:
     if not auto_created:
         return "preserve_not_owned"
     if not exists:
@@ -717,18 +581,13 @@ def validate_summary_schema(summary: dict[str, Any]) -> None:
     missing = required - set(summary)
     if missing:
         raise BenchmarkError(f"summary missing keys: {sorted(missing)}")
-    if (
-        summary["schema_version"] != SCHEMA_VERSION
-        or summary["latency_policy"] != "report_only"
-    ):
+    if summary["schema_version"] != SCHEMA_VERSION or summary["latency_policy"] != "report_only":
         raise BenchmarkError("invalid summary schema metadata")
 
 
 def save_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def load_replay_input(source: Path) -> dict[str, Any]:
@@ -740,22 +599,14 @@ def load_replay_input(source: Path) -> dict[str, Any]:
             raise BenchmarkError("replay fixture must be a JSON object")
         return value
     if not source.is_dir():
-        raise BenchmarkError(
-            "replay input must be replay.json or an artifact directory"
-        )
+        raise BenchmarkError("replay input must be replay.json or an artifact directory")
     manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     final = json.loads((source / "capture-final.json").read_text(encoding="utf-8"))
     agents: dict[str, Any] = {}
     for route in ("local", "worktree"):
-        start = json.loads(
-            (source / "agents" / route / "start.json").read_text(encoding="utf-8")
-        )
-        wait = json.loads(
-            (source / "agents" / route / "wait.json").read_text(encoding="utf-8")
-        )
-        log = json.loads(
-            (source / "agents" / route / "log.json").read_text(encoding="utf-8")
-        )
+        start = json.loads((source / "agents" / route / "start.json").read_text(encoding="utf-8"))
+        wait = json.loads((source / "agents" / route / "wait.json").read_text(encoding="utf-8"))
+        log = json.loads((source / "agents" / route / "log.json").read_text(encoding="utf-8"))
         agents[route] = {
             "status": (find_string(wait, "status") or "").lower(),
             "start_response": start,
@@ -783,21 +634,13 @@ def replay_artifact(source: Path) -> dict[str, Any]:
     configuration = replay.get("configuration")
     capture = replay.get("capture")
     agents = replay.get("agents")
-    if (
-        not isinstance(configuration, dict)
-        or not isinstance(capture, dict)
-        or not isinstance(agents, dict)
-    ):
+    if not isinstance(configuration, dict) or not isinstance(capture, dict) or not isinstance(agents, dict):
         raise BenchmarkError("replay input omitted configuration, capture, or agents")
     marker = configuration.get("marker")
     path = configuration.get("path")
     worktree_path = configuration.get("worktree_path")
-    if not all(
-        isinstance(value, str) and value for value in (marker, path, worktree_path)
-    ):
-        raise BenchmarkError(
-            "replay configuration omitted marker, path, or worktree_path"
-        )
+    if not all(isinstance(value, str) and value for value in (marker, path, worktree_path)):
+        raise BenchmarkError("replay configuration omitted marker, path, or worktree_path")
     search_count = int(configuration.get("search_count", 0))
     read_count = int(configuration.get("read_count", 0))
     read_limit = int(configuration.get("read_limit", 0))
@@ -808,9 +651,7 @@ def replay_artifact(source: Path) -> dict[str, Any]:
     agent_results = {
         route: {
             "status": (agents.get(route) or {}).get("status"),
-            "session_id": response_session_id(
-                (agents.get(route) or {}).get("start_response")
-            ),
+            "session_id": response_session_id((agents.get(route) or {}).get("start_response")),
             "start_response": (agents.get(route) or {}).get("start_response"),
             "wait_response": (agents.get(route) or {}).get("wait_response"),
         }
@@ -820,23 +661,19 @@ def replay_artifact(source: Path) -> dict[str, Any]:
     failures: list[str] = []
     try:
         samples = build_samples(capture)
-        classify_routes(
-            samples, search_count, read_count, expected_agent_run_ids(agent_results)
-        )
-        failures.extend(
-            validate_integrity(
-                capture,
-                samples,
-                transcripts,
-                agent_results,
-                marker,
-                path,
-                search_count,
-                read_count,
-                read_limit,
-                Path(worktree_path),
-            )
-        )
+        classify_routes(samples, search_count, read_count, expected_agent_run_ids(agent_results))
+        failures.extend(validate_integrity(
+            capture,
+            samples,
+            transcripts,
+            agent_results,
+            marker,
+            path,
+            search_count,
+            read_count,
+            read_limit,
+            Path(worktree_path),
+        ))
     except (BenchmarkError, KeyError, TypeError, ValueError) as error:
         failures.append(str(error))
     summary = {
@@ -858,35 +695,18 @@ class CLIRunner:
         self.lock = threading.Lock()
         self.ordinal = 0
 
-    def run(
-        self,
-        label: str,
-        tool: str | None = None,
-        payload: dict[str, Any] | None = None,
-        timeout: float = 180,
-        check: bool = True,
-        extra: list[str] | None = None,
-        parse_json: bool = True,
-    ) -> Any:
+    def run(self, label: str, tool: str | None = None, payload: dict[str, Any] | None = None,
+            timeout: float = 180, check: bool = True, extra: list[str] | None = None,
+            parse_json: bool = True) -> Any:
         if extra is not None:
             command = [str(self.cli), *extra]
         else:
             routed = dict(payload or {})
             routed["_windowID"] = self.window_id
-            command = [
-                str(self.cli),
-                "--raw-json",
-                "-w",
-                str(self.window_id),
-                "-c",
-                str(tool),
-                "-j",
-                json.dumps(routed, separators=(",", ":"), sort_keys=True),
-            ]
+            command = [str(self.cli), "--raw-json", "-w", str(self.window_id), "-c", str(tool),
+                       "-j", json.dumps(routed, separators=(",", ":"), sort_keys=True)]
         started = utc_now()
-        process = subprocess.run(
-            command, cwd=self.root, text=True, capture_output=True, timeout=timeout
-        )
+        process = subprocess.run(command, cwd=self.root, text=True, capture_output=True, timeout=timeout)
         record = {
             "schema_version": SCHEMA_VERSION,
             "label": label,
@@ -902,23 +722,13 @@ class CLIRunner:
             self.ordinal += 1
             record["ordinal"] = ordinal
             safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", label)
-            save_json(
-                self.output / "raw-cli-calls" / f"{ordinal:03d}-{safe}.json", record
-            )
-            with (self.output / "raw-cli-calls.ndjson").open(
-                "a", encoding="utf-8"
-            ) as stream:
+            save_json(self.output / "raw-cli-calls" / f"{ordinal:03d}-{safe}.json", record)
+            with (self.output / "raw-cli-calls.ndjson").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, sort_keys=True) + "\n")
         if check and process.returncode:
-            raise BenchmarkError(
-                f"{label} failed ({process.returncode}): {process.stderr.strip()}"
-            )
+            raise BenchmarkError(f"{label} failed ({process.returncode}): {process.stderr.strip()}")
         if not parse_json:
-            return {
-                "stdout": process.stdout.strip(),
-                "stderr": process.stderr.strip(),
-                "returncode": process.returncode,
-            }
+            return {"stdout": process.stdout.strip(), "stderr": process.stderr.strip(), "returncode": process.returncode}
         if not process.stdout.strip():
             return {}
         try:
@@ -929,9 +739,7 @@ class CLIRunner:
             return {"unparsed_stdout": process.stdout}
 
 
-def command(
-    command: list[str], root: Path, check: bool = True
-) -> subprocess.CompletedProcess[str]:
+def command(command: list[str], root: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
     process = subprocess.run(command, cwd=root, text=True, capture_output=True)
     if check and process.returncode:
         raise BenchmarkError(f"{' '.join(command)} failed: {process.stderr.strip()}")
@@ -945,17 +753,11 @@ def validate_worktree_identity(
     same_as_workspace_root: bool,
 ) -> None:
     if repo_common_directory.resolve() != candidate_common_directory.resolve():
-        raise BenchmarkError(
-            "supplied worktree belongs to a different git common directory"
-        )
+        raise BenchmarkError("supplied worktree belongs to a different git common directory")
     if not linked:
-        raise BenchmarkError(
-            "supplied worktree is not registered as a linked git worktree"
-        )
+        raise BenchmarkError("supplied worktree is not registered as a linked git worktree")
     if same_as_workspace_root:
-        raise BenchmarkError(
-            "supplied worktree must differ from the normal workspace root"
-        )
+        raise BenchmarkError("supplied worktree must differ from the normal workspace root")
 
 
 def git_common_directory(path: Path) -> Path:
@@ -964,9 +766,7 @@ def git_common_directory(path: Path) -> Path:
     return (common if common.is_absolute() else path / common).resolve()
 
 
-def worktree_manifest_metadata(
-    path: Path, sha: str, status: str, common_directory: Path
-) -> dict[str, Any]:
+def worktree_manifest_metadata(path: Path, sha: str, status: str, common_directory: Path) -> dict[str, Any]:
     return {
         "path": str(path),
         "sha": sha,
@@ -981,9 +781,7 @@ def worktree_metadata(root: Path, candidate: Path) -> dict[str, Any]:
     resolved_candidate = candidate.resolve(strict=True)
     listed = {
         Path(line.removeprefix("worktree ")).resolve()
-        for line in command(
-            ["git", "worktree", "list", "--porcelain"], root
-        ).stdout.splitlines()
+        for line in command(["git", "worktree", "list", "--porcelain"], root).stdout.splitlines()
         if line.startswith("worktree ")
     }
     validate_worktree_identity(
@@ -1004,15 +802,8 @@ def worktree_metadata(root: Path, candidate: Path) -> dict[str, Any]:
 
 
 def resolve_cli(argument: str | None) -> Path:
-    candidates = [
-        argument,
-        os.environ.get("REPOPROMPT_DEBUG_CLI_INSTALL_PATH"),
-        shutil.which("rpce-cli-debug"),
-        str(
-            Path.home()
-            / "Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug"
-        ),
-    ]
+    candidates = [argument, os.environ.get("REPOPROMPT_DEBUG_CLI_INSTALL_PATH"), shutil.which("rpce-cli-debug"),
+                  str(Path.home() / "Library/Application Support/RepoPrompt CE/repoprompt_ce_cli_debug")]
     for candidate in candidates:
         if candidate:
             path = Path(candidate).expanduser()
@@ -1021,16 +812,14 @@ def resolve_cli(argument: str | None) -> Path:
     raise BenchmarkError("rpce-cli-debug was not found")
 
 
-def agent_prompt(
-    route: str, marker: str, path: str, searches: int, reads: int, read_limit: int
-) -> str:
+def agent_prompt(route: str, marker: str, path: str, searches: int, reads: int, read_limit: int) -> str:
     search = (
-        f"Call file_search exactly {searches} times sequentially with exactly "
+        f'Call file_search exactly {searches} times sequentially with exactly '
         f'{{"pattern":{json.dumps(marker)},"regex":false,"mode":"content","filter":{{"paths":[{json.dumps(path)}]}},'
         '"max_results":20,"context_lines":1}}.'
     )
     read = (
-        f"Call read_file exactly {reads} times sequentially with exactly "
+        f'Call read_file exactly {reads} times sequentially with exactly '
         f'{{"path":{json.dumps(path)},"start_line":1,"limit":{read_limit}}}.'
     )
     ordered = f"{search} Then {read}" if route == "local" else f"{read} Then {search}"
@@ -1044,17 +833,11 @@ def agent_prompt(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--replay",
-        help="offline replay.json file, fixture directory, or benchmark artifact directory",
-    )
+    parser.add_argument("--replay", help="offline replay.json file, fixture directory, or benchmark artifact directory")
     parser.add_argument("--cli")
     parser.add_argument("--window-id", type=int, default=1)
     parser.add_argument("--marker", default="debugDiagnosticsToolName")
-    parser.add_argument(
-        "--path",
-        default="Sources/RepoPrompt/Features/Diagnostics/MCP/MCPConnectionManager+DebugDiagnostics.swift",
-    )
+    parser.add_argument("--path", default="Sources/RepoPrompt/Features/Diagnostics/MCP/MCPConnectionManager+DebugDiagnostics.swift")
     parser.add_argument("--search-count", type=int, default=5)
     parser.add_argument("--read-count", type=int, default=5)
     parser.add_argument("--read-limit", type=int, default=24)
@@ -1075,9 +858,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(__file__).resolve().parent.parent
     repo_sha = command(["git", "rev-parse", "HEAD"], root).stdout.strip()
-    repo_status = command(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"], root
-    ).stdout
+    repo_status = command(["git", "status", "--porcelain=v1", "--untracked-files=all"], root).stdout
     cli = resolve_cli(args.cli)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", args.label).strip("-") or "paired"
@@ -1091,9 +872,7 @@ def main(argv: list[str] | None = None) -> int:
     def interrupted(signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt(f"signal {signum}")
 
-    old_handlers = {
-        sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
-    }
+    old_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     for sig in old_handlers:
         signal.signal(sig, interrupted)
 
@@ -1105,9 +884,7 @@ def main(argv: list[str] | None = None) -> int:
         temporary_parent = Path(tempfile.mkdtemp(prefix="rpce-agent-file-tools-"))
         worktree = temporary_parent / "worktree"
         try:
-            command(
-                ["git", "worktree", "add", "--detach", str(worktree), repo_sha], root
-            )
+            command(["git", "worktree", "add", "--detach", str(worktree), repo_sha], root)
         except BaseException:
             if worktree.exists():
                 command(["git", "worktree", "remove", str(worktree)], root, check=False)
@@ -1137,23 +914,11 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": SCHEMA_VERSION,
         "run_id": output.name,
         "created_at": utc_now(),
-        "repo": {
-            "root": str(root),
-            "sha": repo_sha,
-            "dirty": bool(repo_status),
-            "status_porcelain": repo_status.splitlines(),
-        },
-        "cli": {
-            "realpath": str(cli),
-            "version": version,
-            "sha256": hashlib.sha256(cli.read_bytes()).hexdigest(),
-        },
+        "repo": {"root": str(root), "sha": repo_sha, "dirty": bool(repo_status),
+                 "status_porcelain": repo_status.splitlines()},
+        "cli": {"realpath": str(cli), "version": version, "sha256": hashlib.sha256(cli.read_bytes()).hexdigest()},
         "configuration": vars(args),
-        "worktree": {
-            **worktree_info,
-            "auto_created": auto_created,
-            "cleanup": "pending",
-        },
+        "worktree": {**worktree_info, "auto_created": auto_created, "cleanup": "pending"},
         "sessions": {},
     }
     save_json(output / "manifest.json", manifest)
@@ -1166,56 +931,30 @@ def main(argv: list[str] | None = None) -> int:
     operational_error: BaseException | None = None
 
     try:
-        begin = runner.run(
-            "capture-begin",
-            DEBUG_TOOL,
-            {
-                "op": "mcp_read_search_capture_begin",
-                "label": output.name,
-                "max_samples": args.max_samples,
-            },
-        )
+        begin = runner.run("capture-begin", DEBUG_TOOL, {
+            "op": "mcp_read_search_capture_begin", "label": output.name, "max_samples": args.max_samples,
+        })
         capture_started = True
         save_json(output / "capture-begin.json", begin)
-        before = runner.run(
-            "runtime-before",
-            DEBUG_TOOL,
-            {
-                "op": "mcp_read_search_runtime_snapshot",
-                "window_id": args.window_id,
-                "recent_publication_limit": 16,
-                "root_limit": 256,
-            },
-        )
+        before = runner.run("runtime-before", DEBUG_TOOL, {
+            "op": "mcp_read_search_runtime_snapshot", "window_id": args.window_id,
+            "recent_publication_limit": 16, "root_limit": 256,
+        })
         save_json(output / "runtime-before.json", before)
 
         def start(route: str) -> tuple[str, Any]:
             payload: dict[str, Any] = {
-                "op": "start",
-                "detach": True,
-                "model_id": "explore",
-                "inherit_worktree": False,
+                "op": "start", "detach": True, "model_id": "explore", "inherit_worktree": False,
                 "session_name": f"Agent file-tool diagnostic ({route})",
-                "message": agent_prompt(
-                    route,
-                    args.marker,
-                    args.path,
-                    args.search_count,
-                    args.read_count,
-                    args.read_limit,
-                ),
+                "message": agent_prompt(route, args.marker, args.path, args.search_count, args.read_count, args.read_limit),
             }
             if route == "worktree":
                 payload["worktree"] = str(worktree)
-            return route, runner.run(
-                f"agent-{route}-start", "agent_run", payload, timeout=90
-            )
+            return route, runner.run(f"agent-{route}-start", "agent_run", payload, timeout=90)
 
         start_errors: list[BaseException] = []
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = {
-                route: pool.submit(start, route) for route in ("local", "worktree")
-            }
+            futures = {route: pool.submit(start, route) for route in ("local", "worktree")}
             for route, future in futures.items():
                 try:
                     _, response = future.result()
@@ -1230,26 +969,16 @@ def main(argv: list[str] | None = None) -> int:
                     save_json(output / "agents" / route / "start.json", response)
                 except BaseException as error:
                     start_errors.append(error)
-        manifest["sessions"] = {
-            route: {"session_id": value["session_id"]}
-            for route, value in sessions.items()
-        }
+        manifest["sessions"] = {route: {"session_id": value["session_id"]} for route, value in sessions.items()}
         save_json(output / "manifest.json", manifest)
         if start_errors:
             raise BenchmarkError("; ".join(str(error) for error in start_errors))
 
         def wait(item: tuple[str, dict[str, Any]]) -> tuple[str, Any]:
             route, session = item
-            return route, runner.run(
-                f"agent-{route}-wait",
-                "agent_run",
-                {
-                    "op": "wait",
-                    "session_id": session["session_id"],
-                    "timeout": args.timeout,
-                },
-                timeout=args.timeout + 30,
-            )
+            return route, runner.run(f"agent-{route}-wait", "agent_run", {
+                "op": "wait", "session_id": session["session_id"], "timeout": args.timeout,
+            }, timeout=args.timeout + 30)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             waits = dict(pool.map(wait, sessions.items()))
@@ -1257,31 +986,19 @@ def main(argv: list[str] | None = None) -> int:
             sessions[route]["status"] = (find_string(response, "status") or "").lower()
             sessions[route]["wait_response"] = response
             save_json(output / "agents" / route / "wait.json", response)
-        runtime_after = runner.run(
-            "runtime-after",
-            DEBUG_TOOL,
-            {
-                "op": "mcp_read_search_runtime_snapshot",
-                "window_id": args.window_id,
-                "recent_publication_limit": 16,
-                "root_limit": 256,
-            },
-        )
+        runtime_after = runner.run("runtime-after", DEBUG_TOOL, {
+            "op": "mcp_read_search_runtime_snapshot", "window_id": args.window_id,
+            "recent_publication_limit": 16, "root_limit": 256,
+        })
         save_json(output / "runtime-after.json", runtime_after)
     except BaseException as error:
         operational_error = error
     finally:
         if capture_started:
             try:
-                final = runner.run(
-                    "capture-finish",
-                    DEBUG_TOOL,
-                    {
-                        "op": "mcp_read_search_capture_snapshot",
-                        "finish": True,
-                        "include_timeline": True,
-                    },
-                )
+                final = runner.run("capture-finish", DEBUG_TOOL, {
+                    "op": "mcp_read_search_capture_snapshot", "finish": True, "include_timeline": True,
+                })
                 capture = extract_capture(final)
                 save_json(output / "capture-final.json", final)
             except BaseException as error:
@@ -1291,63 +1008,30 @@ def main(argv: list[str] | None = None) -> int:
             status = str(session.get("status") or "").lower()
             try:
                 if status not in TERMINAL_STATUSES:
-                    polled = runner.run(
-                        f"agent-{route}-poll-cleanup",
-                        "agent_run",
-                        {
-                            "op": "poll",
-                            "session_id": session["session_id"],
-                        },
-                        timeout=30,
-                        check=False,
-                    )
+                    polled = runner.run(f"agent-{route}-poll-cleanup", "agent_run", {
+                        "op": "poll", "session_id": session["session_id"],
+                    }, timeout=30, check=False)
                     status = (find_string(polled, "status") or "").lower()
                 if status not in TERMINAL_STATUSES:
                     cancel_error: BaseException | None = None
                     try:
-                        runner.run(
-                            f"agent-{route}-cancel-cleanup",
-                            "agent_run",
-                            {
-                                "op": "cancel",
-                                "session_id": session["session_id"],
-                            },
-                            timeout=30,
-                            check=True,
-                        )
+                        runner.run(f"agent-{route}-cancel-cleanup", "agent_run", {
+                            "op": "cancel", "session_id": session["session_id"],
+                        }, timeout=30, check=True)
                     except BaseException as error:
                         cancel_error = error
-                    settled = runner.run(
-                        f"agent-{route}-wait-after-cancel",
-                        "agent_run",
-                        {
-                            "op": "wait",
-                            "session_id": session["session_id"],
-                            "timeout": 30,
-                        },
-                        timeout=45,
-                        check=False,
-                    )
+                    settled = runner.run(f"agent-{route}-wait-after-cancel", "agent_run", {
+                        "op": "wait", "session_id": session["session_id"], "timeout": 30,
+                    }, timeout=45, check=False)
                     status = (find_string(settled, "status") or "").lower()
                     cleanup_errors.extend(
                         BenchmarkError(message)
-                        for message in cancellation_failure_messages(
-                            route, cancel_error, status
-                        )
+                        for message in cancellation_failure_messages(route, cancel_error, status)
                     )
                 session["final_status"] = status
-                log = runner.run(
-                    f"agent-{route}-get-log",
-                    "agent_manage",
-                    {
-                        "op": "get_log",
-                        "session_id": session["session_id"],
-                        "offset": 0,
-                        "limit": 1000,
-                    },
-                    timeout=60,
-                    check=False,
-                )
+                log = runner.run(f"agent-{route}-get-log", "agent_manage", {
+                    "op": "get_log", "session_id": session["session_id"], "offset": 0, "limit": 1000,
+                }, timeout=60, check=False)
                 logs[route] = log
                 save_json(output / "agents" / route / "log.json", log)
             except BaseException as error:
@@ -1355,59 +1039,33 @@ def main(argv: list[str] | None = None) -> int:
                 cleanup_errors.append(error)
         if cleanup_errors:
             manifest["cleanup_errors"] = [str(error) for error in cleanup_errors]
-            operational_error = operational_error or BenchmarkError(
-                "; ".join(str(error) for error in cleanup_errors)
-            )
+            operational_error = operational_error or BenchmarkError("; ".join(str(error) for error in cleanup_errors))
         if runtime_after is None:
             try:
-                runtime_after = runner.run(
-                    "runtime-cleanup",
-                    DEBUG_TOOL,
-                    {
-                        "op": "mcp_read_search_runtime_snapshot",
-                        "window_id": args.window_id,
-                        "recent_publication_limit": 16,
-                        "root_limit": 256,
-                    },
-                    check=False,
-                )
+                runtime_after = runner.run("runtime-cleanup", DEBUG_TOOL, {
+                    "op": "mcp_read_search_runtime_snapshot", "window_id": args.window_id,
+                    "recent_publication_limit": 16, "root_limit": 256,
+                }, check=False)
                 save_json(output / "runtime-after.json", runtime_after)
             except BaseException as error:
                 operational_error = operational_error or error
 
         exists = worktree.exists()
-        clean = (
-            exists
-            and not command(
-                [
-                    "git",
-                    "-C",
-                    str(worktree),
-                    "status",
-                    "--porcelain=v1",
-                    "--untracked-files=all",
-                ],
-                root,
-                check=False,
-            ).stdout.strip()
-        )
+        clean = exists and not command(
+            ["git", "-C", str(worktree), "status", "--porcelain=v1", "--untracked-files=all"], root, check=False
+        ).stdout.strip()
         sessions_terminal = all(
-            str(session.get("final_status") or session.get("status") or "").lower()
-            in TERMINAL_STATUSES
+            str(session.get("final_status") or session.get("status") or "").lower() in TERMINAL_STATUSES
             for session in sessions.values()
         )
         decision = cleanup_decision(auto_created, exists, clean, sessions_terminal)
         manifest["worktree"]["cleanup"] = decision
         if decision == "remove_clean_auto_created":
-            removal = command(
-                ["git", "worktree", "remove", str(worktree)], root, check=False
-            )
+            removal = command(["git", "worktree", "remove", str(worktree)], root, check=False)
             manifest["worktree"]["remove_returncode"] = removal.returncode
             manifest["worktree"]["remove_stderr"] = removal.stderr.strip()
             if removal.returncode:
-                operational_error = operational_error or BenchmarkError(
-                    "clean temporary worktree removal failed"
-                )
+                operational_error = operational_error or BenchmarkError("clean temporary worktree removal failed")
             elif temporary_parent:
                 try:
                     temporary_parent.rmdir()
@@ -1418,9 +1076,7 @@ def main(argv: list[str] | None = None) -> int:
 
     samples: list[dict[str, Any]] = []
     failures: list[str] = []
-    transcripts = {
-        route: find_string(log, "transcript_xml") or "" for route, log in logs.items()
-    }
+    transcripts = {route: find_string(log, "transcript_xml") or "" for route, log in logs.items()}
     if capture is None:
         failures.append("final capture unavailable")
         failures.extend(validate_agent_completion(sessions, transcripts))
@@ -1428,26 +1084,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         try:
             samples = build_samples(capture)
-            classify_routes(
+            classify_routes(samples, args.search_count, args.read_count, expected_agent_run_ids(sessions))
+            failures.extend(validate_integrity(
+                capture,
                 samples,
+                transcripts,
+                sessions,
+                args.marker,
+                args.path,
                 args.search_count,
                 args.read_count,
-                expected_agent_run_ids(sessions),
-            )
-            failures.extend(
-                validate_integrity(
-                    capture,
-                    samples,
-                    transcripts,
-                    sessions,
-                    args.marker,
-                    args.path,
-                    args.search_count,
-                    args.read_count,
-                    args.read_limit,
-                    worktree,
-                )
-            )
+                args.read_limit,
+                worktree,
+            ))
         except BenchmarkError as error:
             failures.append(str(error))
     with (output / "samples.ndjson").open("w", encoding="utf-8") as stream:
@@ -1464,13 +1113,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     validate_summary_schema(summary)
     save_json(output / "summary.json", summary)
-    manifest.update(
-        {
-            "finished_at": utc_now(),
-            "status": summary["status"],
-            "integrity": summary["integrity"],
-        }
-    )
+    manifest.update({"finished_at": utc_now(), "status": summary["status"], "integrity": summary["integrity"]})
     save_json(output / "manifest.json", manifest)
     print(json.dumps(summary, indent=2, sort_keys=True))
     print(f"Artifacts: {output}")

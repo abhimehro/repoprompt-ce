@@ -6,8 +6,8 @@ final class PCRE2RegexTests: XCTestCase {
         let regex = try PCRE2Regex(#"^(é)(.)$"#, jit: .disabled)
         let match = try XCTUnwrap(regex.firstMatch(in: "é🙂"))
 
-        XCTAssertEqual(match.byteRange, 0 ..< 6)
-        XCTAssertEqual(match.captureByteRanges, [0 ..< 6, 0 ..< 2, 2 ..< 6])
+        XCTAssertEqual(match.byteRange, 0..<6)
+        XCTAssertEqual(match.captureByteRanges, [0..<6, 0..<2, 2..<6])
         XCTAssertFalse(try regex.firstMatch(in: "é") != nil)
     }
 
@@ -20,7 +20,7 @@ final class PCRE2RegexTests: XCTestCase {
             return true
         }
 
-        XCTAssertEqual(ranges, [0 ..< 0, 2 ..< 2])
+        XCTAssertEqual(ranges, [0..<0, 2..<2])
     }
 
     func testMatchLimitIsReported() throws {
@@ -48,7 +48,7 @@ final class PCRE2RegexTests: XCTestCase {
             XCTAssertFalse(try session.containsMatch(in: "other"))
             XCTAssertEqual(
                 try session.firstMatch(in: "item-22")?.captureByteRanges[1],
-                5 ..< 7
+                5..<7
             )
         }
     }

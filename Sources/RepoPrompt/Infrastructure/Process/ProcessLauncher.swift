@@ -156,7 +156,7 @@ enum ProcessLauncher {
 
         _ = FDWriteSupport.configureNoSigPipe(fd: stdinPipe[1])
 
-        var fileActions: posix_spawn_file_actions_t?
+        var fileActions: posix_spawn_file_actions_t? = nil
         let fileActionsInitResult: Int32 = if case let .fileActions(errno)? = initializationFailure {
             errno
         } else {
@@ -198,7 +198,7 @@ enum ProcessLauncher {
             }
         }
 
-        var attributes: posix_spawnattr_t?
+        var attributes: posix_spawnattr_t? = nil
         let attributesInitResult: Int32 = if case let .attributes(errno)? = initializationFailure {
             errno
         } else {

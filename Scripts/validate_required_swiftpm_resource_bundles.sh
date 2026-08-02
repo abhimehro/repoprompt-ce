@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_BUNDLE="${1-}"
+APP_BUNDLE="${1:-}"
 LAYOUT_LABEL="${2:-Required SwiftPM resource bundle layout}"
 
 fail() {
-	printf 'ERROR: %s\n' "$*" >&2
-	exit 1
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
 }
 
-[[ -n $APP_BUNDLE ]] || fail "Usage: $0 <app-bundle> [label]"
+[[ -n "$APP_BUNDLE" ]] || fail "Usage: $0 <app-bundle> [label]"
 
 python3 - "$APP_BUNDLE" "$LAYOUT_LABEL" <<'PYTHON'
 import stat

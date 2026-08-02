@@ -4,18 +4,18 @@
 
 RepoPrompt CE stores rich Agent Mode session transcripts on disk but exposes almost none of that history through MCP tools. The existing surface is limited to:
 
-| Tool                           | What it does                                    | Gap                                           |
-| ------------------------------ | ----------------------------------------------- | --------------------------------------------- |
-| `agent_manage.list_sessions`   | List sessions by state filter                   | No content search, no time analytics          |
-| `agent_manage.get_log`         | Read one session's transcript (paginated turns) | Single-session only, no cross-session queries |
-| `agent_manage.extract_handoff` | Export a session as XML                         | Single-session, export-only                   |
+| Tool | What it does | Gap |
+|------|-------------|-----|
+| `agent_manage.list_sessions` | List sessions by state filter | No content search, no time analytics |
+| `agent_manage.get_log` | Read one session's transcript (paginated turns) | Single-session only, no cross-session queries |
+| `agent_manage.extract_handoff` | Export a session as XML | Single-session, export-only |
 
 Users and agents cannot answer questions like:
 
-- _"How much time did I spend working on feature X?"_
-- _"Which sessions touched `APISettingsViewModel.swift`?"_
-- _"What edge cases did we identify when fixing the ZAI model picker bug?"_
-- _"Find where we discussed rate limiting"_
+- *"How much time did I spend working on feature X?"*
+- *"Which sessions touched `APISettingsViewModel.swift`?"*
+- *"What edge cases did we identify when fixing the ZAI model picker bug?"*
+- *"Find where we discussed rate limiting"*
 
 This spec proposes a new MCP tool group — **`history`** — that queries past session transcripts across all workspaces.
 
@@ -31,7 +31,7 @@ This spec proposes a new MCP tool group — **`history`** — that queries past 
 - Real-time streaming of session content as it arrives.
 - Modifying past session data (read-only surface).
 - Searching Claude Code (CLI) session logs — only Agent Mode sessions managed by the app.
-- Reconstructing previous code states — tool call logs are partial and unreliable for that. File _activity_ (touched/read/edited) is tracked, not full before/after snapshots.
+- Reconstructing previous code states — tool call logs are partial and unreliable for that. File *activity* (touched/read/edited) is tracked, not full before/after snapshots.
 
 ## Constraints
 
@@ -47,89 +47,74 @@ This spec proposes a new MCP tool group — **`history`** — that queries past 
 - **Validation**: enum parameters are strict — invalid `sort` (`list_sessions`) and invalid `source` (`search`) return a validation error rather than silently falling back. `group_by` (`time`) and `op` are likewise validated. `search` `query` is trimmed; a whitespace-only query is rejected as empty.
 - **Cooperative work budgets**: cross-workspace inventory is bounded by workspace count, decoded-index count/bytes, and elapsed time; transcript operations are additionally bounded by cumulative turns and total elapsed time. Cancellation is checked and the task yields throughout enumeration, stat/decode, hydration, and transcript search loops. Budget exhaustion returns retryable partial results before the outer MCP watchdog: `scan_truncated` is true and `scan_diagnostics` contains typed `kind`, `limit`, `consumed`, `unit`, and `retryable` fields. The existing `max_sessions_scanned` default/cap and its `sessions_scanned`/`scan_truncated` behavior remain unchanged.
 - Secret sanitization in search snippets deferred to v2 (`MCPResponseSanitizationPolicy` does not exist). Search snippets may expose tool args containing secrets. The risk is bounded (session data is local, only the machine's user sees MCP responses).
-
 ## Scenarios
 
 ### Scenario: List sessions that touched a specific file
-
 - **Given** 3 sessions exist, 2 of which contain tool calls referencing `APISettingsViewModel.swift`
 - **When** `history.list_sessions(touched_file: "APISettingsViewModel")`
 - **Then** returns exactly 2 sessions with `files_touched` containing the path
 
 ### Scenario: Search across compacted and live turns
-
 - **Given** a session has compacted turns with conclusion text containing "regression test" and a live turn with activity text containing "regression test"
 - **When** `history.search(query: "regression test", source: "all")` (searches `conclusionText` when available, falling back to `compactConclusionText` for compacted turns)
 - **Then** returns matches from both the compacted summary and the live activity, with `source` field indicating "summary" or "activity"
 
 ### Scenario: Search summaries only
-
 - **Given** the same session as above
 - **When** `history.search(query: "regression test", source: "summaries")`
 - **Then** returns only the compacted turn match, not the live activity
 
 ### Scenario: Time aggregation with idle gap exclusion
-
 - **Given** a session with turns spanning 10:00–11:00, then a 2-hour gap, then turns from 13:00–13:30
 - **When** `history.time(group_by: "session")` at the settings-backed default idle threshold (currently 10 minutes)
 - **Then** `active_duration_seconds` is 5400 (90 minutes), not 12600 (3.5 hours)
 
 ### Scenario: Custom idle threshold changes what counts as active
-
 - **Given** a session with turns spanning 10:00–11:00, then a 15-minute gap, then turns from 11:15–11:45
 - **When** `history.time(group_by: "session", idle_threshold_minutes: 10)`
 - **Then** the 15-minute gap counts as idle, so `active_duration_seconds` is 5400 (the 60- and 30-minute blocks only); at the settings-backed default idle threshold (currently 10 minutes) the same session reports 6300 (the gap merged in as active)
 
 ### Scenario: Gap equal to the idle threshold counts as active
-
 - **Given** a session with merged active intervals 10:00–11:00 and 11:10–11:30 (a 10-minute gap)
 - **When** `history.time(group_by: "session", idle_threshold_minutes: 10)`
 - **Then** the 10-minute gap is counted as active because it equals the threshold, so `active_duration_seconds` is 5400
 
 ### Scenario: list_sessions applies the custom idle threshold
-
 - **Given** a session with merged active intervals 10:00–11:00 and 11:15–11:45 (a 15-minute gap)
 - **When** `history.list_sessions(idle_threshold_minutes: 10)`
 - **Then** that session's `active_duration_seconds` is 5400; at the settings-backed default idle threshold (currently 10 minutes) it would be 6300
 
 ### Scenario: Zero-turn session contributes zero duration
-
 - **Given** a session with no turn-active intervals that otherwise matches the query filters
 - **When** `history.list_sessions` or `history.time` runs
 - **Then** the session's `active_duration_seconds` is 0, it has no idle gaps, and it is included per the non-duration filters
 
 ### Scenario: Cross-workspace query
-
 - **Given** sessions exist in workspaces "repoprompt-ce" and "lyric-vibe"
 - **When** `history.list_sessions()`
 - **Then** returns sessions from both workspaces, each with `workspace_name` populated
 
 ### Scenario: Workspace-scoped query
-
 - **Given** the same sessions
 - **When** `history.list_sessions(workspace: "repoprompt-ce")`
 - **Then** returns only sessions from that workspace
 
 ### Scenario: Truncation on large result sets
-
 - **Given** 50 sessions match a query with `limit: 20`
 - **When** `history.list_sessions(date_from: "2026-01-01", limit: 20)`
 - **Then** returns 20 sessions with `"truncated": true` and `"total_sessions": 50`
 
 ### Scenario: Empty result set
-
 - **Given** no sessions match the filter
 - **When** `history.search(query: "quantum computing")`
 - **Then** returns `"total_matches": 0`, `"results": []`, `"truncated": false`
 
 ### Scenario: Time grouped by day
-
 - **Given** 5 sessions across 3 days with known turn durations
 - **When** `history.time(group_by: "day")`
 - **Then** returns 3 groups keyed by date, each with correct session count and total duration
 
 ### Scenario: Filter sessions by agent kind
-
 - **Given** sessions using codexExec and claudeCodeGLM agents
 - **When** `history.list_sessions(agent_kind: "codexExec")`
 - **Then** returns only Codex sessions
@@ -142,25 +127,26 @@ Session inventory with content-aware filters.
 
 **Parameters:**
 
-| Parameter                | Type      | Description                                                                                                                         |
-| ------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `workspace`              | `string?` | Limit to workspace name/UUID                                                                                                        |
-| `agent_kind`             | `string?` | `"claudeCodeGLM"` \| `"codexExec"` \| `"acp"`                                                                                       |
-| `model`                  | `string?` | Model substring match                                                                                                               |
-| `touched_file`           | `string?` | Sessions that edited/read this file path                                                                                            |
-| `date_from`              | `string?` | ISO 8601 lower bound                                                                                                                |
-| `date_to`                | `string?` | ISO 8601 upper bound                                                                                                                |
-| `sort`                   | `string?` | `"last_activity"` (default) \| `"duration"` \| `"turn_count"`                                                                       |
-| `limit`                  | `int?`    | Max results (default: 30, max: 100)                                                                                                 |
-| `idle_threshold_minutes` | `int?`    | Gaps longer than this count as idle when computing `active_duration_seconds` (settings-backed default, currently 10; range: 0–1440) |
-| `max_sessions_scanned`   | `int?`    | Bound on sessions hydrated for stub-derived fields / touched-file matching (default: 200, hard cap: 1000)                           |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `workspace` | `string?` | Limit to workspace name/UUID |
+| `agent_kind` | `string?` | `"claudeCodeGLM"` \| `"codexExec"` \| `"acp"` |
+| `model` | `string?` | Model substring match |
+| `touched_file` | `string?` | Sessions that edited/read this file path |
+| `date_from` | `string?` | ISO 8601 lower bound |
+| `date_to` | `string?` | ISO 8601 upper bound |
+| `sort` | `string?` | `"last_activity"` (default) \| `"duration"` \| `"turn_count"` |
+| `limit` | `int?` | Max results (default: 30, max: 100) |
+| `idle_threshold_minutes` | `int?` | Gaps longer than this count as idle when computing `active_duration_seconds` (settings-backed default, currently 10; range: 0–1440) |
+| `max_sessions_scanned` | `int?` | Bound on sessions hydrated for stub-derived fields / touched-file matching (default: 200, hard cap: 1000) |
 
-**Returns:** `total_sessions`, `truncated`, `sessions_scanned`, `scan_truncated`, optional typed `scan_diagnostics`, `skipped_workspaces`, and array of `sessions` with: `session_id`, `session_name`, `workspace_name`, `agent_kind`_, `agent_model`_, `first_activity_at`, `last_activity_at`, `active_duration_seconds`, `turn_count`, `tool_call_count`, `files_touched`, `had_errors`, `last_run_state`*.
+**Returns:** `total_sessions`, `truncated`, `sessions_scanned`, `scan_truncated`, optional typed `scan_diagnostics`, `skipped_workspaces`, and array of `sessions` with: `session_id`, `session_name`, `workspace_name`, `agent_kind`*, `agent_model`*, `first_activity_at`, `last_activity_at`, `active_duration_seconds`, `turn_count`, `tool_call_count`, `files_touched`, `had_errors`, `last_run_state`*.
 
 - `first_activity_at`: earliest indexed transcript turn/activity timestamp, with session activity date as a fallback for legacy indexes.
 - `last_activity_at`: latest indexed transcript turn/activity timestamp, with `savedAt` as a fallback for legacy indexes.
 - `last_run_state`* (`agent_kind`* / `agent_model`*): emitted only when the source value is present. Legacy or sanitized sessions may omit `agent_kind`, `agent_model`, and `last_run_state` entirely. `last_run_state` is the raw persisted `AgentSessionRunState` string — one of `"idle"` | `"running"` | `"waitingForUser"` | `"waitingForQuestion"` | `"waitingForApproval"` | `"completed"` | `"cancelled"` | `"failed"` (camelCase, not normalized). It is the state at last save, not strictly terminal.
 - `request_previews` is omitted from v1.
+
 
 ### `history.search`
 
@@ -168,17 +154,17 @@ Full-text search across session transcripts and summaries.
 
 **Parameters:**
 
-| Parameter                   | Type      | Description                                                         |
-| --------------------------- | --------- | ------------------------------------------------------------------- |
-| `query`                     | `string`  | Search term (required)                                              |
-| `workspace`                 | `string?` | Limit to workspace name/UUID                                        |
-| `session_id`                | `string?` | Limit to a specific session                                         |
-| `source`                    | `string?` | `"activities"` \| `"summaries"` \| `"all"` (default: `"all"`)       |
-| `date_from`                 | `string?` | ISO 8601 lower bound                                                |
-| `date_to`                   | `string?` | ISO 8601 upper bound                                                |
-| `limit`                     | `int?`    | Max results (default: 20, max: 100)                                 |
-| `max_sessions_scanned`      | `int?`    | Bound on transcript sessions scanned (default: 200, hard cap: 1000) |
-| `include_turn_request_text` | `bool?`   | Include clipped matched-turn user request text (default: false)     |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | `string` | Search term (required) |
+| `workspace` | `string?` | Limit to workspace name/UUID |
+| `session_id` | `string?` | Limit to a specific session |
+| `source` | `string?` | `"activities"` \| `"summaries"` \| `"all"` (default: `"all"`) |
+| `date_from` | `string?` | ISO 8601 lower bound |
+| `date_to` | `string?` | ISO 8601 upper bound |
+| `limit` | `int?` | Max results (default: 20, max: 100) |
+| `max_sessions_scanned` | `int?` | Bound on transcript sessions scanned (default: 200, hard cap: 1000) |
+| `include_turn_request_text` | `bool?` | Include clipped matched-turn user request text (default: false) |
 
 **Returns:** `total_matches`, `truncated`, `scan_truncated`, optional typed `scan_diagnostics`, `sessions_scanned`, `skipped_workspaces`, and array of `results` with: `session_id`, `session_name`, `workspace_name`, `turn_index`, `turn_request_text`*, `role`, `timestamp`, `snippet` (~200 chars), `source`.
 
@@ -194,17 +180,17 @@ Aggregate time-in-session analytics.
 
 **Parameters:**
 
-| Parameter                | Type      | Description                                                                                |
-| ------------------------ | --------- | ------------------------------------------------------------------------------------------ |
-| `group_by`               | `string`  | `"day"` \| `"week"` \| `"month"` \| `"session"` \| `"workspace"` (required)                |
-| `workspace`              | `string?` | Limit to workspace name/UUID                                                               |
-| `session_id`             | `string?` | Limit to a specific session                                                                |
-| `date_from`              | `string?` | ISO 8601 lower bound                                                                       |
-| `date_to`                | `string?` | ISO 8601 upper bound                                                                       |
-| `include_details`        | `bool?`   | Include per-session breakdowns (default: false)                                            |
-| `limit`                  | `int?`    | Max groups (default: 30, max: 100)                                                         |
-| `idle_threshold_minutes` | `int?`    | Gaps longer than this count as idle (settings-backed default, currently 10; range: 0–1440) |
-| `max_sessions_scanned`   | `int?`    | Bound on transcript/hydration sessions scanned (default: 200, hard cap: 1000)              |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `group_by` | `string` | `"day"` \| `"week"` \| `"month"` \| `"session"` \| `"workspace"` (required) |
+| `workspace` | `string?` | Limit to workspace name/UUID |
+| `session_id` | `string?` | Limit to a specific session |
+| `date_from` | `string?` | ISO 8601 lower bound |
+| `date_to` | `string?` | ISO 8601 upper bound |
+| `include_details` | `bool?` | Include per-session breakdowns (default: false) |
+| `limit` | `int?` | Max groups (default: 30, max: 100) |
+| `idle_threshold_minutes` | `int?` | Gaps longer than this count as idle (settings-backed default, currently 10; range: 0–1440) |
+| `max_sessions_scanned` | `int?` | Bound on transcript/hydration sessions scanned (default: 200, hard cap: 1000) |
 
 **Returns:** `total_sessions`, `total_active_duration_seconds`, `truncated`, `sessions_scanned`, `scan_truncated`, optional typed `scan_diagnostics`, `skipped_workspaces`, and array of `groups` keyed by the `group_by` value. Each group has `sessions`, `active_duration_seconds`, `turn_count`, `tool_call_count`, and optional `details` array with per-session breakdowns.
 
@@ -218,15 +204,15 @@ Read a bounded, noise-reduced transcript window for one session. Intended follow
 
 **Parameters:**
 
-| Parameter       | Type        | Description                                                                                                                    |
-| --------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `session_id`    | `string`    | Required session UUID                                                                                                          |
-| `around_turn`   | `int?`      | Turn index to inspect, usually copied from a search result                                                                     |
-| `context_turns` | `int?`      | Turns before/after `around_turn` (default: 1, max: 5; use 0 for cheapest target-turn-only follow-up)                           |
-| `turn_start`    | `int?`      | Inclusive start turn for a bounded range; used when `around_turn` is omitted                                                   |
-| `turn_end`      | `int?`      | Inclusive end turn for a bounded range; max returned span is 20 turns                                                          |
-| `roles`         | `[string]?` | Included roles. Default: user, assistant, errors, summaries. Tool calls are summarized per turn unless role `tool` is included |
-| `max_chars`     | `int?`      | Hard cap on returned text (default: 6000, max: 20000)                                                                          |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `string` | Required session UUID |
+| `around_turn` | `int?` | Turn index to inspect, usually copied from a search result |
+| `context_turns` | `int?` | Turns before/after `around_turn` (default: 1, max: 5; use 0 for cheapest target-turn-only follow-up) |
+| `turn_start` | `int?` | Inclusive start turn for a bounded range; used when `around_turn` is omitted |
+| `turn_end` | `int?` | Inclusive end turn for a bounded range; max returned span is 20 turns |
+| `roles` | `[string]?` | Included roles. Default: user, assistant, errors, summaries. Tool calls are summarized per turn unless role `tool` is included |
+| `max_chars` | `int?` | Hard cap on returned text (default: 6000, max: 20000) |
 
 **Returns:** `session_id`, `session_name`, `workspace_name`, `total_turns`, `returned_turn_start`, `returned_turn_end`, `truncated`, and `turns`. Each returned turn includes `turn_index`, `started_at`, optional `request_text`, optional `tool_call_summary`, `entries`, `truncated`, and optional `entries_omitted`.
 

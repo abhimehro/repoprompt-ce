@@ -42,14 +42,15 @@ import re
 
 ## Mandatory Properties ##
 
-name = "Italian"
-code = "it"
+name = 'Italian'
+code = 'it'
 use_ascii = True
-charsets = ["ISO-8859-1", "ISO-8859-3", "ISO-8859-9", "ISO-8859-15", "WINDOWS-1252"]
+charsets = ['ISO-8859-1', 'ISO-8859-3', 'ISO-8859-9',
+            'ISO-8859-15', 'WINDOWS-1252']
 
 ## Optional Properties ##
 
-alphabet = "óéèò"
-start_pages = ["Pieve Ligure"]
+alphabet = 'óéèò'
+start_pages = ['Pieve Ligure']
 wikipedia_code = code
 case_mapping = True

@@ -31,13 +31,10 @@ class TestListParsingTests(unittest.TestCase):
             "provider",
         )
 
-        self.assertEqual(
-            [test.method_id for test in root],
-            [
-                "root/RepoPromptTests.ExampleTests/testOne",
-                "root/RepoPromptTests.ExampleTests/testTwo",
-            ],
-        )
+        self.assertEqual([test.method_id for test in root], [
+            "root/RepoPromptTests.ExampleTests/testOne",
+            "root/RepoPromptTests.ExampleTests/testTwo",
+        ])
         self.assertEqual(
             provider[0].method_id,
             "provider/RepoPromptClaudeCompatibleProviderTests.CodecTests/testRoundTrip",
@@ -45,15 +42,11 @@ class TestListParsingTests(unittest.TestCase):
 
     def test_parse_test_list_rejects_duplicate_identifiers(self) -> None:
         text = "RepoPromptTests.ExampleTests/testOne\nRepoPromptTests.ExampleTests/testOne\n"
-        with self.assertRaisesRegex(
-            optimizer.OptimizerError, "duplicate listed test identifier"
-        ):
+        with self.assertRaisesRegex(optimizer.OptimizerError, "duplicate listed test identifier"):
             optimizer.parse_test_list(text, "root")
 
     def test_parse_test_list_requires_xctest_methods(self) -> None:
-        with self.assertRaisesRegex(
-            optimizer.OptimizerError, "no discoverable XCTest methods"
-        ):
+        with self.assertRaisesRegex(optimizer.OptimizerError, "no discoverable XCTest methods"):
             optimizer.parse_test_list("RepoPromptTests.ExampleTests/example\n", "root")
 
 
@@ -91,9 +84,7 @@ class TimingTests(unittest.TestCase):
 
         timings = optimizer.parse_xctest_timings(text)
 
-        self.assertEqual(
-            [timing.method for timing in timings], ["testOld", "testNew", "testSkipped"]
-        )
+        self.assertEqual([timing.method for timing in timings], ["testOld", "testNew", "testSkipped"])
         self.assertEqual([timing.seconds for timing in timings], [0.125, 0.25, 0.01])
         self.assertEqual(timings[-1].status, "skipped")
 
@@ -128,13 +119,7 @@ class TimingTests(unittest.TestCase):
 
     def test_filtered_sample_without_timings_is_invalid(self) -> None:
         run = optimizer.ConductorRun(
-            command=[
-                "/repo/conductor",
-                "test",
-                "--filter",
-                "RepoPromptTests.Empty",
-                "--json",
-            ],
+            command=["/repo/conductor", "test", "--filter", "RepoPromptTests.Empty", "--json"],
             process_exit_code=0,
             stdout="{}",
             stderr="",
@@ -161,10 +146,7 @@ class TimingTests(unittest.TestCase):
 
         self.assertFalse(sample.valid)
         self.assertEqual(sample.source_guard_kind, optimizer.SOURCE_GUARD_METADATA)
-        self.assertIn(
-            "filtered baseline produced no parsed XCTest timings",
-            sample.invalid_reasons,
-        )
+        self.assertIn("filtered baseline produced no parsed XCTest timings", sample.invalid_reasons)
 
     def test_baseline_summary_separates_build_and_test_seconds(self) -> None:
         samples = [
@@ -187,32 +169,22 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(summary["median_total_build_plus_test_seconds"], 17.0)
 
     def test_suite_ranking_uses_median_aggregate_seconds(self) -> None:
-        ranking = optimizer.suite_ranking(
-            [
-                self.make_sample(
-                    1,
-                    [
-                        optimizer.TestCaseTiming(
-                            "RepoPromptTests.A", "testOne", "passed", 1.0
-                        ),
-                        optimizer.TestCaseTiming(
-                            "RepoPromptTests.B", "testTwo", "passed", 4.0
-                        ),
-                    ],
-                ),
-                self.make_sample(
-                    2,
-                    [
-                        optimizer.TestCaseTiming(
-                            "RepoPromptTests.A", "testOne", "passed", 5.0
-                        ),
-                        optimizer.TestCaseTiming(
-                            "RepoPromptTests.B", "testTwo", "passed", 4.0
-                        ),
-                    ],
-                ),
-            ]
-        )
+        ranking = optimizer.suite_ranking([
+            self.make_sample(
+                1,
+                [
+                    optimizer.TestCaseTiming("RepoPromptTests.A", "testOne", "passed", 1.0),
+                    optimizer.TestCaseTiming("RepoPromptTests.B", "testTwo", "passed", 4.0),
+                ],
+            ),
+            self.make_sample(
+                2,
+                [
+                    optimizer.TestCaseTiming("RepoPromptTests.A", "testOne", "passed", 5.0),
+                    optimizer.TestCaseTiming("RepoPromptTests.B", "testTwo", "passed", 4.0),
+                ],
+            ),
+        ])
 
         self.assertEqual(ranking[0]["suite"], "RepoPromptTests.B")
         self.assertEqual(ranking[0]["median_aggregate_seconds"], 4.0)
@@ -224,43 +196,25 @@ class TimingTests(unittest.TestCase):
             self.make_sample(
                 1,
                 [
-                    optimizer.TestCaseTiming(
-                        "RepoPromptTests.B", "testSlow", "passed", 5.0
-                    ),
-                    optimizer.TestCaseTiming(
-                        "RepoPromptTests.A", "testSlow", "passed", 5.0
-                    ),
-                    optimizer.TestCaseTiming(
-                        "RepoPromptTests.A", "testFast", "passed", 1.0
-                    ),
+                    optimizer.TestCaseTiming("RepoPromptTests.B", "testSlow", "passed", 5.0),
+                    optimizer.TestCaseTiming("RepoPromptTests.A", "testSlow", "passed", 5.0),
+                    optimizer.TestCaseTiming("RepoPromptTests.A", "testFast", "passed", 1.0),
                 ],
             ),
             self.make_sample(
                 2,
                 [
-                    optimizer.TestCaseTiming(
-                        "RepoPromptTests.B", "testSlow", "skipped", 7.0
-                    ),
-                    optimizer.TestCaseTiming(
-                        "RepoPromptTests.A", "testSlow", "passed", 7.0
-                    ),
-                    optimizer.TestCaseTiming(
-                        "RepoPromptTests.A", "testFast", "passed", 2.0
-                    ),
+                    optimizer.TestCaseTiming("RepoPromptTests.B", "testSlow", "skipped", 7.0),
+                    optimizer.TestCaseTiming("RepoPromptTests.A", "testSlow", "passed", 7.0),
+                    optimizer.TestCaseTiming("RepoPromptTests.A", "testFast", "passed", 2.0),
                 ],
             ),
         ]
 
         ranking = optimizer.test_ranking(samples)
 
-        self.assertEqual(
-            (ranking[0]["suite"], ranking[0]["method"]),
-            ("RepoPromptTests.A", "testSlow"),
-        )
-        self.assertEqual(
-            (ranking[1]["suite"], ranking[1]["method"]),
-            ("RepoPromptTests.B", "testSlow"),
-        )
+        self.assertEqual((ranking[0]["suite"], ranking[0]["method"]), ("RepoPromptTests.A", "testSlow"))
+        self.assertEqual((ranking[1]["suite"], ranking[1]["method"]), ("RepoPromptTests.B", "testSlow"))
         self.assertEqual(ranking[0]["median_seconds"], 6.0)
         self.assertEqual(ranking[0]["observed_p95_seconds"], 7.0)
         self.assertEqual(ranking[1]["failure_or_skip_count"], 1)
@@ -293,12 +247,8 @@ class SourceAndLedgerTests(unittest.TestCase):
                 "--json",
             ],
         )
-        with self.assertRaisesRegex(
-            optimizer.OptimizerError, "--filter cannot be used with list mode"
-        ):
-            optimizer.conductor_command(
-                Path("/repo"), "provider", list_mode=True, filter_value="Suite"
-            )
+        with self.assertRaisesRegex(optimizer.OptimizerError, "--filter cannot be used with list mode"):
+            optimizer.conductor_command(Path("/repo"), "provider", list_mode=True, filter_value="Suite")
 
     def test_conductor_command_adds_test_product_before_filter(self) -> None:
         command = optimizer.conductor_command(
@@ -320,9 +270,7 @@ class SourceAndLedgerTests(unittest.TestCase):
                 "--json",
             ],
         )
-        with self.assertRaisesRegex(
-            optimizer.OptimizerError, "--test-product cannot be used with list mode"
-        ):
+        with self.assertRaisesRegex(optimizer.OptimizerError, "--test-product cannot be used with list mode"):
             optimizer.conductor_command(
                 Path("/repo"),
                 "root",
@@ -341,9 +289,7 @@ class SourceAndLedgerTests(unittest.TestCase):
             new_file.write_text("final class AnotherTests {}\n", encoding="utf-8")
             after_add = optimizer.measurement_source_metadata_fingerprint(root)
 
-            new_file.write_text(
-                "final class AnotherTests { func testTwo() {} }\n", encoding="utf-8"
-            )
+            new_file.write_text("final class AnotherTests { func testTwo() {} }\n", encoding="utf-8")
             after_modify = optimizer.measurement_source_metadata_fingerprint(root)
 
             new_file.unlink()
@@ -352,26 +298,19 @@ class SourceAndLedgerTests(unittest.TestCase):
         self.assertNotEqual(initial, after_add)
         self.assertNotEqual(after_add, after_modify)
         self.assertEqual(initial, after_delete)
-        with self.assertRaisesRegex(
-            optimizer.OptimizerError, "unsupported source change guard"
-        ):
+        with self.assertRaisesRegex(optimizer.OptimizerError, "unsupported source change guard"):
             optimizer.measurement_source_guard_fingerprint(root, "unknown")
 
     def test_source_mapping_and_ledger_scaffold_are_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_repo(root)
-            tests = [
-                optimizer.ListedTest("root", "RepoPromptTests.ExampleTests", "testOne")
-            ]
+            tests = [optimizer.ListedTest("root", "RepoPromptTests.ExampleTests", "testOne")]
 
             locations = optimizer.map_test_sources(root, tests)
             rows = optimizer.ledger_rows(tests, locations)
 
-        self.assertEqual(
-            locations[tests[0].method_id].file,
-            "Tests/RepoPromptTests/MCP/ExampleTests.swift",
-        )
+        self.assertEqual(locations[tests[0].method_id].file, "Tests/RepoPromptTests/MCP/ExampleTests.swift")
         self.assertEqual(rows[0]["domain"], "MCP")
         self.assertEqual(rows[0]["execution_tier"], "routine")
         self.assertEqual(rows[0]["scenario_count"], "1")
@@ -398,20 +337,16 @@ class SourceAndLedgerTests(unittest.TestCase):
             ledger = Path(tmp) / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.ExampleTests/testOne",
-                        "target": "root",
-                        "suite": "RepoPromptTests.ExampleTests",
-                        "method": "testOne",
-                        "execution_tier": "sometimes",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.ExampleTests/testOne",
+                    "target": "root",
+                    "suite": "RepoPromptTests.ExampleTests",
+                    "method": "testOne",
+                    "execution_tier": "sometimes",
+                }],
             )
 
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "unsupported execution_tier"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "unsupported execution_tier"):
                 optimizer.read_ledger_rows(ledger)
 
     def test_default_impacted_range_unions_branch_and_worktree_changes(self) -> None:
@@ -430,24 +365,12 @@ class SourceAndLedgerTests(unittest.TestCase):
             return FakeCompletedProcess("Shared.swift\nTests/WorktreeTests.swift\n")
 
         with mock.patch.object(optimizer, "run_command", side_effect=fake_run_command):
-            changed = optimizer.changed_files_for_range(
-                Path("/repo"), optimizer.DEFAULT_IMPACTED_RANGE
-            )
+            changed = optimizer.changed_files_for_range(Path("/repo"), optimizer.DEFAULT_IMPACTED_RANGE)
 
-        self.assertEqual(
-            changed,
-            ["Shared.swift", "Sources/Branch.swift", "Tests/WorktreeTests.swift"],
-        )
+        self.assertEqual(changed, ["Shared.swift", "Sources/Branch.swift", "Tests/WorktreeTests.swift"])
         self.assertEqual(
             calls[0],
-            [
-                "git",
-                "diff",
-                "--name-only",
-                "--diff-filter=ACMRT",
-                "origin/main...HEAD",
-                "--",
-            ],
+            ["git", "diff", "--name-only", "--diff-filter=ACMRT", "origin/main...HEAD", "--"],
         )
         self.assertEqual(
             calls[1],
@@ -519,10 +442,7 @@ class SourceAndLedgerTests(unittest.TestCase):
                 "root/RepoPromptTests.SmokeTests/testSmoke",
             ],
         )
-        self.assertEqual(
-            payload["skipped_heavy_or_opt_in"][0]["method_id"],
-            "root/RepoPromptTests.ScaleTests/testScale",
-        )
+        self.assertEqual(payload["skipped_heavy_or_opt_in"][0]["method_id"], "root/RepoPromptTests.ScaleTests/testScale")
         self.assertIn(r"RepoPromptTests\.ExampleTests/testOne", payload["filter"])
 
     def test_impacted_tests_uses_full_root_for_broad_boundaries(self) -> None:
@@ -531,23 +451,17 @@ class SourceAndLedgerTests(unittest.TestCase):
             ledger = root / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.ExampleTests/testOne",
-                        "target": "root",
-                        "suite": "RepoPromptTests.ExampleTests",
-                        "method": "testOne",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.ExampleTests/testOne",
+                    "target": "root",
+                    "suite": "RepoPromptTests.ExampleTests",
+                    "method": "testOne",
+                    "execution_tier": "routine",
+                }],
             )
 
-            with mock.patch.object(
-                optimizer, "changed_files_for_range", return_value=["Package.swift"]
-            ):
-                payload = optimizer.impacted_tests(
-                    root, ledger, "HEAD", validate_live_list=False
-                )
+            with mock.patch.object(optimizer, "changed_files_for_range", return_value=["Package.swift"]):
+                payload = optimizer.impacted_tests(root, ledger, "HEAD", validate_live_list=False)
 
         self.assertTrue(payload["full_root_required"])
         self.assertIsNone(payload["filter"])
@@ -560,20 +474,16 @@ class SourceAndLedgerTests(unittest.TestCase):
             ledger = root / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.ExampleTests/testOne",
-                        "target": "root",
-                        "suite": "RepoPromptTests.ExampleTests",
-                        "method": "testOne",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.ExampleTests/testOne",
+                    "target": "root",
+                    "suite": "RepoPromptTests.ExampleTests",
+                    "method": "testOne",
+                    "execution_tier": "routine",
+                }],
             )
 
-            with mock.patch.object(
-                optimizer, "changed_files_for_range", return_value=["Package.swift"]
-            ):
+            with mock.patch.object(optimizer, "changed_files_for_range", return_value=["Package.swift"]):
                 with self.assertRaises(optimizer.OptimizerError) as ctx:
                     optimizer.impacted_tests(
                         root,
@@ -592,28 +502,22 @@ class SourceAndLedgerTests(unittest.TestCase):
             ledger = root / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.ExampleTests/testOne",
-                        "target": "root",
-                        "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
-                        "suite": "RepoPromptTests.ExampleTests",
-                        "method": "testOne",
-                        "domain": "MCP",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.ExampleTests/testOne",
+                    "target": "root",
+                    "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
+                    "suite": "RepoPromptTests.ExampleTests",
+                    "method": "testOne",
+                    "domain": "MCP",
+                    "execution_tier": "routine",
+                }],
             )
             list_run = optimizer.ConductorRun(
                 command=["/repo/conductor", "test", "--list", "--json"],
                 process_exit_code=0,
                 stdout="{}",
                 stderr="",
-                result={
-                    "state": "completed",
-                    "exitCode": 0,
-                    "logPath": "/tmp/root-list.log",
-                },
+                result={"state": "completed", "exitCode": 0, "logPath": "/tmp/root-list.log"},
                 log_text="RepoPromptTests.ExampleTests/testOne\n",
                 ticket="list-ticket",
             )
@@ -654,28 +558,22 @@ class SourceAndLedgerTests(unittest.TestCase):
             ledger = root / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.ExampleTests/testOne",
-                        "target": "root",
-                        "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
-                        "suite": "RepoPromptTests.ExampleTests",
-                        "method": "testOne",
-                        "domain": "MCP",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.ExampleTests/testOne",
+                    "target": "root",
+                    "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
+                    "suite": "RepoPromptTests.ExampleTests",
+                    "method": "testOne",
+                    "domain": "MCP",
+                    "execution_tier": "routine",
+                }],
             )
             list_run = optimizer.ConductorRun(
                 command=["/repo/conductor", "test", "--list", "--json"],
                 process_exit_code=0,
                 stdout="{}",
                 stderr="",
-                result={
-                    "state": "completed",
-                    "exitCode": 0,
-                    "logPath": "/tmp/root-list.log",
-                },
+                result={"state": "completed", "exitCode": 0, "logPath": "/tmp/root-list.log"},
                 log_text="RepoPromptTests.ExampleTests/testOne\n",
                 ticket="list-ticket",
             )
@@ -701,9 +599,7 @@ class SourceAndLedgerTests(unittest.TestCase):
                     return_value=["Tests/RepoPromptTests/MCP/ExampleTests.swift"],
                 ),
             ):
-                payload = optimizer.impacted_tests(
-                    root, ledger, "HEAD", run_selected=True
-                )
+                payload = optimizer.impacted_tests(root, ledger, "HEAD", run_selected=True)
 
         self.assertIsNotNone(payload["run"])
         self.assertEqual(payload["run"]["process_exit_code"], 0)
@@ -717,28 +613,22 @@ class SourceAndLedgerTests(unittest.TestCase):
             ledger = root / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.ExampleTests/testOne",
-                        "target": "root",
-                        "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
-                        "suite": "RepoPromptTests.ExampleTests",
-                        "method": "testOne",
-                        "domain": "MCP",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.ExampleTests/testOne",
+                    "target": "root",
+                    "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
+                    "suite": "RepoPromptTests.ExampleTests",
+                    "method": "testOne",
+                    "domain": "MCP",
+                    "execution_tier": "routine",
+                }],
             )
             run = optimizer.ConductorRun(
                 command=["/repo/conductor", "test", "--list", "--json"],
                 process_exit_code=0,
                 stdout="{}",
                 stderr="",
-                result={
-                    "state": "completed",
-                    "exitCode": 0,
-                    "logPath": "/tmp/root-list.log",
-                },
+                result={"state": "completed", "exitCode": 0, "logPath": "/tmp/root-list.log"},
                 log_text="RepoPromptTests.ExampleTests/testOne\n",
                 ticket="list-ticket",
             )
@@ -763,62 +653,48 @@ class SourceAndLedgerTests(unittest.TestCase):
             ledger = root / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.ExampleTests/testOne",
-                        "target": "root",
-                        "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
-                        "suite": "RepoPromptTests.ExampleTests",
-                        "method": "testOne",
-                        "domain": "MCP",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.ExampleTests/testOne",
+                    "target": "root",
+                    "file": "Tests/RepoPromptTests/MCP/ExampleTests.swift",
+                    "suite": "RepoPromptTests.ExampleTests",
+                    "method": "testOne",
+                    "domain": "MCP",
+                    "execution_tier": "routine",
+                }],
             )
             run = optimizer.ConductorRun(
                 command=["/repo/conductor", "test", "--list", "--json"],
                 process_exit_code=0,
                 stdout="{}",
                 stderr="",
-                result={
-                    "state": "completed",
-                    "exitCode": 0,
-                    "logPath": "/tmp/root-list.log",
-                },
+                result={"state": "completed", "exitCode": 0, "logPath": "/tmp/root-list.log"},
                 log_text="RepoPromptTests.ExampleTests/testOne\nRepoPromptWorkspaceTests.SplitTests/testTwo\n",
                 ticket="list-ticket",
             )
 
             with (
                 mock.patch.object(optimizer, "run_conductor", return_value=run),
-                mock.patch.object(
-                    optimizer, "changed_files_for_range", return_value=[]
-                ),
+                mock.patch.object(optimizer, "changed_files_for_range", return_value=[]),
             ):
-                with self.assertRaisesRegex(
-                    optimizer.OptimizerError, "missing=1 stale=0"
-                ):
+                with self.assertRaisesRegex(optimizer.OptimizerError, "missing=1 stale=0"):
                     optimizer.impacted_tests(root, ledger, "HEAD")
 
-    def test_impacted_tests_selects_changed_split_root_test_file_by_ledger_path(
-        self,
-    ) -> None:
+    def test_impacted_tests_selects_changed_split_root_test_file_by_ledger_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ledger = root / "ledger.tsv"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptWorkspaceTests.SplitTests/testTwo",
-                        "target": "root",
-                        "file": "Tests/RepoPromptWorkspaceTests/SplitTests.swift",
-                        "suite": "RepoPromptWorkspaceTests.SplitTests",
-                        "method": "testTwo",
-                        "domain": "Workspace",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptWorkspaceTests.SplitTests/testTwo",
+                    "target": "root",
+                    "file": "Tests/RepoPromptWorkspaceTests/SplitTests.swift",
+                    "suite": "RepoPromptWorkspaceTests.SplitTests",
+                    "method": "testTwo",
+                    "domain": "Workspace",
+                    "execution_tier": "routine",
+                }],
             )
 
             with mock.patch.object(
@@ -826,23 +702,16 @@ class SourceAndLedgerTests(unittest.TestCase):
                 "changed_files_for_range",
                 return_value=["Tests/RepoPromptWorkspaceTests/SplitTests.swift"],
             ):
-                payload = optimizer.impacted_tests(
-                    root, ledger, "HEAD", validate_live_list=False
-                )
+                payload = optimizer.impacted_tests(root, ledger, "HEAD", validate_live_list=False)
 
         self.assertEqual(payload["selected_count"], 1)
-        self.assertEqual(
-            payload["selected"][0]["method_id"],
-            "root/RepoPromptWorkspaceTests.SplitTests/testTwo",
-        )
+        self.assertEqual(payload["selected"][0]["method_id"], "root/RepoPromptWorkspaceTests.SplitTests/testTwo")
         self.assertIn(
             "Tests/RepoPromptWorkspaceTests/SplitTests.swift: changed test file",
             payload["selected"][0]["reasons"],
         )
 
-    def test_shard_root_tests_balances_by_runtime_and_excludes_heavy_by_default(
-        self,
-    ) -> None:
+    def test_shard_root_tests_balances_by_runtime_and_excludes_heavy_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.tsv"
             self.write_ledger(
@@ -911,23 +780,13 @@ class SourceAndLedgerTests(unittest.TestCase):
                 ],
             )
             baseline.write_text(
-                json.dumps(
-                    {
-                        "target": "root",
-                        "slowest_tests": [
-                            {
-                                "suite": "RepoPromptTests.A",
-                                "method": "testOne",
-                                "median_seconds": 2.5,
-                            },
-                            {
-                                "suite": "RepoPromptTests.C",
-                                "method": "testMissing",
-                                "median_seconds": 9.0,
-                            },
-                        ],
-                    }
-                ),
+                json.dumps({
+                    "target": "root",
+                    "slowest_tests": [
+                        {"suite": "RepoPromptTests.A", "method": "testOne", "median_seconds": 2.5},
+                        {"suite": "RepoPromptTests.C", "method": "testMissing", "median_seconds": 9.0},
+                    ],
+                }),
                 encoding="utf-8",
             )
 
@@ -935,23 +794,14 @@ class SourceAndLedgerTests(unittest.TestCase):
 
             self.assertEqual(summary["rows_updated"], 1)
             self.assertEqual(summary["rows_unchanged"], 1)
-            self.assertEqual(
-                summary["artifact_methods_missing_from_ledger"],
-                ["root/RepoPromptTests.C/testMissing"],
-            )
-            self.assertEqual(
-                summary["ledger_methods_missing_from_artifact"],
-                ["root/RepoPromptTests.B/testTwo"],
-            )
+            self.assertEqual(summary["artifact_methods_missing_from_ledger"], ["root/RepoPromptTests.C/testMissing"])
+            self.assertEqual(summary["ledger_methods_missing_from_artifact"], ["root/RepoPromptTests.B/testTwo"])
             with output.open("r", encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle, delimiter="\t"))
-            self.assertEqual(
-                [row["method_id"] for row in rows],
-                [
-                    "root/RepoPromptTests.A/testOne",
-                    "root/RepoPromptTests.B/testTwo",
-                ],
-            )
+            self.assertEqual([row["method_id"] for row in rows], [
+                "root/RepoPromptTests.A/testOne",
+                "root/RepoPromptTests.B/testTwo",
+            ])
             self.assertEqual(rows[0]["runtime_seconds"], "2.500000")
             self.assertEqual(rows[1]["runtime_seconds"], "1.000000")
 
@@ -963,24 +813,18 @@ class SourceAndLedgerTests(unittest.TestCase):
             baseline = root / "baseline.json"
             self.write_ledger(
                 ledger,
-                [
-                    {
-                        "method_id": "root/RepoPromptTests.A/testOne",
-                        "target": "root",
-                        "suite": "RepoPromptTests.A",
-                        "method": "testOne",
-                        "execution_tier": "routine",
-                    }
-                ],
+                [{
+                    "method_id": "root/RepoPromptTests.A/testOne",
+                    "target": "root",
+                    "suite": "RepoPromptTests.A",
+                    "method": "testOne",
+                    "execution_tier": "routine",
+                }],
             )
-            baseline.write_text(
-                json.dumps({"target": "root", "slowest_tests": []}), encoding="utf-8"
-            )
+            baseline.write_text(json.dumps({"target": "root", "slowest_tests": []}), encoding="utf-8")
             output.write_text("existing", encoding="utf-8")
 
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "refusing to overwrite"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "refusing to overwrite"):
                 optimizer.runtime_import(ledger, baseline, output)
 
     def test_ci_suite_plan_balances_suites_and_marks_batch_eligibility(self) -> None:
@@ -1032,44 +876,28 @@ class SourceAndLedgerTests(unittest.TestCase):
                 ],
             )
 
-            plan = optimizer.ci_suite_plan(
-                ledger,
-                2,
-                suites=[
-                    "RepoPromptTests.Slow",
-                    "RepoPromptTests.Fast",
-                    "RepoPromptTests.MissingRuntime",
-                    "RepoPromptTests.Shared",
-                    "RepoPromptTests.NotLive",
-                ],
-            )
-
-        self.assertEqual(plan["shard_count"], 2)
-        self.assertEqual(plan["missing_suites"], ["RepoPromptTests.NotLive"])
-        all_suites = {
-            entry["suite"]: entry
-            for shard in plan["shards"]
-            for entry in shard["suites"]
-        }
-        self.assertEqual(
-            set(all_suites),
-            {
+            plan = optimizer.ci_suite_plan(ledger, 2, suites=[
                 "RepoPromptTests.Slow",
                 "RepoPromptTests.Fast",
                 "RepoPromptTests.MissingRuntime",
                 "RepoPromptTests.Shared",
-            },
-        )
-        self.assertEqual(
-            all_suites["RepoPromptTests.MissingRuntime"]["missing_runtime_count"], 1
-        )
+                "RepoPromptTests.NotLive",
+            ])
+
+        self.assertEqual(plan["shard_count"], 2)
+        self.assertEqual(plan["missing_suites"], ["RepoPromptTests.NotLive"])
+        all_suites = {entry["suite"]: entry for shard in plan["shards"] for entry in shard["suites"]}
+        self.assertEqual(set(all_suites), {
+            "RepoPromptTests.Slow",
+            "RepoPromptTests.Fast",
+            "RepoPromptTests.MissingRuntime",
+            "RepoPromptTests.Shared",
+        })
+        self.assertEqual(all_suites["RepoPromptTests.MissingRuntime"]["missing_runtime_count"], 1)
         self.assertTrue(all_suites["RepoPromptTests.Fast"]["batch_eligible"])
         self.assertFalse(all_suites["RepoPromptTests.MissingRuntime"]["batch_eligible"])
         self.assertFalse(all_suites["RepoPromptTests.Shared"]["batch_eligible"])
-        self.assertGreaterEqual(
-            plan["shards"][0]["estimated_seconds"],
-            plan["shards"][1]["estimated_seconds"],
-        )
+        self.assertGreaterEqual(plan["shards"][0]["estimated_seconds"], plan["shards"][1]["estimated_seconds"])
 
     def test_source_mapping_supports_multiple_root_test_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1087,9 +915,7 @@ class SourceAndLedgerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             tests = [
-                optimizer.ListedTest(
-                    "root", "RepoPromptWorkspaceTests.WorkspaceExampleTests", "testTwo"
-                )
+                optimizer.ListedTest("root", "RepoPromptWorkspaceTests.WorkspaceExampleTests", "testTwo")
             ]
 
             locations = optimizer.map_test_sources(root, tests)
@@ -1106,18 +932,10 @@ class SourceAndLedgerTests(unittest.TestCase):
             tests_root = root / "Tests" / "RepoPromptTests" / "MCP"
             tests_root.mkdir(parents=True)
             for name in ("One.swift", "Two.swift"):
-                (tests_root / name).write_text(
-                    "func testShared() {}\n", encoding="utf-8"
-                )
-            tests = [
-                optimizer.ListedTest(
-                    "root", "RepoPromptTests.UnknownTests", "testShared"
-                )
-            ]
+                (tests_root / name).write_text("func testShared() {}\n", encoding="utf-8")
+            tests = [optimizer.ListedTest("root", "RepoPromptTests.UnknownTests", "testShared")]
 
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "expected one source file"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "expected one source file"):
                 optimizer.map_test_sources(root, tests)
 
     def test_ledger_verification_rejects_schema_and_duplicates(self) -> None:
@@ -1136,9 +954,7 @@ class SourceAndLedgerTests(unittest.TestCase):
                 writer.writerow(row)
                 writer.writerow(row)
 
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "duplicate method_id"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "duplicate method_id"):
                 optimizer.read_ledger_ids(path)
 
     def test_verify_ledger_emits_progress_and_checks_completed_state(self) -> None:
@@ -1154,12 +970,7 @@ class SourceAndLedgerTests(unittest.TestCase):
                 )
                 writer.writeheader()
                 for method_id, target, suite, method in [
-                    (
-                        "root/RepoPromptTests.ExampleTests/testOne",
-                        "root",
-                        "RepoPromptTests.ExampleTests",
-                        "testOne",
-                    ),
+                    ("root/RepoPromptTests.ExampleTests/testOne", "root", "RepoPromptTests.ExampleTests", "testOne"),
                     (
                         "provider/RepoPromptClaudeCompatibleProviderTests.CodecTests/testRoundTrip",
                         "provider",
@@ -1168,15 +979,13 @@ class SourceAndLedgerTests(unittest.TestCase):
                     ),
                 ]:
                     row = {column: "" for column in optimizer.LEDGER_COLUMNS}
-                    row.update(
-                        {
-                            "method_id": method_id,
-                            "target": target,
-                            "suite": suite,
-                            "method": method,
-                            "execution_tier": "routine" if target == "root" else "fast",
-                        }
-                    )
+                    row.update({
+                        "method_id": method_id,
+                        "target": target,
+                        "suite": suite,
+                        "method": method,
+                        "execution_tier": "routine" if target == "root" else "fast",
+                    })
                     writer.writerow(row)
             runs = {
                 "root": optimizer.ConductorRun(
@@ -1184,11 +993,7 @@ class SourceAndLedgerTests(unittest.TestCase):
                     process_exit_code=0,
                     stdout="{}",
                     stderr="",
-                    result={
-                        "state": "completed",
-                        "exitCode": 0,
-                        "logPath": "/tmp/root.log",
-                    },
+                    result={"state": "completed", "exitCode": 0, "logPath": "/tmp/root.log"},
                     log_text="RepoPromptTests.ExampleTests/testOne\n",
                     ticket="root-ticket",
                 ),
@@ -1197,31 +1002,19 @@ class SourceAndLedgerTests(unittest.TestCase):
                     process_exit_code=0,
                     stdout="{}",
                     stderr="",
-                    result={
-                        "state": "completed",
-                        "exitCode": 0,
-                        "logPath": "/tmp/provider.log",
-                    },
+                    result={"state": "completed", "exitCode": 0, "logPath": "/tmp/provider.log"},
                     log_text="RepoPromptClaudeCompatibleProviderTests.CodecTests/testRoundTrip\n",
                     ticket="provider-ticket",
                 ),
             }
             events: list[dict[str, object]] = []
 
-            def fake_run_conductor(
-                repo_root,
-                target,
-                list_mode=False,
-                filter_value=None,
-                timeout_seconds=None,
-            ):
+            def fake_run_conductor(repo_root, target, list_mode=False, filter_value=None, timeout_seconds=None):
                 self.assertTrue(list_mode)
                 self.assertEqual(timeout_seconds, 12)
                 return runs[target]
 
-            with mock.patch.object(
-                optimizer, "run_conductor", side_effect=fake_run_conductor
-            ):
+            with mock.patch.object(optimizer, "run_conductor", side_effect=fake_run_conductor):
                 payload = optimizer.verify_ledger_with_progress(
                     root,
                     ledger,
@@ -1260,41 +1053,27 @@ class SourceAndLedgerTests(unittest.TestCase):
                 process_exit_code=0,
                 stdout="{}",
                 stderr="",
-                result={
-                    "state": "completed",
-                    "exitCode": 0,
-                    "logPath": "/missing/root.log",
-                },
+                result={"state": "completed", "exitCode": 0, "logPath": "/missing/root.log"},
                 log_text="",
                 ticket="root-ticket",
             )
 
             with mock.patch.object(optimizer, "run_conductor", return_value=run):
-                with self.assertRaisesRegex(
-                    optimizer.OptimizerError, "list log missing or empty"
-                ):
+                with self.assertRaisesRegex(optimizer.OptimizerError, "list log missing or empty"):
                     optimizer.verify_ledger_with_progress(root, ledger, None)
 
     def test_verify_ledger_rejects_non_positive_list_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ledger = root / "ledger.tsv"
-            ledger.write_text(
-                "\t".join(optimizer.LEDGER_COLUMNS) + "\n", encoding="utf-8"
-            )
+            ledger.write_text("\t".join(optimizer.LEDGER_COLUMNS) + "\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "must be greater than zero"
-            ):
-                optimizer.verify_ledger_with_progress(
-                    root, ledger, None, list_timeout_seconds=0
-                )
+            with self.assertRaisesRegex(optimizer.OptimizerError, "must be greater than zero"):
+                optimizer.verify_ledger_with_progress(root, ledger, None, list_timeout_seconds=0)
 
 
 class ProgressOutputTests(unittest.TestCase):
-    def test_emit_progress_event_uses_stderr_compact_json_and_ignores_pipe_errors(
-        self,
-    ) -> None:
+    def test_emit_progress_event_uses_stderr_compact_json_and_ignores_pipe_errors(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
 
@@ -1319,22 +1098,14 @@ class ProgressOutputTests(unittest.TestCase):
 
     def test_conductor_ticket_helper_uses_current_ticket_only(self) -> None:
         self.assertEqual(
-            optimizer.conductor_ticket_from_payload(
-                {"ticket": "top"}, {"ticket": "result"}
-            ),
+            optimizer.conductor_ticket_from_payload({"ticket": "top"}, {"ticket": "result"}),
             "result",
         )
-        self.assertEqual(
-            optimizer.conductor_ticket_from_payload({"ticket": "top"}, {}), "top"
-        )
-        self.assertEqual(
-            optimizer.conductor_ticket_from_payload({}, {"ticket": 123}), "123"
-        )
+        self.assertEqual(optimizer.conductor_ticket_from_payload({"ticket": "top"}, {}), "top")
+        self.assertEqual(optimizer.conductor_ticket_from_payload({}, {"ticket": 123}), "123")
         self.assertIsNone(optimizer.conductor_ticket_from_payload({"ticket": ""}, {}))
         self.assertIsNone(
-            optimizer.conductor_ticket_from_payload(
-                {}, {"supersededByTicket": "old-ticket"}
-            )
+            optimizer.conductor_ticket_from_payload({}, {"supersededByTicket": "old-ticket"})
         )
 
 
@@ -1359,15 +1130,11 @@ class BaselineProgressTests(unittest.TestCase):
             ticket=f"ticket-{index}",
         )
 
-    def test_baseline_progress_events_are_ordered_and_include_invalid_reasons(
-        self,
-    ) -> None:
+    def test_baseline_progress_events_are_ordered_and_include_invalid_reasons(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             filter_value = "RepoPromptTests.ExampleTests"
-            expected_command = optimizer.conductor_command(
-                root, "root", filter_value=filter_value
-            )
+            expected_command = optimizer.conductor_command(root, "root", filter_value=filter_value)
             events: list[dict[str, object]] = []
             operations: list[tuple[str, object]] = []
             run_count = 0
@@ -1387,30 +1154,16 @@ class BaselineProgressTests(unittest.TestCase):
                 nonlocal run_count
                 run_count += 1
                 self.assertFalse(list_mode)
-                self.assertEqual(
-                    (target, filter_value), ("root", "RepoPromptTests.ExampleTests")
-                )
+                self.assertEqual((target, filter_value), ("root", "RepoPromptTests.ExampleTests"))
                 self.assertIsNone(test_product)
                 operations.append(("run", run_count))
                 return runs.pop(0)
 
             with (
-                mock.patch.object(
-                    optimizer,
-                    "git_metadata",
-                    return_value={"commit": "a" * 40, "working_tree": ""},
-                ),
-                mock.patch.object(
-                    optimizer,
-                    "measurement_source_guard_fingerprint",
-                    return_value="same-source",
-                ),
-                mock.patch.object(
-                    optimizer, "run_conductor", side_effect=fake_run_conductor
-                ),
-                mock.patch.object(
-                    optimizer, "utc_now", return_value="2026-07-01T00:00:00+00:00"
-                ),
+                mock.patch.object(optimizer, "git_metadata", return_value={"commit": "a" * 40, "working_tree": ""}),
+                mock.patch.object(optimizer, "measurement_source_guard_fingerprint", return_value="same-source"),
+                mock.patch.object(optimizer, "run_conductor", side_effect=fake_run_conductor),
+                mock.patch.object(optimizer, "utc_now", return_value="2026-07-01T00:00:00+00:00"),
             ):
                 payload = optimizer.baseline(
                     repo_root=root,
@@ -1453,9 +1206,7 @@ class BaselineProgressTests(unittest.TestCase):
 
         invalid_end = events[1]
         self.assertEqual(invalid_end["ticket"], "ticket-1")
-        self.assertEqual(
-            invalid_end["log_path"], "/tmp/test-suite-optimizer-sample-1.log"
-        )
+        self.assertEqual(invalid_end["log_path"], "/tmp/test-suite-optimizer-sample-1.log")
         self.assertEqual(invalid_end["process_exit_code"], 0)
         self.assertEqual(invalid_end["state"], "completed")
         self.assertEqual(invalid_end["exit_code"], 1)
@@ -1481,13 +1232,7 @@ class BaselineProgressTests(unittest.TestCase):
                 "logPath": "/tmp/build.log",
             }
             build_run = optimizer.ConductorRun(
-                command=[
-                    "/repo/conductor",
-                    "swift-build",
-                    "--product",
-                    "all",
-                    "--json",
-                ],
+                command=["/repo/conductor", "swift-build", "--product", "all", "--json"],
                 process_exit_code=0,
                 stdout="{}",
                 stderr="",
@@ -1512,25 +1257,11 @@ class BaselineProgressTests(unittest.TestCase):
                 return self.make_run(1)
 
             with (
-                mock.patch.object(
-                    optimizer,
-                    "git_metadata",
-                    return_value={"commit": "b" * 40, "working_tree": ""},
-                ),
-                mock.patch.object(
-                    optimizer,
-                    "measurement_source_guard_fingerprint",
-                    return_value="same-source",
-                ),
-                mock.patch.object(
-                    optimizer, "run_conductor_build", side_effect=fake_build
-                ),
-                mock.patch.object(
-                    optimizer, "run_conductor", side_effect=fake_run_conductor
-                ),
-                mock.patch.object(
-                    optimizer, "utc_now", return_value="2026-07-01T00:00:00+00:00"
-                ),
+                mock.patch.object(optimizer, "git_metadata", return_value={"commit": "b" * 40, "working_tree": ""}),
+                mock.patch.object(optimizer, "measurement_source_guard_fingerprint", return_value="same-source"),
+                mock.patch.object(optimizer, "run_conductor_build", side_effect=fake_build),
+                mock.patch.object(optimizer, "run_conductor", side_effect=fake_run_conductor),
+                mock.patch.object(optimizer, "utc_now", return_value="2026-07-01T00:00:00+00:00"),
             ):
                 payload = optimizer.baseline(
                     repo_root=root,
@@ -1558,15 +1289,11 @@ class BaselineProgressTests(unittest.TestCase):
         self.assertEqual(events[2]["execution_seconds"], 3.0)
         self.assertEqual(payload["summary"]["median_build_execution_seconds"], 3.0)
 
-    def test_baseline_records_test_product_and_keeps_primary_metric_separate(
-        self,
-    ) -> None:
+    def test_baseline_records_test_product_and_keeps_primary_metric_separate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             expected_product = "RepoPromptWorkspaceTests"
-            expected_command = optimizer.conductor_command(
-                root, "root", test_product=expected_product
-            )
+            expected_command = optimizer.conductor_command(root, "root", test_product=expected_product)
             events: list[dict[str, object]] = []
 
             def fake_run_conductor(
@@ -1576,29 +1303,14 @@ class BaselineProgressTests(unittest.TestCase):
                 filter_value: str | None = None,
                 test_product: str | None = None,
             ) -> optimizer.ConductorRun:
-                self.assertEqual(
-                    (target, list_mode, filter_value, test_product),
-                    ("root", False, None, expected_product),
-                )
+                self.assertEqual((target, list_mode, filter_value, test_product), ("root", False, None, expected_product))
                 return self.make_run(1)
 
             with (
-                mock.patch.object(
-                    optimizer,
-                    "git_metadata",
-                    return_value={"commit": "c" * 40, "working_tree": ""},
-                ),
-                mock.patch.object(
-                    optimizer,
-                    "measurement_source_guard_fingerprint",
-                    return_value="same-source",
-                ),
-                mock.patch.object(
-                    optimizer, "run_conductor", side_effect=fake_run_conductor
-                ),
-                mock.patch.object(
-                    optimizer, "utc_now", return_value="2026-07-01T00:00:00+00:00"
-                ),
+                mock.patch.object(optimizer, "git_metadata", return_value={"commit": "c" * 40, "working_tree": ""}),
+                mock.patch.object(optimizer, "measurement_source_guard_fingerprint", return_value="same-source"),
+                mock.patch.object(optimizer, "run_conductor", side_effect=fake_run_conductor),
+                mock.patch.object(optimizer, "utc_now", return_value="2026-07-01T00:00:00+00:00"),
             ):
                 payload = optimizer.baseline(
                     repo_root=root,
@@ -1625,15 +1337,11 @@ class BaselineProgressTests(unittest.TestCase):
         self.assertIn("Scope/filter: test-product", scoreboard)
         self.assertIn(f"Test product: `{expected_product}`", scoreboard)
 
-    def test_baseline_rejects_provider_build_before_samples_before_progress(
-        self,
-    ) -> None:
+    def test_baseline_rejects_provider_build_before_samples_before_progress(self) -> None:
         events: list[dict[str, object]] = []
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "supports only --target root"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "supports only --target root"):
                 optimizer.baseline(
                     repo_root=root,
                     target="provider",
@@ -1648,15 +1356,11 @@ class BaselineProgressTests(unittest.TestCase):
 
         self.assertEqual(events, [])
 
-    def test_baseline_rejects_test_product_build_before_samples_before_progress(
-        self,
-    ) -> None:
+    def test_baseline_rejects_test_product_build_before_samples_before_progress(self) -> None:
         events: list[dict[str, object]] = []
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "cannot be combined with --test-product"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "cannot be combined with --test-product"):
                 optimizer.baseline(
                     repo_root=root,
                     target="root",
@@ -1699,13 +1403,7 @@ class FocusedCostTests(unittest.TestCase):
         if result_extra:
             result.update(result_extra)
         return optimizer.ConductorRun(
-            command=[
-                "/repo/conductor",
-                "test",
-                "--filter",
-                "RepoPromptTests.ExampleTests",
-                "--json",
-            ],
+            command=["/repo/conductor", "test", "--filter", "RepoPromptTests.ExampleTests", "--json"],
             process_exit_code=0,
             stdout=json.dumps({"result": result}),
             stderr="",
@@ -1722,13 +1420,7 @@ class FocusedCostTests(unittest.TestCase):
             scoreboard = root / "scoreboard.md"
             events: list[dict[str, object]] = []
             runs = [
-                self.make_run(
-                    root,
-                    1,
-                    result_extra={
-                        "diagnostics": [{"swiftFrontendMaxRSSBytes": 42_000}]
-                    },
-                ),
+                self.make_run(root, 1, result_extra={"diagnostics": [{"swiftFrontendMaxRSSBytes": 42_000}]}),
                 self.make_run(root, 2, exit_code=1, log_text=""),
             ]
 
@@ -1745,22 +1437,10 @@ class FocusedCostTests(unittest.TestCase):
                 return runs.pop(0)
 
             with (
-                mock.patch.object(
-                    optimizer,
-                    "git_metadata",
-                    return_value={"commit": "b" * 40, "working_tree": ""},
-                ),
-                mock.patch.object(
-                    optimizer,
-                    "measurement_source_guard_fingerprint",
-                    return_value="same-source",
-                ),
-                mock.patch.object(
-                    optimizer, "run_conductor", side_effect=fake_run_conductor
-                ),
-                mock.patch.object(
-                    optimizer, "utc_now", return_value="2026-07-03T00:00:00+00:00"
-                ),
+                mock.patch.object(optimizer, "git_metadata", return_value={"commit": "b" * 40, "working_tree": ""}),
+                mock.patch.object(optimizer, "measurement_source_guard_fingerprint", return_value="same-source"),
+                mock.patch.object(optimizer, "run_conductor", side_effect=fake_run_conductor),
+                mock.patch.object(optimizer, "utc_now", return_value="2026-07-03T00:00:00+00:00"),
             ):
                 payload = optimizer.focused_cost(
                     repo_root=root,
@@ -1779,14 +1459,9 @@ class FocusedCostTests(unittest.TestCase):
 
         self.assertEqual(payload, artifact)
         self.assertEqual(artifact["diagnostic_kind"], "focused-cost")
-        self.assertEqual(
-            artifact["command"],
-            optimizer.conductor_command(root, "root", filter_value=filter_value),
-        )
+        self.assertEqual(artifact["command"], optimizer.conductor_command(root, "root", filter_value=filter_value))
         self.assertFalse(artifact["primary_metric_eligible"])
-        self.assertEqual(
-            artifact["source_guard"], {"kind": optimizer.SOURCE_GUARD_METADATA}
-        )
+        self.assertEqual(artifact["source_guard"], {"kind": optimizer.SOURCE_GUARD_METADATA})
         self.assertEqual(artifact["samples"][0]["queue_wait_seconds"], 0.5)
         self.assertEqual(artifact["samples"][0]["total_execution_seconds"], 13.0)
         self.assertEqual(artifact["samples"][0]["parsed_xctest_seconds"], 1.5)
@@ -1795,10 +1470,7 @@ class FocusedCostTests(unittest.TestCase):
         self.assertFalse(artifact["samples"][0]["source_changed"])
         self.assertEqual(artifact["samples"][0]["invalid_reasons"], [])
         self.assertIn("test exit 1", artifact["samples"][1]["invalid_reasons"])
-        self.assertIn(
-            "filtered baseline produced no parsed XCTest timings",
-            artifact["samples"][1]["invalid_reasons"],
-        )
+        self.assertIn("filtered baseline produced no parsed XCTest timings", artifact["samples"][1]["invalid_reasons"])
         self.assertEqual(artifact["summary"]["valid_samples"], 1)
         self.assertEqual(artifact["summary"]["median_total_execution_seconds"], 13.0)
         self.assertEqual(artifact["summary"]["median_parsed_xctest_seconds"], 1.5)
@@ -1819,17 +1491,10 @@ class FocusedCostTests(unittest.TestCase):
         self.assertIn("Primary metric eligible: no", scoreboard_text)
         self.assertIn("unit-focused", scoreboard_text)
         self.assertIn("Summary:", scoreboard_text)
-        self.assertIn(
-            "| Valid | Invalid | Median total execution seconds |", scoreboard_text
-        )
-        self.assertIn(
-            "| 1 | 1 | 13.000 | 13.000 | 0.0000 | stable | 1.500 | 11.500 | 42000 | yes | no |",
-            scoreboard_text,
-        )
+        self.assertIn("| Valid | Invalid | Median total execution seconds |", scoreboard_text)
+        self.assertIn("| 1 | 1 | 13.000 | 13.000 | 0.0000 | stable | 1.500 | 11.500 | 42000 | yes | no |", scoreboard_text)
 
-    def test_focused_cost_rejects_zero_valid_samples_without_writing_outputs(
-        self,
-    ) -> None:
+    def test_focused_cost_rejects_zero_valid_samples_without_writing_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output = root / "focused-cost.json"
@@ -1852,25 +1517,11 @@ class FocusedCostTests(unittest.TestCase):
                 return runs.pop(0)
 
             with (
-                mock.patch.object(
-                    optimizer,
-                    "git_metadata",
-                    return_value={"commit": "c" * 40, "working_tree": ""},
-                ),
-                mock.patch.object(
-                    optimizer,
-                    "measurement_source_guard_fingerprint",
-                    return_value="same-source",
-                ),
-                mock.patch.object(
-                    optimizer, "run_conductor", side_effect=fake_run_conductor
-                ),
-                mock.patch.object(
-                    optimizer, "utc_now", return_value="2026-07-03T00:00:00+00:00"
-                ),
-                self.assertRaisesRegex(
-                    optimizer.OptimizerError, "focused-cost produced no valid samples"
-                ) as raised,
+                mock.patch.object(optimizer, "git_metadata", return_value={"commit": "c" * 40, "working_tree": ""}),
+                mock.patch.object(optimizer, "measurement_source_guard_fingerprint", return_value="same-source"),
+                mock.patch.object(optimizer, "run_conductor", side_effect=fake_run_conductor),
+                mock.patch.object(optimizer, "utc_now", return_value="2026-07-03T00:00:00+00:00"),
+                self.assertRaisesRegex(optimizer.OptimizerError, "focused-cost produced no valid samples") as raised,
             ):
                 optimizer.focused_cost(
                     repo_root=root,
@@ -1885,9 +1536,7 @@ class FocusedCostTests(unittest.TestCase):
 
             message = str(raised.exception)
             self.assertIn("sample 1: test exit 1", message)
-            self.assertIn(
-                "filtered baseline produced no parsed XCTest timings", message
-            )
+            self.assertIn("filtered baseline produced no parsed XCTest timings", message)
             self.assertIn("sample 2: test exit 2", message)
             self.assertFalse(output.exists())
             self.assertFalse(scoreboard.exists())
@@ -1895,9 +1544,7 @@ class FocusedCostTests(unittest.TestCase):
     def test_focused_cost_requires_filter_and_positive_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "--filter is required"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "--filter is required"):
                 optimizer.focused_cost(
                     repo_root=root,
                     target="root",
@@ -1908,9 +1555,7 @@ class FocusedCostTests(unittest.TestCase):
                     output=root / "out.json",
                     progress_sink=None,
                 )
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "--samples must be greater than zero"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "--samples must be greater than zero"):
                 optimizer.focused_cost(
                     repo_root=root,
                     target="root",
@@ -1925,10 +1570,7 @@ class FocusedCostTests(unittest.TestCase):
     def test_parser_exposes_focused_cost_options(self) -> None:
         help_text = io.StringIO()
         parser = optimizer.build_parser()
-        with (
-            contextlib.redirect_stdout(help_text),
-            self.assertRaises(SystemExit) as raised,
-        ):
+        with contextlib.redirect_stdout(help_text), self.assertRaises(SystemExit) as raised:
             parser.parse_args(["focused-cost", "--help"])
 
         self.assertEqual(raised.exception.code, 0)
@@ -1946,28 +1588,16 @@ class FocusedCostTests(unittest.TestCase):
 
 
 class CombinedBaselineTests(unittest.TestCase):
-    def test_combine_baselines_marks_fewer_than_three_valid_samples_unreliable(
-        self,
-    ) -> None:
+    def test_combine_baselines_marks_fewer_than_three_valid_samples_unreliable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             log_one = root / "one.log"
             log_two = root / "two.log"
-            log_one.write_text(
-                "Test Case 'RepoPromptTests.Suite.testOne' passed after 2.000 seconds.\n",
-                encoding="utf-8",
-            )
-            log_two.write_text(
-                "Test Case 'RepoPromptTests.Suite.testOne' passed after 4.000 seconds.\n",
-                encoding="utf-8",
-            )
+            log_one.write_text("Test Case 'RepoPromptTests.Suite.testOne' passed after 2.000 seconds.\n", encoding="utf-8")
+            log_two.write_text("Test Case 'RepoPromptTests.Suite.testOne' passed after 4.000 seconds.\n", encoding="utf-8")
             paths = []
             for index, (seconds, valid, log) in enumerate(
-                [
-                    (10.0, True, log_one),
-                    (20.0, False, root / "invalid.log"),
-                    (14.0, True, log_two),
-                ],
+                [(10.0, True, log_one), (20.0, False, root / "invalid.log"), (14.0, True, log_two)],
                 start=1,
             ):
                 path = root / f"baseline-{index}.json"
@@ -2000,9 +1630,7 @@ class CombinedBaselineTests(unittest.TestCase):
         self.assertFalse(combined["summary"]["reliable"])
         self.assertEqual(combined["scope"], "complete")
         self.assertIsNone(combined["filter"])
-        self.assertEqual(
-            combined["source_guard"]["kind"], optimizer.SOURCE_GUARD_CONTENT
-        )
+        self.assertEqual(combined["source_guard"]["kind"], optimizer.SOURCE_GUARD_CONTENT)
         self.assertEqual(combined["summary"]["median_seconds"], 12.0)
         self.assertEqual(combined["summary"]["observed_p95_seconds"], 14.0)
         self.assertEqual(combined["slowest_suites"][0]["median_aggregate_seconds"], 3.0)
@@ -2048,21 +1676,10 @@ class CombinedBaselineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             complete = artifact(root, "complete")
-            focused = artifact(
-                root, "focused", scope="filtered", filter_value="RepoPromptTests.A"
-            )
-            focused_other = artifact(
-                root,
-                "focused-other",
-                scope="filtered",
-                filter_value="RepoPromptTests.B",
-            )
-            workspace_product = artifact(
-                root, "workspace-product", test_product="RepoPromptWorkspaceTests"
-            )
-            mcp_product = artifact(
-                root, "mcp-product", test_product="RepoPromptMCPTests"
-            )
+            focused = artifact(root, "focused", scope="filtered", filter_value="RepoPromptTests.A")
+            focused_other = artifact(root, "focused-other", scope="filtered", filter_value="RepoPromptTests.B")
+            workspace_product = artifact(root, "workspace-product", test_product="RepoPromptWorkspaceTests")
+            mcp_product = artifact(root, "mcp-product", test_product="RepoPromptMCPTests")
             metadata = artifact(root, "metadata", guard=optimizer.SOURCE_GUARD_METADATA)
 
             with self.assertRaisesRegex(optimizer.OptimizerError, "one scope"):
@@ -2071,9 +1688,7 @@ class CombinedBaselineTests(unittest.TestCase):
                 optimizer.combine_baselines([focused, focused_other])
             with self.assertRaisesRegex(optimizer.OptimizerError, "one test product"):
                 optimizer.combine_baselines([workspace_product, mcp_product])
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "one source change guard"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "one source change guard"):
                 optimizer.combine_baselines([complete, metadata])
 
     def test_compare_baselines_reports_fractional_deltas(self) -> None:
@@ -2081,18 +1696,8 @@ class CombinedBaselineTests(unittest.TestCase):
             root = Path(tmp)
             before = root / "before.json"
             after = root / "after.json"
-            before.write_text(
-                json.dumps(
-                    {"summary": {"median_seconds": 100, "observed_p95_seconds": 120}}
-                ),
-                encoding="utf-8",
-            )
-            after.write_text(
-                json.dumps(
-                    {"summary": {"median_seconds": 90, "observed_p95_seconds": 108}}
-                ),
-                encoding="utf-8",
-            )
+            before.write_text(json.dumps({"summary": {"median_seconds": 100, "observed_p95_seconds": 120}}), encoding="utf-8")
+            after.write_text(json.dumps({"summary": {"median_seconds": 90, "observed_p95_seconds": 108}}), encoding="utf-8")
 
             comparison = optimizer.compare_baselines(before, after)
 
@@ -2145,17 +1750,9 @@ class AppendOnlyArtifactTests(unittest.TestCase):
     def test_scoreboard_appends_without_rewriting_prior_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "scoreboard.md"
-            optimizer.append_baseline_scoreboard(
-                path,
-                self.payload("2026-06-16T10:00:00Z", "/one.log"),
-                {"root": 2, "provider": 1},
-            )
+            optimizer.append_baseline_scoreboard(path, self.payload("2026-06-16T10:00:00Z", "/one.log"), {"root": 2, "provider": 1})
             first = path.read_text(encoding="utf-8")
-            optimizer.append_baseline_scoreboard(
-                path,
-                self.payload("2026-06-16T11:00:00Z", "/two.log"),
-                {"root": 2, "provider": 1},
-            )
+            optimizer.append_baseline_scoreboard(path, self.payload("2026-06-16T11:00:00Z", "/two.log"), {"root": 2, "provider": 1})
             second = path.read_text(encoding="utf-8")
 
         self.assertTrue(second.startswith(first))
@@ -2164,18 +1761,14 @@ class AppendOnlyArtifactTests(unittest.TestCase):
         self.assertIn("Source-change guard: `metadata`", second)
         self.assertIn("Test product: ``", second)
         self.assertIn("Build before samples: no", second)
-        self.assertIn(
-            "| Sample | Valid | Build seconds | Test execution seconds |", second
-        )
+        self.assertIn("| Sample | Valid | Build seconds | Test execution seconds |", second)
         self.assertIn("Primary metric eligible: no", second)
 
     def test_json_artifacts_refuse_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "artifact.json"
             optimizer.write_json_new(path, {"one": 1})
-            with self.assertRaisesRegex(
-                optimizer.OptimizerError, "refusing to overwrite"
-            ):
+            with self.assertRaisesRegex(optimizer.OptimizerError, "refusing to overwrite"):
                 optimizer.write_json_new(path, {"two": 2})
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"one": 1})
 

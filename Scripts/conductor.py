@@ -20,8 +20,8 @@ import json
 import math
 import os
 import re
-import shutil
 import signal
+import shutil
 import socket
 import socketserver
 import stat
@@ -34,11 +34,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
-from debug_app_process import (
-    ProcessIdentityError,
-    matching_processes,
-    terminate_matching_processes,
-)
+from debug_app_process import ProcessIdentityError, matching_processes, terminate_matching_processes
 
 PROTOCOL_VERSION = 11
 TERMINAL_STATES = {"completed", "failed", "canceled"}
@@ -218,9 +214,7 @@ class ProcessOutputTransport:
     master_fd: Optional[int] = None
     slave_fd: Optional[int] = None
     pipe_stream: Optional[Any] = None
-    close_lock: threading.Lock = dataclasses.field(
-        default_factory=threading.Lock, repr=False
-    )
+    close_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock, repr=False)
 
     @classmethod
     def create(cls, kind: str) -> "ProcessOutputTransport":
@@ -379,22 +373,16 @@ def ensure_private_dir(path: Path) -> None:
     if not stat.S_ISDIR(stat_result.st_mode):
         raise ConductorError(f"private directory {path} is not a directory")
     if hasattr(os, "getuid") and stat_result.st_uid != os.getuid():
-        raise ConductorError(
-            f"private directory {path} is not owned by the current user"
-        )
+        raise ConductorError(f"private directory {path} is not owned by the current user")
     mode = stat_result.st_mode & 0o777
     if mode & 0o077:
         try:
             os.chmod(path, 0o700)
         except OSError as exc:
-            raise ConductorError(
-                f"could not restrict private directory {path} to 0700: {exc}"
-            )
+            raise ConductorError(f"could not restrict private directory {path} to 0700: {exc}")
         mode = os.lstat(path).st_mode & 0o777
         if mode & 0o077:
-            raise ConductorError(
-                f"private directory {path} is not credential-safe (mode {mode:o})"
-            )
+            raise ConductorError(f"private directory {path} is not credential-safe (mode {mode:o})")
 
 
 def ensure_state_dirs(paths: Paths) -> None:
@@ -416,22 +404,15 @@ def configured_global_heavy_slots(env: Optional[Dict[str, str]] = None) -> int:
     try:
         slots = int(raw)
     except ValueError as exc:
-        raise ConductorError(
-            "REPOPROMPT_DEV_HEAVY_SLOTS must be a positive integer"
-        ) from exc
+        raise ConductorError("REPOPROMPT_DEV_HEAVY_SLOTS must be a positive integer") from exc
     if slots < 1 or slots > MAX_GLOBAL_HEAVY_SLOTS:
-        raise ConductorError(
-            f"REPOPROMPT_DEV_HEAVY_SLOTS must be between 1 and {MAX_GLOBAL_HEAVY_SLOTS}"
-        )
+        raise ConductorError(f"REPOPROMPT_DEV_HEAVY_SLOTS must be between 1 and {MAX_GLOBAL_HEAVY_SLOTS}")
     return slots
 
 
 def global_heavy_slot_paths(env: Optional[Dict[str, str]] = None) -> List[Path]:
     root = machine_lock_dir()
-    return [
-        root / f"global-heavy-{index}.lock"
-        for index in range(configured_global_heavy_slots(env))
-    ]
+    return [root / f"global-heavy-{index}.lock" for index in range(configured_global_heavy_slots(env))]
 
 
 def live_app_lock_path() -> Path:
@@ -491,11 +472,7 @@ def read_display_lock_metadata(path: Path) -> Optional[Dict[str, Any]]:
 def format_display_lock_holder(metadata: Optional[Dict[str, Any]]) -> str:
     if not metadata:
         return "holder unknown"
-    label = (
-        metadata.get("operationLabel")
-        or metadata.get("operation")
-        or "unknown operation"
-    )
+    label = metadata.get("operationLabel") or metadata.get("operation") or "unknown operation"
     ticket = metadata.get("ticket") or "no-ticket"
     repo = metadata.get("repoRoot") or "unknown repo"
     worktree = metadata.get("worktree") or Path(str(repo)).name
@@ -517,9 +494,7 @@ def machine_exclusive_lock(lock_path: Path, metadata: Dict[str, Any], wait_label
             break
         except BlockingIOError:
             if not did_log_wait:
-                holder = format_display_lock_holder(
-                    read_display_lock_metadata(lock_path)
-                )
+                holder = format_display_lock_holder(read_display_lock_metadata(lock_path))
                 print(f"waiting for {wait_label}: {lock_path} ({holder})", flush=True)
                 did_log_wait = True
             time.sleep(MACHINE_LOCK_POLL_SECONDS)
@@ -543,14 +518,9 @@ def machine_exclusive_lock(lock_path: Path, metadata: Dict[str, Any], wait_label
 
 
 @contextlib.contextmanager
-def machine_heavy_slot(
-    metadata: Dict[str, Any], env: Optional[Dict[str, str]], wait_label: str
-):
+def machine_heavy_slot(metadata: Dict[str, Any], env: Optional[Dict[str, str]], wait_label: str):
     ensure_private_dir(machine_lock_dir())
-    lock_files = [
-        (path, path.open("a+", encoding="utf-8"))
-        for path in global_heavy_slot_paths(env)
-    ]
+    lock_files = [(path, path.open("a+", encoding="utf-8")) for path in global_heavy_slot_paths(env)]
     did_log_wait = False
     selected_file: Optional[Any] = None
     try:
@@ -570,15 +540,9 @@ def machine_heavy_slot(
                         continue
                     raise
             if not did_log_wait:
-                holders = "; ".join(
-                    format_display_lock_holder(read_display_lock_metadata(path))
-                    for path, _ in lock_files
-                )
+                holders = "; ".join(format_display_lock_holder(read_display_lock_metadata(path)) for path, _ in lock_files)
                 paths = ",".join(str(path) for path, _ in lock_files)
-                print(
-                    f"waiting for {wait_label} ({len(lock_files)} configured): {paths}; {holders}",
-                    flush=True,
-                )
+                print(f"waiting for {wait_label} ({len(lock_files)} configured): {paths}; {holders}", flush=True)
                 did_log_wait = True
             time.sleep(GLOBAL_HEAVY_SLOT_POLL_SECONDS)
     finally:
@@ -620,12 +584,7 @@ def cleanup_stale_files(paths: Paths) -> None:
     pid = read_pid(paths.pid_path)
     if pid is not None and pid_alive(pid):
         return
-    for path in (
-        paths.pid_path,
-        paths.socket_path,
-        paths.daemon_meta_path,
-        paths.running_processes_path,
-    ):
+    for path in (paths.pid_path, paths.socket_path, paths.daemon_meta_path, paths.running_processes_path):
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
 
@@ -674,21 +633,12 @@ def process_table_snapshot() -> Dict[int, Tuple[int, str]]:
 
 
 def process_command_snapshot(pids: Sequence[int]) -> Dict[int, str]:
-    selected = sorted({pid for pid in pids if pid > 0})[
-        :XCTEST_STALL_DIAGNOSTIC_MAX_PROCESSES
-    ]
+    selected = sorted({pid for pid in pids if pid > 0})[:XCTEST_STALL_DIAGNOSTIC_MAX_PROCESSES]
     if not selected:
         return {}
     try:
         completed = subprocess.run(
-            [
-                "ps",
-                "-ww",
-                "-p",
-                ",".join(str(pid) for pid in selected),
-                "-o",
-                "pid=,command=",
-            ],
+            ["ps", "-ww", "-p", ",".join(str(pid) for pid in selected), "-o", "pid=,command="],
             text=True,
             capture_output=True,
             timeout=2.0,
@@ -737,9 +687,7 @@ def write_daemon_metadata(paths: Paths) -> None:
         "processStart": process_start_token(os.getpid()),
         "createdAt": now(),
     }
-    paths.daemon_meta_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    paths.daemon_meta_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     with contextlib.suppress(OSError):
         os.chmod(paths.daemon_meta_path, 0o600)
 
@@ -757,20 +705,13 @@ def verify_daemon_pid_identity(paths: Paths, pid: int) -> bool:
     metadata = read_daemon_metadata(paths)
     if metadata.get("pid") != pid:
         return False
-    if (
-        metadata.get("repoRoot") != str(paths.repo_root)
-        or metadata.get("repoHash") != paths.repo_hash
-    ):
+    if metadata.get("repoRoot") != str(paths.repo_root) or metadata.get("repoHash") != paths.repo_hash:
         return False
     expected_start = metadata.get("processStart")
     if expected_start and process_start_token(pid) != expected_start:
         return False
     command = process_command(pid)
-    return (
-        "conductor.py" in command
-        and "__daemon" in command
-        and str(paths.repo_root) in command
-    )
+    return "conductor.py" in command and "__daemon" in command and str(paths.repo_root) in command
 
 
 def json_dumps(obj: Any) -> str:
@@ -856,9 +797,7 @@ class OutputSummarizer:
         r"(ERROR:|FAILED|failed with|process exited with status|fatal error|Traceback|Exception|Permission denied|No such file or directory|timed out|killing process (?:group|tree)|terminating process (?:group|tree))",
         re.IGNORECASE,
     )
-    SWIFT_ERROR_RE = re.compile(
-        r"(: error:|error: emit-module command failed|Command SwiftCompile failed|Command CompileSwift failed|fatal error:)"
-    )
+    SWIFT_ERROR_RE = re.compile(r"(: error:|error: emit-module command failed|Command SwiftCompile failed|Command CompileSwift failed|fatal error:)")
     WARNING_RE = re.compile(r"(: warning:|^WARNING:)")
     TEST_FAILURE_RE = re.compile(
         r"(Test Case '.*' failed|XCTAssert|: error: .*Test|Executed .* tests?, with .* failures?|Failing tests:|error: Exited with unexpected signal|error: terminated)"
@@ -866,10 +805,7 @@ class OutputSummarizer:
     STYLE_FINDING_RE = re.compile(
         r"(SwiftFormat|SwiftLint|linting|Missing required tool|Run 'make install-format-tools'|ERROR: Missing required Swift style tools|[^\s:]+:\d+:\d+: (warning|error):)"
     )
-    TIMEOUT_RE = re.compile(
-        r"(timed out after|terminating process (?:group|tree)|killing process (?:group|tree)|canceled)",
-        re.IGNORECASE,
-    )
+    TIMEOUT_RE = re.compile(r"(timed out after|terminating process (?:group|tree)|killing process (?:group|tree)|canceled)", re.IGNORECASE)
     PHASE_RE = re.compile(r"^(==>|\$ |\+ )")
     ARTIFACT_RE = re.compile(
         r"^(Created:|APP_BUNDLE=|COMPAT_APP_BUNDLE=|CLI_PATH=|Output written to:|Agent Mode diagnostics enabled|Resolved rpce-cli-debug:|Build cache diagnostics|Current \.build:|Managed worktree container:|Worktree \.build total:|Top \.build directories:|\s+[0-9.]+ [KMGT]?i?B\s+)"
@@ -877,9 +813,7 @@ class OutputSummarizer:
     APP_LIFECYCLE_RE = re.compile(
         r"(Stopping existing RepoPrompt|Waiting for existing RepoPrompt|Launching .*RepoPrompt\.app|Confirming launched RepoPrompt|Observed launched RepoPrompt|Guarding against a delayed RepoPrompt|Delayed launch guard confirmed|RepoPrompt(?: CE debug app)? stop confirmed|RepoPrompt was (not running|already stopped))"
     )
-    SOURCE_CHANGED_DURING_BUILD_RE = re.compile(
-        r"input file .* was modified during the build", re.IGNORECASE
-    )
+    SOURCE_CHANGED_DURING_BUILD_RE = re.compile(r"input file .* was modified during the build", re.IGNORECASE)
 
     @classmethod
     def summarize_file(
@@ -893,13 +827,9 @@ class OutputSummarizer:
     ) -> Dict[str, Any]:
         try:
             with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-                return cls.summarize_lines(
-                    operation, args, state, exit_code, timed_out, handle
-                )
+                return cls.summarize_lines(operation, args, state, exit_code, timed_out, handle)
         except OSError as exc:
-            return cls._minimal_summary(
-                operation, state, exit_code, f"could not read log for summary: {exc}"
-            )
+            return cls._minimal_summary(operation, state, exit_code, f"could not read log for summary: {exc}")
 
     @classmethod
     def summarize_lines(
@@ -912,40 +842,24 @@ class OutputSummarizer:
         lines_iterable: Any,
     ) -> Dict[str, Any]:
         del args
-        failure = (
-            state in {"failed", "canceled"}
-            or bool(timed_out)
-            or (exit_code not in (None, 0))
-        )
+        failure = state in {"failed", "canceled"} or bool(timed_out) or (exit_code not in (None, 0))
         launch_lifecycle = {
             "transitionStarted": False,
             "launchRequested": False,
             "launchConfirmed": False,
             "sourceChangedDuringBuild": False,
         }
-        section_limit = (
-            SUMMARY_FAILURE_MAX_LINES if failure else SUMMARY_SUCCESS_MAX_LINES
-        )
+        section_limit = SUMMARY_FAILURE_MAX_LINES if failure else SUMMARY_SUCCESS_MAX_LINES
         per_section_limit = max(5, min(30, section_limit // 2))
         sections = {
             "App lifecycle": SummarySectionBuilder("App lifecycle", 12, keep_last=True),
-            "Phases": SummarySectionBuilder(
-                "Phases", 20 if failure else 10, keep_last=True
-            ),
-            "Failure highlights": SummarySectionBuilder(
-                "Failure highlights", per_section_limit
-            ),
-            "Swift compiler errors": SummarySectionBuilder(
-                "Swift compiler errors", per_section_limit
-            ),
+            "Phases": SummarySectionBuilder("Phases", 20 if failure else 10, keep_last=True),
+            "Failure highlights": SummarySectionBuilder("Failure highlights", per_section_limit),
+            "Swift compiler errors": SummarySectionBuilder("Swift compiler errors", per_section_limit),
             "Test failures": SummarySectionBuilder("Test failures", per_section_limit),
-            "Style findings": SummarySectionBuilder(
-                "Style findings", per_section_limit
-            ),
+            "Style findings": SummarySectionBuilder("Style findings", per_section_limit),
             "Warnings": SummarySectionBuilder("Warnings", 5 if not failure else 10),
-            "Timeout or cancellation": SummarySectionBuilder(
-                "Timeout or cancellation", per_section_limit
-            ),
+            "Timeout or cancellation": SummarySectionBuilder("Timeout or cancellation", per_section_limit),
             "Artifacts": SummarySectionBuilder("Artifacts", 10),
             "Recent output": SummarySectionBuilder("Recent output", 20),
             "Summary notes": SummarySectionBuilder("Summary notes", 5),
@@ -956,14 +870,7 @@ class OutputSummarizer:
         tail: Deque[str] = deque(maxlen=20)
         previous_context: Deque[str] = deque(maxlen=SUMMARY_CONTEXT_BEFORE)
         pending_context: List[Tuple[str, int]] = []
-        style_operation = operation in {
-            "format",
-            "format-check",
-            "lint",
-            "check-format-tools",
-            "install-format-tools",
-            "format-tools-status",
-        }
+        style_operation = operation in {"format", "format-check", "lint", "check-format-tools", "install-format-tools", "format-tools-status"}
 
         for raw_line in lines_iterable:
             line_count += 1
@@ -1063,11 +970,7 @@ class OutputSummarizer:
                 truncated = True
                 break
             if len(section["lines"]) > remaining_lines:
-                omitted = (
-                    len(section["lines"])
-                    - remaining_lines
-                    + int(section.get("omittedLineCount") or 0)
-                )
+                omitted = len(section["lines"]) - remaining_lines + int(section.get("omittedLineCount") or 0)
                 section = dict(section)
                 section["lines"] = section["lines"][:remaining_lines]
                 section["truncated"] = True
@@ -1112,9 +1015,7 @@ class OutputSummarizer:
         return state or "unknown result"
 
     @classmethod
-    def _minimal_summary(
-        cls, operation: str, state: str, exit_code: Optional[int], note: str
-    ) -> Dict[str, Any]:
+    def _minimal_summary(cls, operation: str, state: str, exit_code: Optional[int], note: str) -> Dict[str, Any]:
         return {
             "version": SUMMARY_VERSION,
             "operation": operation,
@@ -1138,22 +1039,13 @@ class OutputSummarizer:
 
 
 def operation_display_name(operation: str, args: Dict[str, Any]) -> str:
-    if operation == "app" and args.get("subcommand") in {
-        "status",
-        "stop",
-        "launch-existing",
-        "relaunch",
-    }:
+    if operation == "app" and args.get("subcommand") in {"status", "stop", "launch-existing", "relaunch"}:
         return f"app {args['subcommand']}"
     return operation
 
 
 def latest_lifecycle_intent(operation: str, args: Dict[str, Any]) -> Optional[str]:
-    if operation == "app" and args.get("subcommand") in {
-        "stop",
-        "launch-existing",
-        "relaunch",
-    }:
+    if operation == "app" and args.get("subcommand") in {"stop", "launch-existing", "relaunch"}:
         return operation_display_name(operation, args)
     return None
 
@@ -1161,33 +1053,17 @@ def latest_lifecycle_intent(operation: str, args: Dict[str, Any]) -> Optional[st
 def is_launch_capable_job(operation: str, args: Dict[str, Any]) -> bool:
     return (
         operation == "run"
-        or (
-            operation == "app"
-            and args.get("subcommand") in {"launch-existing", "relaunch"}
-        )
-        or (
-            operation == "smoke" and bool(args.get("launch") or args.get("packagedApp"))
-        )
+        or (operation == "app" and args.get("subcommand") in {"launch-existing", "relaunch"})
+        or (operation == "smoke" and bool(args.get("launch") or args.get("packagedApp")))
     )
 
 
 def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -> bool:
-    if operation in {
-        "swift-build",
-        "build",
-        "package",
-        "test",
-        "provider-test",
-        "install-debug-cli",
-    }:
+    if operation in {"swift-build", "build", "package", "test", "provider-test", "install-debug-cli"}:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
         return True
-    if operation == "release" and args.get("subcommand") in {
-        "artifact",
-        "package",
-        "local-install",
-    }:
+    if operation == "release" and args.get("subcommand") in {"artifact", "package", "local-install"}:
         return True
     return False
 
@@ -1243,9 +1119,7 @@ class Job:
     process_pid: Optional[int] = None
     process_pgid: Optional[int] = None
     process_start: Optional[str] = None
-    tracked_processes: Dict[int, str] = dataclasses.field(
-        default_factory=dict, repr=False
-    )
+    tracked_processes: Dict[int, str] = dataclasses.field(default_factory=dict, repr=False)
     process_group_identity_confirmed: bool = False
     global_heavy_slot_wait_seconds: Optional[float] = None
     global_heavy_slot_path: Optional[str] = None
@@ -1271,21 +1145,15 @@ class Job:
     diagnostics: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
     diagnostic_paths: List[Path] = dataclasses.field(default_factory=list, repr=False)
     output_summary: Optional[Dict[str, Any]] = None
-    tail: Deque[str] = dataclasses.field(
-        default_factory=lambda: deque(maxlen=LOG_TAIL_LINES)
-    )
+    tail: Deque[str] = dataclasses.field(default_factory=lambda: deque(maxlen=LOG_TAIL_LINES))
 
-    def to_payload(
-        self, include_tail: bool = True, include_summary: bool = True
-    ) -> Dict[str, Any]:
+    def to_payload(self, include_tail: bool = True, include_summary: bool = True) -> Dict[str, Any]:
         queue_wait_seconds = None
         if self.started_at is not None:
             queue_wait_seconds = max(0.0, self.started_at - self.created_at)
         execution_seconds = None
         if self.process_started_at is not None and self.process_finished_at is not None:
-            execution_seconds = max(
-                0.0, self.process_finished_at - self.process_started_at
-            )
+            execution_seconds = max(0.0, self.process_finished_at - self.process_started_at)
         payload: Dict[str, Any] = {
             "ticket": self.ticket,
             "requestKey": self.request_key,
@@ -1453,9 +1321,7 @@ class OperationRegistry:
             snapshot[key] = value
         return snapshot
 
-    def prepare(
-        self, request: Dict[str, Any]
-    ) -> Tuple[List[str], List[str], Path, Dict[str, str], Optional[float]]:
+    def prepare(self, request: Dict[str, Any]) -> Tuple[List[str], List[str], Path, Dict[str, str], Optional[float]]:
         operation = request.get("operation")
         args = request.get("args") or {}
         timeout = request.get("timeout")
@@ -1485,99 +1351,31 @@ class OperationRegistry:
         if operation == "guardrails":
             return [script("guardrails.sh")], lanes, cwd, env, effective_timeout
         if operation == "codex-schema-check":
-            return (
-                [sys.executable, script("check_codex_app_server_schema.py")],
-                lanes,
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [sys.executable, script("check_codex_app_server_schema.py")], lanes, cwd, env, effective_timeout
         if operation == "format":
-            return (
-                [script("swift_style.sh"), "format"],
-                ["style", "build"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("swift_style.sh"), "format"], ["style", "build"], cwd, env, effective_timeout
         if operation == "format-check":
-            return (
-                [script("swift_style.sh"), "format-check"],
-                ["style"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("swift_style.sh"), "format-check"], ["style"], cwd, env, effective_timeout
         if operation == "lint":
-            return (
-                [script("swift_style.sh"), "lint"],
-                ["style"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("swift_style.sh"), "lint"], ["style"], cwd, env, effective_timeout
         if operation == "format-tools-status":
-            return (
-                [script("install_format_tools.sh"), "status"],
-                lanes,
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("install_format_tools.sh"), "status"], lanes, cwd, env, effective_timeout
         if operation == "check-format-tools":
-            return (
-                [script("install_format_tools.sh"), "check"],
-                ["style"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("install_format_tools.sh"), "check"], ["style"], cwd, env, effective_timeout
         if operation == "install-format-tools":
-            return (
-                [script("install_format_tools.sh"), "install"],
-                ["style"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("install_format_tools.sh"), "install"], ["style"], cwd, env, effective_timeout
         if operation == "swift-build":
             product = args.get("product")
             lanes = ["build"]
             if product == "all":
-                return (
-                    self._internal_argv("swift_build_all", {}),
-                    lanes,
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
-            return (
-                ["swift", "build", "--product", str(product)],
-                lanes,
-                cwd,
-                env,
-                effective_timeout,
-            )
+                return self._internal_argv("swift_build_all", {}), lanes, cwd, env, effective_timeout
+            return ["swift", "build", "--product", str(product)], lanes, cwd, env, effective_timeout
         if operation == "build":
-            return (
-                [script("package_app.sh"), "debug"],
-                ["build", "debugArtifact"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("package_app.sh"), "debug"], ["build", "debugArtifact"], cwd, env, effective_timeout
         if operation == "package":
             config = str(args.get("config"))
-            lanes = ["build", "debugArtifact"] + (
-                ["release"] if config == "release" else []
-            )
-            return (
-                [script("package_app.sh"), config],
-                lanes,
-                cwd,
-                env,
-                effective_timeout,
-            )
+            lanes = ["build", "debugArtifact"] + (["release"] if config == "release" else [])
+            return [script("package_app.sh"), config], lanes, cwd, env, effective_timeout
         if operation == "test":
             argv = ["swift", "test"]
             if args.get("testProduct"):
@@ -1595,74 +1393,24 @@ class OperationRegistry:
                 argv.append("list")
             elif args.get("filter"):
                 argv.extend(["--filter", str(args["filter"])])
-            return (
-                argv,
-                ["build"],
-                self.repo_root / "Packages" / "RepoPromptAgentProviders",
-                env,
-                effective_timeout,
-            )
+            return argv, ["build"], self.repo_root / "Packages" / "RepoPromptAgentProviders", env, effective_timeout
         if operation == "install-debug-cli":
-            return (
-                [script("install_debug_cli.sh"), "install", "--build"],
-                ["build", "debugArtifact"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("install_debug_cli.sh"), "install", "--build"], ["build", "debugArtifact"], cwd, env, effective_timeout
         if operation == "debug-cli-status":
-            return (
-                [script("install_debug_cli.sh"), "status"],
-                lanes,
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return [script("install_debug_cli.sh"), "status"], lanes, cwd, env, effective_timeout
         if operation == "run":
-            return (
-                self._internal_argv("debug_app_build_then_launch", dict(args)),
-                ["liveApp"],
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return self._internal_argv("debug_app_build_then_launch", dict(args)), ["liveApp"], cwd, env, effective_timeout
         if operation == "app":
             subcommand = args.get("subcommand")
             if subcommand == "stop":
-                internal_args = {
-                    "guardDelayedLaunch": bool(args.get("guardDelayedLaunch"))
-                }
-                return (
-                    self._internal_argv("app_stop", internal_args),
-                    ["liveApp"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                internal_args = {"guardDelayedLaunch": bool(args.get("guardDelayedLaunch"))}
+                return self._internal_argv("app_stop", internal_args), ["liveApp"], cwd, env, effective_timeout
             if subcommand == "status":
-                return (
-                    self._internal_argv("app_status", {}),
-                    lanes,
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return self._internal_argv("app_status", {}), lanes, cwd, env, effective_timeout
             if subcommand == "launch-existing":
-                return (
-                    self._internal_argv("app_launch_existing", dict(args)),
-                    ["liveApp"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return self._internal_argv("app_launch_existing", dict(args)), ["liveApp"], cwd, env, effective_timeout
             if subcommand == "relaunch":
-                return (
-                    self._internal_argv("debug_app_build_then_launch", dict(args)),
-                    ["liveApp"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return self._internal_argv("debug_app_build_then_launch", dict(args)), ["liveApp"], cwd, env, effective_timeout
         if operation == "smoke":
             lanes = ["debugArtifact", "liveApp"]
             if args.get("launch"):
@@ -1671,74 +1419,26 @@ class OperationRegistry:
                 lanes = ["liveApp"]
             smoke_args = dict(args)
             smoke_args["operationTimeout"] = effective_timeout
-            return (
-                self._internal_argv("smoke", smoke_args),
-                lanes,
-                cwd,
-                env,
-                effective_timeout,
-            )
+            return self._internal_argv("smoke", smoke_args), lanes, cwd, env, effective_timeout
         if operation == "diagnostics":
             subcommand = args.get("subcommand")
             if subcommand == "agent-mode-on":
-                return (
-                    self._internal_argv("diagnostics_agent_mode_on", dict(args)),
-                    ["debugArtifact", "liveApp"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return self._internal_argv("diagnostics_agent_mode_on", dict(args)), ["debugArtifact", "liveApp"], cwd, env, effective_timeout
             if subcommand == "build-cache":
-                return (
-                    self._internal_argv("diagnostics_build_cache", dict(args)),
-                    lanes,
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return self._internal_argv("diagnostics_build_cache", dict(args)), lanes, cwd, env, effective_timeout
         if operation == "release":
             subcommand = args.get("subcommand")
             if subcommand == "package":
-                return (
-                    [script("package_app.sh"), "release"],
-                    ["build", "debugArtifact", "release"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return [script("package_app.sh"), "release"], ["build", "debugArtifact", "release"], cwd, env, effective_timeout
             if subcommand == "local-install":
-                return (
-                    [script("install_local_production.sh")],
-                    ["build", "debugArtifact", "release"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return [script("install_local_production.sh")], ["build", "debugArtifact", "release"], cwd, env, effective_timeout
             if subcommand == "artifact":
-                return (
-                    [script("release.sh"), "artifact"],
-                    ["build", "debugArtifact", "release"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                return [script("release.sh"), "artifact"], ["build", "debugArtifact", "release"], cwd, env, effective_timeout
             if subcommand == "preflight":
                 release_script = self.repo_root / "Scripts" / "release.sh"
                 if release_script.exists():
-                    return (
-                        [str(release_script), "preflight"],
-                        ["release"],
-                        cwd,
-                        env,
-                        effective_timeout,
-                    )
-                return (
-                    self._internal_argv("release_preflight_missing", {}),
-                    ["release"],
-                    cwd,
-                    env,
-                    effective_timeout,
-                )
+                    return [str(release_script), "preflight"], ["release"], cwd, env, effective_timeout
+                return self._internal_argv("release_preflight_missing", {}), ["release"], cwd, env, effective_timeout
 
         raise ConductorError(f"invalid arguments for operation '{operation}'")
 
@@ -1750,18 +1450,12 @@ class OperationRegistry:
         if list_mode and args.get("filter"):
             raise ConductorError("test list mode cannot be combined with a filter")
         if list_mode and (raw_seconds is not None or wake_probe):
-            raise ConductorError(
-                "test list mode cannot be combined with XCTest stall diagnostics"
-            )
+            raise ConductorError("test list mode cannot be combined with XCTest stall diagnostics")
         if list_mode and args.get("testProduct"):
-            raise ConductorError(
-                "test list mode cannot be combined with --test-product"
-            )
+            raise ConductorError("test list mode cannot be combined with --test-product")
         if raw_seconds is None:
             if wake_probe:
-                raise ConductorError(
-                    "--xctest-stall-wake-probe requires --xctest-stall-seconds"
-                )
+                raise ConductorError("--xctest-stall-wake-probe requires --xctest-stall-seconds")
             return
         try:
             seconds = float(raw_seconds)
@@ -1770,13 +1464,7 @@ class OperationRegistry:
         if not math.isfinite(seconds) or seconds <= 0:
             raise ConductorError("--xctest-stall-seconds must be greater than zero")
 
-    def _prepare_sleep(
-        self,
-        operation: Any,
-        args: Dict[str, Any],
-        timeout: Optional[Any],
-        request: Dict[str, Any],
-    ) -> Tuple[List[str], List[str], Path, Dict[str, str], Optional[float]]:
+    def _prepare_sleep(self, operation: Any, args: Dict[str, Any], timeout: Optional[Any], request: Dict[str, Any]) -> Tuple[List[str], List[str], Path, Dict[str, str], Optional[float]]:
         try:
             seconds = float(args.get("seconds"))
         except (TypeError, ValueError):
@@ -1801,19 +1489,9 @@ class OperationRegistry:
             "print(f'{message}: done exit_code={exit_code}', flush=True)\n"
             "sys.exit(exit_code)\n"
         )
-        argv = [
-            sys.executable,
-            "-u",
-            "-c",
-            child_code,
-            str(seconds),
-            message,
-            str(exit_code),
-        ]
+        argv = [sys.executable, "-u", "-c", child_code, str(seconds), message, str(exit_code)]
         env = self._base_env(bool(request.get("verbose")), request)
-        effective_timeout = (
-            float(timeout) if timeout is not None else max(30.0, seconds + 30.0)
-        )
+        effective_timeout = float(timeout) if timeout is not None else max(30.0, seconds + 30.0)
         return argv, lanes, self.repo_root, env, effective_timeout
 
     def _base_env(self, verbose: bool, request: Dict[str, Any]) -> Dict[str, str]:
@@ -1824,13 +1502,7 @@ class OperationRegistry:
 
     def _internal_argv(self, kind: str, args: Dict[str, Any]) -> List[str]:
         payload = {"kind": kind, "args": args, "repoRoot": str(self.repo_root)}
-        return [
-            sys.executable,
-            "-u",
-            str(self.script_path),
-            "__operation_runner",
-            json_dumps(payload),
-        ]
+        return [sys.executable, "-u", str(self.script_path), "__operation_runner", json_dumps(payload)]
 
     def _default_timeout(self, operation: Any, args: Dict[str, Any]) -> float:
         if operation in {
@@ -1846,10 +1518,7 @@ class OperationRegistry:
             return SHORT_TIMEOUT_SECONDS
         if operation == "release" and args.get("subcommand") == "artifact":
             return RELEASE_ARTIFACT_TIMEOUT_SECONDS
-        if operation in {"package", "release"} and (
-            args.get("config") == "release"
-            or args.get("subcommand") in {"package", "local-install"}
-        ):
+        if operation in {"package", "release"} and (args.get("config") == "release" or args.get("subcommand") in {"package", "local-install"}):
             return RELEASE_TIMEOUT_SECONDS
         if operation == "smoke" and args.get("agentRun"):
             return MEDIUM_TIMEOUT_SECONDS
@@ -1883,35 +1552,19 @@ class DaemonState:
         self.shutdown_requested = False
         self.server: Optional[socketserver.BaseServer] = None
 
-    def _global_heavy_slot_paths(
-        self, env: Optional[Dict[str, str]] = None
-    ) -> List[Path]:
+    def _global_heavy_slot_paths(self, env: Optional[Dict[str, str]] = None) -> List[Path]:
         return global_heavy_slot_paths(env)
 
     def status_payload(self) -> Dict[str, Any]:
         with self.lock:
             active_by_lane = {
-                lane: self._job_payload_locked(
-                    self.jobs[ticket], include_tail=False, include_summary=False
-                )
+                lane: self._job_payload_locked(self.jobs[ticket], include_tail=False, include_summary=False)
                 for lane, ticket in sorted(self.active_lanes.items())
                 if ticket in self.jobs
             }
-            running_jobs = [
-                self._job_payload_locked(job, include_tail=False, include_summary=False)
-                for job in self.jobs.values()
-                if job.state == "running"
-            ]
-            queued_jobs = [
-                self._job_payload_locked(
-                    self.jobs[ticket], include_tail=False, include_summary=False
-                )
-                for ticket in self.queue
-                if ticket in self.jobs
-            ]
-            terminal_count = sum(
-                1 for job in self.jobs.values() if job.state in TERMINAL_STATES
-            )
+            running_jobs = [self._job_payload_locked(job, include_tail=False, include_summary=False) for job in self.jobs.values() if job.state == "running"]
+            queued_jobs = [self._job_payload_locked(self.jobs[ticket], include_tail=False, include_summary=False) for ticket in self.queue if ticket in self.jobs]
+            terminal_count = sum(1 for job in self.jobs.values() if job.state in TERMINAL_STATES)
             return {
                 "protocolVersion": PROTOCOL_VERSION,
                 "pid": os.getpid(),
@@ -1919,9 +1572,7 @@ class DaemonState:
                 "repoHash": self.paths.repo_hash,
                 "socketPath": str(self.paths.socket_path),
                 "stateDir": str(self.paths.state_dir),
-                "globalHeavySlotPaths": [
-                    str(path) for path in self._global_heavy_slot_paths()
-                ],
+                "globalHeavySlotPaths": [str(path) for path in self._global_heavy_slot_paths()],
                 "globalHeavySlotCount": configured_global_heavy_slots(),
                 "liveAppLockPath": str(live_app_lock_path()),
                 "activeJobsByLane": active_by_lane,
@@ -1932,12 +1583,8 @@ class DaemonState:
                 "shutdownRequested": self.shutdown_requested,
             }
 
-    def _job_payload_locked(
-        self, job: Job, include_tail: bool = True, include_summary: bool = True
-    ) -> Dict[str, Any]:
-        payload = job.to_payload(
-            include_tail=include_tail, include_summary=include_summary
-        )
+    def _job_payload_locked(self, job: Job, include_tail: bool = True, include_summary: bool = True) -> Dict[str, Any]:
+        payload = job.to_payload(include_tail=include_tail, include_summary=include_summary)
         if job.state == "queued":
             payload["blockedBy"] = self._blocked_by_locked(job)
         return payload
@@ -1956,9 +1603,7 @@ class DaemonState:
                 blockers.append(
                     {
                         "ticket": blocker.ticket,
-                        "operationLabel": operation_display_name(
-                            blocker.operation, blocker.args
-                        ),
+                        "operationLabel": operation_display_name(blocker.operation, blocker.args),
                         "state": blocker.state,
                         "conflictingLanes": conflicting,
                         "cancelRequested": blocker.cancel_requested,
@@ -1976,9 +1621,7 @@ class DaemonState:
                 blockers.append(
                     {
                         "ticket": blocker.ticket,
-                        "operationLabel": operation_display_name(
-                            blocker.operation, blocker.args
-                        ),
+                        "operationLabel": operation_display_name(blocker.operation, blocker.args),
                         "state": blocker.state,
                         "conflictingLanes": conflicting,
                         "cancelRequested": blocker.cancel_requested,
@@ -1992,11 +1635,7 @@ class DaemonState:
             raise ConductorError("request args must be an object")
         args = dict(raw_args)
         operation = str(request.get("operation") or "")
-        if operation == "app" and args.get("subcommand") in {
-            "stop",
-            "launch-existing",
-            "relaunch",
-        }:
+        if operation == "app" and args.get("subcommand") in {"stop", "launch-existing", "relaunch"}:
             # Derived exclusively by supersession below, never accepted from a client.
             args.pop("guardDelayedLaunch", None)
         normalized_request = dict(request)
@@ -2005,9 +1644,7 @@ class DaemonState:
         request_key = request.get("requestKey")
         verbose = bool(request.get("verbose"))
         timeout_value = request.get("timeout")
-        _argv, lanes, _cwd, _env, effective_timeout = self.registry.prepare(
-            normalized_request
-        )
+        _argv, lanes, _cwd, _env, effective_timeout = self.registry.prepare(normalized_request)
         env_snapshot = self.registry._request_env_snapshot(normalized_request)
 
         with self.condition:
@@ -2015,18 +1652,14 @@ class DaemonState:
                 raise ConductorError("daemon is stopping; cannot enqueue new jobs")
             if request_key:
                 existing_ticket = self.request_keys.get(request_key)
-                existing = (
-                    self.jobs.get(existing_ticket or "") if existing_ticket else None
-                )
+                existing = self.jobs.get(existing_ticket or "") if existing_ticket else None
                 if existing and existing.state not in TERMINAL_STATES:
                     if existing.fingerprint != fingerprint:
                         raise ConductorError(
                             "request-key mismatch: an active job with this key has a different fingerprint "
                             f"(existing ticket {existing.ticket})"
                         )
-                    reused = self._job_payload_locked(
-                        existing, include_tail=False, include_summary=False
-                    )
+                    reused = self._job_payload_locked(existing, include_tail=False, include_summary=False)
                     reused["reused"] = True
                     return reused
 
@@ -2039,11 +1672,7 @@ class DaemonState:
                 operation=operation,
                 args=args,
                 lanes=lanes,
-                timeout=(
-                    effective_timeout
-                    if timeout_value is not None or effective_timeout is not None
-                    else None
-                ),
+                timeout=effective_timeout if timeout_value is not None or effective_timeout is not None else None,
                 verbose=verbose,
                 env=env_snapshot,
                 created_at=now(),
@@ -2053,9 +1682,7 @@ class DaemonState:
             superseded_jobs: List[Dict[str, Any]] = []
             guard_delayed_launch = False
             if intent:
-                superseded_jobs, guard_delayed_launch = (
-                    self._supersede_live_app_jobs_locked(job, intent)
-                )
+                superseded_jobs, guard_delayed_launch = self._supersede_live_app_jobs_locked(job, intent)
                 if guard_delayed_launch:
                     job.args["guardDelayedLaunch"] = True
             self.jobs[ticket] = job
@@ -2065,31 +1692,22 @@ class DaemonState:
             self._retention_pass_locked()
             self._schedule_locked()
             self.condition.notify_all()
-            payload = self._job_payload_locked(
-                job, include_tail=False, include_summary=False
-            )
+            payload = self._job_payload_locked(job, include_tail=False, include_summary=False)
             payload["reused"] = False
             payload["supersededJobs"] = superseded_jobs
             return payload
 
-    def _supersede_live_app_jobs_locked(
-        self, new_job: Job, intent: str
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+    def _supersede_live_app_jobs_locked(self, new_job: Job, intent: str) -> Tuple[List[Dict[str, Any]], bool]:
         superseded: List[Dict[str, Any]] = []
         guard_delayed_launch = False
         for old_job in list(self.jobs.values()):
-            if (
-                old_job.state not in {"queued", "running"}
-                or "liveApp" not in old_job.lanes
-            ):
+            if old_job.state not in {"queued", "running"} or "liveApp" not in old_job.lanes:
                 continue
             prior_state = old_job.state
             old_job.cancel_requested = True
             old_job.superseded_by_ticket = new_job.ticket
             old_job.superseded_by_operation = intent
-            guard_delayed_launch = guard_delayed_launch or bool(
-                old_job.args.get("guardDelayedLaunch")
-            )
+            guard_delayed_launch = guard_delayed_launch or bool(old_job.args.get("guardDelayedLaunch"))
             if prior_state == "queued":
                 old_job.state = "canceled"
                 old_job.finished_at = now()
@@ -2097,15 +1715,10 @@ class DaemonState:
                 old_job.result_summary = f"superseded before start by {intent}"
                 with contextlib.suppress(ValueError):
                     self.queue.remove(old_job.ticket)
-                self._append_system_line_locked(
-                    old_job,
-                    f"job superseded before start by {intent} {new_job.ticket}\n",
-                )
+                self._append_system_line_locked(old_job, f"job superseded before start by {intent} {new_job.ticket}\n")
                 cancellation_state = "canceled"
             else:
-                guard_delayed_launch = guard_delayed_launch or is_launch_capable_job(
-                    old_job.operation, old_job.args
-                )
+                guard_delayed_launch = guard_delayed_launch or is_launch_capable_job(old_job.operation, old_job.args)
                 reason = f"superseded by {intent} {new_job.ticket}"
                 termination_sent = bool(old_job.process_pid or old_job.process_pgid)
                 if termination_sent:
@@ -2119,18 +1732,14 @@ class DaemonState:
             superseded.append(
                 {
                     "ticket": old_job.ticket,
-                    "operationLabel": operation_display_name(
-                        old_job.operation, old_job.args
-                    ),
+                    "operationLabel": operation_display_name(old_job.operation, old_job.args),
                     "priorState": prior_state,
                     "cancellationState": cancellation_state,
                 }
             )
         return superseded, guard_delayed_launch
 
-    def _escalate_canceled_job_after_grace(
-        self, ticket: str, reason: str, termination_sent: bool
-    ) -> None:
+    def _escalate_canceled_job_after_grace(self, ticket: str, reason: str, termination_sent: bool) -> None:
         with self.condition:
             job = self.jobs.get(ticket)
             while job and job.state == "running" and not job.process_pid:
@@ -2146,9 +1755,7 @@ class DaemonState:
                 signal_for_new=signal.SIGTERM,
             )
             if descendants_alive:
-                self._kill_process_group_locked(
-                    job, reason=f"{reason}; SIGKILL after grace period"
-                )
+                self._kill_process_group_locked(job, reason=f"{reason}; SIGKILL after grace period")
                 self._wait_for_process_tree_exit_locked(
                     job,
                     now() + KILL_GRACE_SECONDS,
@@ -2162,18 +1769,9 @@ class DaemonState:
             jobs.sort(key=lambda job: job.created_at)
             if state_filter:
                 jobs = [job for job in jobs if job.state == state_filter]
-            return {
-                "jobs": [
-                    self._job_payload_locked(
-                        job, include_tail=False, include_summary=False
-                    )
-                    for job in jobs
-                ]
-            }
+            return {"jobs": [self._job_payload_locked(job, include_tail=False, include_summary=False) for job in jobs]}
 
-    def resolve_job_locked(
-        self, ticket: Optional[str], request_key: Optional[str]
-    ) -> Job:
+    def resolve_job_locked(self, ticket: Optional[str], request_key: Optional[str]) -> Job:
         if request_key:
             ticket = self.request_keys.get(request_key)
             if not ticket:
@@ -2185,25 +1783,17 @@ class DaemonState:
             raise ConductorError(f"unknown job '{ticket}'")
         return job
 
-    def job_status(
-        self, ticket: Optional[str], request_key: Optional[str]
-    ) -> Dict[str, Any]:
+    def job_status(self, ticket: Optional[str], request_key: Optional[str]) -> Dict[str, Any]:
         with self.lock:
             job = self.resolve_job_locked(ticket, request_key)
             if job.state not in TERMINAL_STATES or job.output_summary is not None:
                 return self._job_payload_locked(job, include_tail=True)
         self._refresh_output_summary(job)
         with self.lock:
-            return self._job_payload_locked(
-                self.resolve_job_locked(ticket, request_key), include_tail=True
-            )
+            return self._job_payload_locked(self.resolve_job_locked(ticket, request_key), include_tail=True)
 
-    def job_wait(
-        self,
-        ticket: Optional[str],
-        request_key: Optional[str],
-        timeout: Optional[float],
-    ) -> Dict[str, Any]:
+
+    def job_wait(self, ticket: Optional[str], request_key: Optional[str], timeout: Optional[float]) -> Dict[str, Any]:
         deadline = now() + timeout if timeout is not None else None
         with self.condition:
             job = self.resolve_job_locked(ticket, request_key)
@@ -2213,24 +1803,18 @@ class DaemonState:
                     payload = self._job_payload_locked(job, include_tail=True)
                     payload["waitTimedOut"] = True
                     return payload
-                self.condition.wait(
-                    timeout=remaining if remaining is not None else 30.0
-                )
+                self.condition.wait(timeout=remaining if remaining is not None else 30.0)
             if job.output_summary is not None:
                 payload = self._job_payload_locked(job, include_tail=True)
                 payload["waitTimedOut"] = False
                 return payload
         self._refresh_output_summary(job)
         with self.condition:
-            payload = self._job_payload_locked(
-                self.resolve_job_locked(ticket, request_key), include_tail=True
-            )
+            payload = self._job_payload_locked(self.resolve_job_locked(ticket, request_key), include_tail=True)
             payload["waitTimedOut"] = False
             return payload
 
-    def job_cancel(
-        self, ticket: Optional[str], request_key: Optional[str]
-    ) -> Dict[str, Any]:
+    def job_cancel(self, ticket: Optional[str], request_key: Optional[str]) -> Dict[str, Any]:
         with self.condition:
             job = self.resolve_job_locked(ticket, request_key)
             if job.state == "queued":
@@ -2255,9 +1839,7 @@ class DaemonState:
     def stop(self, force: bool) -> Dict[str, Any]:
         running_tickets: List[str] = []
         with self.condition:
-            active_or_queued = [
-                job for job in self.jobs.values() if job.state in {"queued", "running"}
-            ]
+            active_or_queued = [job for job in self.jobs.values() if job.state in {"queued", "running"}]
             if active_or_queued and not force:
                 raise ConductorError(
                     "daemon has active or queued jobs; use 'daemon stop --force' to cancel them before stopping"
@@ -2273,23 +1855,15 @@ class DaemonState:
                         job.result_summary = "canceled by daemon stop --force"
                         with contextlib.suppress(ValueError):
                             self.queue.remove(job.ticket)
-                        self._append_system_line_locked(
-                            job, "job canceled by daemon stop --force before start\n"
-                        )
+                        self._append_system_line_locked(job, "job canceled by daemon stop --force before start\n")
                     elif job.state == "running":
                         running_tickets.append(job.ticket)
-                        self._terminate_process_group_locked(
-                            job, reason="daemon stop --force"
-                        )
+                        self._terminate_process_group_locked(job, reason="daemon stop --force")
                 self._write_running_processes_locked()
                 self.condition.notify_all()
             payload = self.status_payload()
         if force and running_tickets:
-            threading.Thread(
-                target=self._force_shutdown_when_canceled,
-                args=(running_tickets,),
-                daemon=True,
-            ).start()
+            threading.Thread(target=self._force_shutdown_when_canceled, args=(running_tickets,), daemon=True).start()
         else:
             threading.Thread(target=self._shutdown_server_soon, daemon=True).start()
         return payload
@@ -2311,9 +1885,7 @@ class DaemonState:
                     signal_for_new=signal.SIGTERM,
                 )
                 if descendants_alive:
-                    self._kill_process_group_locked(
-                        job, reason="daemon stop --force; SIGKILL after grace period"
-                    )
+                    self._kill_process_group_locked(job, reason="daemon stop --force; SIGKILL after grace period")
                     self._wait_for_process_tree_exit_locked(
                         job,
                         now() + KILL_GRACE_SECONDS,
@@ -2348,9 +1920,7 @@ class DaemonState:
             job.started_at = now()
             for lane in job.lanes:
                 self.active_lanes[lane] = job.ticket
-            thread = threading.Thread(
-                target=self._run_job, args=(job.ticket,), daemon=True
-            )
+            thread = threading.Thread(target=self._run_job, args=(job.ticket,), daemon=True)
             thread.start()
         if to_start:
             self.condition.notify_all()
@@ -2377,9 +1947,7 @@ class DaemonState:
                         job.exit_code = 130
                         job.result_summary = "canceled before global heavy slot"
                         job.finished_at = now()
-                        self._append_system_line_locked(
-                            job, "job canceled before global heavy slot\n"
-                        )
+                        self._append_system_line_locked(job, "job canceled before global heavy slot\n")
                         self.condition.notify_all()
                         return None
                 for lock_path, lock_file in lock_files:
@@ -2396,16 +1964,11 @@ class DaemonState:
                         raise
                 if selected_file is not None and selected_path is not None:
                     break
-                holders = [
-                    format_display_lock_holder(read_display_lock_metadata(path))
-                    for path, _file in lock_files
-                ]
+                holders = [format_display_lock_holder(read_display_lock_metadata(path)) for path, _file in lock_files]
                 with self.condition:
                     job = self.jobs.get(ticket)
                     if job and job.state == "running":
-                        job.global_heavy_slot_path = ",".join(
-                            str(path) for path, _file in lock_files
-                        )
+                        job.global_heavy_slot_path = ",".join(str(path) for path, _file in lock_files)
                         job.global_heavy_slot_holder = "; ".join(holders)
                         if not did_log_wait:
                             self._append_system_line_locked(
@@ -2478,9 +2041,7 @@ class DaemonState:
                     job.exit_code = 130
                     job.result_summary = "canceled before process start"
                     job.finished_at = now()
-                    self._append_system_line_locked(
-                        job, "job canceled before process start\n"
-                    )
+                    self._append_system_line_locked(job, "job canceled before process start\n")
                     return
             argv, _lanes, cwd, env, effective_timeout = self.registry.prepare(request)
             env["REPOPROMPT_CONDUCTOR_JOB_TICKET"] = job.ticket
@@ -2513,18 +2074,12 @@ class DaemonState:
                         job.process_pgid = os.getpgid(process.pid)
                     snapshot = process_table_snapshot()
                     process_record = snapshot.get(process.pid)
-                    job.process_start = (
-                        process_record[1]
-                        if process_record
-                        else process_start_token(process.pid)
-                    )
+                    job.process_start = process_record[1] if process_record else process_start_token(process.pid)
                     if job.process_start:
                         job.tracked_processes[process.pid] = job.process_start
                     self._write_running_processes_locked()
                     if job.cancel_requested and job.superseded_by_ticket is None:
-                        self._terminate_process_group_locked(
-                            job, reason="cancellation requested before PID assignment"
-                        )
+                        self._terminate_process_group_locked(job, reason="cancellation requested before PID assignment")
                     self.condition.notify_all()
 
                 reader = threading.Thread(
@@ -2562,9 +2117,7 @@ class DaemonState:
                             signal_for_new=signal.SIGTERM,
                         )
                         if root_alive or descendants_alive:
-                            self._kill_process_group_locked(
-                                job, reason="SIGKILL after timeout grace period"
-                            )
+                            self._kill_process_group_locked(job, reason="SIGKILL after timeout grace period")
                     if root_alive:
                         try:
                             exit_code = process.wait(timeout=KILL_GRACE_SECONDS)
@@ -2595,29 +2148,18 @@ class DaemonState:
                 if job.cancel_requested:
                     with self.condition:
                         if self._process_tree_alive_locked(job):
-                            self._terminate_process_group_locked(
-                                job, reason="cancellation descendant cleanup"
-                            )
+                            self._terminate_process_group_locked(job, reason="cancellation descendant cleanup")
                             term_deadline = now() + TERMINATE_GRACE_SECONDS
                             descendants_alive = self._wait_for_process_tree_exit_locked(
                                 job, term_deadline, signal_for_new=signal.SIGTERM
                             )
                             if descendants_alive:
-                                self._kill_process_group_locked(
-                                    job,
-                                    reason="cancellation descendant cleanup; SIGKILL after grace period",
-                                )
-                                descendants_alive = (
-                                    self._wait_for_process_tree_exit_locked(
-                                        job,
-                                        now() + KILL_GRACE_SECONDS,
-                                        signal_for_new=signal.SIGKILL,
-                                    )
+                                self._kill_process_group_locked(job, reason="cancellation descendant cleanup; SIGKILL after grace period")
+                                descendants_alive = self._wait_for_process_tree_exit_locked(
+                                    job, now() + KILL_GRACE_SECONDS, signal_for_new=signal.SIGKILL
                                 )
                             if descendants_alive:
-                                raise ConductorError(
-                                    "canceled job descendants remained alive after SIGKILL escalation"
-                                )
+                                raise ConductorError("canceled job descendants remained alive after SIGKILL escalation")
                 reader.join(timeout=2.0)
                 if reader.is_alive():
                     output_transport.close_reader()
@@ -2645,9 +2187,7 @@ class DaemonState:
                     job.error = str(exc)
                     job.result_summary = f"daemon runner error: {exc}"
                     job.finished_at = now()
-                    self._append_system_line_locked(
-                        job, f"daemon runner error: {exc}\n"
-                    )
+                    self._append_system_line_locked(job, f"daemon runner error: {exc}\n")
         finally:
             self._release_global_heavy_slot(global_heavy_slot)
             if output_transport is not None:
@@ -2655,9 +2195,7 @@ class DaemonState:
             refresh_after_release = False
             with self.condition:
                 if job is not None:
-                    refresh_after_release = (
-                        job.state in TERMINAL_STATES and job.output_summary is None
-                    )
+                    refresh_after_release = job.state in TERMINAL_STATES and job.output_summary is None
                     for lane in list(job.lanes):
                         if self.active_lanes.get(lane) == job.ticket:
                             del self.active_lanes[lane]
@@ -2666,9 +2204,7 @@ class DaemonState:
                 self._schedule_locked()
                 self.condition.notify_all()
             if job is not None and refresh_after_release:
-                threading.Thread(
-                    target=self._refresh_output_summary, args=(job,), daemon=True
-                ).start()
+                threading.Thread(target=self._refresh_output_summary, args=(job,), daemon=True).start()
 
     @staticmethod
     def _take_complete_output_lines(pending: bytearray, chunk: bytes) -> List[bytes]:
@@ -2721,10 +2257,7 @@ class DaemonState:
         elif job.measurement_invalid:
             job.state = "failed"
             job.exit_code = XCTEST_STALL_FAILURE_EXIT_CODE
-            job.error = (
-                job.error
-                or "XCTest progress stall watchdog invalidated this measurement"
-            )
+            job.error = job.error or "XCTest progress stall watchdog invalidated this measurement"
             job.result_summary = job.error
         elif job.timed_out:
             job.state = "failed"
@@ -2847,9 +2380,7 @@ class DaemonState:
         commands = process_command_snapshot(verified.keys())
         entries: List[Dict[str, Any]] = []
         matches: List[Tuple[int, int, str]] = []
-        for pid in sorted(
-            verified, key=lambda candidate: (depths.get(candidate, 0), candidate)
-        ):
+        for pid in sorted(verified, key=lambda candidate: (depths.get(candidate, 0), candidate)):
             ppid, start_token = verified[pid]
             command = commands.get(pid, "")
             entry = {
@@ -2868,9 +2399,7 @@ class DaemonState:
         _depth, pid, start_token = max(matches)
         return (pid, start_token), entries
 
-    def _signal_process_identity(
-        self, pid: int, start_token: str, sig: signal.Signals
-    ) -> bool:
+    def _signal_process_identity(self, pid: int, start_token: str, sig: signal.Signals) -> bool:
         confirmation = process_table_snapshot().get(pid)
         if confirmation is None or confirmation[1] != start_token:
             return False
@@ -2881,9 +2410,7 @@ class DaemonState:
             return False
 
     @staticmethod
-    def _bound_diagnostic_file(
-        path: Path, max_bytes: int = XCTEST_STALL_SAMPLE_MAX_BYTES
-    ) -> None:
+    def _bound_diagnostic_file(path: Path, max_bytes: int = XCTEST_STALL_SAMPLE_MAX_BYTES) -> None:
         try:
             data = path.read_bytes()
         except OSError:
@@ -2905,9 +2432,7 @@ class DaemonState:
         snapshot_path = self.paths.jobs_dir / f"{job.ticket}.xctest-stall.json"
         diagnostic["processSnapshotPath"] = str(snapshot_path)
         try:
-            snapshot_path.write_text(
-                json.dumps(diagnostic, indent=2, sort_keys=True), encoding="utf-8"
-            )
+            snapshot_path.write_text(json.dumps(diagnostic, indent=2, sort_keys=True), encoding="utf-8")
             self._bound_diagnostic_file(snapshot_path)
             job.diagnostic_paths.append(snapshot_path)
         except OSError as exc:
@@ -2943,10 +2468,7 @@ class DaemonState:
     ) -> bool:
         deadline = time.monotonic() + min(timeout, XCTEST_WAKE_PROGRESS_WAIT_SECONDS)
         with self.condition:
-            while (
-                job.state == "running"
-                and job.xctest_progress_sequence <= progress_sequence
-            ):
+            while job.state == "running" and job.xctest_progress_sequence <= progress_sequence:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -2957,9 +2479,7 @@ class DaemonState:
         with self.condition:
             if job.state != "running":
                 return
-            self._terminate_process_group_locked(
-                job, reason="XCTest progress stall measurement invalid"
-            )
+            self._terminate_process_group_locked(job, reason="XCTest progress stall measurement invalid")
             descendants_alive = self._wait_for_process_tree_exit_locked(
                 job,
                 now() + TERMINATE_GRACE_SECONDS,
@@ -3016,14 +2536,10 @@ class DaemonState:
             for entry in process_tree:
                 self._append_system_line_locked(
                     job,
-                    "  pid={pid} ppid={ppid} depth={depth} start={startToken} command={command}\n".format(
-                        **entry
-                    ),
+                    "  pid={pid} ppid={ppid} depth={depth} start={startToken} command={command}\n".format(**entry),
                 )
 
-        diagnostic = self._capture_xctest_stall_diagnostics(
-            job, diagnostic, xctest_identity
-        )
+        diagnostic = self._capture_xctest_stall_diagnostics(job, diagnostic, xctest_identity)
         resumed = False
         stop_sent = False
         continue_sent = False
@@ -3032,13 +2548,9 @@ class DaemonState:
             stop_sent = self._signal_process_identity(pid, start_token, signal.SIGSTOP)
             if stop_sent:
                 time.sleep(XCTEST_WAKE_PROBE_PAUSE_SECONDS)
-                continue_sent = self._signal_process_identity(
-                    pid, start_token, signal.SIGCONT
-                )
+                continue_sent = self._signal_process_identity(pid, start_token, signal.SIGCONT)
                 if continue_sent:
-                    resumed = self._wait_for_xctest_progress_after_probe(
-                        job, claim.progress_sequence
-                    )
+                    resumed = self._wait_for_xctest_progress_after_probe(job, claim.progress_sequence)
         diagnostic["stopSent"] = stop_sent
         diagnostic["continueSent"] = continue_sent
         diagnostic["progressResumed"] = resumed
@@ -3046,9 +2558,7 @@ class DaemonState:
         if isinstance(snapshot_path_value, str):
             try:
                 snapshot_path = Path(snapshot_path_value)
-                snapshot_path.write_text(
-                    json.dumps(diagnostic, indent=2, sort_keys=True), encoding="utf-8"
-                )
+                snapshot_path.write_text(json.dumps(diagnostic, indent=2, sort_keys=True), encoding="utf-8")
                 self._bound_diagnostic_file(snapshot_path)
             except OSError as exc:
                 diagnostic["processSnapshotFinalWriteError"] = str(exc)
@@ -3107,9 +2617,7 @@ class DaemonState:
                 )
         payload = {"updatedAt": now(), "processes": processes}
         try:
-            self.paths.running_processes_path.write_text(
-                json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
-            )
+            self.paths.running_processes_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
             with contextlib.suppress(OSError):
                 os.chmod(self.paths.running_processes_path, 0o600)
         except OSError:
@@ -3128,9 +2636,7 @@ class DaemonState:
             signal_for_new=signal.SIGTERM,
         )
         if descendants_alive:
-            self._kill_process_group_locked(
-                job, reason=f"{reason}; SIGKILL after grace period"
-            )
+            self._kill_process_group_locked(job, reason=f"{reason}; SIGKILL after grace period")
             self._wait_for_process_tree_exit_locked(
                 job,
                 now() + KILL_GRACE_SECONDS,
@@ -3140,9 +2646,7 @@ class DaemonState:
         while job.state == "running" and now() < completion_deadline:
             self.condition.wait(timeout=PROCESS_TREE_POLL_SECONDS)
 
-    def _refresh_process_tree_locked(
-        self, job: Job
-    ) -> Tuple[Dict[int, Tuple[int, str]], Dict[int, int]]:
+    def _refresh_process_tree_locked(self, job: Job) -> Tuple[Dict[int, Tuple[int, str]], Dict[int, int]]:
         snapshot = process_table_snapshot()
         root_pid = job.process_pid
         if root_pid and root_pid not in job.tracked_processes:
@@ -3196,17 +2700,9 @@ class DaemonState:
     ) -> int:
         confirmation = process_table_snapshot()
         signaled = 0
-        for pid in sorted(
-            verified,
-            key=lambda candidate: (depths.get(candidate, 0), candidate),
-            reverse=True,
-        ):
+        for pid in sorted(verified, key=lambda candidate: (depths.get(candidate, 0), candidate), reverse=True):
             token = job.tracked_processes.get(pid)
-            if (
-                not token
-                or confirmation.get(pid) is None
-                or confirmation[pid][1] != token
-            ):
+            if not token or confirmation.get(pid) is None or confirmation[pid][1] != token:
                 continue
             try:
                 os.kill(pid, sig)
@@ -3253,19 +2749,11 @@ class DaemonState:
                 if not self._process_group_id_alive_locked(job):
                     return False
                 self._signal_process_group_id_locked(job, signal_for_new)
-                self.condition.wait(
-                    timeout=min(PROCESS_TREE_POLL_SECONDS, max(0.0, deadline - now()))
-                )
+                self.condition.wait(timeout=min(PROCESS_TREE_POLL_SECONDS, max(0.0, deadline - now())))
                 continue
-            self._signal_verified_processes_locked(
-                job, signal_for_new, verified, depths
-            )
-            self.condition.wait(
-                timeout=min(PROCESS_TREE_POLL_SECONDS, max(0.0, deadline - now()))
-            )
-        return self._process_tree_alive_locked(
-            job
-        ) or self._process_group_id_alive_locked(job)
+            self._signal_verified_processes_locked(job, signal_for_new, verified, depths)
+            self.condition.wait(timeout=min(PROCESS_TREE_POLL_SECONDS, max(0.0, deadline - now())))
+        return self._process_tree_alive_locked(job) or self._process_group_id_alive_locked(job)
 
     def _signal_process_group_id_locked(self, job: Job, sig: signal.Signals) -> bool:
         try:
@@ -3304,9 +2792,7 @@ class DaemonState:
 
     def _terminate_process_group_locked(self, job: Job, reason: str) -> None:
         if self._signal_process_group_id_locked(job, signal.SIGTERM):
-            self._append_system_line_locked(
-                job, f"terminating process group: {reason}\n"
-            )
+            self._append_system_line_locked(job, f"terminating process group: {reason}\n")
         self._append_system_line_locked(job, f"terminating process tree: {reason}\n")
         self._signal_process_tree_locked(job, signal.SIGTERM)
 
@@ -3323,9 +2809,7 @@ class DaemonState:
         for job in terminal:
             if job.finished_at is not None and job.finished_at < cutoff:
                 prune.add(job.ticket)
-        terminal_sorted = sorted(
-            terminal, key=lambda job: job.finished_at or job.created_at
-        )
+        terminal_sorted = sorted(terminal, key=lambda job: job.finished_at or job.created_at)
         excess = max(0, len(terminal_sorted) - MAX_TERMINAL_JOBS)
         for job in terminal_sorted[:excess]:
             prune.add(job.ticket)
@@ -3376,9 +2860,7 @@ class ThreadedUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamSer
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(
-        self, server_address: str, handler_cls: Any, state: DaemonState
-    ) -> None:
+    def __init__(self, server_address: str, handler_cls: Any, state: DaemonState) -> None:
         self.state = state
         super().__init__(server_address, handler_cls)
 
@@ -3435,9 +2917,7 @@ def run_daemon(paths: Paths) -> int:
     with contextlib.suppress(OSError):
         os.chmod(paths.pid_path, 0o600)
     write_daemon_metadata(paths)
-    paths.running_processes_path.write_text(
-        json.dumps({"updatedAt": now(), "processes": []}, indent=2), encoding="utf-8"
-    )
+    paths.running_processes_path.write_text(json.dumps({"updatedAt": now(), "processes": []}, indent=2), encoding="utf-8")
     with contextlib.suppress(OSError):
         os.chmod(paths.running_processes_path, 0o600)
     state = DaemonState(paths)
@@ -3452,9 +2932,7 @@ def run_daemon(paths: Paths) -> int:
             for job in state.jobs.values():
                 if job.state == "running":
                     job.cancel_requested = True
-                    state._terminate_process_group_locked(
-                        job, reason=f"signal {signum}"
-                    )
+                    state._terminate_process_group_locked(job, reason=f"signal {signum}")
             state.condition.notify_all()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
@@ -3465,17 +2943,9 @@ def run_daemon(paths: Paths) -> int:
     finally:
         server.server_close()
         metadata = read_daemon_metadata(paths)
-        owns_daemon_files = (
-            read_pid(paths.pid_path) == os.getpid()
-            and metadata.get("pid") == os.getpid()
-        )
+        owns_daemon_files = read_pid(paths.pid_path) == os.getpid() and metadata.get("pid") == os.getpid()
         if owns_daemon_files:
-            for path in (
-                paths.socket_path,
-                paths.pid_path,
-                paths.daemon_meta_path,
-                paths.running_processes_path,
-            ):
+            for path in (paths.socket_path, paths.pid_path, paths.daemon_meta_path, paths.running_processes_path):
                 with contextlib.suppress(FileNotFoundError):
                     path.unlink()
     return 0
@@ -3487,9 +2957,7 @@ def format_argv(argv: Sequence[str]) -> str:
     return " ".join(shlex.quote(part) for part in argv)
 
 
-def request_daemon(
-    paths: Paths, payload: Dict[str, Any], timeout: Optional[float] = None
-) -> Dict[str, Any]:
+def request_daemon(paths: Paths, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
     request = dict(payload)
     request.setdefault("id", str(uuid.uuid4()))
     data = (json.dumps(request) + "\n").encode("utf-8")
@@ -3512,9 +2980,7 @@ def request_daemon(
     return response.get("payload") or {}
 
 
-def compatible_daemon_status_or_stop_idle_mismatch(
-    paths: Paths,
-) -> Tuple[Optional[Dict[str, Any]], Optional[ConductorError]]:
+def compatible_daemon_status_or_stop_idle_mismatch(paths: Paths) -> Tuple[Optional[Dict[str, Any]], Optional[ConductorError]]:
     try:
         payload = request_daemon(paths, {"type": "status"}, timeout=1.0)
     except ConductorError as exc:
@@ -3532,11 +2998,7 @@ def compatible_daemon_status_or_stop_idle_mismatch(
             "run './conductor daemon stop --force' after deciding it is safe"
         )
     try:
-        request_daemon(
-            paths,
-            {"type": "stop", "force": False},
-            timeout=FORCE_STOP_RPC_TIMEOUT_SECONDS,
-        )
+        request_daemon(paths, {"type": "stop", "force": False}, timeout=FORCE_STOP_RPC_TIMEOUT_SECONDS)
     except ConductorError as exc:
         raise ConductorError(
             f"daemon protocol mismatch (daemon={protocol}, client={PROTOCOL_VERSION}) could not stop without force; "
@@ -3573,9 +3035,7 @@ def ensure_daemon(paths: Paths, start_if_needed: bool = True) -> Dict[str, Any]:
     with paths.lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         cleanup_stale_files(paths)
-        payload, locked_contact_error = compatible_daemon_status_or_stop_idle_mismatch(
-            paths
-        )
+        payload, locked_contact_error = compatible_daemon_status_or_stop_idle_mismatch(paths)
         if payload is not None:
             return payload
         locked_live_pid = read_pid(paths.pid_path)
@@ -3587,13 +3047,7 @@ def ensure_daemon(paths: Paths, start_if_needed: bool = True) -> Dict[str, Any]:
         script = Path(__file__).resolve()
         with paths.daemon_log_path.open("ab") as daemon_log:
             proc = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(script),
-                    "__daemon",
-                    "--repo-root",
-                    str(paths.repo_root),
-                ],
+                [sys.executable, str(script), "__daemon", "--repo-root", str(paths.repo_root)],
                 cwd=str(paths.repo_root),
                 stdin=subprocess.DEVNULL,
                 stdout=daemon_log,
@@ -3632,11 +3086,7 @@ def read_running_processes(paths: Paths) -> List[Dict[str, Any]]:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return []
     processes = payload.get("processes") if isinstance(payload, dict) else None
-    return (
-        [item for item in processes if isinstance(item, dict)]
-        if isinstance(processes, list)
-        else []
-    )
+    return [item for item in processes if isinstance(item, dict)] if isinstance(processes, list) else []
 
 
 def signal_running_process_groups(paths: Paths, sig: signal.Signals) -> None:
@@ -3656,12 +3106,7 @@ def force_stop_unresponsive_daemon(paths: Paths) -> Dict[str, Any]:
     pid = read_pid(paths.pid_path)
     if not pid or not pid_alive(pid):
         cleanup_stale_files(paths)
-        return {
-            "stopped": True,
-            "pid": pid,
-            "forced": True,
-            "message": "no live daemon pid",
-        }
+        return {"stopped": True, "pid": pid, "forced": True, "message": "no live daemon pid"}
     if not verify_daemon_pid_identity(paths, pid):
         raise ConductorError(
             f"refusing to force-stop pid {pid}: daemon identity could not be verified; "
@@ -3681,9 +3126,7 @@ def force_stop_unresponsive_daemon(paths: Paths) -> Dict[str, Any]:
         while pid_alive(pid) and now() < deadline:
             time.sleep(0.1)
     if pid_alive(pid):
-        raise ConductorError(
-            f"force-stop signaled verified daemon pid {pid}, but it is still alive; leaving pid/socket files intact"
-        )
+        raise ConductorError(f"force-stop signaled verified daemon pid {pid}, but it is still alive; leaving pid/socket files intact")
     cleanup_stale_files(paths)
     with contextlib.suppress(FileNotFoundError):
         paths.socket_path.unlink()
@@ -3693,13 +3136,7 @@ def force_stop_unresponsive_daemon(paths: Paths) -> Dict[str, Any]:
         paths.daemon_meta_path.unlink()
     with contextlib.suppress(FileNotFoundError):
         paths.running_processes_path.unlink()
-    return {
-        "stopped": True,
-        "pid": pid,
-        "forced": True,
-        "socketPath": str(paths.socket_path),
-        "stateDir": str(paths.state_dir),
-    }
+    return {"stopped": True, "pid": pid, "forced": True, "socketPath": str(paths.socket_path), "stateDir": str(paths.state_dir)}
 
 
 def parse_json_flag(argv: List[str]) -> Tuple[bool, List[str]]:
@@ -3729,9 +3166,7 @@ def render_daemon_status(payload: Dict[str, Any], shorthand: bool = False) -> No
             global_wait = job.get("globalHeavySlotWaitSeconds")
             if global_wait is not None:
                 timing += f" global-wait={format_duration(float(global_wait))}"
-            print(
-                f"  {lane}: {job.get('ticket')} {job.get('operationLabel') or job.get('operation')} [{job.get('state')}]{timing}"
-            )
+            print(f"  {lane}: {job.get('ticket')} {job.get('operationLabel') or job.get('operation')} [{job.get('state')}]{timing}")
     else:
         print("active lanes: none")
     print(f"queued:   {payload.get('queueDepth', 0)}")
@@ -3742,21 +3177,13 @@ def render_daemon_status(payload: Dict[str, Any], shorthand: bool = False) -> No
             queued_for = None
             if job.get("createdAt"):
                 queued_for = max(0.0, now() - float(job.get("createdAt")))
-            timing = (
-                f" queued={format_duration(queued_for)}"
-                if queued_for is not None
-                else ""
-            )
-            print(
-                f"  {job.get('ticket')} {job.get('operationLabel') or job.get('operation')} lanes={','.join(job.get('lanes') or [])}{timing}"
-            )
+            timing = f" queued={format_duration(queued_for)}" if queued_for is not None else ""
+            print(f"  {job.get('ticket')} {job.get('operationLabel') or job.get('operation')} lanes={','.join(job.get('lanes') or [])}{timing}")
 
 
 def render_superseded_jobs(payload: Dict[str, Any]) -> None:
     for job in payload.get("supersededJobs") or []:
-        action = (
-            "Canceled" if job.get("cancellationState") == "canceled" else "Canceling"
-        )
+        action = "Canceled" if job.get("cancellationState") == "canceled" else "Canceling"
         print(
             f"{action} older live-app work: {job.get('operationLabel')} {job.get('ticket')} "
             f"({job.get('priorState')})."
@@ -3765,32 +3192,17 @@ def render_superseded_jobs(payload: Dict[str, Any]) -> None:
 
 def select_progress_lines(operation: str, lines: Sequence[str]) -> List[str]:
     selected: List[str] = []
-    style_operation = operation in {
-        "format",
-        "format-check",
-        "lint",
-        "check-format-tools",
-        "install-format-tools",
-        "format-tools-status",
-    }
+    style_operation = operation in {"format", "format-check", "lint", "check-format-tools", "install-format-tools", "format-tools-status"}
     for raw_line in lines:
         line = clean_summary_line(str(raw_line))
         if not line:
             continue
         allowed = False
-        if (
-            OutputSummarizer.PHASE_RE.search(line)
-            or OutputSummarizer.ARTIFACT_RE.search(line)
-            or OutputSummarizer.APP_LIFECYCLE_RE.search(line)
-        ):
+        if OutputSummarizer.PHASE_RE.search(line) or OutputSummarizer.ARTIFACT_RE.search(line) or OutputSummarizer.APP_LIFECYCLE_RE.search(line):
             allowed = True
-        elif OutputSummarizer.TIMEOUT_RE.search(
-            line
-        ) or OutputSummarizer.FAILURE_RE.search(line):
+        elif OutputSummarizer.TIMEOUT_RE.search(line) or OutputSummarizer.FAILURE_RE.search(line):
             allowed = True
-        elif OutputSummarizer.TEST_FAILURE_RE.search(
-            line
-        ) or OutputSummarizer.SWIFT_ERROR_RE.search(line):
+        elif OutputSummarizer.TEST_FAILURE_RE.search(line) or OutputSummarizer.SWIFT_ERROR_RE.search(line):
             allowed = True
         elif style_operation and OutputSummarizer.STYLE_FINDING_RE.search(line):
             allowed = True
@@ -3803,16 +3215,9 @@ def select_progress_lines(operation: str, lines: Sequence[str]) -> List[str]:
 
 def output_summary_for_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     summary = payload.get("outputSummary")
-    label = payload.get("operationLabel") or operation_display_name(
-        str(payload.get("operation") or ""), payload.get("args") or {}
-    )
-    requires_lifecycle_classification = (
-        label == "app relaunch" and payload.get("state") == "failed"
-    )
-    if isinstance(summary, dict) and (
-        not requires_lifecycle_classification
-        or isinstance(summary.get("launchLifecycle"), dict)
-    ):
+    label = payload.get("operationLabel") or operation_display_name(str(payload.get("operation") or ""), payload.get("args") or {})
+    requires_lifecycle_classification = label == "app relaunch" and payload.get("state") == "failed"
+    if isinstance(summary, dict) and (not requires_lifecycle_classification or isinstance(summary.get("launchLifecycle"), dict)):
         return summary
     log_path = payload.get("logPath")
     if log_path:
@@ -3832,26 +3237,17 @@ def output_summary_for_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
-def payload_with_output_summary(
-    payload: Dict[str, Any], include_log_tail: bool = False
-) -> Dict[str, Any]:
+def payload_with_output_summary(payload: Dict[str, Any], include_log_tail: bool = False) -> Dict[str, Any]:
     if payload.get("state") not in TERMINAL_STATES:
         return payload
     existing_summary = payload.get("outputSummary")
-    label = payload.get("operationLabel") or operation_display_name(
-        str(payload.get("operation") or ""), payload.get("args") or {}
-    )
-    needs_lifecycle_classification = (
-        label == "app relaunch" and payload.get("state") == "failed"
-    )
+    label = payload.get("operationLabel") or operation_display_name(str(payload.get("operation") or ""), payload.get("args") or {})
+    needs_lifecycle_classification = label == "app relaunch" and payload.get("state") == "failed"
     needs_summary = not isinstance(existing_summary, dict) or (
-        needs_lifecycle_classification
-        and not isinstance(existing_summary.get("launchLifecycle"), dict)
+        needs_lifecycle_classification and not isinstance(existing_summary.get("launchLifecycle"), dict)
     )
     tail = payload.get("logTail")
-    needs_tail_trim = (
-        include_log_tail and isinstance(tail, list) and len(tail) > LOG_TAIL_LINES
-    )
+    needs_tail_trim = include_log_tail and isinstance(tail, list) and len(tail) > LOG_TAIL_LINES
     has_tail = "logTail" in payload
     should_drop_tail = has_tail and not include_log_tail
     if not needs_summary and not needs_tail_trim and not should_drop_tail:
@@ -3867,19 +3263,13 @@ def payload_with_output_summary(
     return enriched
 
 
-def print_job_result_header(
-    payload: Dict[str, Any], summary: Optional[Dict[str, Any]] = None
-) -> None:
+def print_job_result_header(payload: Dict[str, Any], summary: Optional[Dict[str, Any]] = None) -> None:
     summary = summary or output_summary_for_payload(payload)
-    print(
-        f"Result:   {summary.get('headline') or payload.get('resultSummary') or payload.get('state')}"
-    )
+    print(f"Result:   {summary.get('headline') or payload.get('resultSummary') or payload.get('state')}")
     print(f"Ticket:   {payload.get('ticket')}")
     if payload.get("requestKey"):
         print(f"Request:  {payload.get('requestKey')}")
-    label = payload.get("operationLabel") or operation_display_name(
-        str(payload.get("operation") or ""), payload.get("args") or {}
-    )
+    label = payload.get("operationLabel") or operation_display_name(str(payload.get("operation") or ""), payload.get("args") or {})
     print(f"Operation:{' ' if label else ''}{label}")
     print(f"State:    {payload.get('state')}")
     if payload.get("exitCode") is not None:
@@ -3887,17 +3277,11 @@ def print_job_result_header(
     print(f"Log:      {payload.get('logPath')}")
     timing_parts: List[str] = []
     if payload.get("queueWaitSeconds") is not None:
-        timing_parts.append(
-            f"queue={format_duration(float(payload.get('queueWaitSeconds')))}"
-        )
+        timing_parts.append(f"queue={format_duration(float(payload.get('queueWaitSeconds')))}")
     if payload.get("executionSeconds") is not None:
-        timing_parts.append(
-            f"exec={format_duration(float(payload.get('executionSeconds')))}"
-        )
+        timing_parts.append(f"exec={format_duration(float(payload.get('executionSeconds')))}")
     if payload.get("globalHeavySlotWaitSeconds") is not None:
-        timing_parts.append(
-            f"global-wait={format_duration(float(payload.get('globalHeavySlotWaitSeconds')))}"
-        )
+        timing_parts.append(f"global-wait={format_duration(float(payload.get('globalHeavySlotWaitSeconds')))}")
     if timing_parts:
         print(f"Timing:   {', '.join(timing_parts)}")
     if payload.get("error"):
@@ -3923,12 +3307,8 @@ def render_output_summary(summary: Dict[str, Any]) -> None:
         print("Summary truncated; see full log for complete output.")
 
 
-def lifecycle_outcome_lines(
-    payload: Dict[str, Any], summary: Dict[str, Any]
-) -> List[str]:
-    label = payload.get("operationLabel") or operation_display_name(
-        str(payload.get("operation") or ""), payload.get("args") or {}
-    )
+def lifecycle_outcome_lines(payload: Dict[str, Any], summary: Dict[str, Any]) -> List[str]:
+    label = payload.get("operationLabel") or operation_display_name(str(payload.get("operation") or ""), payload.get("args") or {})
     state = payload.get("state")
     if label not in {"app relaunch", "app stop"}:
         return []
@@ -3937,12 +3317,8 @@ def lifecycle_outcome_lines(
         replacement_ticket = payload.get("supersededByTicket")
         subject = "relaunch" if label == "app relaunch" else "stop"
         if replacement:
-            ticket_detail = (
-                f" (ticket {replacement_ticket})" if replacement_ticket else ""
-            )
-            return [
-                f"This app {subject} ticket was superseded by newer {replacement} intent{ticket_detail}."
-            ]
+            ticket_detail = f" (ticket {replacement_ticket})" if replacement_ticket else ""
+            return [f"This app {subject} ticket was superseded by newer {replacement} intent{ticket_detail}."]
         return [f"This app {subject} ticket was canceled before completion."]
     if label != "app relaunch" or state != "failed":
         return []
@@ -4003,9 +3379,7 @@ def print_full_log(payload: Dict[str, Any]) -> None:
                 print()
 
 
-def print_terminal_job_output(
-    payload: Dict[str, Any], output_mode: str = "summary"
-) -> None:
+def print_terminal_job_output(payload: Dict[str, Any], output_mode: str = "summary") -> None:
     summary = output_summary_for_payload(payload)
     print_job_result_header(payload, summary=summary)
     render_lifecycle_outcome(payload, summary)
@@ -4015,9 +3389,7 @@ def print_terminal_job_output(
     render_output_summary(summary)
 
 
-def render_job(
-    job: Dict[str, Any], output_mode: str = "summary", include_tail: bool = True
-) -> None:
+def render_job(job: Dict[str, Any], output_mode: str = "summary", include_tail: bool = True) -> None:
     if job.get("state") in TERMINAL_STATES:
         print_terminal_job_output(job, output_mode=output_mode)
         return
@@ -4029,17 +3401,11 @@ def render_job(
     print(f"lanes:     {', '.join(job.get('lanes') or []) or 'none'}")
     timing_parts: List[str] = []
     if job.get("createdAt"):
-        timing_parts.append(
-            f"queued={format_duration(max(0.0, now() - float(job.get('createdAt'))))}"
-        )
+        timing_parts.append(f"queued={format_duration(max(0.0, now() - float(job.get('createdAt'))))}")
     if job.get("startedAt"):
-        timing_parts.append(
-            f"running={format_duration(max(0.0, now() - float(job.get('startedAt'))))}"
-        )
+        timing_parts.append(f"running={format_duration(max(0.0, now() - float(job.get('startedAt'))))}")
     if job.get("globalHeavySlotWaitSeconds") is not None:
-        timing_parts.append(
-            f"global-wait={format_duration(float(job.get('globalHeavySlotWaitSeconds')))}"
-        )
+        timing_parts.append(f"global-wait={format_duration(float(job.get('globalHeavySlotWaitSeconds')))}")
     if timing_parts:
         print(f"timing:    {', '.join(timing_parts)}")
     if job.get("globalHeavySlotPath") and job.get("state") == "running":
@@ -4060,9 +3426,7 @@ def render_job(
             if not str(job.get("logTail")[-1]).endswith("\n"):
                 print()
         else:
-            noteworthy = select_progress_lines(
-                str(job.get("operation") or ""), job.get("logTail") or []
-            )
+            noteworthy = select_progress_lines(str(job.get("operation") or ""), job.get("logTail") or [])
             if noteworthy:
                 print("--- noteworthy recent output ---")
                 for line in noteworthy:
@@ -4088,14 +3452,7 @@ def handle_daemon_command(paths: Paths, argv: List[str]) -> int:
             payload = ensure_daemon(paths, start_if_needed=False)
         except ConductorError as exc:
             if json_mode:
-                print_json(
-                    {
-                        "running": False,
-                        "error": str(exc),
-                        "socketPath": str(paths.socket_path),
-                        "stateDir": str(paths.state_dir),
-                    }
-                )
+                print_json({"running": False, "error": str(exc), "socketPath": str(paths.socket_path), "stateDir": str(paths.state_dir)})
             else:
                 print(f"daemon not running: {exc}")
             return 1
@@ -4117,9 +3474,7 @@ def handle_daemon_command(paths: Paths, argv: List[str]) -> int:
                 {"type": "stop", "force": force},
                 timeout=FORCE_STOP_RPC_TIMEOUT_SECONDS if force else 5.0,
             )
-            stopped = wait_until_stopped(
-                paths, timeout=(TERMINATE_GRACE_SECONDS + 5.0) if force else 5.0
-            )
+            stopped = wait_until_stopped(paths, timeout=(TERMINATE_GRACE_SECONDS + 5.0) if force else 5.0)
             if force and not stopped:
                 payload = force_stop_unresponsive_daemon(paths)
         except ConductorError:
@@ -4129,11 +3484,7 @@ def handle_daemon_command(paths: Paths, argv: List[str]) -> int:
         if json_mode:
             print_json(payload)
         else:
-            print(
-                "daemon stopping"
-                if not payload.get("forced")
-                else "daemon force-stopped"
-            )
+            print("daemon stopping" if not payload.get("forced") else "daemon force-stopped")
         return 0
     raise ConductorError(f"unknown daemon command '{sub}'")
 
@@ -4146,14 +3497,7 @@ def handle_status_command(paths: Paths, argv: List[str]) -> int:
         payload = ensure_daemon(paths, start_if_needed=False)
     except ConductorError as exc:
         if json_mode:
-            print_json(
-                {
-                    "running": False,
-                    "error": str(exc),
-                    "socketPath": str(paths.socket_path),
-                    "stateDir": str(paths.state_dir),
-                }
-            )
+            print_json({"running": False, "error": str(exc), "socketPath": str(paths.socket_path), "stateDir": str(paths.state_dir)})
         else:
             print("conductor daemon not running")
             print(f"socket: {paths.socket_path}")
@@ -4173,11 +3517,7 @@ def handle_job_command(paths: Paths, argv: List[str]) -> int:
     ensure_daemon(paths, start_if_needed=False)
     sub = argv[0]
     parser = argparse.ArgumentParser(prog=f"conductor job {sub}", add_help=True)
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="machine-readable output; includes logPath, not raw full logs",
-    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output; includes logPath, not raw full logs")
     if sub in {"status", "wait"}:
         parser.add_argument(
             "--full-log",
@@ -4186,14 +3526,9 @@ def handle_job_command(paths: Paths, argv: List[str]) -> int:
         )
 
     if sub == "list":
-        parser.add_argument(
-            "--state",
-            choices=sorted(["queued", "running", "completed", "failed", "canceled"]),
-        )
+        parser.add_argument("--state", choices=sorted(["queued", "running", "completed", "failed", "canceled"]))
         ns = parser.parse_args(argv[1:])
-        payload = request_daemon(
-            paths, {"type": "job-list", "state": ns.state}, timeout=5.0
-        )
+        payload = request_daemon(paths, {"type": "job-list", "state": ns.state}, timeout=5.0)
         if ns.json:
             print_json(payload)
         else:
@@ -4201,9 +3536,7 @@ def handle_job_command(paths: Paths, argv: List[str]) -> int:
             if not jobs:
                 print("no retained jobs")
             for job in jobs:
-                print(
-                    f"{job.get('ticket')} {job.get('state')} {job.get('operationLabel') or job.get('operation')} lanes={','.join(job.get('lanes') or []) or 'none'}"
-                )
+                print(f"{job.get('ticket')} {job.get('state')} {job.get('operationLabel') or job.get('operation')} lanes={','.join(job.get('lanes') or []) or 'none'}")
         return 0
 
     if sub in {"status", "wait", "cancel"}:
@@ -4213,19 +3546,11 @@ def handle_job_command(paths: Paths, argv: List[str]) -> int:
             parser.add_argument("--timeout", type=float)
         ns = parser.parse_args(argv[1:])
         if getattr(ns, "json", False) and getattr(ns, "full_log", False):
-            raise ConductorError(
-                "--full-log is only supported for human output; JSON output includes logPath instead"
-            )
+            raise ConductorError("--full-log is only supported for human output; JSON output includes logPath instead")
         if bool(ns.ticket) == bool(ns.request_key):
-            raise ConductorError(
-                "provide exactly one of <ticket> or --request-key <key>"
-            )
+            raise ConductorError("provide exactly one of <ticket> or --request-key <key>")
         req: Dict[str, Any] = {
-            "type": {
-                "status": "job-status",
-                "wait": "job-wait",
-                "cancel": "job-cancel",
-            }[sub],
+            "type": {"status": "job-status", "wait": "job-wait", "cancel": "job-cancel"}[sub],
             "ticket": ns.ticket,
             "requestKey": ns.request_key,
         }
@@ -4234,13 +3559,7 @@ def handle_job_command(paths: Paths, argv: List[str]) -> int:
                 raise ConductorError("wait timeout must be non-negative")
             if ns.timeout is None:
                 output_mode = "full" if getattr(ns, "full_log", False) else "summary"
-                payload = wait_for_terminal(
-                    paths,
-                    ns.ticket,
-                    ns.request_key,
-                    json_mode=ns.json,
-                    output_mode=output_mode,
-                )
+                payload = wait_for_terminal(paths, ns.ticket, ns.request_key, json_mode=ns.json, output_mode=output_mode)
             else:
                 req["timeout"] = ns.timeout
                 payload = request_daemon(paths, req, timeout=ns.timeout + 5.0)
@@ -4249,19 +3568,12 @@ def handle_job_command(paths: Paths, argv: List[str]) -> int:
         if ns.json:
             print_json(payload_with_output_summary(payload))
         else:
-            render_job(
-                payload,
-                output_mode="full" if getattr(ns, "full_log", False) else "summary",
-            )
+            render_job(payload, output_mode="full" if getattr(ns, "full_log", False) else "summary")
             if payload.get("waitTimedOut"):
                 print("wait timed out before job reached a terminal state")
         if sub == "wait" and payload.get("waitTimedOut"):
             return 124
-        return (
-            terminal_exit_code(payload)
-            if sub == "wait" and payload.get("state") in TERMINAL_STATES
-            else 0
-        )
+        return terminal_exit_code(payload) if sub == "wait" and payload.get("state") in TERMINAL_STATES else 0
 
     raise ConductorError(f"unknown job command '{sub}'")
 
@@ -4276,13 +3588,9 @@ def split_operation_flags(argv: List[str]) -> Tuple[argparse.Namespace, List[str
     parser.add_argument("--full-log", action="store_true")
     known, rest = parser.parse_known_args(argv)
     if known.json and known.full_log:
-        raise ConductorError(
-            "--full-log is only supported for human output; JSON output includes logPath instead"
-        )
+        raise ConductorError("--full-log is only supported for human output; JSON output includes logPath instead")
     if known.async_mode and known.full_log:
-        raise ConductorError(
-            "--full-log requires synchronous human output; use './conductor job wait <ticket> --full-log' for async jobs"
-        )
+        raise ConductorError("--full-log requires synchronous human output; use './conductor job wait <ticket> --full-log' for async jobs")
     return known, rest
 
 
@@ -4336,9 +3644,7 @@ def handle_sleep_operation(paths: Paths, operation: str, argv: List[str]) -> int
 
     ticket = enqueue_payload.get("ticket")
     if global_flags.json:
-        final = payload_with_output_summary(
-            wait_for_terminal(paths, ticket, request_key=None, json_mode=True)
-        )
+        final = payload_with_output_summary(wait_for_terminal(paths, ticket, request_key=None, json_mode=True))
         print_json({"enqueue": enqueue_payload, "result": final})
         return terminal_exit_code(final)
 
@@ -4347,9 +3653,7 @@ def handle_sleep_operation(paths: Paths, operation: str, argv: List[str]) -> int
     print(f"reconnect: ./conductor job wait {ticket}")
     render_superseded_jobs(enqueue_payload)
     output_mode = "full" if global_flags.full_log else "summary"
-    final_payload = wait_for_terminal(
-        paths, ticket, request_key=None, json_mode=False, output_mode=output_mode
-    )
+    final_payload = wait_for_terminal(paths, ticket, request_key=None, json_mode=False, output_mode=output_mode)
     print_terminal_job_output(final_payload, output_mode=output_mode)
     return terminal_exit_code(final_payload)
 
@@ -4370,12 +3674,7 @@ def wait_for_terminal(
     while True:
         payload = request_daemon(
             paths,
-            {
-                "type": "job-wait",
-                "ticket": ticket,
-                "requestKey": request_key,
-                "timeout": WAIT_POLL_SECONDS,
-            },
+            {"type": "job-wait", "ticket": ticket, "requestKey": request_key, "timeout": WAIT_POLL_SECONDS},
             timeout=WAIT_POLL_SECONDS + 5.0,
         )
         if not json_mode:
@@ -4386,43 +3685,27 @@ def wait_for_terminal(
                 last_state = state
             blockers = payload.get("blockedBy") or [] if state == "queued" else []
             blocker_signature = tuple(
-                (
-                    str(item.get("ticket")),
-                    str(item.get("operationLabel")),
-                    ",".join(item.get("conflictingLanes") or []),
-                    str(item.get("cancelRequested")),
-                )
+                (str(item.get("ticket")), str(item.get("operationLabel")), ",".join(item.get("conflictingLanes") or []), str(item.get("cancelRequested")))
                 for item in blockers
             )
             if state == "queued" and blockers and blocker_signature != last_blockers:
                 for blocker in blockers:
                     lanes = ",".join(blocker.get("conflictingLanes") or [])
-                    cancellation = (
-                        " (cancellation requested)"
-                        if blocker.get("cancelRequested")
-                        else ""
-                    )
+                    cancellation = " (cancellation requested)" if blocker.get("cancelRequested") else ""
                     print(
                         f"Waiting to begin {payload.get('operationLabel') or payload.get('operation')}; "
                         f"blocked by {blocker.get('operationLabel')} {blocker.get('ticket')} on {lanes}{cancellation}."
                     )
                 last_blockers = blocker_signature
             if tail != last_tail and state not in TERMINAL_STATES:
-                new_lines = (
-                    tail[len(last_tail) :]
-                    if len(tail) >= len(last_tail)
-                    and tail[: len(last_tail)] == last_tail
-                    else tail[-5:]
-                )
+                new_lines = tail[len(last_tail) :] if len(tail) >= len(last_tail) and tail[: len(last_tail)] == last_tail else tail[-5:]
                 if output_mode == "full":
                     for line in new_lines:
                         print(line, end="")
                     if new_lines:
                         last_progress_at = now()
                 else:
-                    for line in select_progress_lines(
-                        str(payload.get("operation") or ""), new_lines
-                    ):
+                    for line in select_progress_lines(str(payload.get("operation") or ""), new_lines):
                         if line in printed_progress_set:
                             continue
                         print(line)
@@ -4432,14 +3715,8 @@ def wait_for_terminal(
                             printed_progress_set = set(printed_progress)
                         last_progress_at = now()
                 last_tail = tail
-            if (
-                state not in TERMINAL_STATES
-                and output_mode != "full"
-                and now() - last_progress_at >= PROGRESS_HEARTBEAT_SECONDS
-            ):
-                print(
-                    f"[{time.strftime('%H:%M:%S')}] still running; log: {payload.get('logPath')}"
-                )
+            if state not in TERMINAL_STATES and output_mode != "full" and now() - last_progress_at >= PROGRESS_HEARTBEAT_SECONDS:
+                print(f"[{time.strftime('%H:%M:%S')}] still running; log: {payload.get('logPath')}")
                 last_progress_at = now()
         if payload.get("state") in TERMINAL_STATES:
             return payload
@@ -4500,9 +3777,7 @@ def is_already_on_workspace(stderr: str, workspace: str) -> bool:
     return expected in lines or f"Error: [-32600] Invalid Request: {expected}." in lines
 
 
-def routed_structured_cli_argv(
-    cli: str, window_id: int, command: str, payload: Dict[str, Any]
-) -> List[str]:
+def routed_structured_cli_argv(cli: str, window_id: int, command: str, payload: Dict[str, Any]) -> List[str]:
     routed_payload = dict(payload)
     routed_payload["_windowID"] = window_id
     return [cli, "-w", str(window_id), "-c", command, "-j", json.dumps(routed_payload)]
@@ -4517,13 +3792,7 @@ def resolve_debug_cli() -> Optional[str]:
     path_cli = shutil.which("rpce-cli-debug")
     if path_cli and os.access(path_cli, os.X_OK):
         return path_cli
-    fallback = (
-        Path.home()
-        / "Library"
-        / "Application Support"
-        / "RepoPrompt CE"
-        / "repoprompt_ce_cli_debug"
-    )
+    fallback = Path.home() / "Library" / "Application Support" / "RepoPrompt CE" / "repoprompt_ce_cli_debug"
     if fallback.is_file() and os.access(fallback, os.X_OK):
         return str(fallback)
     bundled = debug_app_bundle_path() / "Contents" / "MacOS" / "repoprompt-mcp"
@@ -4541,13 +3810,9 @@ def resolve_embedded_helper(app_bundle: Path) -> str:
     try:
         helper.relative_to(app)
     except ValueError as exc:
-        raise ConductorError(
-            f"embedded MCP helper escapes launched app bundle: {helper}"
-        ) from exc
+        raise ConductorError(f"embedded MCP helper escapes launched app bundle: {helper}") from exc
     if not helper.is_file() or not os.access(helper, os.X_OK):
-        raise ConductorError(
-            f"embedded MCP helper is not an executable regular file: {helper}"
-        )
+        raise ConductorError(f"embedded MCP helper is not an executable regular file: {helper}")
     return str(helper)
 
 
@@ -4556,10 +3821,7 @@ def require_debug_cli() -> Optional[str]:
     if cli:
         print(f"Resolved rpce-cli-debug: {cli}", flush=True)
         return cli
-    print(
-        "ERROR: rpce-cli-debug was not found via REPOPROMPT_DEBUG_CLI_INSTALL_PATH, PATH, user-space fallback, or the debug app bundle.",
-        flush=True,
-    )
+    print("ERROR: rpce-cli-debug was not found via REPOPROMPT_DEBUG_CLI_INSTALL_PATH, PATH, user-space fallback, or the debug app bundle.", flush=True)
     print("Install it with:", flush=True)
     print("  make install-debug-cli", flush=True)
     print("  # or", flush=True)
@@ -4593,19 +3855,9 @@ def debug_app_bundle_path() -> Path:
     # Mirrors Scripts/run.sh path resolution so app status reports the same bundle that run delegates launch.
     root = os.environ.get(
         "REPOPROMPT_DEBUG_APP_ROOT",
-        str(
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "RepoPrompt CE"
-            / "DebugApps"
-        ),
+        str(Path.home() / "Library" / "Application Support" / "RepoPrompt CE" / "DebugApps"),
     )
-    return Path(
-        os.environ.get(
-            "REPOPROMPT_DEBUG_APP_BUNDLE", str(Path(root) / "RepoPrompt.app")
-        )
-    )
+    return Path(os.environ.get("REPOPROMPT_DEBUG_APP_BUNDLE", str(Path(root) / "RepoPrompt.app")))
 
 
 def debug_app_executable_path() -> Path:
@@ -4618,24 +3870,18 @@ def find_debug_app_pids() -> List[str]:
 
 def execution_location_ui_smoke_timeout(env: Dict[str, str]) -> float:
     try:
-        wait_seconds = max(
-            0.0, float(env.get("REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_WAIT", "3"))
-        )
+        wait_seconds = max(0.0, float(env.get("REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_WAIT", "3")))
     except ValueError:
         wait_seconds = 3.0
     try:
-        cycles = max(
-            1, int(env.get("REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_CYCLES", "3"))
-        )
+        cycles = max(1, int(env.get("REPOPROMPT_EXECUTION_LOCATION_UI_SMOKE_CYCLES", "3")))
     except ValueError:
         cycles = 3
     return cycles * (wait_seconds + 60.0) + 60.0
 
 
 def terminate_debug_app_processes() -> List[str]:
-    return [
-        str(pid) for pid in terminate_matching_processes(debug_app_executable_path())
-    ]
+    return [str(pid) for pid in terminate_matching_processes(debug_app_executable_path())]
 
 
 def debug_app_provenance_path(bundle: Path) -> Path:
@@ -4686,9 +3932,7 @@ def provenance_report_lines(repo_root: Path, bundle: Path) -> List[str]:
     lines.append(f"    worktree: {worktree}")
     lines.append(f"    branch: {branch}")
     lines.append(f"    commit: {commit[:12] if commit != '<unknown>' else commit}")
-    lines.append(
-        f"    dirty at build: {dirty if isinstance(dirty, bool) else '<unknown>'}"
-    )
+    lines.append(f"    dirty at build: {dirty if isinstance(dirty, bool) else '<unknown>'}")
     lines.append(f"    built: {built_at}")
     flags: List[str] = []
     try:
@@ -4714,9 +3958,7 @@ def print_debug_app_provenance(repo_root: Path, bundle: Path) -> None:
 def report_launch_bundle_details(repo_root: Path, bundle: Path) -> int:
     print(f"Launch app path: {bundle}", flush=True)
     print_debug_app_provenance(repo_root, bundle)
-    codesign = subprocess.run(
-        ["codesign", "-dv", str(bundle)], text=True, capture_output=True
-    )
+    codesign = subprocess.run(["codesign", "-dv", str(bundle)], text=True, capture_output=True)
     details = (codesign.stdout or "") + (codesign.stderr or "")
     team = "<missing>"
     authorities: List[str] = []
@@ -4726,39 +3968,18 @@ def report_launch_bundle_details(repo_root: Path, bundle: Path) -> int:
         elif line.startswith("Authority="):
             authorities.append(line.split("=", 1)[1])
     marker = subprocess.run(
-        [
-            "plutil",
-            "-extract",
-            "RepoPromptDebugSecureStorageBackend",
-            "raw",
-            "-o",
-            "-",
-            str(bundle / "Contents" / "Info.plist"),
-        ],
+        ["plutil", "-extract", "RepoPromptDebugSecureStorageBackend", "raw", "-o", "-", str(bundle / "Contents" / "Info.plist")],
         text=True,
         capture_output=True,
     )
-    storage = (
-        marker.stdout.strip()
-        if marker.returncode == 0 and marker.stdout.strip()
-        else "<missing>"
-    )
+    storage = marker.stdout.strip() if marker.returncode == 0 and marker.stdout.strip() else "<missing>"
     print(f"Launch app team: {team}", flush=True)
-    print(
-        f"Launch app signing authorities: {', '.join(authorities) if authorities else '<none/ad-hoc>'}",
-        flush=True,
-    )
+    print(f"Launch app signing authorities: {', '.join(authorities) if authorities else '<none/ad-hoc>'}", flush=True)
     print(f"Launch app debug secure storage marker: {storage}", flush=True)
     if storage != "keychain":
-        print(
-            "WARNING: Debug secure storage is in-memory this run; secrets and permission changes won't persist.",
-            flush=True,
-        )
+        print("WARNING: Debug secure storage is in-memory this run; secrets and permission changes won't persist.", flush=True)
     elif not team or team in {"<missing>", "not set"}:
-        print(
-            "WARNING: Launching a keychain-marked debug app without a team identifier; runtime will fall back to in-memory secure storage.",
-            flush=True,
-        )
+        print("WARNING: Launching a keychain-marked debug app without a team identifier; runtime will fall back to in-memory secure storage.", flush=True)
     return 0
 
 
@@ -4783,56 +4004,33 @@ def wait_for_debug_app_process(timeout: float = STARTUP_TIMEOUT_SECONDS) -> List
 
 
 def guard_delayed_debug_app_launch() -> int:
-    print(
-        "Guarding against a delayed RepoPrompt CE debug app launch from superseded app work.",
-        flush=True,
-    )
+    print("Guarding against a delayed RepoPrompt CE debug app launch from superseded app work.", flush=True)
     return _operation_app_stop_unlocked(Path.cwd(), {"guardDelayedLaunch": True})
 
 
 def _operation_app_stop_unlocked(_repo_root: Path, args: Dict[str, Any]) -> int:
     guard_delayed_launch = bool(args.get("guardDelayedLaunch"))
-    required_quiet = (
-        APP_STOP_DELAYED_LAUNCH_GUARD_SECONDS
-        if guard_delayed_launch
-        else APP_STOP_QUIET_SECONDS
-    )
-    confirmation_timeout = (
-        APP_STOP_DELAYED_LAUNCH_CONFIRM_TIMEOUT_SECONDS
-        if guard_delayed_launch
-        else APP_STOP_CONFIRM_TIMEOUT_SECONDS
-    )
+    required_quiet = APP_STOP_DELAYED_LAUNCH_GUARD_SECONDS if guard_delayed_launch else APP_STOP_QUIET_SECONDS
+    confirmation_timeout = APP_STOP_DELAYED_LAUNCH_CONFIRM_TIMEOUT_SECONDS if guard_delayed_launch else APP_STOP_CONFIRM_TIMEOUT_SECONDS
     deadline = now() + confirmation_timeout
     quiet_since: Optional[float] = None
     observed_process = False
     if guard_delayed_launch:
-        print(
-            "Guarding against a delayed RepoPrompt CE debug app launch from superseded app work.",
-            flush=True,
-        )
+        print("Guarding against a delayed RepoPrompt CE debug app launch from superseded app work.", flush=True)
     while True:
         try:
             pids = find_debug_app_pids()
         except ProcessIdentityError as exc:
-            print(
-                f"ERROR: could not safely identify the debug app process: {exc}",
-                flush=True,
-            )
+            print(f"ERROR: could not safely identify the debug app process: {exc}", flush=True)
             return 1
         if pids:
             observed_process = True
             quiet_since = None
-            print(
-                f"Observed running RepoPrompt CE debug PID(s): {', '.join(pids)}",
-                flush=True,
-            )
+            print(f"Observed running RepoPrompt CE debug PID(s): {', '.join(pids)}", flush=True)
             try:
                 terminate_debug_app_processes()
             except ProcessIdentityError as exc:
-                print(
-                    f"ERROR: refused to signal a process without validated debug app identity: {exc}",
-                    flush=True,
-                )
+                print(f"ERROR: refused to signal a process without validated debug app identity: {exc}", flush=True)
                 return 1
         else:
             if quiet_since is None:
@@ -4844,10 +4042,7 @@ def _operation_app_stop_unlocked(_repo_root: Path, args: Dict[str, Any]) -> int:
                     print("RepoPrompt was already stopped; stop confirmed.", flush=True)
                 return 0
         if now() >= deadline:
-            print(
-                "ERROR: timed out confirming that RepoPrompt remained stopped.",
-                flush=True,
-            )
+            print("ERROR: timed out confirming that RepoPrompt remained stopped.", flush=True)
             return 1
         time.sleep(APP_STOP_POLL_SECONDS)
 
@@ -4866,9 +4061,7 @@ def cleanup_staged_debug_bundle(staged_bundle: Optional[Path]) -> None:
         shutil.rmtree(parent)
 
 
-def package_debug_app_under_heavy(
-    repo_root: Path, operation_label: str
-) -> Tuple[int, Optional[Path]]:
+def package_debug_app_under_heavy(repo_root: Path, operation_label: str) -> Tuple[int, Optional[Path]]:
     live_bundle = debug_app_bundle_path()
     staging_parent = staged_debug_app_parent(live_bundle)
     staged_bundle = staging_parent / live_bundle.name
@@ -4895,10 +4088,7 @@ def package_debug_app_under_heavy(
             return code, None
         executable = staged_bundle / "Contents" / "MacOS" / "RepoPrompt"
         if not executable.is_file() or not os.access(executable, os.X_OK):
-            print(
-                f"ERROR: staged debug app is not launchable: {staged_bundle}",
-                flush=True,
-            )
+            print(f"ERROR: staged debug app is not launchable: {staged_bundle}", flush=True)
             cleanup_staged_debug_bundle(staged_bundle)
             return 1, None
         print(f"Staged debug app bundle: {staged_bundle}", flush=True)
@@ -4921,25 +4111,19 @@ def swap_staged_debug_bundle_into_place(staged_bundle: Path, live_bundle: Path) 
     renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
     renamex_np.restype = ctypes.c_int
     rename_swap = 0x00000002
-    result = renamex_np(
-        os.fsencode(staged_bundle), os.fsencode(live_bundle), rename_swap
-    )
+    result = renamex_np(os.fsencode(staged_bundle), os.fsencode(live_bundle), rename_swap)
     if result == 0:
         return True
     return False
 
 
-def activate_staged_debug_bundle(
-    staged_bundle: Path, live_bundle: Optional[Path] = None
-) -> None:
+def activate_staged_debug_bundle(staged_bundle: Path, live_bundle: Optional[Path] = None) -> None:
     live = live_bundle or debug_app_bundle_path()
     if not staged_bundle.exists():
         raise ConductorError(f"staged debug app bundle is missing: {staged_bundle}")
     executable = staged_bundle / "Contents" / "MacOS" / "RepoPrompt"
     if not executable.is_file() or not os.access(executable, os.X_OK):
-        raise ConductorError(
-            f"staged debug app bundle is not launchable: {staged_bundle}"
-        )
+        raise ConductorError(f"staged debug app bundle is not launchable: {staged_bundle}")
     live.parent.mkdir(parents=True, exist_ok=True)
     backup = live.parent / f".{live.name}.previous.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     moved_existing = False
@@ -4969,31 +4153,15 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
     staged_bundle = Path(str(staged_value)) if staged_value else None
     activated = False
     executable = bundle / "Contents" / "MacOS" / "RepoPrompt"
-    if staged_bundle is None and (
-        not bundle.exists()
-        or not executable.is_file()
-        or not os.access(executable, os.X_OK)
-    ):
-        print(
-            f"ERROR: existing debug app bundle is not launchable: {bundle}", flush=True
-        )
-        print(
-            "Build it first with './conductor build' or './conductor run'.", flush=True
-        )
+    if staged_bundle is None and (not bundle.exists() or not executable.is_file() or not os.access(executable, os.X_OK)):
+        print(f"ERROR: existing debug app bundle is not launchable: {bundle}", flush=True)
+        print("Build it first with './conductor build' or './conductor run'.", flush=True)
         return 1
     metadata = display_lock_metadata(
         lock_kind="live-app",
         ticket=os.environ.get("REPOPROMPT_CONDUCTOR_JOB_TICKET"),
-        operation=(
-            "app launch-existing"
-            if staged_bundle is None
-            else "app activate-staged-and-launch"
-        ),
-        operation_label=(
-            "app launch-existing"
-            if staged_bundle is None
-            else "app activate staged and launch"
-        ),
+        operation="app launch-existing" if staged_bundle is None else "app activate-staged-and-launch",
+        operation_label="app launch-existing" if staged_bundle is None else "app activate staged and launch",
         repo_root=repo_root,
         repo_hash=None,
     )
@@ -5002,9 +4170,7 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
             if staged_bundle is None:
                 report_launch_bundle_details(repo_root, bundle)
             print("Stopping existing RepoPrompt CE debug app instance", flush=True)
-            stop_code = _operation_app_stop_unlocked(
-                repo_root, {"guardDelayedLaunch": bool(args.get("guardDelayedLaunch"))}
-            )
+            stop_code = _operation_app_stop_unlocked(repo_root, {"guardDelayedLaunch": bool(args.get("guardDelayedLaunch"))})
             if stop_code != 0:
                 return stop_code
             if staged_bundle is not None:
@@ -5015,30 +4181,19 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
             argv = ["open", "-n", str(bundle)]
             if app_args:
                 argv.extend(["--args", *app_args])
-            code, _stdout, _stderr = run_operation_command(
-                "launch existing debug app", argv, repo_root
-            )
+            code, _stdout, _stderr = run_operation_command("launch existing debug app", argv, repo_root)
             if code != 0:
                 return code
             try:
                 launched_pids = wait_for_debug_app_process()
             except ProcessIdentityError as exc:
-                print(
-                    f"ERROR: could not safely identify the launched RepoPrompt CE debug app process: {exc}",
-                    flush=True,
-                )
+                print(f"ERROR: could not safely identify the launched RepoPrompt CE debug app process: {exc}", flush=True)
                 return 1
             if not launched_pids:
-                print(
-                    "ERROR: launch request returned, but no matching RepoPrompt CE debug app process appeared within 10 seconds.",
-                    flush=True,
-                )
+                print("ERROR: launch request returned, but no matching RepoPrompt CE debug app process appeared within 10 seconds.", flush=True)
                 _operation_app_stop_unlocked(repo_root, {"guardDelayedLaunch": True})
                 return 1
-            print(
-                f"Observed launched RepoPrompt CE debug PID(s): {', '.join(launched_pids)}",
-                flush=True,
-            )
+            print(f"Observed launched RepoPrompt CE debug PID(s): {', '.join(launched_pids)}", flush=True)
         return 0
     finally:
         if staged_bundle is not None and not activated:
@@ -5046,14 +4201,9 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
 
 
 def operation_debug_app_build_then_launch(repo_root: Path, args: Dict[str, Any]) -> int:
-    package_code, staged_bundle = package_debug_app_under_heavy(
-        repo_root, "debug app build/package"
-    )
+    package_code, staged_bundle = package_debug_app_under_heavy(repo_root, "debug app build/package")
     if package_code != 0 or staged_bundle is None:
-        print(
-            "Package failed; no live bundle or stop/launch lifecycle action was performed.",
-            flush=True,
-        )
+        print("Package failed; no live bundle or stop/launch lifecycle action was performed.", flush=True)
         return package_code or 1
     launch_args = dict(args)
     launch_args.setdefault("appArgs", [])
@@ -5076,9 +4226,7 @@ def operation_app_status(repo_root: Path) -> int:
     print(f"  Bundle exists: {'yes' if bundle.exists() else 'no'}")
     if bundle.exists():
         # Keep the signing/storage probes aligned with Scripts/run.sh launch diagnostics.
-        codesign = subprocess.run(
-            ["codesign", "-dv", str(bundle)], text=True, capture_output=True
-        )
+        codesign = subprocess.run(["codesign", "-dv", str(bundle)], text=True, capture_output=True)
         details = (codesign.stdout or "") + (codesign.stderr or "")
         team = "<missing>"
         authorities: List[str] = []
@@ -5088,35 +4236,18 @@ def operation_app_status(repo_root: Path) -> int:
             elif line.startswith("Authority="):
                 authorities.append(line.split("=", 1)[1])
         print(f"  Signing team: {team}")
-        print(
-            f"  Signing authorities: {', '.join(authorities) if authorities else '<none/ad-hoc>'}"
-        )
+        print(f"  Signing authorities: {', '.join(authorities) if authorities else '<none/ad-hoc>'}")
         plist = bundle / "Contents" / "Info.plist"
         marker = subprocess.run(
-            [
-                "plutil",
-                "-extract",
-                "RepoPromptDebugSecureStorageBackend",
-                "raw",
-                "-o",
-                "-",
-                str(plist),
-            ],
+            ["plutil", "-extract", "RepoPromptDebugSecureStorageBackend", "raw", "-o", "-", str(plist)],
             text=True,
             capture_output=True,
         )
-        print(
-            f"  Debug secure storage marker: {marker.stdout.strip() if marker.returncode == 0 and marker.stdout.strip() else '<missing>'}"
-        )
+        print(f"  Debug secure storage marker: {marker.stdout.strip() if marker.returncode == 0 and marker.stdout.strip() else '<missing>'}")
         for line in provenance_report_lines(repo_root, bundle):
             print(line)
     status_script = repo_root / "Scripts" / "install_debug_cli.sh"
-    code, _stdout, _stderr = run_operation_command(
-        "debug CLI status",
-        [str(status_script), "status"],
-        repo_root,
-        allow_exit_codes={0, 1},
-    )
+    code, _stdout, _stderr = run_operation_command("debug CLI status", [str(status_script), "status"], repo_root, allow_exit_codes={0, 1})
     return 0 if code in {0, 1} else code
 
 
@@ -5135,21 +4266,14 @@ def operation_app_stop(repo_root: Path, args: Dict[str, Any]) -> int:
 
 def operation_swift_build_all(repo_root: Path) -> int:
     for product in ["RepoPrompt", "repoprompt-mcp"]:
-        code, _stdout, _stderr = run_operation_command(
-            f"swift build --product {product}",
-            ["swift", "build", "--product", product],
-            repo_root,
-        )
+        code, _stdout, _stderr = run_operation_command(f"swift build --product {product}", ["swift", "build", "--product", product], repo_root)
         if code != 0:
             return code
     return 0
 
 
 def operation_release_preflight_missing(_repo_root: Path) -> int:
-    print(
-        "ERROR: Scripts/release.sh does not exist, so release preflight is not available yet.",
-        flush=True,
-    )
+    print("ERROR: Scripts/release.sh does not exist, so release preflight is not available yet.", flush=True)
     print("See docs/open-source-readiness.md for release-readiness notes.", flush=True)
     return 1
 
@@ -5188,10 +4312,7 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
         try:
             cli = resolve_embedded_helper(debug_app_bundle_path())
         except (ConductorError, FileNotFoundError, OSError) as exc:
-            print(
-                f"ERROR: could not resolve exact helper from launched app: {exc}",
-                flush=True,
-            )
+            print(f"ERROR: could not resolve exact helper from launched app: {exc}", flush=True)
             return 1
         print(f"Resolved launched app embedded helper: {cli}", flush=True)
     else:
@@ -5202,58 +4323,29 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
     if launched:
         print("Polling rpce-cli-debug windows until the app is ready...", flush=True)
         while True:
-            code, stdout, stderr = run_operation_command(
-                "windows readiness",
-                [cli, "-e", "windows"],
-                repo_root,
-                env=env,
-                allow_exit_codes={0, 1},
-            )
+            code, stdout, stderr = run_operation_command("windows readiness", [cli, "-e", "windows"], repo_root, env=env, allow_exit_codes={0, 1})
             if code == 0:
                 break
             if now() >= deadline:
-                print(
-                    "ERROR: timed out waiting for rpce-cli-debug windows after launch",
-                    flush=True,
-                )
+                print("ERROR: timed out waiting for rpce-cli-debug windows after launch", flush=True)
                 return code or 1
             time.sleep(2.0)
 
     stages = [
         ("windows", [cli, "-e", "windows"]),
-        (
-            "workspace switch",
-            [cli, "-w", str(window_id), "-e", f"workspace switch {workspace}"],
-        ),
+        ("workspace switch", [cli, "-w", str(window_id), "-e", f"workspace switch {workspace}"]),
         ("tree roots", [cli, "-w", str(window_id), "-e", "tree --type roots"]),
-        (
-            "manage_worktree list",
-            [cli, "-w", str(window_id), "-e", "manage_worktree op=list"],
-        ),
+        ("manage_worktree list", [cli, "-w", str(window_id), "-e", "manage_worktree op=list"]),
         (
             "agent_manage roles",
-            routed_structured_cli_argv(
-                cli,
-                window_id,
-                "agent_manage",
-                {"op": "list_agents", "roles_only": True},
-            ),
+            routed_structured_cli_argv(cli, window_id, "agent_manage", {"op": "list_agents", "roles_only": True}),
         ),
     ]
     for name, argv in stages:
         allow_exit_codes = {0, 1} if name == "workspace switch" else None
-        code, _stdout, stderr = run_operation_command(
-            name, argv, repo_root, env=env, allow_exit_codes=allow_exit_codes
-        )
-        if (
-            name == "workspace switch"
-            and code == 1
-            and is_already_on_workspace(stderr, workspace)
-        ):
-            print(
-                f'Already on workspace "{workspace}"; continuing smoke flow.',
-                flush=True,
-            )
+        code, _stdout, stderr = run_operation_command(name, argv, repo_root, env=env, allow_exit_codes=allow_exit_codes)
+        if name == "workspace switch" and code == 1 and is_already_on_workspace(stderr, workspace):
+            print(f'Already on workspace "{workspace}"; continuing smoke flow.', flush=True)
             continue
         if code != 0:
             if name == "workspace switch" and code == 1:
@@ -5271,12 +4363,7 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
             return 1
         code, _stdout, _stderr = run_operation_command(
             "execution location UI smoke",
-            [
-                str(
-                    repo_root / "Scripts" / "smoke_agent_execution_location_popover.sh"
-                ),
-                debug_pids[0],
-            ],
+            [str(repo_root / "Scripts" / "smoke_agent_execution_location_popover.sh"), debug_pids[0]],
             repo_root,
             env=env,
             timeout=execution_location_ui_smoke_timeout(env),
@@ -5307,20 +4394,10 @@ def operation_smoke(repo_root: Path, args: Dict[str, Any]) -> int:
         except json.JSONDecodeError:
             session_id = find_session_id_in_text(stdout)
         if not session_id:
-            print(
-                "ERROR: Could not parse session_id from agent_run start output.",
-                flush=True,
-            )
-            print(
-                'Manual wait hint: rpce-cli-debug -w 1 -c agent_run -j \'{"op":"wait","session_id":"<session_id>","timeout":120}\'',
-                flush=True,
-            )
+            print("ERROR: Could not parse session_id from agent_run start output.", flush=True)
+            print("Manual wait hint: rpce-cli-debug -w 1 -c agent_run -j '{\"op\":\"wait\",\"session_id\":\"<session_id>\",\"timeout\":120}'", flush=True)
             return 1
-        wait_payload = {
-            "op": "wait",
-            "session_id": session_id,
-            "timeout": agent_timeout,
-        }
+        wait_payload = {"op": "wait", "session_id": session_id, "timeout": agent_timeout}
         code, _stdout, _stderr = run_operation_command(
             "agent_run wait",
             routed_structured_cli_argv(cli, window_id, "agent_run", wait_payload),
@@ -5414,10 +4491,7 @@ def operation_diagnostics_build_cache(repo_root: Path, args: Dict[str, Any]) -> 
         if current_build.is_symlink():
             with contextlib.suppress(OSError):
                 symlink_note = f" -> {current_build.resolve(strict=True)}"
-        print(
-            f"Current .build: {format_bytes(directory_size_bytes(current_build))}{symlink_note}",
-            flush=True,
-        )
+        print(f"Current .build: {format_bytes(directory_size_bytes(current_build))}{symlink_note}", flush=True)
     else:
         print("Current .build: missing", flush=True)
 
@@ -5438,20 +4512,13 @@ def operation_diagnostics_build_cache(repo_root: Path, args: Dict[str, Any]) -> 
 
     total = sum(size for size, _mtime, _name in rows)
     print(f"Managed worktree container: {container}", flush=True)
-    print(
-        f"Worktree .build total: {format_bytes(total)} across {len(rows)} build director{'y' if len(rows) == 1 else 'ies'}",
-        flush=True,
-    )
+    print(f"Worktree .build total: {format_bytes(total)} across {len(rows)} build director{'y' if len(rows) == 1 else 'ies'}", flush=True)
     if not rows:
         return 0
 
     print("Top .build directories:", flush=True)
     for size, mtime, name in sorted(rows, key=lambda row: row[0], reverse=True)[:limit]:
-        mtime_text = (
-            "unknown"
-            if mtime is None
-            else time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-        )
+        mtime_text = "unknown" if mtime is None else time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
         print(f"  {format_bytes(size):>9}  {name}  modified={mtime_text}", flush=True)
     return 0
 
@@ -5464,16 +4531,8 @@ def operation_diagnostics_agent_mode_on(repo_root: Path, args: Dict[str, Any]) -
     log_file = str(args.get("logFile") or "/tmp/repoprompt-ce-claude-raw-events")
     settings = [
         {"op": "list", "group": "agent_mode", "detailed": True},
-        {
-            "op": "set",
-            "key": "agent_mode.claude_raw_event_logging_enabled",
-            "value": True,
-        },
-        {
-            "op": "set",
-            "key": "agent_mode.claude_raw_event_log_file_path",
-            "value": log_file,
-        },
+        {"op": "set", "key": "agent_mode.claude_raw_event_logging_enabled", "value": True},
+        {"op": "set", "key": "agent_mode.claude_raw_event_log_file_path", "value": log_file},
         {"op": "set", "key": "agent_mode.perf_diagnostics_enabled", "value": True},
     ]
     for payload in settings:
@@ -5484,9 +4543,7 @@ def operation_diagnostics_agent_mode_on(repo_root: Path, args: Dict[str, Any]) -
         )
         if code != 0:
             return code
-    print(
-        f"Agent Mode diagnostics enabled. Raw Claude events log: {log_file}", flush=True
-    )
+    print(f"Agent Mode diagnostics enabled. Raw Claude events log: {log_file}", flush=True)
     return 0
 
 
@@ -5550,9 +4607,7 @@ def enqueue_and_maybe_wait(
 
     ticket = enqueue_payload.get("ticket")
     if global_flags.json:
-        final = payload_with_output_summary(
-            wait_for_terminal(paths, ticket, request_key=None, json_mode=True)
-        )
+        final = payload_with_output_summary(wait_for_terminal(paths, ticket, request_key=None, json_mode=True))
         print_json({"enqueue": enqueue_payload, "result": final})
         return terminal_exit_code(final)
 
@@ -5561,9 +4616,7 @@ def enqueue_and_maybe_wait(
     print(f"reconnect: ./conductor job wait {ticket}")
     render_superseded_jobs(enqueue_payload)
     output_mode = "full" if global_flags.full_log else "summary"
-    final_payload = wait_for_terminal(
-        paths, ticket, request_key=None, json_mode=False, output_mode=output_mode
-    )
+    final_payload = wait_for_terminal(paths, ticket, request_key=None, json_mode=False, output_mode=output_mode)
     print_terminal_job_output(final_payload, output_mode=output_mode)
     return terminal_exit_code(final_payload)
 
@@ -5596,9 +4649,7 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         parse_no_args(f"conductor {operation}", rest)
     elif operation == "swift-build":
         parser = argparse.ArgumentParser(prog="conductor swift-build")
-        parser.add_argument(
-            "--product", required=True, choices=["RepoPrompt", "repoprompt-mcp", "all"]
-        )
+        parser.add_argument("--product", required=True, choices=["RepoPrompt", "repoprompt-mcp", "all"])
         ns = parser.parse_args(rest)
         args["product"] = ns.product
     elif operation == "package":
@@ -5620,15 +4671,9 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         ):
             raise ConductorError("--xctest-stall-seconds must be greater than zero")
         if ns.xctest_stall_wake_probe and ns.xctest_stall_seconds is None:
-            raise ConductorError(
-                "--xctest-stall-wake-probe requires --xctest-stall-seconds"
-            )
-        if ns.list and (
-            ns.xctest_stall_seconds is not None or ns.xctest_stall_wake_probe
-        ):
-            raise ConductorError(
-                "--list cannot be combined with XCTest stall diagnostics"
-            )
+            raise ConductorError("--xctest-stall-wake-probe requires --xctest-stall-seconds")
+        if ns.list and (ns.xctest_stall_seconds is not None or ns.xctest_stall_wake_probe):
+            raise ConductorError("--list cannot be combined with XCTest stall diagnostics")
         if ns.list and ns.test_product:
             raise ConductorError("--list cannot be combined with --test-product")
         if ns.list:
@@ -5646,20 +4691,14 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         args["appArgs"] = app_args
     elif operation == "app":
         if not rest or rest[0] not in {"status", "stop", "launch-existing", "relaunch"}:
-            raise ConductorError(
-                "usage: ./conductor app status|stop|launch-existing|relaunch [-- <app args...>]"
-            )
+            raise ConductorError("usage: ./conductor app status|stop|launch-existing|relaunch [-- <app args...>]")
         args["subcommand"] = rest[0]
         trailing = rest[1:]
         if args["subcommand"] in {"status", "stop"} and trailing:
-            raise ConductorError(
-                f"app {args['subcommand']} does not accept application arguments"
-            )
+            raise ConductorError(f"app {args['subcommand']} does not accept application arguments")
         if args["subcommand"] in {"launch-existing", "relaunch"}:
             if trailing and trailing[0] != "--":
-                raise ConductorError(
-                    f"app {args['subcommand']} application arguments must follow '--'"
-                )
+                raise ConductorError(f"app {args['subcommand']} application arguments must follow '--'")
             args["appArgs"] = trailing[1:] if trailing else []
     elif operation == "smoke":
         parser = argparse.ArgumentParser(prog="conductor smoke")
@@ -5670,9 +4709,7 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         parser.add_argument("--workspace", default="repoprompt-ce")
         parser.add_argument("--window-id", type=int, default=1)
         parser.add_argument("--agent-run", action="store_true")
-        parser.add_argument(
-            "--agent-timeout", type=float, default=SMOKE_AGENT_WAIT_SECONDS
-        )
+        parser.add_argument("--agent-timeout", type=float, default=SMOKE_AGENT_WAIT_SECONDS)
         parser.add_argument("--execution-location-ui", action="store_true")
         ns = parser.parse_args(rest)
         if ns.agent_timeout < 0:
@@ -5682,9 +4719,7 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         if ns.packaged_app and ns.agent_run:
             raise ConductorError("--agent-run is not supported with --packaged-app")
         if ns.packaged_app and ns.execution_location_ui:
-            raise ConductorError(
-                "--execution-location-ui is not supported with --packaged-app"
-            )
+            raise ConductorError("--execution-location-ui is not supported with --packaged-app")
         args.update(
             {
                 "launch": ns.launch,
@@ -5702,15 +4737,11 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
         agent_mode = subparsers.add_parser("agent-mode-on")
-        agent_mode.add_argument(
-            "--log-file", default="/tmp/repoprompt-ce-claude-raw-events"
-        )
+        agent_mode.add_argument("--log-file", default="/tmp/repoprompt-ce-claude-raw-events")
         agent_mode.add_argument("--window-id", type=int, default=1)
 
         build_cache = subparsers.add_parser("build-cache")
-        build_cache.add_argument(
-            "--limit", type=int, default=BUILD_CACHE_DIAGNOSTIC_MAX_ROWS
-        )
+        build_cache.add_argument("--limit", type=int, default=BUILD_CACHE_DIAGNOSTIC_MAX_ROWS)
 
         ns = parser.parse_args(rest)
         args["subcommand"] = ns.subcommand
@@ -5718,15 +4749,11 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
             args.update({"logFile": ns.log_file, "windowId": ns.window_id})
         elif ns.subcommand == "build-cache":
             if ns.limit <= 0:
-                raise ConductorError(
-                    "diagnostics build-cache --limit must be greater than zero"
-                )
+                raise ConductorError("diagnostics build-cache --limit must be greater than zero")
             args["limit"] = ns.limit
     elif operation == "release":
         parser = argparse.ArgumentParser(prog="conductor release")
-        parser.add_argument(
-            "subcommand", choices=["preflight", "artifact", "package", "local-install"]
-        )
+        parser.add_argument("subcommand", choices=["preflight", "artifact", "package", "local-install"])
         ns = parser.parse_args(rest)
         args["subcommand"] = ns.subcommand
     else:
@@ -5740,9 +4767,7 @@ def main(argv: List[str]) -> int:
 
     if argv and argv[0] == "__operation_runner":
         if len(argv) != 2:
-            raise ConductorError(
-                "__operation_runner requires one JSON payload argument"
-            )
+            raise ConductorError("__operation_runner requires one JSON payload argument")
         return run_operation_runner(argv[1])
     if argv and argv[0] == "__daemon":
         parser = argparse.ArgumentParser(prog="conductor.py __daemon")
@@ -5770,9 +4795,7 @@ def main(argv: List[str]) -> int:
         return handle_sleep_operation(paths, command, argv[1:])
     if command in IMPLEMENTED_OPERATIONS:
         return handle_real_operation(paths, command, argv[1:])
-    raise ConductorError(
-        f"unknown command '{command}'. Run './conductor --help' for usage."
-    )
+    raise ConductorError(f"unknown command '{command}'. Run './conductor --help' for usage.")
 
 
 if __name__ == "__main__":

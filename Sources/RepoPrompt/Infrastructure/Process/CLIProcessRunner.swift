@@ -165,7 +165,7 @@ final class CLIProcessRunner {
                     logger: { [weak self] message in
                         self?.log(message)
                     },
-                    preferredBasenames: config.resolveCandidates?.isEmpty == false ? config.resolveCandidates : [config.command],
+                    preferredBasenames: (config.resolveCandidates?.isEmpty == false ? config.resolveCandidates : [config.command]),
                     shellLookupMode: config.shellLookupMode
                 )
             }()
@@ -396,7 +396,7 @@ final class CLIProcessRunner {
                 logger: { [weak self] message in
                     self?.log(message)
                 },
-                preferredBasenames: config.resolveCandidates?.isEmpty == false ? config.resolveCandidates : [config.command],
+                preferredBasenames: (config.resolveCandidates?.isEmpty == false ? config.resolveCandidates : [config.command]),
                 shellLookupMode: config.shellLookupMode
             )
         }()

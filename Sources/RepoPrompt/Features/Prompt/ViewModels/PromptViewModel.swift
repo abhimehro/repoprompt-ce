@@ -5011,7 +5011,7 @@ class PromptViewModel: ObservableObject {
         }
         // Identify a stored prompt to be used as SYSTEM prompt when configured
         let idsCandidate = activeConfig.storedPromptIds ?? preset.storedPromptIds
-        var systemStoredPrompt: StoredPrompt?
+        var systemStoredPrompt: StoredPrompt? = nil
         if preset.useStoredPromptsAsSystem ?? false,
            let ids = idsCandidate,
            ids.count == 1,

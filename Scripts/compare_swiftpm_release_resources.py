@@ -24,10 +24,7 @@ def sha256(path: Path) -> str:
 
 def signature(root: Path) -> dict[str, tuple[str, int, str]]:
     result: dict[str, tuple[str, int, str]] = {}
-    for path in [
-        root,
-        *sorted(root.rglob("*"), key=lambda item: str(item.relative_to(root))),
-    ]:
+    for path in [root, *sorted(root.rglob("*"), key=lambda item: str(item.relative_to(root)))]:
         relative = "." if path == root else path.relative_to(root).as_posix()
         mode = path.lstat().st_mode
         permissions = stat.S_IMODE(mode)
@@ -53,9 +50,7 @@ def resource_roots(build_dir: Path) -> dict[str, Path]:
 
 def main() -> int:
     if len(sys.argv) != 3:
-        fail(
-            "usage: compare_swiftpm_release_resources.py <arm64-bin-dir> <x86_64-bin-dir>"
-        )
+        fail("usage: compare_swiftpm_release_resources.py <arm64-bin-dir> <x86_64-bin-dir>")
     arm_dir = Path(sys.argv[1])
     intel_dir = Path(sys.argv[2])
     if not arm_dir.is_dir() or not intel_dir.is_dir():
@@ -82,9 +77,7 @@ def main() -> int:
             )
             preview = ", ".join(differing[:10])
             suffix = "" if len(differing) <= 10 else f" (+{len(differing) - 10} more)"
-            fail(
-                f"SwiftPM resource differs across architectures: {name}: {preview}{suffix}"
-            )
+            fail(f"SwiftPM resource differs across architectures: {name}: {preview}{suffix}")
 
     print(
         "OK: SwiftPM release resources are equivalent across arm64 and x86_64: "
