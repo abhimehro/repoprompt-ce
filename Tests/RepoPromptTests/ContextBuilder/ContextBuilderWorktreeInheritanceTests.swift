@@ -197,6 +197,7 @@ import XCTest
                         worktreeBindings: [binding],
                         explicitlyBound: false
                     )
+                    fixture.contextA.window.workspaceManager.publishMCPMutationContextForTesting()
                     let outerEndpoint = try fixture.endpointA()
                     try await configureAgentModeEndpoint(
                         outerEndpoint,
@@ -635,6 +636,7 @@ import XCTest
                         worktreeBindings: [binding],
                         explicitlyBound: false
                     )
+                    fixture.contextA.window.workspaceManager.publishMCPMutationContextForTesting()
                     let outerEndpoint = try fixture.endpointA()
                     try await configureAgentModeEndpoint(
                         outerEndpoint,
