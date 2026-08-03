@@ -28,7 +28,7 @@ class OpenRouterProvider: AIProvider {
             }
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
+        let configuration = URLSessionConfiguration.ephemeral // SECURITY: Prevent sensitive data (prompts, API keys) from being cached to disk
         configuration.timeoutIntervalForRequest = 21600 // 6 hours
         configuration.timeoutIntervalForResource = 21600 // 6 hours
 

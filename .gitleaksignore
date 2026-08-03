@@ -1,0 +1,5 @@
+# False positives in README.md documentation examples
+f8e54ee5ace1ff7affbb04e81f01391501b5aba1:README.md:sidekiq-secret:42
+f8e54ee5ace1ff7affbb04e81f01391501b5aba1:README.md:aws-access-token:221
+f8e54ee5ace1ff7affbb04e81f01391501b5aba1:README.md:aws-access-token:223
+f8e54ee5ace1ff7affbb04e81f01391501b5aba1:README.md:aws-access-token:259

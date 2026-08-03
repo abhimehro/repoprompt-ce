@@ -352,7 +352,7 @@ final class AzureOpenAIProvider: AIProvider {
 
     private let configuration: AzureOpenAIConfiguration
     private lazy var urlSessionConfiguration: URLSessionConfiguration = {
-        let config = URLSessionConfiguration.ephemeral
+        let config = URLSessionConfiguration.ephemeral // SECURITY: Prevent sensitive data (prompts, API keys) from being cached to disk
         config.timeoutIntervalForRequest = 21600 // 6 hours
         config.timeoutIntervalForResource = 21600 // 6 hours
         return config

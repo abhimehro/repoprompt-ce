@@ -39,7 +39,7 @@ final class DefaultHTTPClient: HTTPClient, @unchecked Sendable {
     }
 
     private static func makeConfiguration(requestTimeout: TimeInterval, resourceTimeout: TimeInterval) -> URLSessionConfiguration {
-        let config = URLSessionConfiguration.ephemeral
+        let config = URLSessionConfiguration.ephemeral // SECURITY: Prevent sensitive data from being cached to disk
         config.timeoutIntervalForRequest = requestTimeout
         config.timeoutIntervalForResource = resourceTimeout
         config.waitsForConnectivity = false
