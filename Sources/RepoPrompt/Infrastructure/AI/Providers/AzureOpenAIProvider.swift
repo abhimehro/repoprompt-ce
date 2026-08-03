@@ -352,7 +352,7 @@ final class AzureOpenAIProvider: AIProvider {
 
     private let configuration: AzureOpenAIConfiguration
     private lazy var urlSessionConfiguration: URLSessionConfiguration = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 21600 // 6 hours
         config.timeoutIntervalForResource = 21600 // 6 hours
         return config
