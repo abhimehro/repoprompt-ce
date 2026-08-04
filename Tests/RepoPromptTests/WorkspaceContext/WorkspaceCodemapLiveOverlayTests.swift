@@ -981,7 +981,7 @@ final class WorkspaceCodemapLiveOverlayTests: XCTestCase {
         )
         let recordOverlay = WorkspaceCodemapLiveOverlay(
             policy: recordLimitedPolicy,
-            manifestRecordEqualityTraversal: equalityProbe.recordTraversal
+            manifestRecordEqualityTraversal: { equalityProbe.recordTraversal() }
         )
         let recordFixture = try await makeRootFixture(
             name: #function + "-records",
@@ -1286,7 +1286,7 @@ final class WorkspaceCodemapLiveOverlayTests: XCTestCase {
             .adopted(readyEntryCount: 1)
         )
 
-        await commitGate.releaseFirstCommit()
+        commitGate.releaseFirstCommit()
         await assertEqualValue(firstAdoption.value, .adopted(readyEntryCount: 1))
         await assertFalseValue(overlay.rollbackManifestAdoption(
             ticket: firstTicket,

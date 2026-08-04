@@ -267,7 +267,7 @@ final class WorkspaceFileContextStoreExactCapabilityTests: XCTestCase {
                 kind: .sessionWorktree
             )
             XCTAssertNotEqual(replacement.id, fixture.authorization.root.id)
-            await gate.release()
+            gate.release()
 
             let result = try await resolutionTask.value
             guard case .staleAuthority = result else {

@@ -1,7 +1,7 @@
 import Foundation
 @testable import RepoPromptApp
 
-final class ReviewGitRepositoryFixture {
+final class ReviewGitRepositoryFixture: @unchecked Sendable {
     let sandbox: URL
 
     init(name: String = "ReviewGitRepositoryFixture") throws {

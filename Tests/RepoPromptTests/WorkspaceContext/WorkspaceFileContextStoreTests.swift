@@ -7436,7 +7436,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                     standardizedRelativePath: "\(index).txt"
                 )
             }
-            func load(_ content: String) -> ValidatedFileContentSnapshot {
+            @Sendable func load(_ content: String) -> ValidatedFileContentSnapshot {
                 ValidatedFileContentSnapshot(
                     content: content,
                     detectedEncodingRawValue: String.Encoding.utf8.rawValue,
