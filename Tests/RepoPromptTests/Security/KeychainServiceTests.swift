@@ -18,7 +18,7 @@ final class KeychainServiceTests: XCTestCase {
 
         XCTAssertEqual(value, "stored-value")
         let query = try XCTUnwrap(fake.copyQueries.first)
-        XCTAssertEqual(query.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUISkip as String)
+        XCTAssertEqual(query.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUIFail as String)
     }
 
     func testInteractiveReadDoesNotAddUISkip() throws {
@@ -105,7 +105,7 @@ final class KeychainServiceTests: XCTestCase {
 
         XCTAssertEqual(fake.deleteQueries.map { $0.stringValue(for: kSecAttrService) }, [canonicalService])
         let deleteQuery = try XCTUnwrap(fake.deleteQueries.first)
-        XCTAssertEqual(deleteQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUISkip as String)
+        XCTAssertEqual(deleteQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUIFail as String)
     }
 
     func testSaveUpdatesCanonicalNoninteractiveItemWithoutAddingWhenPresent() throws {
@@ -123,7 +123,7 @@ final class KeychainServiceTests: XCTestCase {
         XCTAssertEqual(updateQuery.stringValue(for: kSecClass), kSecClassGenericPassword as String)
         XCTAssertEqual(updateQuery.stringValue(for: kSecAttrService), KeychainService.officialV2ServiceName)
         XCTAssertEqual(updateQuery.stringValue(for: kSecAttrAccount), "api-key")
-        XCTAssertEqual(updateQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUISkip as String)
+        XCTAssertEqual(updateQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUIFail as String)
         let updateAttributes = try XCTUnwrap(fake.updateAttributes.first)
         XCTAssertEqual(updateAttributes.dataValue(for: kSecValueData), Data("stored-value".utf8))
     }
@@ -142,12 +142,12 @@ final class KeychainServiceTests: XCTestCase {
         let updateQuery = try XCTUnwrap(fake.updateQueries.first)
         XCTAssertEqual(updateQuery.stringValue(for: kSecAttrService), KeychainService.officialV2ServiceName)
         XCTAssertEqual(updateQuery.stringValue(for: kSecAttrAccount), "api-key")
-        XCTAssertEqual(updateQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUISkip as String)
+        XCTAssertEqual(updateQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUIFail as String)
         let addQuery = try XCTUnwrap(fake.addQueries.first)
         XCTAssertEqual(addQuery.stringValue(for: kSecClass), kSecClassGenericPassword as String)
         XCTAssertEqual(addQuery.stringValue(for: kSecAttrService), KeychainService.officialV2ServiceName)
         XCTAssertEqual(addQuery.stringValue(for: kSecAttrAccount), "api-key")
-        XCTAssertEqual(addQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUISkip as String)
+        XCTAssertEqual(addQuery.stringValue(for: kSecUseAuthenticationUI), kSecUseAuthenticationUIFail as String)
         XCTAssertEqual(addQuery.dataValue(for: kSecValueData), Data("stored-value".utf8))
         XCTAssertEqual(addQuery.stringValue(for: kSecAttrAccessible), kSecAttrAccessibleAfterFirstUnlock as String)
         XCTAssertEqual(addQuery.boolValue(for: kSecAttrSynchronizable), false)
