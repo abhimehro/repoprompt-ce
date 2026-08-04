@@ -536,10 +536,6 @@ final actor ServerController: ObservableObject {
         }
     }
 
-    // This is no longer needed as there are no individual service toggles.
-    // func updateServiceBindings(_ b: [String: Binding<Bool>]) async {
-    //     await networkManager.updateServiceBindings(b)
-    // }
 
     // MARK: – helpers ––––––––––––––––––––––––––––––––––––––––––––––––––
 

@@ -12989,11 +12989,6 @@ actor ServerNetworkManager {
         return await bootstrap.peerPID()
     }
 
-    /// Update service bindings - no longer needed but kept for compatibility
-    func updateServiceBindings(_ newBindings: [String: Binding<Bool>]) async {
-        // No-op since we don't use individual service bindings anymore
-        // All services are controlled by the master enabled state
-    }
 
     // MARK: - Admission helpers
 
