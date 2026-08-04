@@ -5961,11 +5961,11 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 selectCreatedFiles: false
             )
 
-            try await host.writeText(path: "Missing.swift", content: "created", overwrite: true)
+            _ = try await host.writeText(path: "Missing.swift", content: "created", overwrite: true)
             let createdContent = try await store.readContent(rootID: record.id, relativePath: "Missing.swift")
             XCTAssertEqual(createdContent, "created", caseLabel)
 
-            try await host.writeText(path: "Existing.swift", content: "new", overwrite: true)
+            _ = try await host.writeText(path: "Existing.swift", content: "new", overwrite: true)
             let overwrittenContent = try await store.readContent(rootID: record.id, relativePath: "Existing.swift")
             XCTAssertEqual(overwrittenContent, "new", caseLabel)
         }
@@ -5993,7 +5993,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 }
             #endif
 
-            try await host.writeText(path: target.path, content: "created", overwrite: true)
+            _ = try await host.writeText(path: target.path, content: "created", overwrite: true)
 
             #if DEBUG
                 let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
@@ -6075,8 +6075,8 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 selectCreatedFiles: false
             )
 
-            try await host.writeText(path: "secret.ignored", content: "ignored token", overwrite: false)
-            try await host.writeText(path: "ignored/report.md", content: "nested ignored", overwrite: false)
+            _ = try await host.writeText(path: "secret.ignored", content: "ignored token", overwrite: false)
+            _ = try await host.writeText(path: "ignored/report.md", content: "nested ignored", overwrite: false)
 
             let ignoredURL = root.appendingPathComponent("secret.ignored")
             XCTAssertTrue(FileManager.default.fileExists(atPath: ignoredURL.path), caseLabel)
