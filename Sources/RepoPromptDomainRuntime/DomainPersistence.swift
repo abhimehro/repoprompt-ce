@@ -174,6 +174,16 @@ enum DomainPersistenceError: Error, Equatable {
     case cancelled
 }
 
+package struct DomainPersistenceDataSnapshot: Sendable {
+    package let data: Data?
+    package let digest: String?
+
+    package init(data: Data?) {
+        self.data = data
+        digest = data.map(DomainContentDigest.sha256)
+    }
+}
+
 private final class DomainBlockingCancellation: Sendable {
     private let state = OSAllocatedUnfairLock(initialState: false)
 
@@ -339,57 +349,51 @@ package struct DomainPersistenceCoordinator {
             .appendingPathComponent("\(safe)-\(digest)", isDirectory: true)
     }
 
-    private var journalDirectory: URL {
-        runtimeRoot.appendingPathComponent("working-journals", isDirectory: true)
-    }
-
-    private var revisionDirectory: URL {
-        runtimeRoot.appendingPathComponent("revisions", isDirectory: true)
-    }
-
-    private var deletionDirectory: URL {
-        runtimeRoot.appendingPathComponent("deletion-tombstones", isDirectory: true)
-    }
-
-    private var lockDirectory: URL {
-        runtimeRoot.appendingPathComponent("locks", isDirectory: true)
-    }
-
-    private var settingsDirectory: URL {
-        runtimeRoot.appendingPathComponent("settings", isDirectory: true)
-    }
-
-    private var rollbackRoot: URL {
-        runtimeRoot.appendingPathComponent("rollback", isDirectory: true)
-    }
-
-    private var policyURL: URL {
-        settingsDirectory.appendingPathComponent("runtime-policy.json")
-    }
-
+    private var journalDirectory: URL { runtimeRoot.appendingPathComponent("working-journals", isDirectory: true) }
+    private var revisionDirectory: URL { runtimeRoot.appendingPathComponent("revisions", isDirectory: true) }
+    private var deletionDirectory: URL { runtimeRoot.appendingPathComponent("deletion-tombstones", isDirectory: true) }
+    private var lockDirectory: URL { runtimeRoot.appendingPathComponent("locks", isDirectory: true) }
+    private var settingsDirectory: URL { runtimeRoot.appendingPathComponent("settings", isDirectory: true) }
+    private var rollbackRoot: URL { runtimeRoot.appendingPathComponent("rollback", isDirectory: true) }
+    private var policyURL: URL { settingsDirectory.appendingPathComponent("runtime-policy.json") }
     private var protectedMutationPolicyURL: URL {
         settingsDirectory.appendingPathComponent("protected-mutations.json")
     }
-
     private var protectedMutationPolicyLockURL: URL {
         lockDirectory.appendingPathComponent("protected-mutations.lock")
     }
-
     private var protectedMutationJournalURL: URL {
         settingsDirectory.appendingPathComponent("protected-mutation-journal.json")
     }
-
     private var protectedMutationJournalLockURL: URL {
         lockDirectory.appendingPathComponent("protected-mutation-journal.lock")
     }
-
-    private var catalogURL: URL {
-        runtimeRoot.appendingPathComponent("workspace-catalog.json")
+    private var agentSessionMetadataURL: URL {
+        settingsDirectory.appendingPathComponent("agent-sessions.json")
     }
-
-    private var indexURL: URL {
-        workspaceRoot.appendingPathComponent("workspacesIndex.json")
+    private var agentSessionMetadataLockURL: URL {
+        lockDirectory.appendingPathComponent("agent-sessions.lock")
     }
+    private var directSettingsURL: URL {
+        settingsDirectory.appendingPathComponent("direct-settings.json")
+    }
+    private var directSettingsLockURL: URL {
+        lockDirectory.appendingPathComponent("direct-settings.lock")
+    }
+    private var agentWorktreeBindingsURL: URL {
+        settingsDirectory.appendingPathComponent("agent-worktree-bindings.json")
+    }
+    private var agentWorktreeBindingsLockURL: URL {
+        lockDirectory.appendingPathComponent("agent-worktree-bindings.lock")
+    }
+    private var legacyAgentSessionMetadataURL: URL {
+        configuration.storageDirectory
+            .appendingPathComponent("DomainRuntime", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+            .appendingPathComponent("agent-sessions.json")
+    }
+    private var catalogURL: URL { runtimeRoot.appendingPathComponent("workspace-catalog.json") }
+    private var indexURL: URL { workspaceRoot.appendingPathComponent("workspacesIndex.json") }
 
     private func journalURL(_ workspaceID: UUID) -> URL {
         journalDirectory.appendingPathComponent("\(workspaceID.uuidString).json")
@@ -481,6 +485,113 @@ package struct DomainPersistenceCoordinator {
                     throw DomainPersistenceError.externalDocumentConflict
                 }
                 try DomainPersistenceLock.atomicWrite(data, to: worker.protectedMutationJournalURL)
+            }
+        }
+    }
+
+    package func loadDirectSettingsData() async throws -> DomainPersistenceDataSnapshot {
+        try await DomainBlockingIO.run { cancellation in
+            try cancellation.check()
+            let worker = blockingWorker(cancellation)
+            let data = worker.fileManager.fileExists(atPath: worker.directSettingsURL.path)
+                ? try Data(contentsOf: worker.directSettingsURL)
+                : nil
+            return DomainPersistenceDataSnapshot(data: data)
+        }
+    }
+
+    package func compareAndSwapDirectSettingsData(
+        expectedDigest: String?,
+        data: Data
+    ) async throws {
+        try await DomainBlockingIO.run { cancellation in
+            let worker = blockingWorker(cancellation)
+            try cancellation.check()
+            try worker.withLock(at: worker.directSettingsLockURL) {
+                try cancellation.check()
+                let currentData = worker.fileManager.fileExists(atPath: worker.directSettingsURL.path)
+                    ? try Data(contentsOf: worker.directSettingsURL)
+                    : nil
+                let currentDigest = currentData.map(DomainContentDigest.sha256)
+                guard currentDigest == expectedDigest else {
+                    throw DomainPersistenceError.externalDocumentConflict
+                }
+                try DomainPersistenceLock.atomicWrite(data, to: worker.directSettingsURL)
+            }
+        }
+    }
+
+    package func loadAgentWorktreeBindingsData() async throws -> DomainPersistenceDataSnapshot {
+        try await DomainBlockingIO.run { cancellation in
+            try cancellation.check()
+            let worker = blockingWorker(cancellation)
+            let data = worker.fileManager.fileExists(atPath: worker.agentWorktreeBindingsURL.path)
+                ? try Data(contentsOf: worker.agentWorktreeBindingsURL)
+                : nil
+            return DomainPersistenceDataSnapshot(data: data)
+        }
+    }
+
+    package func compareAndSwapAgentWorktreeBindingsData(
+        expectedDigest: String?,
+        data: Data
+    ) async throws {
+        try await DomainBlockingIO.run { cancellation in
+            let worker = blockingWorker(cancellation)
+            try cancellation.check()
+            try worker.withLock(at: worker.agentWorktreeBindingsLockURL) {
+                try cancellation.check()
+                let currentData = worker.fileManager.fileExists(atPath: worker.agentWorktreeBindingsURL.path)
+                    ? try Data(contentsOf: worker.agentWorktreeBindingsURL)
+                    : nil
+                let currentDigest = currentData.map(DomainContentDigest.sha256)
+                guard currentDigest == expectedDigest else {
+                    throw DomainPersistenceError.externalDocumentConflict
+                }
+                try DomainPersistenceLock.atomicWrite(data, to: worker.agentWorktreeBindingsURL)
+            }
+        }
+    }
+
+    package func loadAgentSessionMetadataData() async throws -> DomainPersistenceDataSnapshot {
+        try await DomainBlockingIO.run { cancellation in
+            try cancellation.check()
+            let worker = blockingWorker(cancellation)
+            let data = worker.fileManager.fileExists(atPath: worker.agentSessionMetadataURL.path)
+                ? try Data(contentsOf: worker.agentSessionMetadataURL)
+                : nil
+            return DomainPersistenceDataSnapshot(data: data)
+        }
+    }
+
+    package func loadLegacyAgentSessionMetadataData() async throws -> DomainPersistenceDataSnapshot {
+        try await DomainBlockingIO.run { cancellation in
+            try cancellation.check()
+            let worker = blockingWorker(cancellation)
+            let data = worker.fileManager.fileExists(atPath: worker.legacyAgentSessionMetadataURL.path)
+                ? try Data(contentsOf: worker.legacyAgentSessionMetadataURL)
+                : nil
+            return DomainPersistenceDataSnapshot(data: data)
+        }
+    }
+
+    package func compareAndSwapAgentSessionMetadataData(
+        expectedDigest: String?,
+        data: Data
+    ) async throws {
+        try await DomainBlockingIO.run { cancellation in
+            let worker = blockingWorker(cancellation)
+            try cancellation.check()
+            try worker.withLock(at: worker.agentSessionMetadataLockURL) {
+                try cancellation.check()
+                let currentData = worker.fileManager.fileExists(atPath: worker.agentSessionMetadataURL.path)
+                    ? try Data(contentsOf: worker.agentSessionMetadataURL)
+                    : nil
+                let currentDigest = currentData.map(DomainContentDigest.sha256)
+                guard currentDigest == expectedDigest else {
+                    throw DomainPersistenceError.externalDocumentConflict
+                }
+                try DomainPersistenceLock.atomicWrite(data, to: worker.agentSessionMetadataURL)
             }
         }
     }

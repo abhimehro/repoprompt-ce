@@ -261,13 +261,18 @@ if domain_runtime is None:
 else:
     if domain_runtime.get("type") != "regular": errors.append("RepoPromptDomainRuntime must remain an internal regular target")
     if domain_runtime.get("path") != "Sources/RepoPromptDomainRuntime": errors.append("RepoPromptDomainRuntime target path drifted")
+    runtime_by_name = [
+        dependency["byName"][0]
+        for dependency in domain_runtime.get("dependencies", [])
+        if dependency.get("byName")
+    ]
     runtime_products = {
         (dependency["product"][0], dependency["product"][1])
         for dependency in domain_runtime.get("dependencies", [])
         if "product" in dependency
     }
-    if runtime_products != {("MCP", "swift-sdk")} or len(domain_runtime.get("dependencies", [])) != 1:
-        errors.append("RepoPromptDomainRuntime must depend only on the pinned MCP SDK product")
+    if runtime_by_name != ["RepoPromptShared", "RepoPromptC", "RepoPromptCodeMapCore"] or runtime_products != {("Logging", "swift-log"), ("MCP", "swift-sdk")} or len(domain_runtime.get("dependencies", [])) != 5:
+        errors.append("RepoPromptDomainRuntime dependencies must remain RepoPromptShared, RepoPromptC, RepoPromptCodeMapCore, Logging, and pinned MCP")
 if domain_runtime_tests is None:
     errors.append("RepoPromptDomainRuntimeTests target missing")
 else:
@@ -383,8 +388,9 @@ if [[ -d "$workspace_core_source_dir" ]]; then
 fi
 
 # RepoPromptDomainRuntime owns Sendable MCP catalog/runtime values, the M2
-# workspace/context authorities, and the M3 shared read/discovery provider. Physical
-# app backends remain injected and the owner stays free of UI/provider implementations.
+# workspace/context authorities, M3 shared reads, M4 protected mutation policy, and
+# M5 long-running lifecycle wrappers. Physical app backends remain injected and the
+# owner stays free of UI/provider implementations.
 domain_runtime_source_dir="Sources/RepoPromptDomainRuntime"
 if [[ -d "$domain_runtime_source_dir" ]]; then
   unexpected_domain_runtime_files="$(find "$domain_runtime_source_dir" -type f ! -name '*.swift' -print)"
@@ -409,21 +415,74 @@ if [[ -d "$domain_runtime_source_dir" ]]; then
     "DomainReadSideEffectCoordinator.swift"
     "MCPDomainReadToolDefinitions.swift"
     "MCPDomainReadToolProvider.swift"
+    "DomainAgentSessionModels.swift"
+    "DomainAgentRunSessionStore.swift"
+    "DomainInteractionBroker.swift"
+    "DomainCredentialEnvelope.swift"
+    "DomainActivityCenter.swift"
+    "MCPDomainLongRunningToolProvider.swift"
   )
   for file in "${domain_runtime_required_files[@]}"; do
     if [[ ! -f "$domain_runtime_source_dir/$file" ]]; then
-      fail "RepoPromptDomainRuntime M2/M3 authority file missing: $file"
+      fail "RepoPromptDomainRuntime M2-M5 authority file missing: $file"
     fi
   done
+  m5_contract_fixture="Scripts/Fixtures/headless_mcp_domain_runtime_m5_contract.json"
+  if [[ ! -f "$m5_contract_fixture" ]]; then
+    fail "M5 AI/Agent contract fixture missing: $m5_contract_fixture"
+  elif ! python3 - "$m5_contract_fixture" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+expected = {
+    "oracle_utils", "ask_oracle", "oracle_send", "context_builder", "ask_user",
+    "agent_explore", "agent_run", "agent_manage", "share_thoughts", "set_status",
+    "wait_for_next_user_instruction",
+}
+assert value["schema_version"] == 2
+assert value["milestone"] == "M5"
+assert set(value["migrated_tools"]) == expected
+assert value["session_lifecycle"]["false_transient_restoration_allowed"] is False
+assert value["session_lifecycle"]["wait_admission_while_draining"] == "cancelled"
+assert value["session_lifecycle"]["active_prior_owner_claim"] == "unavailable_until_prior_owner_durably_stops"
+assert value["session_persistence"]["write_protocol"] == "advisory_lock_digest_cas_atomic_write"
+assert value["session_persistence"]["duplicate_session_ids"] == "byte_preserved_degraded_read_only"
+assert value["session_persistence"]["committed_base_advances_after_each_successful_cas"] is True
+assert value["session_persistence"]["retained_record_limit"] == 512
+assert value["interaction"]["default_timeout"] == "workspace questionTimeoutSeconds setting"
+assert value["interaction"]["app_presentation_tombstone_limit"] == 256
+assert value["interaction"]["connection_removal_late_waiter"] == "blocked_after_suspended_availability"
+assert value["child_launch"]["real_private_endpoint"] == "deferred_to_M6B"
+assert value["child_launch"]["codex_cached_runtime_behavior"] == "carrier_merged_only_at_final_process_spawn_boundary"
+assert value["child_launch"]["end_to_end_private_connectivity_claimed"] is False
+assert set(value["child_launch"]["launch_environment_consumers"]) == {"claude_native", "codex_app_server", "acp_agent"}
+assert value["credentials"]["packaged_child_keychain_evidence"] == "unresolved_M0_procedure_record"
+assert value["credentials"]["persisted_secret_bytes"] is False
+assert value["credentials"]["actual_owned_bytes_instrumented"] is True
+assert value["approval"]["routing_opt_out"] is False
+assert value["authority"]["typed_policy_errors_preserved"] is True
+assert value["public_contract"]["schema_behavior"] == "wrapped_binding_definition_preserved"
+assert value["public_contract"]["proxy_behavior_changed"] is False
+PY
+  then
+    fail "M5 AI/Agent contract fixture drifted or is invalid JSON"
+  fi
   m3_read_tools=(
-    "get_code_structure" "get_file_tree" "read_file" "file_search"
-    "workspace_context" "prompt" "oracle_chat_log" "git" "history"
+    "get_code_structure:getCodeStructure" "get_file_tree:getFileTree" "read_file:readFile" "file_search:search"
+    "workspace_context:workspaceContext" "prompt:prompt" "oracle_chat_log:oracleChatLog" "git:git" "history:history"
   )
-  for tool in "${m3_read_tools[@]}"; do
-    if ! grep -q "name: \"$tool\"" "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
+  for entry in "${m3_read_tools[@]}"; do
+    tool="${entry%%:*}"
+    identifier="${entry##*:}"
+    if ! grep -q "MCPWindowToolName\.$identifier" "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
       fail "M3 shared read definition missing: $tool"
     fi
   done
+  if ! grep -q 'MCPDomainCanonicalToolDefinitions.definition(named:' "$domain_runtime_source_dir/MCPDomainReadToolDefinitions.swift"; then
+    fail "M3 shared read definitions must delegate to the canonical 27-tool schema authority"
+  fi
   print_matches \
     "RepoPromptDomainRuntime contains app/UI/provider implementation" \
     grep -R -n -E 'WindowState|ViewModel|AgentProvider|Claude[^[:space:]]*Provider|Codex[^[:space:]]*Provider|OpenCode[^[:space:]]*Provider|Cursor[^[:space:]]*Provider' "$domain_runtime_source_dir"
@@ -656,6 +715,8 @@ print_matches \
 # promoted into the contributor-facing documentation set.
 allowed_tracked_docs=(
   "docs/architecture/codex-app-server-schema-gate.md"
+  "docs/architecture/compose.md"
+  "docs/architecture/headless-mcp-runtime.md"
   "docs/architecture/provider-plugins.md"
   "docs/architecture/settings-persistence.md"
   "docs/architecture/source-layout.md"
@@ -674,17 +735,24 @@ allowed_tracked_docs=(
   "docs/spec/headless-mcp-domain-runtime-m3-evidence.json"
   "docs/spec/headless-mcp-domain-runtime-m3-read-discovery.md"
   "docs/spec/headless-mcp-domain-runtime-m4-protected-mutations.md"
+  "docs/spec/headless-mcp-domain-runtime-m5-ai-agent-interaction.md"
+  "docs/spec/headless-mcp-domain-runtime-m6-host-extraction.md"
+  "docs/spec/headless-mcp-domain-runtime-m7-cutover.md"
   "docs/spec/history-query-tools.md"
+  "docs/spec/mcp-domain-canonical-tool-definitions.generated.json"
   "docs/worktrees.md"
   "docs/investigations/mcp-tool-throughput-wi3-baseline-2026-06-11.md"
   "docs/investigations/test-coverage-value-audit-ledger-2026-05-29.md"
   "docs/plans/test-coverage-value-audit-2026-05-29.md"
 )
+existing_tracked_docs=()
 while IFS= read -r path; do
-  allowed_tracked_docs+=("$path")
-done < <(git ls-files 'docs/test-suite-optimizer')
+  if [[ -e "$path" ]]; then
+    existing_tracked_docs+=("$path")
+  fi
+done < <(git ls-files docs)
 unexpected_tracked_docs="$(comm -23 \
-  <(git ls-files docs | sort) \
+  <(printf '%s\n' "${existing_tracked_docs[@]}" | sort) \
   <(printf '%s\n' "${allowed_tracked_docs[@]}" | sort))"
 if [[ -n "$unexpected_tracked_docs" ]]; then
   fail "unexpected tracked docs found; keep agent-authored working documents local or add durable docs to the explicit allowlist"

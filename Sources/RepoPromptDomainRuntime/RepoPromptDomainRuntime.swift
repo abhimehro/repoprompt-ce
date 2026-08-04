@@ -16,7 +16,7 @@ package struct DomainRuntimeConfiguration: Sendable {
     package let externalReloadInterval: Duration?
     package let externalReloadMaximumInterval: Duration
     package let metrics: DomainRuntimeMetricsSink
-    package let protectedMutationStage: DomainProtectedMutationStage
+    package let hostDrainTimeout: Duration
 
     package init(
         mode: DomainRuntimeMode,
@@ -29,7 +29,7 @@ package struct DomainRuntimeConfiguration: Sendable {
         externalReloadInterval: Duration? = .seconds(1),
         externalReloadMaximumInterval: Duration = .seconds(30),
         metrics: DomainRuntimeMetricsSink = .disabled,
-        protectedMutationStage: DomainProtectedMutationStage = .m3Compatibility
+        hostDrainTimeout: Duration = .seconds(5)
     ) {
         self.mode = mode
         self.profileIdentifier = profileIdentifier
@@ -42,7 +42,7 @@ package struct DomainRuntimeConfiguration: Sendable {
         self.externalReloadInterval = externalReloadInterval
         self.externalReloadMaximumInterval = externalReloadMaximumInterval
         self.metrics = metrics
-        self.protectedMutationStage = protectedMutationStage
+        self.hostDrainTimeout = hostDrainTimeout
     }
 }
 
@@ -86,6 +86,12 @@ package struct DomainRuntimeSnapshot: Sendable {
     package let workspaceCatalogRevision: UInt64
     package let workspaceHealth: DomainAuthorityHealth
     package let routingRevision: UInt64
+    package let agentSessionPersistenceHealth: DomainAgentSessionPersistenceHealth
+    package let activityPublicationSequence: UInt64
+    package let activeActivityCount: Int
+    package let recentTerminalActivityCount: Int
+    package let hostLifecycle: MCPDomainHostLifecycle
+    package let activeHostInvocationCount: Int
 }
 
 package struct DomainShutdownResult: Sendable {
@@ -102,14 +108,23 @@ package actor MCPDomainRuntime {
     package nonisolated let identity: DomainRuntimeIdentity
     package nonisolated let configuration: DomainRuntimeConfiguration
     package nonisolated let toolRegistry: MCPDomainToolRegistry
+    package nonisolated let domainHost: MCPDomainHost
+    package nonisolated let persistenceCoordinator: DomainPersistenceCoordinator
     package nonisolated let workspaceStore: DomainWorkspaceStore
     package nonisolated let contextStore: DomainContextStore
     package nonisolated let routingCoordinator: DomainRoutingCoordinator
+    package nonisolated let standaloneScopeCoordinator: DomainStandaloneScopeCoordinator
     package nonisolated let readSideEffectCoordinator: DomainReadSideEffectCoordinator
     package nonisolated let mutationPolicyStore: DomainMutationPolicyStore
     package nonisolated let mutationApprovalBroker: DomainMutationApprovalBroker
     package nonisolated let mutationJournal: DomainMutationJournal
     package nonisolated let protectedMutationProvider: MCPDomainProtectedMutationToolProvider
+    package nonisolated let agentSessionStore: DomainAgentRunSessionStore
+    package nonisolated let agentWorktreeBindingStore: DomainAgentWorktreeBindingStore
+    package nonisolated let interactionBroker: DomainInteractionBroker
+    package nonisolated let activityCenter: DomainActivityCenter
+    package nonisolated let credentialEnvelopeStore: DomainCredentialEnvelopeStore
+    package nonisolated let longRunningToolProvider: MCPDomainLongRunningToolProvider
 
     private let workspaceAuthority: DomainWorkspaceContextAuthority
     private var lifecycle: DomainRuntimeLifecycle = .created
@@ -123,7 +138,8 @@ package actor MCPDomainRuntime {
         lifecycleGeneration: UInt64 = 1,
         processID: Int32 = ProcessInfo.processInfo.processIdentifier,
         createdAt: Date = Date(),
-        registryID: UUID = UUID()
+        registryID: UUID = UUID(),
+        prepareChildLaunch: @escaping MCPDomainLongRunningToolProvider.PrepareChildLaunch = { _, _, _ in nil }
     ) {
         self.configuration = configuration
         let runtimeIdentity = DomainRuntimeIdentity(
@@ -140,6 +156,7 @@ package actor MCPDomainRuntime {
             configuration: configuration,
             identity: runtimeIdentity
         )
+        persistenceCoordinator = persistence
         let authority = DomainWorkspaceContextAuthority(
             identity: runtimeIdentity,
             persistence: persistence,
@@ -150,9 +167,22 @@ package actor MCPDomainRuntime {
         let contextStore = DomainContextStore(authority: authority)
         self.workspaceStore = workspaceStore
         self.contextStore = contextStore
-        routingCoordinator = DomainRoutingCoordinator(
+        let routingCoordinator = DomainRoutingCoordinator(
             identity: runtimeIdentity,
             contextStore: contextStore,
+            metrics: configuration.metrics
+        )
+        self.routingCoordinator = routingCoordinator
+        standaloneScopeCoordinator = DomainStandaloneScopeCoordinator(
+            identity: runtimeIdentity,
+            workspaceStore: workspaceStore,
+            contextStore: contextStore,
+            routingCoordinator: routingCoordinator
+        )
+        domainHost = MCPDomainHost(
+            identity: runtimeIdentity,
+            registry: toolRegistry,
+            routingCoordinator: routingCoordinator,
             metrics: configuration.metrics
         )
         readSideEffectCoordinator = DomainReadSideEffectCoordinator(identity: runtimeIdentity)
@@ -170,9 +200,30 @@ package actor MCPDomainRuntime {
         )
         self.mutationJournal = mutationJournal
         protectedMutationProvider = MCPDomainProtectedMutationToolProvider(
-            stage: configuration.protectedMutationStage,
             policyStore: mutationPolicyStore,
             journal: mutationJournal
+        )
+        agentSessionStore = DomainAgentRunSessionStore(
+            identity: runtimeIdentity,
+            persistence: persistence,
+            profileIdentifier: configuration.profileIdentifier
+        )
+        agentWorktreeBindingStore = DomainAgentWorktreeBindingStore(
+            persistence: persistence,
+            profileIdentifier: configuration.profileIdentifier
+        )
+        let interactionBroker = DomainInteractionBroker()
+        let activityCenter = DomainActivityCenter(identity: runtimeIdentity)
+        let credentialEnvelopeStore = DomainCredentialEnvelopeStore(identity: runtimeIdentity)
+        self.interactionBroker = interactionBroker
+        self.activityCenter = activityCenter
+        self.credentialEnvelopeStore = credentialEnvelopeStore
+        longRunningToolProvider = MCPDomainLongRunningToolProvider(
+            identity: runtimeIdentity,
+            policyStore: mutationPolicyStore,
+            interactionBroker: interactionBroker,
+            activityCenter: activityCenter,
+            prepareChildLaunch: prepareChildLaunch
         )
     }
 
@@ -192,10 +243,15 @@ package actor MCPDomainRuntime {
         }
         await startTask?.value
         await mutationPolicyStore.bootstrap()
+        await agentSessionStore.bootstrap()
+        await agentWorktreeBindingStore.bootstrap()
         guard lifecycle == .starting else { return }
         startTask = nil
         let workspaceSnapshot = await workspaceAuthority.snapshot()
-        lifecycle = workspaceSnapshot.health.acceptsMutations ? .ready : .degraded
+        let agentSessions = await agentSessionStore.snapshot()
+        lifecycle = workspaceSnapshot.health.acceptsMutations && agentSessions.persistenceHealth == .ready
+            ? .ready
+            : .degraded
         publishSnapshot()
         startExternalReloadPollingIfNeeded()
     }
@@ -215,7 +271,12 @@ package actor MCPDomainRuntime {
         publishSnapshot()
         externalReloadTask?.cancel()
         externalReloadTask = nil
+        _ = await domainHost.drain(timeout: configuration.hostDrainTimeout)
         await mutationApprovalBroker.shutdown()
+        await interactionBroker.shutdown()
+        _ = await agentSessionStore.shutdown()
+        await activityCenter.shutdown()
+        await credentialEnvelopeStore.shutdown()
         await readSideEffectCoordinator.shutdown()
         await routingCoordinator.shutdown()
         lifecycle = .stopped
@@ -231,6 +292,9 @@ package actor MCPDomainRuntime {
         let catalog = await toolRegistry.snapshot()
         let workspaces = await workspaceAuthority.snapshot()
         let routing = await routingCoordinator.snapshot()
+        let agentSessions = await agentSessionStore.snapshot()
+        let activities = await activityCenter.snapshot()
+        let host = await domainHost.snapshot()
         return DomainRuntimeSnapshot(
             identity: identity,
             lifecycle: lifecycle,
@@ -239,7 +303,13 @@ package actor MCPDomainRuntime {
             workspacePublicationSequence: workspaces.publicationSequence,
             workspaceCatalogRevision: workspaces.catalogRevision,
             workspaceHealth: workspaces.health,
-            routingRevision: routing.revision
+            routingRevision: routing.revision,
+            agentSessionPersistenceHealth: agentSessions.persistenceHealth,
+            activityPublicationSequence: activities.publicationSequence,
+            activeActivityCount: activities.active.count,
+            recentTerminalActivityCount: activities.recentTerminal.count,
+            hostLifecycle: host.lifecycle,
+            activeHostInvocationCount: host.activeInvocationCount
         )
     }
 

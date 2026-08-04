@@ -173,9 +173,9 @@ import XCTest
                     applicationSupportRoot: applicationSupportRoot,
                     workspaceDirectoryProvider: { _ in workspaceDirectories }
                 )
-                let runtime = MCPWindowToolRuntime(windowID: 42) { name, _, arguments, implementation in
+                let runtime = MCPAppToolBinder(windowID: 42) { name, _, arguments, implementation in
                     try await implementation(
-                        MCPWindowToolContext(toolName: name, windowID: 42),
+                        MCPAppToolInvocation(toolName: name, windowID: 42),
                         arguments
                     )
                 }
@@ -1892,12 +1892,13 @@ import XCTest
                 }
                 do {
                     let clientName = "selection-ownership-\(UUID().uuidString)"
+                    let runID = UUID()
                     await manager.installClientConnectionPolicy(
                         for: clientName,
                         windowID: fixture.contextA.window.windowID,
                         restrictedTools: [],
                         tabID: fixture.contextA.tabID,
-                        runID: UUID(),
+                        runID: runID,
                         additionalTools: [],
                         purpose: .agentModeRun
                     )
@@ -1911,10 +1912,41 @@ import XCTest
                         ]
                     )
                     endpoint = createdEndpoint
-                    _ = try await createdEndpoint.callTool(
+                    try await fixture.registerDomainWorkspace(fixture.contextA)
+                    let bindResponse = try await createdEndpoint.callTool(
+                        name: "bind_context",
+                        arguments: ["op": "bind", "context_id": fixture.contextA.tabID.uuidString]
+                    )
+                    XCTAssertFalse(bindResponse.rawJSON.contains("\"isError\":true"), bindResponse.rawJSON)
+                    await manager.setRunPurpose(.agentModeRun, for: createdEndpoint.connectionID)
+                    await manager.debugSeedConnectionRunRouting(
+                        connectionID: createdEndpoint.connectionID,
+                        runID: runID,
+                        purpose: .agentModeRun,
+                        windowID: fixture.contextA.window.windowID
+                    )
+                    let registration = try await AppDomainRuntimeComposition.shared.runtime
+                        .routingCoordinator.currentRegistration(connectionID: createdEndpoint.connectionID)
+                    let routingOutcome = await AppDomainRuntimeComposition.shared.runtime.routingCoordinator.bind(
+                        connection: registration,
+                        binding: .runScoped(
+                            runID: runID,
+                            context: .init(
+                                workspaceID: fixture.contextA.workspaceID,
+                                contextID: fixture.contextA.tabID
+                            )
+                        ),
+                        operationID: UUID()
+                    )
+                    XCTAssertTrue(
+                        routingOutcome.disposition == .applied || routingOutcome.disposition == .unchanged,
+                        routingOutcome.diagnostic ?? "Domain run routing was not established"
+                    )
+                    let clearResponse = try await createdEndpoint.callTool(
                         name: MCPWindowToolName.manageSelection,
                         arguments: ["op": "clear"]
                     )
+                    XCTAssertFalse(clearResponse.rawJSON.contains("\"isError\":true"), clearResponse.rawJSON)
                     let readTask = Task {
                         try await createdEndpoint.callTool(
                             name: MCPWindowToolName.readFile,
@@ -1922,7 +1954,8 @@ import XCTest
                         )
                     }
                     try await gate.waitUntilEntered(count: 1)
-                    _ = try await readTask.value
+                    let readResponse = try await readTask.value
+                    XCTAssertFalse(readResponse.rawJSON.contains("\"isError\":true"), readResponse.rawJSON)
 
                     let addTask = Task {
                         try await createdEndpoint.callTool(
@@ -1940,7 +1973,8 @@ import XCTest
                     XCTAssertTrue(waiterRegistered)
                     await gate.release()
                     server.setReadFileAutoSelectionCanonicalApplyGateForTesting(nil)
-                    _ = try await addTask.value
+                    let addResponse = try await addTask.value
+                    XCTAssertFalse(addResponse.rawJSON.contains("\"isError\":true"), addResponse.rawJSON)
 
                     let getResponse = try await createdEndpoint.callTool(
                         name: MCPWindowToolName.manageSelection,
@@ -2699,7 +2733,7 @@ import XCTest
                 await ToolAvailabilityStore.shared.toggle(MCPGlobalToolName.appSettings, enabled: true)
             }
 
-            let catalog = await ServiceRegistry.catalogSnapshot()
+            let catalog = await AppDomainRuntimeComposition.shared.catalogSnapshot()
             let isRegistered = catalog.activeScopesByToolName[MCPGlobalToolName.appSettings]?.contains(.application) == true
             let isAvailable = ToolAvailabilityStore.shared.toolSummaries.contains {
                 $0.name == MCPGlobalToolName.appSettings
@@ -2728,7 +2762,7 @@ import XCTest
         }
 
         func assertRestored(file: StaticString = #filePath, line: UInt = #line) async {
-            let catalog = await ServiceRegistry.catalogSnapshot()
+            let catalog = await AppDomainRuntimeComposition.shared.catalogSnapshot()
             let isRegistered = catalog.activeScopesByToolName[MCPGlobalToolName.appSettings]?.contains(.application) == true
             XCTAssertTrue(isRegistered, file: file, line: line)
             XCTAssertTrue(

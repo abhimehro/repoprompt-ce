@@ -1,6 +1,7 @@
 import Foundation
 import MCP
 @testable import RepoPromptApp
+import RepoPromptDomainRuntime
 import XCTest
 
 #if DEBUG
@@ -796,7 +797,7 @@ import XCTest
                     XCTAssertTrue(previewResponse.rawJSON.contains("MAP.txt"))
                     XCTAssertTrue(previewResponse.rawJSON.contains("all.patch"))
 
-                    _ = try await endpoint.callTool(
+                    let removeResponse = try await endpoint.callTool(
                         name: MCPWindowToolName.manageSelection,
                         arguments: [
                             "op": "remove",
@@ -806,6 +807,7 @@ import XCTest
                         ],
                         timeoutSeconds: 20
                     )
+                    XCTAssertFalse(removeResponse.rawJSON.contains("\"isError\":true"), removeResponse.rawJSON)
                     let removedSelection = try XCTUnwrap(
                         fixture.contextA.window.workspaceManager.composeTab(
                             with: fixture.contextA.tabID
@@ -823,6 +825,7 @@ import XCTest
                         ],
                         timeoutSeconds: 20
                     )
+                    XCTAssertFalse(readdedResponse.rawJSON.contains("\"isError\":true"), readdedResponse.rawJSON)
                     XCTAssertTrue(readdedResponse.rawJSON.contains("MAP.txt"))
                     XCTAssertTrue(readdedResponse.rawJSON.contains("all.patch"))
                     _ = try await endpoint.callTool(
@@ -1315,6 +1318,7 @@ import XCTest
                         "detach": .bool(true),
                         "timeout": .int(0)
                     ])
+                    window.mcpServer.setRequestMetadataOverrideForTesting(nil)
                     let startObject = try XCTUnwrap(startValue.objectValue)
                     let startSession = try XCTUnwrap(startObject["session"]?.objectValue)
                     let targetSessionID = try XCTUnwrap(
@@ -2169,7 +2173,8 @@ import XCTest
                             try await configureAgentModeEndpoint(
                                 endpoint,
                                 context: childContext,
-                                fixture: fixture
+                                fixture: fixture,
+                                permitImmutableRunBindingForEndpointReuse: true
                             )
                         } else {
                             let childOracleClientName = "linked-public-child-oracle"
@@ -2777,18 +2782,43 @@ import XCTest
         private func configureAgentModeEndpoint(
             _ endpoint: PersistentMCPTestEndpoint,
             context: MCPServerViewModel.TabContextSnapshot,
-            fixture: PersistentMCPTestFixture
+            fixture: PersistentMCPTestFixture,
+            permitImmutableRunBindingForEndpointReuse: Bool = false
         ) async throws {
-            _ = try await endpoint.callTool(
+            try await fixture.registerDomainWorkspace(fixture.contextA)
+            let bindResponse = try await endpoint.callTool(
                 name: "bind_context",
                 arguments: ["op": "bind", "context_id": context.tabID.uuidString]
             )
+            XCTAssertFalse(bindResponse.rawJSON.contains("\"isError\":true"), bindResponse.rawJSON)
             await fixture.networkManager.setRunPurpose(.agentModeRun, for: endpoint.connectionID)
+            let runID = try XCTUnwrap(context.runID)
             try await fixture.networkManager.debugSeedConnectionRunRouting(
                 connectionID: endpoint.connectionID,
-                runID: XCTUnwrap(context.runID),
+                runID: runID,
                 purpose: .agentModeRun,
                 windowID: context.windowID
+            )
+            let registration = try await AppDomainRuntimeComposition.shared.runtime
+                .routingCoordinator.currentRegistration(connectionID: endpoint.connectionID)
+            let workspaceID = try XCTUnwrap(context.workspaceID)
+            let routingOutcome = await AppDomainRuntimeComposition.shared.runtime.routingCoordinator.bind(
+                connection: registration,
+                binding: .runScoped(
+                    runID: runID,
+                    context: .init(workspaceID: workspaceID, contextID: context.tabID)
+                ),
+                operationID: UUID()
+            )
+            let routingEstablished = routingOutcome.disposition == .applied
+                || routingOutcome.disposition == .unchanged
+                || (
+                    permitImmutableRunBindingForEndpointReuse
+                        && routingOutcome.diagnostic == "run_scoped_binding_is_immutable"
+                )
+            XCTAssertTrue(
+                routingEstablished,
+                routingOutcome.diagnostic ?? "Domain run routing was not established"
             )
             await fixture.networkManager.debugSetAdditionalTools(
                 for: endpoint.connectionID,
@@ -2804,6 +2834,21 @@ import XCTest
                 clientName: endpoint.clientName,
                 context: context
             )
+            for _ in 0 ..< 200 {
+                let securityContext = await fixture.networkManager
+                    .debugDomainInvocationSecurityContextForTesting(
+                        connectionID: endpoint.connectionID,
+                        toolName: MCPWindowToolName.askOracle
+                    )
+                if securityContext.hasAuthoritativeRoutingContext,
+                   securityContext.workspaceID == workspaceID,
+                   !securityContext.authorizedCanonicalRoots.isEmpty
+                {
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTFail("Oracle test routing context did not become authoritative")
         }
 
         private func activateWorkspace(_ context: PersistentMCPTestContext) async throws {

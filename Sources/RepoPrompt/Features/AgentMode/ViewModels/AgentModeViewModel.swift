@@ -647,6 +647,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         private var test_activeWorkspaceIDForSessionIndexOverride: UUID?
         private var test_allowsScheduledDerivedTranscriptRefreshWithoutPromptManager = false
         private var test_persistentBindingResolutionSnapshotBuildCount = 0
+        var test_sidebarSessionRowsBuildCount = 0
         var test_sidebarListProjectionBuildCount = 0
         private var test_afterMCPStoreEpochBegan: (@MainActor () async -> Void)?
         private var test_terminalPublicationOverride: ((
@@ -2740,6 +2741,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
         sessionIndexStore.setSessionListCacheReady(false, for: owner)
         refreshSessionListCache(for: workspace, owner: owner)
+    }
+
+    func toggleComposeInspectorIfActive() {
+        guard isAgentModeActive else { return }
+        ui.contextDrawer.toggle()
     }
 
     /// Toggle whether agent mode UI is active (used to defer heavy session loads).
@@ -5252,7 +5258,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             parentSessionID: session.parentSessionID,
             failureReason: failureReason,
             worktreeBindings: session.worktreeBindings.map { AgentRunMCPSnapshot.WorktreeBinding(binding: $0) },
-            activeWorktreeMerges: session.worktreeMergeOperations.activeWorktreeMergeSummaries
+            appActiveWorktreeMerges: session.worktreeMergeOperations.activeWorktreeMergeSummaries
         )
     }
 
@@ -6791,7 +6797,17 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         session.mcpControlCleanupTask?.cancel()
         session.mcpControlActivationGeneration &+= 1
         let activationGeneration = session.mcpControlActivationGeneration
-        let registration = await AgentRunSessionStore.register(sessionID: sessionID)
+        let registration: AgentRunSessionStore.Registration
+        switch await AgentRunSessionStore.claimResumableSession(sessionID: sessionID) {
+        case let .accepted(claimed):
+            registration = claimed
+        case .unavailable, .alreadyActive:
+            registration = await AgentRunSessionStore.register(sessionID: sessionID)
+        case .shuttingDown:
+            throw MCPError.internalError(
+                "The Agent session runtime is shutting down and cannot activate a control session."
+            )
+        }
         guard sessions[tabID] === session,
               session.activeAgentSessionID == sessionID,
               !session.bindingTransitionInProgress,
@@ -6826,6 +6842,23 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             autoEditEnabledBeforeOverride: priorAutoEditEnabled,
             taskLabelKind: taskLabelKind
         )
+        let cancellationInstalled = await AgentRunSessionStore.installCancellationHandler(
+            registration: registration
+        ) { [weak self] in
+            await self?.mcpCancelControlRunIfCurrent(
+                tabID: tabID,
+                sessionID: sessionID,
+                activationID: activationID,
+                registration: registration
+            )
+        }
+        guard cancellationInstalled else {
+            session.mcpControlContext = nil
+            await AgentRunSessionStore.cleanup(registration: registration)
+            throw MCPError.internalError(
+                "The Agent session runtime stopped before its cancellation handler could be installed."
+            )
+        }
         session.mcpFollowUpRunPending = startPending
         mcpControlledTabIDs.insert(tabID)
         if markSessionAsMCPOriginated {
@@ -6922,6 +6955,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 updateGlobalDefault: false
             )
         }
+        await AgentRunSessionStore.removeCancellationHandler(
+            registration: context.registration
+        )
         session.mcpControlContext = nil
         mcpControlledTabIDs.remove(session.tabID)
         if cleanupSessionStore {
@@ -6933,6 +6969,30 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             updateBindingsFromSession(session)
             refreshAutoEditPermissionGuidanceForActiveSession()
         }
+    }
+
+    private func mcpCancelControlRunIfCurrent(
+        tabID: UUID,
+        sessionID: UUID,
+        activationID: UUID,
+        registration: AgentRunSessionStore.Registration
+    ) async {
+        guard let session = sessions[tabID],
+              session.activeAgentSessionID == sessionID,
+              let context = session.mcpControlContext,
+              context.sessionID == sessionID,
+              context.activationID == activationID,
+              context.registration == registration
+        else {
+            return
+        }
+        cancelPendingInstruction(for: session)
+        await runService.cancelRun(
+            tabID: tabID,
+            session: session,
+            intent: .runtimeShutdown,
+            completion: .terminalTeardownCompleted
+        )
     }
 
     @discardableResult
@@ -15379,6 +15439,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         return .answered(answer?.answers.joined(separator: "\n") ?? "", elapsedSeconds: response.elapsedSeconds)
     }
 
+    func canPresentAskUserInteraction(tabID: UUID) -> Bool {
+        sessions[tabID] != nil
+    }
+
     func askUserInteraction(
         tabID: UUID,
         interaction: AgentAskUserInteraction
@@ -15402,14 +15466,27 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         reconcileInteractiveRunState(session)
         updateBindingsFromSession(session)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            session.askUserContinuation = continuation
-            schedulePendingAskUserTimeout(
-                for: session,
-                interactionID: interaction.id,
-                timeoutSeconds: interaction.timeoutSeconds,
-                startedAt: interaction.askedAt
-            )
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    session.pendingAskUser = nil
+                    reconcileInteractiveRunState(session)
+                    updateBindingsFromSession(session)
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                session.askUserContinuation = continuation
+                schedulePendingAskUserTimeout(
+                    for: session,
+                    interactionID: interaction.id,
+                    timeoutSeconds: interaction.timeoutSeconds,
+                    startedAt: interaction.askedAt
+                )
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelAskUserInteraction(tabID: tabID, interactionID: interaction.id)
+            }
         }
     }
 
@@ -15525,6 +15602,21 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             pending.timeoutStartedAt = nil
             session.pendingAskUser = pending
         }
+    }
+
+    @discardableResult
+    func cancelAskUserInteraction(tabID: UUID, interactionID: UUID) -> Bool {
+        guard let session = sessions[tabID],
+              session.pendingAskUser?.interaction.id == interactionID,
+              let continuation = session.askUserContinuation
+        else { return false }
+        invalidatePendingAskUserTimeout(for: session)
+        session.pendingAskUser = nil
+        session.askUserContinuation = nil
+        reconcileInteractiveRunState(session)
+        updateBindingsFromSession(session)
+        continuation.resume(throwing: CancellationError())
+        return true
     }
 
     func submitAskUserResponse(tabID: UUID, interactionID: UUID) {

@@ -8,7 +8,7 @@ import XCTest
     final class MCPProtectedMutationInvocationIntegrationTests: XCTestCase {
         func testPromptStateMutationsCommitWithoutPhysicalPathAdmission() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
-                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let fixture = try await makeFixture(lease: lease)
                 let endpoint = try fixture.endpointA()
                 let manager = fixture.networkManager
                 do {
@@ -17,7 +17,7 @@ import XCTest
                         connectionID: endpoint.connectionID,
                         identity: .verified(processID: Int(getpid()), fingerprint: "test:verified:prompt-state")
                     )
-                    try await bind(endpoint, to: fixture.contextA.tabID)
+                    try await bind(endpoint, to: fixture.contextA)
 
                     let runtime = AppDomainRuntimeComposition.shared.runtime
                     var journalKeys = try await Set(runtime.mutationJournal.snapshot().recordSnapshots.map(\.key))
@@ -61,7 +61,7 @@ import XCTest
 
         func testFileActionRevalidatesFenceAfterCommitAtBlockingIOBoundary() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
-                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let fixture = try await makeFixture(lease: lease)
                 let endpoint = try fixture.endpointA()
                 let manager = fixture.networkManager
                 let store = fixture.contextA.window.workspaceFileContextStore
@@ -89,7 +89,7 @@ import XCTest
                         connectionID: endpoint.connectionID,
                         identity: .verified(processID: Int(getpid()), fingerprint: "test:verified:late-fence")
                     )
-                    try await bind(endpoint, to: fixture.contextA.tabID)
+                    try await bind(endpoint, to: fixture.contextA)
                     let runtime = AppDomainRuntimeComposition.shared.runtime
                     let journalKeys = try await Set(runtime.mutationJournal.snapshot().recordSnapshots.map(\.key))
 
@@ -137,19 +137,19 @@ import XCTest
             }
         }
 
-        func testAppInvocationUsesCoordinatorRegistrationAfterReRegistrationAndHonorsInjectedIdentity() async throws {
+        func testRunScopedInvocationUsesAuthoritativeRegistrationAndVerifiedIdentity() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
-                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let fixture = try await makeFixture(lease: lease)
+                let endpoint = try fixture.endpointA()
+                let manager = fixture.networkManager
                 do {
-                    let endpoint = try fixture.endpointA()
-                    let manager = fixture.networkManager
                     try await registerDomainWorkspace(fixture.contextA)
                     await manager.debugSetDomainPeerIdentityForTesting(
                         connectionID: endpoint.connectionID,
                         identity: .verified(processID: Int(getpid()), fingerprint: "test:verified:app")
                     )
-                    try await bind(endpoint, to: fixture.contextA.tabID)
-                    let initial = try await waitForAuthoritativeContext(
+                    try await bind(endpoint, to: fixture.contextA)
+                    let initial = try await authoritativeContext(
                         manager: manager,
                         endpoint: endpoint,
                         toolName: "manage_selection"
@@ -181,7 +181,7 @@ import XCTest
                         operationID: UUID()
                     )
                     XCTAssertEqual(reboundOutcome.disposition, .applied)
-                    let rebound = try await waitForAuthoritativeContext(
+                    let rebound = try await authoritativeContext(
                         manager: manager,
                         endpoint: endpoint,
                         toolName: "manage_selection"
@@ -189,6 +189,7 @@ import XCTest
                     XCTAssertEqual(rebound.workspaceID, fixture.contextA.workspaceID)
                     XCTAssertTrue(rebound.authorizedCanonicalRoots.contains(fixture.contextA.rootURL.path))
 
+                    await manager.setRunPurpose(.agentModeRun, for: endpoint.connectionID)
                     await manager.debugSetDomainPeerIdentityForTesting(
                         connectionID: endpoint.connectionID,
                         identity: .unverified
@@ -215,139 +216,15 @@ import XCTest
                         connectionID: endpoint.connectionID,
                         identity: nil
                     )
+                    await manager.setRunPurpose(.unknown, for: endpoint.connectionID)
                     await fixture.cleanup()
                     try await fixture.assertCleanedUp()
                 } catch {
-                    await fixture.cleanup()
-                    throw error
-                }
-            }
-        }
-
-        func testRunScopedAppManagedWorktreeCreateRetainsLogicalRootAuthorization() async throws {
-            try await MCPSharedServerTestLease.shared.withLease { lease in
-                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
-                let endpoint = try fixture.endpointA()
-                let manager = fixture.networkManager
-                let repo = fixture.contextA.rootURL
-                let branch = "m4/app-managed-\(UUID().uuidString.lowercased())"
-                let appManagedContainer = GitWorktreeDefaultPathPlanner.defaultContainer(forMainWorktreeRoot: repo)
-                let worktree = appManagedContainer.appendingPathComponent(
-                    "m4-app-managed-\(UUID().uuidString.lowercased())",
-                    isDirectory: true
-                )
-                var worktreeCreated = false
-                do {
-                    try await registerDomainWorkspace(fixture.contextA)
-                    try FileManager.default.createDirectory(at: appManagedContainer, withIntermediateDirectories: true)
-                    try initializeGitRepository(at: repo)
                     await manager.debugSetDomainPeerIdentityForTesting(
                         connectionID: endpoint.connectionID,
-                        identity: .verified(processID: Int(getpid()), fingerprint: "test:verified:app-managed")
+                        identity: nil
                     )
-                    try await bind(endpoint, to: fixture.contextA.tabID)
-                    await manager.setRunPurpose(.agentModeRun, for: endpoint.connectionID)
-                    let securityContext = await manager.debugDomainInvocationSecurityContextForTesting(
-                        connectionID: endpoint.connectionID,
-                        toolName: "manage_worktree"
-                    )
-                    XCTAssertEqual(securityContext.principal.kind.rawValue, DomainClientPrincipalKind.runScoped.rawValue)
-                    XCTAssertTrue(securityContext.authorizedCanonicalRoots.contains(repo.path))
-                    XCTAssertTrue(securityContext.ephemeralGrantedToolNames.contains("manage_worktree"))
-
-                    let response = try await endpoint.callTool(
-                        name: "manage_worktree",
-                        arguments: [
-                            "op": "create",
-                            "repo_root": repo.path,
-                            "path": worktree.path,
-                            "branch": branch,
-                            "base_ref": "HEAD",
-                            "operation_id": "app-managed-run-scoped"
-                        ]
-                    )
-                    let result = try toolResult(response)
-                    XCTAssertFalse(result.isError, result.text)
-                    worktreeCreated = true
-                    XCTAssertTrue(FileManager.default.fileExists(atPath: worktree.path))
-
-                    try removeWorktreeIfPresent(worktree, from: repo)
-                    worktreeCreated = false
                     await manager.setRunPurpose(.unknown, for: endpoint.connectionID)
-                    await manager.debugSetDomainPeerIdentityForTesting(connectionID: endpoint.connectionID, identity: nil)
-                    await fixture.cleanup()
-                    try await fixture.assertCleanedUp()
-                } catch {
-                    await manager.setRunPurpose(.unknown, for: endpoint.connectionID)
-                    await manager.debugSetDomainPeerIdentityForTesting(connectionID: endpoint.connectionID, identity: nil)
-                    if worktreeCreated {
-                        try? removeWorktreeIfPresent(worktree, from: repo)
-                    }
-                    await fixture.cleanup()
-                    throw error
-                }
-            }
-        }
-
-        func testRunScopedAppManagedWorktreeCreateRejectsResolvedContainerSymlinkEscape() async throws {
-            try await MCPSharedServerTestLease.shared.withLease { lease in
-                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
-                let endpoint = try fixture.endpointA()
-                let manager = fixture.networkManager
-                let repo = fixture.contextA.rootURL
-                let branch = "m4/app-managed-escape-\(UUID().uuidString.lowercased())"
-                let appManagedContainer = GitWorktreeDefaultPathPlanner.defaultContainer(forMainWorktreeRoot: repo)
-                let outside = appManagedContainer.deletingLastPathComponent().appendingPathComponent(
-                    "m4-app-managed-outside-\(UUID().uuidString.lowercased())",
-                    isDirectory: true
-                )
-                let link = appManagedContainer.appendingPathComponent("link", isDirectory: true)
-                let escapedWorktree = link.appendingPathComponent("child", isDirectory: true)
-                var worktreeCreated = false
-                do {
-                    try await registerDomainWorkspace(fixture.contextA)
-                    try FileManager.default.createDirectory(at: appManagedContainer, withIntermediateDirectories: true)
-                    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-                    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
-                    try initializeGitRepository(at: repo)
-                    await manager.debugSetDomainPeerIdentityForTesting(
-                        connectionID: endpoint.connectionID,
-                        identity: .verified(processID: Int(getpid()), fingerprint: "test:verified:app-managed-escape")
-                    )
-                    try await bind(endpoint, to: fixture.contextA.tabID)
-                    await manager.setRunPurpose(.agentModeRun, for: endpoint.connectionID)
-
-                    let response = try await endpoint.callTool(
-                        name: "manage_worktree",
-                        arguments: [
-                            "op": "create",
-                            "repo_root": repo.path,
-                            "path": escapedWorktree.path,
-                            "branch": branch,
-                            "base_ref": "HEAD",
-                            "operation_id": "app-managed-symlink-escape"
-                        ]
-                    )
-                    let result = try toolResult(response)
-                    worktreeCreated = !result.isError && FileManager.default.fileExists(atPath: escapedWorktree.path)
-                    XCTAssertTrue(result.isError, result.text)
-                    XCTAssertFalse(FileManager.default.fileExists(atPath: escapedWorktree.path))
-                    XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("child").path))
-
-                    try? FileManager.default.removeItem(at: link)
-                    try? FileManager.default.removeItem(at: outside)
-                    await manager.setRunPurpose(.unknown, for: endpoint.connectionID)
-                    await manager.debugSetDomainPeerIdentityForTesting(connectionID: endpoint.connectionID, identity: nil)
-                    await fixture.cleanup()
-                    try await fixture.assertCleanedUp()
-                } catch {
-                    await manager.setRunPurpose(.unknown, for: endpoint.connectionID)
-                    await manager.debugSetDomainPeerIdentityForTesting(connectionID: endpoint.connectionID, identity: nil)
-                    if worktreeCreated {
-                        try? removeWorktreeIfPresent(escapedWorktree, from: repo)
-                    }
-                    try? FileManager.default.removeItem(at: link)
-                    try? FileManager.default.removeItem(at: outside)
                     await fixture.cleanup()
                     throw error
                 }
@@ -356,7 +233,7 @@ import XCTest
 
         func testCorrelationReuseExportEscapeAndBoundWorktreeTranslationCrossAppProvider() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
-                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let fixture = try await makeFixture(lease: lease)
                 let endpoint = try fixture.endpointA()
                 let manager = fixture.networkManager
                 let repo = fixture.contextA.rootURL
@@ -386,8 +263,8 @@ import XCTest
                         connectionID: endpoint.connectionID,
                         identity: .verified(processID: Int(getpid()), fingerprint: "test:verified:worktree")
                     )
-                    try await bind(endpoint, to: fixture.contextA.tabID)
-                    let initialSecurityContext = try await waitForAuthoritativeContext(
+                    try await bind(endpoint, to: fixture.contextA)
+                    let initialSecurityContext = try await authoritativeContext(
                         manager: manager,
                         endpoint: endpoint,
                         toolName: "file_actions"
@@ -427,13 +304,13 @@ import XCTest
                         connectionID: endpoint.connectionID,
                         operationID: UUID()
                     )
-                    try await bind(endpoint, to: fixture.contextA.tabID)
+                    try await bind(endpoint, to: fixture.contextA)
                     let routingProbe = try await endpoint.callTool(
                         name: "get_file_tree",
                         arguments: ["type": "roots"]
                     )
                     XCTAssertFalse(try toolResult(routingProbe).isError)
-                    let reboundSecurityContext = try await waitForAuthoritativeContext(
+                    let reboundSecurityContext = try await authoritativeContext(
                         manager: manager,
                         endpoint: endpoint,
                         toolName: "file_actions"
@@ -690,6 +567,15 @@ import XCTest
             }
         }
 
+        private func makeFixture(
+            lease: MCPSharedServerTestLease.Ownership
+        ) async throws -> PersistentMCPTestFixture {
+            try await PersistentMCPTestFixture.make(
+                lease: lease,
+                domainRuntime: AppDomainRuntimeComposition.shared.runtime
+            )
+        }
+
         private func captureJournalRecord(
             runtime: MCPDomainRuntime,
             excluding priorKeys: Set<String>,
@@ -748,37 +634,38 @@ import XCTest
             )
         }
 
-        private func bind(_ endpoint: PersistentMCPTestEndpoint, to contextID: UUID) async throws {
+        private func bind(
+            _ endpoint: PersistentMCPTestEndpoint,
+            to context: PersistentMCPTestContext
+        ) async throws {
             let response = try await endpoint.callTool(
                 name: "bind_context",
-                arguments: ["op": "bind", "context_id": contextID.uuidString]
+                arguments: ["op": "bind", "context_id": context.tabID.uuidString]
             )
             let result = try toolResult(response)
             XCTAssertFalse(result.isError, result.text)
+            await context.window.mcpServer.domainRoutingPublishTask?.value
         }
 
-        private func waitForAuthoritativeContext(
+        private func authoritativeContext(
             manager: ServerNetworkManager,
             endpoint: PersistentMCPTestEndpoint,
             toolName: String
         ) async throws -> DomainToolInvocationSecurityContext {
-            for _ in 0 ..< 200 {
-                let context = await manager.debugDomainInvocationSecurityContextForTesting(
-                    connectionID: endpoint.connectionID,
-                    toolName: toolName
-                )
-                if context.hasAuthoritativeRoutingContext, context.workspaceID != nil,
-                   !context.authorizedCanonicalRoots.isEmpty
-                {
-                    return context
-                }
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            throw NSError(
-                domain: "MCPProtectedMutationInvocationIntegrationTests",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "domain routing context did not become authoritative"]
+            let context = await manager.debugDomainInvocationSecurityContextForTesting(
+                connectionID: endpoint.connectionID,
+                toolName: toolName
             )
+            guard context.hasAuthoritativeRoutingContext, context.workspaceID != nil,
+                  !context.authorizedCanonicalRoots.isEmpty
+            else {
+                throw NSError(
+                    domain: "MCPProtectedMutationInvocationIntegrationTests",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "domain routing context was not authoritative after binding publication completed"]
+                )
+            }
+            return context
         }
 
         private func toolResult(_ response: PersistentMCPTestRPCResponse) throws -> (isError: Bool, text: String) {

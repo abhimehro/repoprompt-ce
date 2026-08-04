@@ -9,6 +9,7 @@
 import Foundation
 import Logging
 import MCP
+import RepoPromptDomainRuntime
 import RepoPromptShared
 
 // MARK: - Bundle helpers
@@ -80,6 +81,7 @@ actor BootstrapSocketConnectionManager: MCPServerConnection {
     private var state: ConnectionStateSnapshot = .connecting
     private var isClosing = false
     private var handshakeComplete = false
+    private var clientCapabilities: MCP.Client.Capabilities?
     private var startupFailureTransportSnapshot: MCPTransportCloseSnapshot?
 
     init(
@@ -159,10 +161,11 @@ actor BootstrapSocketConnectionManager: MCPServerConnection {
             await registerHandlers()
 
             mcpConnectionLog("BootstrapSocketConnectionManager: starting MCP server...")
-            try await server.start(transport: transport) { [weak self] clientInfo, _ in
+            try await server.start(transport: transport) { [weak self] clientInfo, capabilities in
                 mcpConnectionLog("BootstrapSocketConnectionManager: received client info: \(clientInfo.name)")
                 guard let self else { throw MCPError.connectionClosed }
 
+                await recordClientCapabilities(capabilities)
                 let approved = await approvalHandler(clientInfo)
                 if !approved {
                     throw MCPError.connectionClosed
@@ -186,6 +189,37 @@ actor BootstrapSocketConnectionManager: MCPServerConnection {
 
     func startupFailureTransportCloseSnapshot() -> MCPTransportCloseSnapshot? {
         startupFailureTransportSnapshot
+    }
+
+    func supportsFormElicitation() -> Bool {
+        clientCapabilities?.elicitation?.form != nil
+    }
+
+    func requestFormElicitation(
+        message: String,
+        requestedSchema: Elicitation.RequestSchema
+    ) async throws -> CreateElicitation.Result {
+        guard supportsFormElicitation(), !isClosing else {
+            throw MCPError.invalidRequest("Client did not negotiate form elicitation")
+        }
+        return try await server.requestElicitation(
+            message: message,
+            requestedSchema: requestedSchema,
+            mode: .form
+        )
+    }
+
+    func cancelFormElicitation() async {
+        guard !isClosing else { return }
+        await parentManager.terminateConnection(
+            connectionID,
+            reason: .runCancelled,
+            message: "The pending elicitation was cancelled."
+        )
+    }
+
+    private func recordClientCapabilities(_ capabilities: MCP.Client.Capabilities) {
+        clientCapabilities = capabilities
     }
 
     #if DEBUG
