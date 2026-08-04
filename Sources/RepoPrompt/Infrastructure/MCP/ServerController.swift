@@ -536,7 +536,6 @@ final actor ServerController: ObservableObject {
         }
     }
 
-
     // MARK: – helpers ––––––––––––––––––––––––––––––––––––––––––––––––––
 
     nonisolated static func runningStatus(for outcome: ServerNetworkManager.StartOutcome) -> String? {
