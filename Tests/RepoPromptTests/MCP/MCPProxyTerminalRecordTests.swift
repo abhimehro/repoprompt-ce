@@ -206,4 +206,39 @@ final class MCPProxyTerminalRecordTests: XCTestCase {
         XCTAssertEqual(record.bridgeHasForwardedProtocolFrame, snapshot.hasForwardedProtocolFrame)
         XCTAssertEqual(record.errorDescription, "Run completed")
     }
+
+    func testValidateCLIHostInputPollResult() {
+        // Valid results
+        XCTAssertNoThrow(try validateCLIHostInputPollResult(0, errno: 0))
+        XCTAssertNoThrow(try validateCLIHostInputPollResult(1, errno: 0))
+
+        // EINTR is ignored
+        XCTAssertNoThrow(try validateCLIHostInputPollResult(-1, errno: EINTR))
+
+        // Other errnos throw
+        XCTAssertThrowsError(try validateCLIHostInputPollResult(-1, errno: EBADF)) { error in
+            guard case let CLIRuntimeError.hostDisconnected(.stdinPollFailed(errno)) = error else {
+                return XCTFail("Expected stdinPollFailed error")
+            }
+            XCTAssertEqual(errno, EBADF)
+        }
+    }
+
+    func testValidateCLIHostInputReadResult() {
+        // Valid results
+        XCTAssertNoThrow(try validateCLIHostInputReadResult(0, errno: 0))
+        XCTAssertNoThrow(try validateCLIHostInputReadResult(10, errno: 0))
+
+        // EAGAIN and EINTR are ignored
+        XCTAssertNoThrow(try validateCLIHostInputReadResult(-1, errno: EAGAIN))
+        XCTAssertNoThrow(try validateCLIHostInputReadResult(-1, errno: EINTR))
+
+        // Other errnos throw
+        XCTAssertThrowsError(try validateCLIHostInputReadResult(-1, errno: EIO)) { error in
+            guard case let CLIRuntimeError.hostDisconnected(.stdinReadFailed(errno)) = error else {
+                return XCTFail("Expected stdinReadFailed error")
+            }
+            XCTAssertEqual(errno, EIO)
+        }
+    }
 }
