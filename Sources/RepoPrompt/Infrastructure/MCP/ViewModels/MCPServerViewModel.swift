@@ -12,6 +12,7 @@ import JSONSchema
 import Logging
 import MCP
 import Ontology
+import RepoPromptDomainRuntime
 import RepoPromptShared
 
 enum ReadFileAutoSelectionCoverageCertificateMissReason: String, CaseIterable, Hashable {
@@ -416,17 +417,17 @@ final class MCPServerViewModel: ObservableObject {
     // ---------------------------------------------------------------------
     let windowID: Int
     private(set) var service: MCPService
-    private let logger = Logger(label: "com.repoprompt.mcp")
+    let logger = Logger(label: "com.repoprompt.mcp")
 
     #if DEBUG
         private var oracleChatSendOverrideForTesting: MCPOracleToolService.SendChat?
         var requestMetadataOverrideForTesting: RequestMetadata?
         var agentRunDispatchOverrideForTesting: AgentExternalMCPRunStarter.DispatchInstruction?
-        private var contextBuilderFollowUpOverrideForTesting: MCPWindowToolDependencies.RunMCPPlanOrQuestion?
+        private var contextBuilderFollowUpOverrideForTesting: MCPAppPhysicalCapabilityAdapters.RunMCPPlanOrQuestion?
         private var contextBuilderBeforeFinalReviewAuthorizationForTesting:
-            MCPWindowToolDependencies.BeforeContextBuilderFinalReviewAuthorization?
+            MCPAppPhysicalCapabilityAdapters.BeforeContextBuilderFinalReviewAuthorization?
         private var contextBuilderDidFinalizeReviewForTesting:
-            MCPWindowToolDependencies.DidFinalizeContextBuilderReview?
+            MCPAppPhysicalCapabilityAdapters.DidFinalizeContextBuilderReview?
         private var contextBuilderSelectionReplyObserverForTesting: ((
             StoredSelection,
             WorkspaceLookupContext?,
@@ -475,14 +476,14 @@ final class MCPServerViewModel: ObservableObject {
         }
 
         func setContextBuilderFollowUpOverrideForTesting(
-            _ override: MCPWindowToolDependencies.RunMCPPlanOrQuestion?
+            _ override: MCPAppPhysicalCapabilityAdapters.RunMCPPlanOrQuestion?
         ) {
             contextBuilderFollowUpOverrideForTesting = override
         }
 
         func setContextBuilderFinalReviewAuthorizationHooksForTesting(
-            before: MCPWindowToolDependencies.BeforeContextBuilderFinalReviewAuthorization?,
-            after: MCPWindowToolDependencies.DidFinalizeContextBuilderReview?
+            before: MCPAppPhysicalCapabilityAdapters.BeforeContextBuilderFinalReviewAuthorization?,
+            after: MCPAppPhysicalCapabilityAdapters.DidFinalizeContextBuilderReview?
         ) {
             contextBuilderBeforeFinalReviewAuthorizationForTesting = before
             contextBuilderDidFinalizeReviewForTesting = after
@@ -506,8 +507,7 @@ final class MCPServerViewModel: ObservableObject {
             resolveTabContextSnapshot: { [self] metadata in
                 try resolveTabContextSnapshot(
                     from: metadata,
-                    toolName: MCPWindowToolName.oracleSend,
-                    policy: .allowLegacyImplicitRouting
+                    toolName: MCPWindowToolName.oracleSend
                 )
             },
             requireCurrentTabContext: { [self] toolName in try await requireCurrentTabContext(toolName: toolName) },
@@ -1021,28 +1021,33 @@ final class MCPServerViewModel: ObservableObject {
     /// This keeps disconnect cleanup from cancelling a newer same-name tool owned by another connection.
     @MainActor
     private var activeToolConnectionID: UUID? = nil
-    /// Whether this window's tools are enabled
-    @Published var windowToolsEnabled: Bool = false {
+    /// Whether this window's tools are registered and available for routing.
+    /// The value becomes true only after domain registration succeeds.
+    @Published private(set) var windowToolsEnabled: Bool = false {
         didSet {
             updateDashboardSubscriptionIfNeeded()
             recomputeCloseSafetyState()
-            #if DEBUG || EDIT_FLOW_PERF
-                Task {
-                    let registrationUpdateWindowToolsEnabledDidSetState = EditFlowPerf.begin(EditFlowPerf.Stage.MCPWindowToolCatalog.registrationUpdateWindowToolsEnabledDidSet)
-                    defer { EditFlowPerf.end(EditFlowPerf.Stage.MCPWindowToolCatalog.registrationUpdateWindowToolsEnabledDidSet, registrationUpdateWindowToolsEnabledDidSetState) }
-                    await updateToolRegistration()
-                }
-            #else
-                Task { await updateToolRegistration() }
-            #endif
         }
     }
+
+    @Published private(set) var windowToolRegistrationFailureDescription: String?
+    private var windowToolsRequested = false
+    var windowToolsAreRequested: Bool {
+        windowToolsRequested
+    }
+
+    private var toolRegistrationIntentGeneration: UInt64 = 0
+    private var windowToolTransitionTail: Task<Bool, Never>?
+    private var activeWindowToolRegistrationHandle: MCPDomainToolRegistrationHandle?
+    #if DEBUG
+        private var afterWindowToolRegistrationBeforeRetentionForTesting: (@MainActor @Sendable () async -> Void)?
+    #endif
 
     /// Controls whether the approval overlay is visible
     @Published var isApprovalOverlayVisible: Bool = false
 
     @MainActor
-    private lazy var windowToolRuntime = MCPWindowToolRuntime(windowID: windowID) { [weak self] name, freshnessPolicy, args, implementation in
+    private lazy var windowToolRuntime = MCPAppToolBinder(windowID: windowID) { [weak self] name, freshnessPolicy, args, implementation in
         guard let self else {
             throw MCPError.internalError("Window deallocated while executing \(name)")
         }
@@ -1050,12 +1055,12 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else {
                 throw MCPError.internalError("Window deallocated during \(name)")
             }
-            return try await implementation(MCPWindowToolContext(toolName: name, windowID: windowID), args)
+            return try await implementation(MCPAppToolInvocation(toolName: name, windowID: windowID), args)
         }
     }
 
     @MainActor
-    private lazy var windowToolDependencies = MCPWindowToolDependencies(
+    private lazy var windowToolExecutionCapabilities = MCPAppPhysicalCapabilityAdapters.Execution(
         executeOracleUtils: { [weak self] args in
             guard let self else { throw MCPError.internalError("Window deallocated while executing oracle_utils") }
             return try await oracleToolService.executeOracleUtils(args: args)
@@ -1063,7 +1068,7 @@ final class MCPServerViewModel: ObservableObject {
         executeAskOracle: { [weak self] args in
             guard let self else { throw MCPError.internalError("Window deallocated while executing ask_oracle") }
             let metadata = await captureRequestMetadata()
-            guard await drainReadFileAutoSelection(
+            guard try await drainReadFileAutoSelection(
                 metadata: metadata,
                 requirement: .mirroredSelectionAndMetrics
             ) == .completed else { throw CancellationError() }
@@ -1072,7 +1077,7 @@ final class MCPServerViewModel: ObservableObject {
         executeOracleSend: { [weak self] args in
             guard let self else { throw MCPError.internalError("Window deallocated while executing oracle_send") }
             let metadata = await captureRequestMetadata()
-            guard await drainReadFileAutoSelection(
+            guard try await drainReadFileAutoSelection(
                 metadata: metadata,
                 requirement: .mirroredSelectionAndMetrics
             ) == .completed else { throw CancellationError() }
@@ -1123,7 +1128,7 @@ final class MCPServerViewModel: ObservableObject {
                 targetWindow: targetWindow,
                 connectionID: connectionID
             )
-            return MCPWindowToolDependencies.ContextBuilderTabResolution(
+            return MCPAppPhysicalCapabilityAdapters.ContextBuilderTabResolution(
                 identity: resolution.identity,
                 nestedTabContext: resolution.nestedTabContext,
                 agentModeSessionID: resolution.agentModeSessionID,
@@ -1231,7 +1236,11 @@ final class MCPServerViewModel: ObservableObject {
                 progressReporter: progressReporter,
                 activityReporter: activityReporter
             )
-        },
+        }
+    )
+
+    @MainActor
+    private lazy var windowToolContextCapabilities = MCPAppPhysicalCapabilityAdapters.Context(
         windowID: windowID,
         promptVM: promptVM,
         workspaceManager: workspaceManager,
@@ -1253,12 +1262,11 @@ final class MCPServerViewModel: ObservableObject {
             }
             try await validateContextBuilderGitArtifactSelection(metadata: metadata, target: target)
         },
-        resolveTabContextSnapshot: { [weak self] metadata, toolName, policy in
+        resolveTabContextSnapshot: { [weak self] metadata, toolName in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving tab context") }
             return try resolveTabContextSnapshot(
                 from: metadata,
-                toolName: toolName,
-                policy: policy
+                toolName: toolName
             )
         },
         updateCurrentTabContext: { [weak self] toolName, mutation in
@@ -1304,29 +1312,39 @@ final class MCPServerViewModel: ObservableObject {
         logDebug: { message in
             mcpServerViewModelDebugLog(message)
         },
-        commitPrimaryGitDiffArtifactsToCurrentTab: { [weak self] toolName, candidates, sourceSelection in
+        commitPrimaryGitDiffArtifactsToCurrentTab: { [weak self] toolName, candidates, sourceSelection, capturedContext in
             guard let self else {
                 throw MCPError.internalError("Window deallocated while committing Git artifacts")
             }
             return try await commitPrimaryGitArtifactsToCurrentTab(
                 toolName: toolName,
                 candidates: candidates,
-                sourceSelection: sourceSelection
+                sourceSelection: sourceSelection,
+                capturedContext: capturedContext
             )
         },
-        replaceAdvertisedGitArtifactsForCurrentTab: { [weak self] toolName, artifacts in
+        replaceAdvertisedGitArtifactsForCurrentTab: { [weak self] toolName, artifacts, expectedSelectionRevision, capturedContext in
             guard let self else {
                 throw MCPError.internalError("Window deallocated while registering Git artifact aliases")
             }
             return try await replaceAdvertisedGitArtifactsForCurrentTab(
                 toolName: toolName,
-                artifacts: artifacts
+                artifacts: artifacts,
+                expectedSelectionRevision: expectedSelectionRevision,
+                capturedContext: capturedContext
             )
         },
-        invalidateAdvertisedGitArtifactsForCurrentTab: { [weak self] toolName in
+        invalidateAdvertisedGitArtifactsForCurrentTab: { [weak self] toolName, capturedContext in
             guard let self else { return }
-            await invalidateAdvertisedGitArtifactsForCurrentTab(toolName: toolName)
-        },
+            await invalidateAdvertisedGitArtifactsForCurrentTab(
+                toolName: toolName,
+                capturedContext: capturedContext
+            )
+        }
+    )
+
+    @MainActor
+    private lazy var windowToolSelectionCapabilities = MCPAppPhysicalCapabilityAdapters.Selection(
         workspaceSearch: workspaceSearch,
         parseManageSelectionInputs: { [weak self] rawPaths, slicesValue in
             guard let self else {
@@ -1456,11 +1474,19 @@ final class MCPServerViewModel: ObservableObject {
             return await removeStoredSelectionPaths(existing: existing, paths: paths, rawPaths: rawPaths, mode: mode, lookupRootScope: lookupRootScope)
         },
         promoteStoredSelectionPaths: { [weak self] existing, paths, rawPaths, strict, lookupRootScope in
-            guard let self else { return (existing, [], false) }
+            guard let self else { return (existing, [], false, 0) }
             return await promoteStoredSelectionPaths(existing: existing, paths: paths, rawPaths: rawPaths, strict: strict, lookupRootScope: lookupRootScope)
         },
         demoteStoredSelectionPaths: { [weak self] existing, paths, rawPaths, strict, lookupRootScope in
-            guard let self else { return MCPServerViewModel.DemoteStoredSelectionResult(selection: existing, invalidPaths: [], codemapUnavailable: [], mutated: false) }
+            guard let self else {
+                return MCPServerViewModel.DemoteStoredSelectionResult(
+                    selection: existing,
+                    invalidPaths: [],
+                    codemapUnavailable: [],
+                    mutated: false,
+                    validCandidateCount: 0
+                )
+            }
             return await demoteStoredSelectionPaths(existing: existing, paths: paths, rawPaths: rawPaths, strict: strict, lookupRootScope: lookupRootScope)
         },
         computeSelectionSlicesVirtual: { [weak self] base, entries, mode, lookupRootScope in
@@ -1476,7 +1502,11 @@ final class MCPServerViewModel: ObservableObject {
         makeSelectionHintError: { [weak self] paths, operation, lookupContext in
             guard let self else { return "Window deallocated while resolving selection inputs." }
             return await makeSelectionHintError(paths: paths, operation: operation, lookupContext: lookupContext)
-        },
+        }
+    )
+
+    @MainActor
+    private lazy var windowToolFileCapabilities = MCPAppPhysicalCapabilityAdapters.Files(
         performFileAction: { [weak self] action, path, content, newPath, ifExists, operationID in
             guard let self else { throw MCPError.internalError("Window deallocated while performing file action") }
             return try await performFileAction(action: action, path: path, content: content, newPath: newPath, ifExists: ifExists, operationID: operationID)
@@ -1519,8 +1549,8 @@ final class MCPServerViewModel: ObservableObject {
             return try await readFile(path: path, startLine1Based: startLine1Based, lineCount: lineCount, lookupRootScope: lookupRootScope)
         },
         enqueueReadFileAutoSelection: { [weak self] reply, requestedPath, resolvedPhysicalPath, metadata in
-            guard let self else { return }
-            await enqueueReadFileAutoSelection(
+            guard let self else { throw MCPError.internalError("Window deallocated while enqueuing read_file auto-selection") }
+            try await enqueueReadFileAutoSelection(
                 reply: reply,
                 requestedPath: requestedPath,
                 resolvedPhysicalPath: resolvedPhysicalPath,
@@ -1528,12 +1558,12 @@ final class MCPServerViewModel: ObservableObject {
             )
         },
         drainReadFileAutoSelection: { [weak self] metadata, requirement in
-            guard let self else { return .cancelled }
-            return await drainReadFileAutoSelection(metadata: metadata, requirement: requirement)
+            guard let self else { throw MCPError.internalError("Window deallocated while draining read_file auto-selection") }
+            return try await drainReadFileAutoSelection(metadata: metadata, requirement: requirement)
         },
         enqueueFileSearchAutoSelection: { [weak self] mode, contextLines, reply, resolvedPhysicalPaths, metadata in
-            guard let self else { return }
-            await enqueueFileSearchAutoSelection(
+            guard let self else { throw MCPError.internalError("Window deallocated while enqueuing file_search auto-selection") }
+            try await enqueueFileSearchAutoSelection(
                 mode: mode,
                 contextLines: contextLines,
                 reply: reply,
@@ -1544,7 +1574,11 @@ final class MCPServerViewModel: ObservableObject {
         workspaceContextMessage: { [weak self] operation, path in
             guard let self else { return "Window deallocated while resolving workspace context." }
             return await workspaceContextMessage(forOperation: operation, path: path)
-        },
+        }
+    )
+
+    @MainActor
+    private lazy var windowToolPromptCapabilities = MCPAppPhysicalCapabilityAdapters.Prompt(
         parseCopyPresetSelector: { [weak self] value in
             guard let self else { return nil }
             return parseCopyPresetSelector(from: value)
@@ -1553,14 +1587,14 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else { return nil }
             return resolveCopyPreset(from: selector)
         },
-        buildTabWorkspaceContext: { [weak self] context, include, display, copyPresetOverride, activeTabCompatibility in
+        buildTabWorkspaceContext: { [weak self] context, include, display, copyPresetOverride, presentationActiveContext in
             guard let self else { throw MCPError.internalError("Window deallocated while building workspace context") }
             return try await buildTabWorkspaceContext(
                 context: context,
                 include: include,
                 display: display,
                 copyPresetOverride: copyPresetOverride,
-                activeTabCompatibility: activeTabCompatibility
+                presentationActiveContext: presentationActiveContext
             )
         },
         selectedFilesWithStats: { [weak self] resolvedContext in
@@ -1593,9 +1627,13 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else { return "" }
             return await buildTabClipboardContent(cfg: cfg, context: context)
         },
-        writePromptExportFile: { [weak self] path, content in
+        writePromptExportFile: { [weak self] path, content, mutationRootMappings in
             guard let self else { throw MCPError.internalError("Window deallocated while exporting prompt") }
-            return try await writePromptExportFile(path: path, content: content)
+            return try await writePromptExportFile(
+                path: path,
+                content: content,
+                mutationRootMappings: mutationRootMappings
+            )
         },
         latestTokenBreakdown: { [weak self] in
             guard let self else { return TokenCountingViewModel.TokenBreakdown(total: 0, files: 0, prompt: 0, meta: 0, fileTree: 0, git: 0, other: 0) }
@@ -1603,24 +1641,161 @@ final class MCPServerViewModel: ObservableObject {
         }
     )
 
-    /// Single window-scoped service registered with ServiceRegistry for this window's MCP tool catalog.
     @MainActor
-    private lazy var windowToolCatalogService = MCPWindowToolCatalogService(
+    private lazy var fileToolProvider = MCPFileToolProvider(
+        runtime: windowToolRuntime,
+        context: windowToolContextCapabilities,
+        selection: windowToolSelectionCapabilities,
+        files: windowToolFileCapabilities
+    )
+    @MainActor
+    private lazy var promptContextToolProvider = MCPPromptContextToolProvider(
+        runtime: windowToolRuntime,
+        execution: windowToolExecutionCapabilities,
+        context: windowToolContextCapabilities,
+        selection: windowToolSelectionCapabilities,
+        files: windowToolFileCapabilities,
+        prompt: windowToolPromptCapabilities
+    )
+    @MainActor
+    private lazy var oracleToolProvider = MCPOracleToolProvider(
+        runtime: windowToolRuntime,
+        execution: windowToolExecutionCapabilities
+    )
+    @MainActor
+    private lazy var gitToolProvider = MCPGitToolProvider(
+        runtime: windowToolRuntime,
+        context: windowToolContextCapabilities,
+        selection: windowToolSelectionCapabilities
+    )
+    @MainActor
+    private lazy var historyToolProvider = MCPHistoryToolProvider(runtime: windowToolRuntime)
+    @MainActor
+    private lazy var domainReadToolProvider = MCPDomainReadToolProvider(
+        resolveContext: { [weak self] toolName, requirement in
+            guard let self else {
+                throw MCPError.internalError("Window deallocated while resolving \(toolName) context")
+            }
+            return try await resolveDomainReadContext(
+                toolName: toolName,
+                requirement: requirement
+            )
+        },
+        refreshContext: { [domainRoutingCoordinator] handle in
+            guard let domainRoutingCoordinator else { return handle }
+            return try await domainRoutingCoordinator.refreshReadContext(handle)
+        },
+        releaseContext: { [weak self] context in
+            await self?.releaseDomainReadAppExecutionContext(for: context)
+        },
+        backend: MCPDomainReadToolBackend { [weak self] toolName, context, args, sideEffects in
+            guard let self else {
+                throw MCPError.internalError("Window deallocated while executing \(toolName)")
+            }
+            let appContext = await domainReadAppExecutionContext(for: context)
+            let executionServer: MCPServerViewModel
+            if let appContext {
+                guard let targetServer = await MainActor.run(body: {
+                    WindowStatesManager.shared.window(withID: appContext.targetWindowID)?.mcpServer
+                }) else {
+                    throw MCPError.internalError("Domain read target window changed before execution")
+                }
+                executionServer = targetServer
+            } else {
+                executionServer = self
+            }
+            switch toolName {
+            case "get_code_structure", "get_file_tree", "read_file", "file_search":
+                return try await executionServer.fileToolProvider.executeDomainRead(
+                    toolName: toolName,
+                    context: context,
+                    appContext: appContext,
+                    args: args,
+                    sideEffects: sideEffects
+                )
+            case "workspace_context", "prompt":
+                return try await executionServer.promptContextToolProvider.executeDomainRead(
+                    toolName: toolName,
+                    context: context,
+                    appContext: appContext,
+                    args: args
+                )
+            case "oracle_chat_log":
+                let oracleExecutionServer: MCPServerViewModel
+                if let targetWindowID = ServerNetworkManager.currentToolDispatchAuthorization?
+                    .windowIdentity?.windowID
+                {
+                    guard let targetServer = await MainActor.run(body: {
+                        WindowStatesManager.shared.window(withID: targetWindowID)?.mcpServer
+                    }) else {
+                        throw MCPError.internalError("Oracle log target window changed before execution")
+                    }
+                    oracleExecutionServer = targetServer
+                } else {
+                    oracleExecutionServer = self
+                }
+                return try await oracleExecutionServer.oracleToolProvider.executeDomainOracleChatLog(
+                    context: context,
+                    args: args
+                )
+            case "history":
+                return try await historyToolProvider.executeDomainRead(
+                    context: context,
+                    args: args
+                )
+            case "git":
+                return try await executionServer.gitToolProvider.executeDomainRead(
+                    context: context,
+                    appContext: appContext,
+                    args: args,
+                    sideEffects: sideEffects
+                )
+            default:
+                throw MCPError.internalError("Unsupported domain read tool: \(toolName)")
+            }
+        },
+        sideEffects: domainReadSideEffectCoordinator
+    )
+
+    /// Window-scoped app tool registration installed in the domain runtime catalog.
+    @MainActor
+    private lazy var windowToolCatalogService = MCPAppToolCatalogRegistration(
         windowID: windowID,
         providers: [
-            MCPSelectionToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPFileToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPPromptContextToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPApplyEditsToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPOracleToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPGitToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPWorktreeToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPContextBuilderToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPAskUserToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPAgentControlToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPAgentSessionControlToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies),
-            MCPHistoryToolProvider(runtime: windowToolRuntime, dependencies: windowToolDependencies)
-        ]
+            MCPSelectionToolProvider(
+                runtime: windowToolRuntime,
+                context: windowToolContextCapabilities,
+                selection: windowToolSelectionCapabilities,
+                files: windowToolFileCapabilities
+            ),
+            fileToolProvider,
+            MCPApplyEditsToolProvider(
+                runtime: windowToolRuntime,
+                context: windowToolContextCapabilities,
+                selection: windowToolSelectionCapabilities
+            ),
+            oracleToolProvider,
+            MCPWorktreeToolProvider(
+                runtime: windowToolRuntime,
+                execution: windowToolExecutionCapabilities,
+                context: windowToolContextCapabilities,
+                selection: windowToolSelectionCapabilities
+            ),
+            MCPContextBuilderToolProvider(
+                runtime: windowToolRuntime,
+                execution: windowToolExecutionCapabilities,
+                context: windowToolContextCapabilities,
+                files: windowToolFileCapabilities
+            ),
+            MCPAskUserToolProvider(runtime: windowToolRuntime, execution: windowToolExecutionCapabilities),
+            MCPAgentControlToolProvider(runtime: windowToolRuntime, execution: windowToolExecutionCapabilities),
+            MCPAgentSessionControlToolProvider(
+                runtime: windowToolRuntime,
+                execution: windowToolExecutionCapabilities
+            )
+        ],
+        sharedBindings: domainReadToolProvider.bindings,
+        runtime: windowToolRuntime
     )
     private var cancellables: Set<AnyCancellable> = []
 
@@ -1676,8 +1851,9 @@ final class MCPServerViewModel: ObservableObject {
         await workspaceManager?.applyStoredSelectionMirrorForReadFileAutoSelection(tabID: key.tabID)
     }
 
+    /// Presentation snapshot cache. Domain routing remains the only routing authority.
     @MainActor
-    var tabContextByConnectionID: [UUID: TabScopedContext] = [:]
+    var tabContextByConnectionID: [UUID: TabContextSnapshot] = [:]
     @MainActor
     var detachedContextBuilderTabContextByRunID: [UUID: DetachedContextBuilderTabContext] = [:]
     @MainActor
@@ -1701,18 +1877,24 @@ final class MCPServerViewModel: ObservableObject {
     @MainActor
     var pendingPolicyRunIDMappingTokenIDByRunID: [UUID: UUID] = [:]
     @MainActor
-    var windowIDByConnection: [UUID: Int] = [:]
+    var presentationWindowByConnection: [UUID: Int] = [:]
+    let domainRoutingCoordinator: DomainRoutingCoordinator?
+    let domainWorkspaceAuthorityClient: DomainWorkspaceAuthorityClient?
+    let domainReadSideEffectCoordinator: DomainReadSideEffectCoordinator
+    let domainReadFallbackRuntimeIdentity: DomainRuntimeIdentity?
+    var domainReadAppExecutionContexts: [UUID: DomainReadAppExecutionContext] = [:]
+    var domainRoutingConnectionIDs: Set<UUID> = []
+    var domainWindowDescriptor: DomainWindowDescriptor?
+    var domainWindowRegistrationTask: Task<DomainWindowDescriptor?, Never>?
+    var domainWindowPresentationRevision: UInt64 = 0
+    var domainRoutingWindowIsClosing = false
+    /// Serializes routing publications (bind/release) so rapid tab transitions cannot
+    /// commit bindings out of order and teardown can drain in-flight publications.
+    var domainRoutingPublishTask: Task<Void, Never>?
     @MainActor
     var tabContextCancellablesByConnectionID: [UUID: Set<AnyCancellable>] = [:]
     @MainActor
-    var lastContextByClientAndWindow: [String: [Int: TabScopedContext]] = [:]
-    /// Temporary legacy routing switch. Diagnostics/tests can disable active-tab
-    /// compatibility to verify clients bind explicitly with `bind_context`.
-    @MainActor
-    var activeTabCompatibilityFallbackEnabled = true
-    @MainActor
-    var activeTabCompatibilityFallbackDiagnostics: [ActiveTabCompatibilityFallbackDiagnostic] = []
-
+    var lastContextByClientAndWindow: [String: [Int: TabContextSnapshot]] = [:]
     var isMultiWindowModeEffectivelyActive: Bool {
         WindowStatesManager.shared.isMultiWindowModeEffectivelyActive
     }
@@ -2103,7 +2285,7 @@ final class MCPServerViewModel: ObservableObject {
         let candidateWindowIDs = [
             managerWindowID,
             metadata.windowID,
-            windowIDByConnection[connectionID]
+            presentationWindowByConnection[connectionID]
         ].compactMap(\.self)
 
         for candidateWindowID in candidateWindowIDs where candidateWindowID != windowID {
@@ -2124,8 +2306,7 @@ final class MCPServerViewModel: ObservableObject {
         purgeStaleAgentRunWaitScopes(source: "begin")
         let resolvedContext = try? resolveTabContextSnapshot(
             from: metadata,
-            toolName: "agent_run_wait_scope",
-            policy: .allowLegacyImplicitRouting
+            toolName: "agent_run_wait_scope"
         )
         guard let parentRunID = await resolveRunIDForExecution(metadata: metadata, resolvedContext: resolvedContext) else {
             steeringDebugLog("[AgentRunSteeringWake] agent_run wait scope skipped: no parent runID childSessions=\(sessionIDs.map(\.uuidString).sorted().joined(separator: ","))")
@@ -2290,7 +2471,6 @@ final class MCPServerViewModel: ObservableObject {
         }
 
         if let resolvedContext,
-           !resolvedContext.usesActiveTabCompatibility,
            let runID = resolvedContext.snapshot.runID
         {
             let context = resolvedContext.snapshot
@@ -2436,6 +2616,23 @@ final class MCPServerViewModel: ObservableObject {
         func test_clearActiveToolSlot() {
             clearActiveToolSlot()
         }
+
+        @MainActor
+        func setServiceForTesting(_ service: MCPService) {
+            self.service = service
+        }
+
+        @MainActor
+        func setAfterWindowToolRegistrationBeforeRetentionForTesting(
+            _ handler: (@MainActor @Sendable () async -> Void)?
+        ) {
+            afterWindowToolRegistrationBeforeRetentionForTesting = handler
+        }
+
+        @MainActor
+        func windowToolRegistrationIntentGenerationForTesting() -> UInt64 {
+            toolRegistrationIntentGeneration
+        }
     #endif
 
     // ---------------------------------------------------------------------
@@ -2455,6 +2652,10 @@ final class MCPServerViewModel: ObservableObject {
             WorkspaceModel,
             WorkspaceManagerViewModel
         ) async throws -> WorkspaceRootRef,
+        domainRoutingCoordinator: DomainRoutingCoordinator? = nil,
+        domainWorkspaceAuthorityClient: DomainWorkspaceAuthorityClient? = nil,
+        domainReadSideEffectCoordinator: DomainReadSideEffectCoordinator? = nil,
+        domainReadRuntimeIdentity: DomainRuntimeIdentity? = nil,
         applyEditsApprovalStore: ApplyEditsApprovalStore = .shared
     ) {
         self.service = service
@@ -2465,7 +2666,29 @@ final class MCPServerViewModel: ObservableObject {
         self.selectionCoordinator = selectionCoordinator
         self.workspaceSearch = workspaceSearch
         self.ensureGitDataRootLoaded = ensureGitDataRootLoaded
+        self.domainRoutingCoordinator = domainRoutingCoordinator
+        self.domainWorkspaceAuthorityClient = domainWorkspaceAuthorityClient
+        if let domainReadSideEffectCoordinator {
+            self.domainReadSideEffectCoordinator = domainReadSideEffectCoordinator
+            domainReadFallbackRuntimeIdentity = domainReadRuntimeIdentity
+        } else {
+            let fallbackIdentity = DomainRuntimeIdentity(
+                runtimeID: UUID(),
+                lifecycleGeneration: 1,
+                processID: ProcessInfo.processInfo.processIdentifier,
+                mode: .app,
+                createdAt: Date()
+            )
+            self.domainReadSideEffectCoordinator = DomainReadSideEffectCoordinator(identity: fallbackIdentity)
+            domainReadFallbackRuntimeIdentity = fallbackIdentity
+        }
         self.applyEditsApprovalStore = applyEditsApprovalStore
+
+        scheduleDomainWindowRegistration(
+            activeWorkspaceID: workspaceManager.activeWorkspaceID,
+            activeContextID: workspaceManager.activeWorkspace?.activeComposeTabID,
+            presentationRevision: 0
+        )
 
         // Observe service state updates
         observeService()
@@ -2480,19 +2703,6 @@ final class MCPServerViewModel: ObservableObject {
             await apply(snap) // @MainActor method
         }
 
-        ToolAvailabilityStore.shared.$toolSummaries
-            .dropFirst()
-            .sink { [weak self] _ in
-                #if DEBUG || EDIT_FLOW_PERF
-                    let invalidationToolSummariesChangeState = EditFlowPerf.begin(EditFlowPerf.Stage.MCPWindowToolCatalog.invalidationToolSummariesChange)
-                #endif
-                self?.invalidateToolsCache()
-                #if DEBUG || EDIT_FLOW_PERF
-                    EditFlowPerf.end(EditFlowPerf.Stage.MCPWindowToolCatalog.invalidationToolSummariesChange, invalidationToolSummariesChangeState)
-                #endif
-            }
-            .store(in: &cancellables)
-
         workspaceManager.$workspaces
             .dropFirst()
             .sink { [weak self] workspaces in
@@ -2502,8 +2712,13 @@ final class MCPServerViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Enable tools based on auto-start setting. CE builds do not license-gate MCP.
-        windowToolsEnabled = GlobalSettingsStore.shared.mcpAutoStart()
+        // Enable tools based on auto-start setting. Publish the enabled state only
+        // after the domain registry owns the complete catalog.
+        if GlobalSettingsStore.shared.mcpAutoStart() {
+            Task { [weak self] in
+                _ = await self?.setWindowToolsEnabled(true)
+            }
+        }
     }
 
     // MARK: – Private helpers
@@ -2628,40 +2843,42 @@ final class MCPServerViewModel: ObservableObject {
 
     /// -----------------------------------------------------------------
     /// Enables tools for this window and awaits MCP readiness for agent bootstrap.
-    func startServer() async {
+    @discardableResult
+    func startServer() async -> Bool {
         await ensureServerReadyForAgentBootstrap()
     }
 
-    /// Ensures tools are enabled and the window is joined before agent bootstrap continues.
-    func ensureServerReadyForAgentBootstrap() async {
-        let invalidateCatalogBeforeUpdate = !windowToolsEnabled
-            || !ServiceRegistry.services.contains { service in
-                (service as AnyObject) === (windowToolCatalogService as AnyObject)
-            }
-        if !windowToolsEnabled {
-            windowToolsEnabled = true
-        }
+    /// Ensures tools are registered before this window becomes eligible for routing.
+    @discardableResult
+    func ensureServerReadyForAgentBootstrap() async -> Bool {
+        let catalogIsRegistered = await AppDomainRuntimeComposition.shared.isRegistered(windowToolCatalogService)
+        let invalidateCatalogBeforeUpdate = !windowToolsEnabled || !catalogIsRegistered
         #if DEBUG || EDIT_FLOW_PERF
-            let registrationUpdateAgentBootstrapState = EditFlowPerf.begin(EditFlowPerf.Stage.MCPWindowToolCatalog.registrationUpdateAgentBootstrap)
+            let registrationUpdateAgentBootstrapState = EditFlowPerf.begin(
+                EditFlowPerf.Stage.MCPWindowToolCatalog.registrationUpdateAgentBootstrap
+            )
         #endif
-        await updateToolRegistration(invalidateCatalogBeforeUpdate: invalidateCatalogBeforeUpdate)
+        let ready = await setWindowToolsEnabled(
+            true,
+            invalidateCatalogBeforeUpdate: invalidateCatalogBeforeUpdate
+        )
         #if DEBUG || EDIT_FLOW_PERF
-            EditFlowPerf.end(EditFlowPerf.Stage.MCPWindowToolCatalog.registrationUpdateAgentBootstrap, registrationUpdateAgentBootstrapState)
+            EditFlowPerf.end(
+                EditFlowPerf.Stage.MCPWindowToolCatalog.registrationUpdateAgentBootstrap,
+                registrationUpdateAgentBootstrapState
+            )
         #endif
+        return ready
     }
 
     /// Disables tools for this window.
     func stopServer() async {
-        windowToolsEnabled = false
+        _ = await setWindowToolsEnabled(false)
     }
 
     /// Convenience UI toggle.
     func toggle() async {
-        if windowToolsEnabled {
-            windowToolsEnabled = false
-        } else {
-            windowToolsEnabled = true
-        }
+        _ = await setWindowToolsEnabled(!windowToolsRequested)
     }
 
     /// Force a state refresh from the service
@@ -2670,31 +2887,154 @@ final class MCPServerViewModel: ObservableObject {
         await service.refreshState()
     }
 
-    /// Updates tool registration based on windowToolsEnabled state
     @MainActor
-    private func updateToolRegistration(invalidateCatalogBeforeUpdate: Bool = true) async {
+    @discardableResult
+    func setWindowToolsEnabled(
+        _ enabled: Bool,
+        invalidateCatalogBeforeUpdate: Bool = true
+    ) async -> Bool {
+        toolRegistrationIntentGeneration &+= 1
+        let intentGeneration = toolRegistrationIntentGeneration
+        windowToolsRequested = enabled
+        windowToolRegistrationFailureDescription = nil
+        if !enabled {
+            windowToolsEnabled = false
+        }
+
+        // MainActor methods are reentrant at every await. Chain transitions so an
+        // older enable/disable/refresh cannot mutate registration or membership
+        // after a newer request has started.
+        let predecessor = windowToolTransitionTail
+        let transition = Task { @MainActor [weak self] in
+            _ = await predecessor?.value
+            guard let self else { return false }
+            return await performWindowToolsTransition(
+                enabled: enabled,
+                intentGeneration: intentGeneration,
+                invalidateCatalogBeforeUpdate: invalidateCatalogBeforeUpdate
+            )
+        }
+        windowToolTransitionTail = transition
+        return await transition.value
+    }
+
+    @MainActor
+    private func performWindowToolsTransition(
+        enabled: Bool,
+        intentGeneration: UInt64,
+        invalidateCatalogBeforeUpdate: Bool
+    ) async -> Bool {
+        guard intentGeneration == toolRegistrationIntentGeneration else {
+            return windowToolsEnabled
+        }
+
+        guard enabled else {
+            // Registration teardown is generation-fenced. Without a retained handle this view model
+            // has no authority to remove a registration owned outside its transition lifecycle.
+            if let handle = activeWindowToolRegistrationHandle {
+                await unregisterWindowToolRegistration(handle)
+            }
+            await service.leave(windowID: windowID)
+            await service.refreshState()
+            return intentGeneration == toolRegistrationIntentGeneration && !windowToolsRequested
+        }
+
+        do {
+            try await AppGlobalMCPServiceComposition.shared.ensureRegistered()
+        } catch {
+            recordWindowToolRegistrationFailure(
+                phase: "application_catalog",
+                error: error,
+                intentGeneration: intentGeneration
+            )
+            return false
+        }
+
+        guard intentGeneration == toolRegistrationIntentGeneration, windowToolsRequested else {
+            return false
+        }
+
         if invalidateCatalogBeforeUpdate {
             #if DEBUG || EDIT_FLOW_PERF
-                let invalidationToolRegistrationUpdateState = EditFlowPerf.begin(EditFlowPerf.Stage.MCPWindowToolCatalog.invalidationToolRegistrationUpdate)
+                let invalidationToolRegistrationUpdateState = EditFlowPerf.begin(
+                    EditFlowPerf.Stage.MCPWindowToolCatalog.invalidationToolRegistrationUpdate
+                )
             #endif
             invalidateToolsCache()
             #if DEBUG || EDIT_FLOW_PERF
-                EditFlowPerf.end(EditFlowPerf.Stage.MCPWindowToolCatalog.invalidationToolRegistrationUpdate, invalidationToolRegistrationUpdateState)
+                EditFlowPerf.end(
+                    EditFlowPerf.Stage.MCPWindowToolCatalog.invalidationToolRegistrationUpdate,
+                    invalidationToolRegistrationUpdateState
+                )
             #endif
         }
 
-        if windowToolsEnabled {
-            ServiceRegistry.register(windowToolCatalogService) // idempotent
-            do {
-                try await service.join(windowID: windowID)
-                await service.refreshState()
-            } catch {
-                logger.error("Failed to join MCP: \(error)")
+        do {
+            let registration = try await AppDomainRuntimeComposition.shared.register(windowToolCatalogService)
+            #if DEBUG
+                await afterWindowToolRegistrationBeforeRetentionForTesting?()
+            #endif
+            // Retain every successful generation before checking for supersession. A queued disable
+            // can then reclaim it by exact handle, while stale handles remain registry-fenced.
+            activeWindowToolRegistrationHandle = registration.handle
+            guard intentGeneration == toolRegistrationIntentGeneration else {
+                if !windowToolsRequested {
+                    await unregisterWindowToolRegistration(registration.handle)
+                }
+                return false
             }
-        } else {
-            ServiceRegistry.unregister(windowToolCatalogService)
-            await service.leave(windowID: windowID)
+            await service.join(windowID: windowID)
+            guard intentGeneration == toolRegistrationIntentGeneration else {
+                if !windowToolsRequested {
+                    windowToolsEnabled = false
+                    await unregisterWindowToolRegistration(registration.handle)
+                    await service.leave(windowID: windowID)
+                }
+                return false
+            }
+
+            windowToolsEnabled = true
+            windowToolRegistrationFailureDescription = nil
             await service.refreshState()
+            guard intentGeneration == toolRegistrationIntentGeneration else {
+                if !windowToolsRequested {
+                    windowToolsEnabled = false
+                    await unregisterWindowToolRegistration(registration.handle)
+                    await service.leave(windowID: windowID)
+                }
+                return false
+            }
+            return true
+        } catch {
+            recordWindowToolRegistrationFailure(
+                phase: "window_catalog",
+                error: error,
+                intentGeneration: intentGeneration
+            )
+            return false
+        }
+    }
+
+    @MainActor
+    private func recordWindowToolRegistrationFailure(
+        phase: String,
+        error: Error,
+        intentGeneration: UInt64
+    ) {
+        guard intentGeneration == toolRegistrationIntentGeneration, windowToolsRequested else { return }
+        windowToolsEnabled = false
+        let description = "\(phase): \(String(reflecting: error))"
+        windowToolRegistrationFailureDescription = description
+        logger.error("MCP window registration failed window=\(windowID) phase=\(phase) error=\(String(reflecting: error))")
+    }
+
+    @MainActor
+    private func unregisterWindowToolRegistration(
+        _ handle: MCPDomainToolRegistrationHandle
+    ) async {
+        await AppDomainRuntimeComposition.shared.unregister(handle)
+        if activeWindowToolRegistrationHandle == handle {
+            activeWindowToolRegistrationHandle = nil
         }
     }
 
@@ -3011,10 +3351,9 @@ final class MCPServerViewModel: ObservableObject {
         let metadata = await captureRequestMetadata()
         let resolvedContext = try? resolveTabContextSnapshot(
             from: metadata,
-            toolName: name,
-            policy: .allowLegacyImplicitRouting
+            toolName: name
         )
-        if let resolvedContext, !resolvedContext.usesActiveTabCompatibility {
+        if let resolvedContext {
             let context = resolvedContext.snapshot
             mcpServerViewModelDebugLog("runTool '\(name)' bound context for tab=\(context.tabID) runID=\(context.runID?.uuidString ?? "nil")")
         }
@@ -3239,7 +3578,7 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     @MainActor
-    var windowMCPToolCatalogService: MCPWindowToolCatalogService {
+    var windowMCPToolCatalogService: MCPAppToolCatalogRegistration {
         windowToolCatalogService
     }
 
@@ -3389,12 +3728,11 @@ final class MCPServerViewModel: ObservableObject {
         guard await ServerNetworkManager.shared.runPurpose(for: connectionID) == .agentModeRun else {
             return false
         }
-        if let resolvedContext = try? resolveTabContextSnapshot(
+        if (try? resolveTabContextSnapshot(
             from: metadata,
-            toolName: "agent_run_source_binding",
-            policy: .allowLegacyImplicitRouting
-        ) {
-            return !resolvedContext.usesActiveTabCompatibility
+            toolName: "agent_run_source_binding"
+        )) != nil {
+            return true
         }
         return false
     }
@@ -3531,7 +3869,6 @@ final class MCPServerViewModel: ObservableObject {
                 providedWindowID: targetWindow.windowID,
                 explicitHint: explicitHint,
                 toolName: MCPWindowToolName.contextBuilder,
-                policy: .requireExplicitOrRunScoped,
                 runPurpose: purpose
             )
             guard case let .tabContextSnapshot(resolvedContext, source) = resolution else {
@@ -3714,10 +4051,10 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     #if DEBUG
-        private var stageProgressSinkForTesting: MCPWindowToolDependencies.SendStageProgress?
+        private var stageProgressSinkForTesting: MCPAppPhysicalCapabilityAdapters.SendStageProgress?
 
         func installStageProgressSinkForTesting(
-            _ sink: MCPWindowToolDependencies.SendStageProgress?
+            _ sink: MCPAppPhysicalCapabilityAdapters.SendStageProgress?
         ) {
             stageProgressSinkForTesting = sink
         }
@@ -3805,8 +4142,7 @@ final class MCPServerViewModel: ObservableObject {
             var resolvedContext = try EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.AutoSelect.fullSnapshotResolution) {
                 try resolveTabContextSnapshot(
                     from: metadata,
-                    toolName: "autoSelectReadFile",
-                    policy: .allowLegacyImplicitRouting
+                    toolName: "autoSelectReadFile"
                 )
             }
             let ctx = resolvedContext.snapshot
@@ -3878,7 +4214,7 @@ final class MCPServerViewModel: ObservableObject {
         requestedPath: String,
         resolvedPhysicalPath: String,
         metadata: RequestMetadata
-    ) async {
+    ) async throws {
         #if DEBUG || EDIT_FLOW_PERF
             let autoSelectTotal = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.AutoSelect.total)
             defer { EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.AutoSelect.total, autoSelectTotal) }
@@ -3888,28 +4224,30 @@ final class MCPServerViewModel: ObservableObject {
             EditFlowPerf.end(
                 EditFlowPerf.Stage.ReadFile.AutoSelect.eligibilityResolution,
                 eligibilityResolution,
-                EditFlowPerf.Dimensions(outcome: "ineligible")
+                EditFlowPerf.Dimensions(outcome: "missingConnection")
             )
-            return
+            throw MCPError.invalidParams("read_file auto-selection requires an admitted MCP connection")
         }
         let purpose: MCPRunPurpose = if let capturedPurpose = metadata.runPurpose {
             capturedPurpose
         } else {
             await ServerNetworkManager.shared.runPurpose(for: connectionID)
         }
-        guard let resolvedContext = try? resolveTabContextSnapshot(
-            from: metadata,
-            toolName: "enqueueReadFileAutoSelection",
-            policy: .allowLegacyImplicitRouting
-        ) else {
+        let resolvedContext: ResolvedTabContextSnapshot
+        do {
+            resolvedContext = try resolveTabContextSnapshot(
+                from: metadata,
+                toolName: "enqueueReadFileAutoSelection"
+            )
+        } catch {
             EditFlowPerf.end(
                 EditFlowPerf.Stage.ReadFile.AutoSelect.eligibilityResolution,
                 eligibilityResolution,
-                EditFlowPerf.Dimensions(outcome: "ineligible")
+                EditFlowPerf.Dimensions(outcome: "invalidContext")
             )
-            return
+            throw error
         }
-        let hasVirtualContext = !resolvedContext.usesActiveTabCompatibility
+        let hasVirtualContext = true
         let shouldApply = AutoSliceSelection.shouldApply(
             purpose: purpose,
             hasVirtualContext: hasVirtualContext
@@ -3950,7 +4288,7 @@ final class MCPServerViewModel: ObservableObject {
             intent: intent,
             resolvedPaths: [resolvedPhysicalPath]
         )
-        let key = readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
+        let key = try readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
         let accepted = readFileAutoSelectionCoordinator.enqueue(
             intent: intent,
             coverageIdentity: coverageIdentity,
@@ -3968,13 +4306,12 @@ final class MCPServerViewModel: ObservableObject {
     func drainReadFileAutoSelection(
         metadata: RequestMetadata,
         requirement: MCPReadFileAutoSelectionCoordinator.DrainRequirement
-    ) async -> MCPReadFileAutoSelectionCoordinator.DrainResult {
-        guard let resolvedContext = try? resolveTabContextSnapshot(
+    ) async throws -> MCPReadFileAutoSelectionCoordinator.DrainResult {
+        let resolvedContext = try resolveTabContextSnapshot(
             from: metadata,
-            toolName: "drainReadFileAutoSelection",
-            policy: .allowLegacyImplicitRouting
-        ) else { return Task.isCancelled ? .cancelled : .completed }
-        let key = readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
+            toolName: "drainReadFileAutoSelection"
+        )
+        let key = try readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
         for predecessorKey in readFileAutoSelectionPredecessorContextKeys(
             metadata: metadata,
             successorKey: key
@@ -4227,14 +4564,14 @@ final class MCPServerViewModel: ObservableObject {
     private func readFileAutoSelectionContextKey(
         resolvedContext: ResolvedTabContextSnapshot,
         metadata: RequestMetadata
-    ) -> MCPReadFileAutoSelectionCoordinator.ContextKey {
-        let route: MCPReadFileAutoSelectionCoordinator.Route = if !resolvedContext.usesActiveTabCompatibility,
-                                                                  let connectionID = metadata.connectionID
-        {
-            .bound(connectionID: connectionID, runID: resolvedContext.snapshot.runID)
-        } else {
-            .activeTabCompatibility
+    ) throws -> MCPReadFileAutoSelectionCoordinator.ContextKey {
+        guard let connectionID = metadata.connectionID else {
+            throw MCPError.invalidParams("Read-file auto-selection requires an authoritative MCP connection context")
         }
+        let route = MCPReadFileAutoSelectionCoordinator.Route.bound(
+            connectionID: connectionID,
+            runID: resolvedContext.snapshot.runID
+        )
         return MCPReadFileAutoSelectionCoordinator.ContextKey(
             windowID: resolvedContext.snapshot.windowID,
             workspaceID: resolvedContext.snapshot.workspaceID,
@@ -4246,19 +4583,14 @@ final class MCPServerViewModel: ObservableObject {
 
     @MainActor
     func isReadFileAutoSelectionContextCurrent(_ key: MCPReadFileAutoSelectionCoordinator.ContextKey) -> Bool {
-        switch key.route {
-        case let .bound(connectionID, runID):
-            guard let context = tabContextByConnectionID[connectionID] else { return false }
-            return context.windowID == key.windowID
-                && context.workspaceID == key.workspaceID
-                && context.tabID == key.tabID
-                && context.runID == runID
-                && context.readFileAutoSelectionGeneration == key.bindingGeneration
-        case .activeTabCompatibility:
-            guard let active = workspaceManager?.activeWorkspace else { return false }
-            return active.id == key.workspaceID
-                && (active.activeComposeTabID ?? active.composeTabs.first?.id) == key.tabID
-        }
+        guard case let .bound(connectionID, runID) = key.route,
+              let context = tabContextByConnectionID[connectionID]
+        else { return false }
+        return context.windowID == key.windowID
+            && context.workspaceID == key.workspaceID
+            && context.tabID == key.tabID
+            && context.runID == runID
+            && context.readFileAutoSelectionGeneration == key.bindingGeneration
     }
 
     @MainActor
@@ -4693,16 +5025,9 @@ final class MCPServerViewModel: ObservableObject {
     @MainActor
     func readFileAutoSelectionContext(
         for key: MCPReadFileAutoSelectionCoordinator.ContextKey
-    ) -> TabScopedContext? {
-        switch key.route {
-        case let .bound(connectionID, _):
-            tabContextByConnectionID[connectionID]
-        case .activeTabCompatibility:
-            try? activeTabCompatibilitySnapshot(
-                metadata: RequestMetadata(connectionID: nil, clientName: nil, windowID: key.windowID),
-                toolName: "readFileAutoSelectionContext"
-            )
-        }
+    ) -> TabContextSnapshot? {
+        guard case let .bound(connectionID, _) = key.route else { return nil }
+        return tabContextByConnectionID[connectionID]
     }
 
     private func autoSelectedFullFilePaths() async -> [String] {
@@ -4710,8 +5035,7 @@ final class MCPServerViewModel: ObservableObject {
         let lookupRootScope = await resolveFileToolLookupContext(from: metadata).rootScope
         guard let resolvedContext = try? resolveTabContextSnapshot(
             from: metadata,
-            toolName: "autoSelectedFullFilePaths",
-            policy: .allowLegacyImplicitRouting
+            toolName: "autoSelectedFullFilePaths"
         ) else { return [] }
         return await autoSelectedFullFilePaths(
             selection: resolvedContext.snapshot.selection,
@@ -4740,7 +5064,7 @@ final class MCPServerViewModel: ObservableObject {
         reply: ToolResultDTOs.SearchResultDTO,
         resolvedPhysicalPaths: [String],
         metadata: RequestMetadata
-    ) async {
+    ) async throws {
         let shapeEligibility = EditFlowPerf.begin(
             EditFlowPerf.Stage.Search.AutoSelect.shapeEligibility,
             EditFlowPerf.Dimensions(searchMode: mode.rawValue, contextLines: contextLines)
@@ -4772,30 +5096,32 @@ final class MCPServerViewModel: ObservableObject {
             EditFlowPerf.end(
                 EditFlowPerf.Stage.Search.AutoSelect.agentEligibility,
                 agentEligibility,
-                EditFlowPerf.Dimensions(outcome: "ineligible")
+                EditFlowPerf.Dimensions(outcome: "missingConnection")
             )
-            return
+            throw MCPError.invalidParams("file_search auto-selection requires an admitted MCP connection")
         }
         let purpose: MCPRunPurpose = if let capturedPurpose = metadata.runPurpose {
             capturedPurpose
         } else {
             await ServerNetworkManager.shared.runPurpose(for: connectionID)
         }
-        guard let resolvedContext = try? resolveTabContextSnapshot(
-            from: metadata,
-            toolName: "enqueueFileSearchAutoSelection",
-            policy: .allowLegacyImplicitRouting
-        ) else {
+        let resolvedContext: ResolvedTabContextSnapshot
+        do {
+            resolvedContext = try resolveTabContextSnapshot(
+                from: metadata,
+                toolName: "enqueueFileSearchAutoSelection"
+            )
+        } catch {
             EditFlowPerf.end(
                 EditFlowPerf.Stage.Search.AutoSelect.agentEligibility,
                 agentEligibility,
-                EditFlowPerf.Dimensions(outcome: "ineligible")
+                EditFlowPerf.Dimensions(outcome: "invalidContext")
             )
-            return
+            throw error
         }
         let shouldApply = AutoSliceSelection.shouldApply(
             purpose: purpose,
-            hasVirtualContext: !resolvedContext.usesActiveTabCompatibility
+            hasVirtualContext: true
         )
         EditFlowPerf.end(
             EditFlowPerf.Stage.Search.AutoSelect.agentEligibility,
@@ -4821,7 +5147,7 @@ final class MCPServerViewModel: ObservableObject {
             intent: intent,
             resolvedPaths: resolvedPhysicalPaths
         )
-        let key = readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
+        let key = try readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
         let accepted = readFileAutoSelectionCoordinator.enqueue(
             intent: intent,
             coverageIdentity: coverageIdentity,
@@ -4853,8 +5179,7 @@ final class MCPServerViewModel: ObservableObject {
             let lookupRootScope = lookupContext.rootScope
             let resolvedContext = try resolveTabContextSnapshot(
                 from: metadata,
-                toolName: "applySelectionSlices",
-                policy: .allowLegacyImplicitRouting
+                toolName: "applySelectionSlices"
             )
             return try await applySelectionSlicesVirtual(
                 resolvedContext: resolvedContext,
@@ -5003,8 +5328,7 @@ final class MCPServerViewModel: ObservableObject {
         try Task.checkCancellation()
         let resolved = try resolveTabContextSnapshot(
             from: metadata,
-            toolName: MCPWindowToolName.getCodeStructure,
-            policy: .allowLegacyImplicitRouting
+            toolName: MCPWindowToolName.getCodeStructure
         )
         let selection = resolved.snapshot.selection
         let selectedPaths = StoredSelectionPathNormalization.standardizedPaths(
@@ -5637,8 +5961,7 @@ final class MCPServerViewModel: ObservableObject {
     ) async throws -> (reply: ToolResultDTOs.ReadFileReply, shouldAutoSelect: Bool)? {
         guard var resolvedContext = try? resolveTabContextSnapshot(
             from: metadata,
-            toolName: MCPWindowToolName.readFile,
-            policy: .allowLegacyImplicitRouting
+            toolName: MCPWindowToolName.readFile
         ) else { return nil }
 
         resolvedContext.snapshot = await stabilizedVirtualContext(for: resolvedContext.snapshot)
@@ -5877,11 +6200,9 @@ final class MCPServerViewModel: ObservableObject {
             from: metadata,
             toolName: MCPWindowToolName.fileActions
         )
-        if !resolvedContext.usesActiveTabCompatibility,
-           let failure = MCPMutationRetryableFailure.unresolvedRouteFailure(
-               for: resolvedContext.snapshot
-           )
-        {
+        if let failure = MCPMutationRetryableFailure.unresolvedRouteFailure(
+            for: resolvedContext.snapshot
+        ) {
             throw failure
         }
         if let failure = await MCPMutationRetryableFailure.mutationScopeFailure(
@@ -5893,8 +6214,9 @@ final class MCPServerViewModel: ObservableObject {
         try Task.checkCancellation()
         let effectivePath = lookupContext.translateInputPath(path)
         let effectiveNewPath = newPath.map { lookupContext.translateInputPath($0) }
-        let shouldSelectCreatedFileInActiveUI = resolvedContext.usesActiveTabCompatibility
+        let shouldSelectCreatedFileInActiveUI = false
         let store = promptVM.workspaceFileContextStore
+        let mutationRootMappings = await lookupContext.domainMutationPhysicalRootMappings(store: store)
         await MCPToolExecutionHandlerPhaseContext.report(.fileActionsPreMutationChecks, transition: .completed)
         try Task.checkCancellation()
         await MCPToolExecutionHandlerPhaseContext.report(.fileActionsCatalogEligibility)
@@ -5924,7 +6246,8 @@ final class MCPServerViewModel: ObservableObject {
                     content: content,
                     overwrite: policy == "overwrite",
                     addToSelection: shouldSelectCreatedFileInActiveUI,
-                    lookupRootScope: lookupContext.rootScope
+                    lookupRootScope: lookupContext.rootScope,
+                    mutationRootMappings: mutationRootMappings
                 )
 
             case "delete":
@@ -5933,13 +6256,22 @@ final class MCPServerViewModel: ObservableObject {
                 guard effectivePath.hasPrefix("/") else {
                     throw MCPError.invalidParams("delete requires an absolute path. Received: \(path)")
                 }
-                try await moveItemToTrash(path: effectivePath, lookupRootScope: lookupContext.rootScope)
+                try await moveItemToTrash(
+                    path: effectivePath,
+                    lookupRootScope: lookupContext.rootScope,
+                    mutationRootMappings: mutationRootMappings
+                )
 
             case "move", "rename":
                 guard let newPath else {
                     throw MCPError.invalidParams("new_path is required for move/rename action")
                 }
-                try await renameFile(oldPath: effectivePath, newPath: effectiveNewPath ?? newPath, lookupRootScope: lookupContext.rootScope)
+                try await renameFile(
+                    oldPath: effectivePath,
+                    newPath: effectiveNewPath ?? newPath,
+                    lookupRootScope: lookupContext.rootScope,
+                    mutationRootMappings: mutationRootMappings
+                )
 
             default:
                 throw MCPError.invalidParams("invalid action: \(action). Must be 'create', 'delete', or 'move'")
@@ -5977,7 +6309,7 @@ final class MCPServerViewModel: ObservableObject {
                 "Reply delivery was cancelled after the durable mutation. Inspect the filesystem and use operation ID \(operationID) only to correlate this result; do not blindly replay."
             )
         }
-        if action.lowercased() == "create", !resolvedContext.usesActiveTabCompatibility {
+        if action.lowercased() == "create" {
             await MCPToolExecutionHandlerPhaseContext.report(.fileActionsPostMutationSelection)
             let baseSelection = resolvedContext.snapshot.selection
             let addResult = await addStoredSelectionPaths(
@@ -6026,7 +6358,8 @@ final class MCPServerViewModel: ObservableObject {
         content: String,
         overwrite: Bool = false,
         addToSelection: Bool = true,
-        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace
+        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace,
+        mutationRootMappings: [DomainMutationPhysicalRootMapping] = []
     ) async throws {
         do {
             let store = promptVM.workspaceFileContextStore
@@ -6035,7 +6368,8 @@ final class MCPServerViewModel: ObservableObject {
                 selectionCoordinator: selectionCoordinator,
                 lookupRootScope: lookupRootScope,
                 createPathResolutionPolicy: .literalPreferredIfStronger,
-                selectCreatedFiles: addToSelection
+                selectCreatedFiles: addToSelection,
+                mutationRootMappings: mutationRootMappings
             )
             try await host.writeText(path: path, content: content, overwrite: overwrite)
         } catch is CancellationError {
@@ -6199,7 +6533,11 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     /// Writes prompt export content, allowing absolute paths outside the workspace.
-    private func writePromptExportFile(path rawPath: String, content: String) async throws -> String {
+    private func writePromptExportFile(
+        path rawPath: String,
+        content: String,
+        mutationRootMappings: [DomainMutationPhysicalRootMapping]
+    ) async throws -> String {
         let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let expandedPath = (trimmed as NSString).expandingTildeInPath
         let standardizedPath = (expandedPath as NSString).standardizingPath
@@ -6207,7 +6545,13 @@ final class MCPServerViewModel: ObservableObject {
 
         // Relative paths should continue to be resolved inside the workspace.
         guard resolvedPath.hasPrefix("/") else {
-            try await writeFile(path: resolvedPath, content: content, overwrite: false, addToSelection: false)
+            try await writeFile(
+                path: resolvedPath,
+                content: content,
+                overwrite: false,
+                addToSelection: false,
+                mutationRootMappings: mutationRootMappings
+            )
             return resolvedPath
         }
 
@@ -6217,7 +6561,13 @@ final class MCPServerViewModel: ObservableObject {
         }
 
         if isUnderRoot {
-            try await writeFile(path: resolvedPath, content: content, overwrite: false, addToSelection: false)
+            try await writeFile(
+                path: resolvedPath,
+                content: content,
+                overwrite: false,
+                addToSelection: false,
+                mutationRootMappings: mutationRootMappings
+            )
             return resolvedPath
         }
 
@@ -6227,7 +6577,15 @@ final class MCPServerViewModel: ObservableObject {
             throw MCPError.invalidParams("path already exists: \(resolvedPath).")
         }
         do {
+            try await MCPDomainMutationCommitContext.admitPhysicalTargets(
+                [url.standardizedFileURL.path],
+                rootMappings: mutationRootMappings
+            )
+            try await MCPDomainMutationCommitContext.willCommit()
+            let physicalMutationGuard = try await MCPDomainMutationCommitContext.physicalMutationGuard()
+            try physicalMutationGuard?.revalidate()
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: nil)
+            try physicalMutationGuard?.revalidate()
             try content.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             throw MCPError.invalidParams("File creation failed for '\(resolvedPath)': \(error.localizedDescription)")
@@ -6236,7 +6594,12 @@ final class MCPServerViewModel: ObservableObject {
         return resolvedPath
     }
 
-    private func renameFile(oldPath: String, newPath: String, lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace) async throws {
+    private func renameFile(
+        oldPath: String,
+        newPath: String,
+        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace,
+        mutationRootMappings: [DomainMutationPhysicalRootMapping] = []
+    ) async throws {
         let store = promptVM.workspaceFileContextStore
         let mutationService = WorkspaceFileMutationService(store: store)
         let source = try await mutationService.resolveExactExistingFileForMutation(oldPath, rootScope: lookupRootScope)
@@ -6267,10 +6630,22 @@ final class MCPServerViewModel: ObservableObject {
         if await store.file(rootID: source.rootID, relativePath: newRelativePath) != nil {
             throw MCPError.invalidParams("path already exists: \(newPath)")
         }
+        let destination = StandardizedPath.join(
+            standardizedRoot: sourceRoot.standardizedFullPath,
+            standardizedRelativePath: newRelativePath
+        )
+        try await MCPDomainMutationCommitContext.admitPhysicalTargets(
+            [source.standardizedFullPath, destination],
+            rootMappings: mutationRootMappings
+        )
         try await store.moveFile(rootID: source.rootID, from: source.standardizedRelativePath, to: newRelativePath)
     }
 
-    private func moveItemToTrash(path: String, lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace) async throws {
+    private func moveItemToTrash(
+        path: String,
+        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace,
+        mutationRootMappings: [DomainMutationPhysicalRootMapping] = []
+    ) async throws {
         let store = promptVM.workspaceFileContextStore
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if let issue = await store.exactPathResolutionIssue(for: trimmed, kind: .either, rootScope: lookupRootScope) {
@@ -6278,6 +6653,10 @@ final class MCPServerViewModel: ObservableObject {
         }
         let mutationService = WorkspaceFileMutationService(store: store)
         if let file = await mutationService.exactExistingFile(trimmed, rootScope: lookupRootScope) {
+            try await MCPDomainMutationCommitContext.admitPhysicalTargets(
+                [file.standardizedFullPath],
+                rootMappings: mutationRootMappings
+            )
             try await store.moveItemToTrash(rootID: file.rootID, relativePath: file.standardizedRelativePath)
             return
         }
@@ -6285,6 +6664,10 @@ final class MCPServerViewModel: ObservableObject {
             throw MCPError.invalidParams("Unknown or unloaded path: \(path).")
         }
         if let folder = lookup.folder {
+            try await MCPDomainMutationCommitContext.admitPhysicalTargets(
+                [folder.standardizedFullPath],
+                rootMappings: mutationRootMappings
+            )
             try await store.moveItemToTrash(rootID: folder.rootID, relativePath: folder.standardizedRelativePath)
         } else {
             throw MCPError.invalidParams("Unknown or unloaded path: \(path).")
@@ -6363,8 +6746,7 @@ final class MCPServerViewModel: ObservableObject {
         let metadata = await captureRequestMetadata()
         let resolved = try resolveTabContextSnapshot(
             from: metadata,
-            toolName: MCPWindowToolName.getFileTree,
-            policy: .allowLegacyImplicitRouting
+            toolName: MCPWindowToolName.getFileTree
         )
         return storedSelection(
             for: resolved.snapshot,

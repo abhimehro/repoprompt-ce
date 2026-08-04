@@ -865,17 +865,24 @@ struct AgentRunMCPToolService {
         if initialSnapshot.status.isTerminal {
             throw MCPError.invalidParams("The run is not currently active (status: \(initialSnapshot.status.rawValue)) and cannot be cancelled.")
         }
-        guard let session = agentModeVM.mcpControlledSession(sessionID: sessionID), session.runState.isActive else {
+        guard let session = agentModeVM.mcpControlledSession(sessionID: sessionID),
+              session.runState.isActive || session.mcpFollowUpRunPending
+        else {
             throw MCPError.invalidParams("The run is not currently active and cannot be cancelled.")
         }
         let metadata = await captureRequestMetadata()
+        let cancelsStartupPendingRun = !session.runState.isActive && session.mcpFollowUpRunPending
+        let tabID = session.tabID
         let cancelResult = try await withHeartbeat(
             metadata.connectionID,
             toolName,
             "cancelling",
             "Cancelling the agent run..."
         ) {
-            await agentModeVM.cancelAgentRun(tabID: session.tabID, completion: .terminalPublished)
+            if cancelsStartupPendingRun {
+                await agentModeVM.setMCPFollowUpRunPending(sessionID: sessionID, false)
+            }
+            await agentModeVM.cancelAgentRun(tabID: tabID, completion: .terminalPublished)
             await Task.yield()
             return await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM).toValue()
         }
@@ -2154,7 +2161,7 @@ struct AgentRunMCPToolService {
             parentSessionID: parentSessionID,
             failureReason: failureReason,
             worktreeBindings: worktreeBindings,
-            activeWorktreeMerges: activeWorktreeMerges
+            appActiveWorktreeMerges: activeWorktreeMerges
         )
     }
 

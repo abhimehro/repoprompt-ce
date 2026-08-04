@@ -31,6 +31,7 @@ struct WorkspaceDemoteSelectionResult: Equatable {
     let invalidPaths: [String]
     let codemapUnavailable: [String]
     let mutated: Bool
+    let validCandidateCount: Int
 }
 
 struct WorkspaceSliceSelectionMutationResult: Equatable {
@@ -115,19 +116,22 @@ struct WorkspaceSelectionMutationService {
     let codemapsGloballyDisabledMessage: String
     let automaticSelectionPolicy: WorkspaceCodemapAutomaticSelectionRequestPolicy
     let automaticSelectionWaiter: WorkspaceCodemapAutomaticSelectionWaiter
+    let removePathsDidCaptureExistingHook: @Sendable (StoredSelection) async -> Void
 
     init(
         store: WorkspaceFileContextStore,
         codemapsGloballyDisabled: Bool = false,
         codemapsGloballyDisabledMessage: String = "Code maps are disabled for this tool.",
         automaticSelectionPolicy: WorkspaceCodemapAutomaticSelectionRequestPolicy = .default,
-        automaticSelectionWaiter: WorkspaceCodemapAutomaticSelectionWaiter = .production
+        automaticSelectionWaiter: WorkspaceCodemapAutomaticSelectionWaiter = .production,
+        removePathsDidCaptureExistingHook: @escaping @Sendable (StoredSelection) async -> Void = { _ in }
     ) {
         self.store = store
         self.codemapsGloballyDisabled = codemapsGloballyDisabled
         self.codemapsGloballyDisabledMessage = codemapsGloballyDisabledMessage
         self.automaticSelectionPolicy = automaticSelectionPolicy
         self.automaticSelectionWaiter = automaticSelectionWaiter
+        self.removePathsDidCaptureExistingHook = removePathsDidCaptureExistingHook
     }
 
     func buildSelection(
@@ -502,6 +506,7 @@ struct WorkspaceSelectionMutationService {
         mode: String = "full",
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace
     ) async -> WorkspaceRemoveSelectionResult {
+        await removePathsDidCaptureExistingHook(existing)
         if mode == "codemap_only" {
             let resolution = await resolveSelectionCandidates(
                 paths: paths,
@@ -556,7 +561,7 @@ struct WorkspaceSelectionMutationService {
         paths: [String],
         rawPaths: [String],
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace
-    ) async -> (selection: StoredSelection, invalidPaths: [String], mutated: Bool) {
+    ) async -> (selection: StoredSelection, invalidPaths: [String], mutated: Bool, validCandidateCount: Int) {
         let resolution = await resolveSelectionCandidates(paths: paths, rawPaths: rawPaths, expandFolders: false, rootScope: rootScope)
         var selectedPaths = existing.selectedPaths
         var manualCodemapPaths = existing.manualCodemapPaths
@@ -581,7 +586,12 @@ struct WorkspaceSelectionMutationService {
             slices: slices,
             codemapAutoEnabled: existing.codemapAutoEnabled
         )
-        return (selection, resolution.invalidPaths, selection != existing || mutated)
+        return (
+            selection,
+            resolution.invalidPaths,
+            selection != existing || mutated,
+            resolution.candidates.count
+        )
     }
 
     func demotePaths(
@@ -601,7 +611,8 @@ struct WorkspaceSelectionMutationService {
                 selection: existing,
                 invalidPaths: resolution.invalidPaths,
                 codemapUnavailable: resolution.codemapUnavailable,
-                mutated: false
+                mutated: false,
+                validCandidateCount: resolution.candidates.count
             )
         }
         var selectedPaths = existing.selectedPaths
@@ -624,7 +635,8 @@ struct WorkspaceSelectionMutationService {
             selection: selection,
             invalidPaths: resolution.invalidPaths,
             codemapUnavailable: resolution.codemapUnavailable,
-            mutated: selection != existing
+            mutated: selection != existing,
+            validCandidateCount: resolution.candidates.count
         )
     }
 
@@ -635,13 +647,17 @@ struct WorkspaceSelectionMutationService {
         allowEmptyFolderExpansion: Bool = false,
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace
     ) async -> WorkspaceResolvedCandidates {
-        let rawLookup = rawLookup(rawPaths)
+        let rawLookup = rawLookup(rawPaths, matching: paths)
         let ordered = orderedInputs(paths)
+        let roots = await store.rootRefs(scope: rootScope)
         var invalid: [String] = []
         var preflight: [String] = []
         for key in ordered {
+            let raw = rawLookup[key] ?? key
             if let issue = await store.exactPathResolutionIssue(for: key, kind: expandFolders ? .either : .file, rootScope: rootScope) {
-                invalid.append(PathResolutionIssueRenderer.message(for: issue))
+                invalid.append(pathResolutionMessage(for: issue, rawPath: raw))
+            } else if isAbsolutePathOutsideRoots(key, roots: roots) {
+                invalid.append(raw)
             } else {
                 preflight.append(key)
             }
@@ -665,7 +681,7 @@ struct WorkspaceSelectionMutationService {
                         if allowEmptyFolderExpansion {
                             resolvedMap[raw] = resolvedMap[raw] ?? (folder.displayPath ?? key)
                         } else if let issue = folder.issue {
-                            invalid.append(PathResolutionIssueRenderer.message(for: issue))
+                            invalid.append(pathResolutionMessage(for: issue, rawPath: raw))
                         } else {
                             invalid.append(raw)
                         }
@@ -678,7 +694,7 @@ struct WorkspaceSelectionMutationService {
                     continue
                 }
                 if let issue = folder.issue {
-                    invalid.append(PathResolutionIssueRenderer.message(for: issue))
+                    invalid.append(pathResolutionMessage(for: issue, rawPath: raw))
                     continue
                 }
             }
@@ -693,13 +709,17 @@ struct WorkspaceSelectionMutationService {
         expandFolders: Bool,
         rootScope: WorkspaceLookupRootScope = .visibleWorkspace
     ) async -> WorkspaceCodemapOnlyCandidates {
-        let rawLookup = rawLookup(rawPaths)
+        let rawLookup = rawLookup(rawPaths, matching: paths)
         let ordered = orderedInputs(paths)
+        let roots = await store.rootRefs(scope: rootScope)
         var invalid: [String] = []
         var preflight: [String] = []
         for key in ordered {
+            let raw = rawLookup[key] ?? key
             if let issue = await store.exactPathResolutionIssue(for: key, kind: expandFolders ? .either : .file, rootScope: rootScope) {
-                invalid.append(PathResolutionIssueRenderer.message(for: issue))
+                invalid.append(pathResolutionMessage(for: issue, rawPath: raw))
+            } else if isAbsolutePathOutsideRoots(key, roots: roots) {
+                invalid.append(raw)
             } else {
                 preflight.append(key)
             }
@@ -727,7 +747,7 @@ struct WorkspaceSelectionMutationService {
                 let folder = await store.expandFolderInputToFiles(key, rootScope: rootScope)
                 if folder.handled {
                     if folder.files.isEmpty {
-                        if let issue = folder.issue { invalid.append(PathResolutionIssueRenderer.message(for: issue)) } else { invalid.append(raw) }
+                        if let issue = folder.issue { invalid.append(pathResolutionMessage(for: issue, rawPath: raw)) } else { invalid.append(raw) }
                     } else {
                         var supported = 0
                         var unsupported = 0
@@ -749,7 +769,7 @@ struct WorkspaceSelectionMutationService {
                     continue
                 }
                 if let issue = folder.issue {
-                    invalid.append(PathResolutionIssueRenderer.message(for: issue))
+                    invalid.append(pathResolutionMessage(for: issue, rawPath: raw))
                     continue
                 }
             }
@@ -1070,6 +1090,56 @@ struct WorkspaceSelectionMutationService {
             lookup[trimmed] = raw
         }
         return lookup
+    }
+
+    private func rawLookup(_ rawPaths: [String], matching paths: [String]) -> [String: String] {
+        var lookup = rawLookup(rawPaths)
+        let orderedPaths = orderedInputs(paths)
+        let orderedRawPaths = orderedInputs(rawPaths)
+        guard orderedPaths.count == orderedRawPaths.count else { return lookup }
+        for (path, raw) in zip(orderedPaths, orderedRawPaths) {
+            lookup[path] = raw
+        }
+        return lookup
+    }
+
+    private func isAbsolutePathOutsideRoots(
+        _ path: String,
+        roots: [WorkspaceRootRef]
+    ) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        guard expanded.hasPrefix("/") else { return false }
+        let standardized = StandardizedPath.absolute(expanded)
+        return !roots.contains { root in
+            standardized == root.standardizedFullPath
+                || StandardizedPath.isDescendant(standardized, of: root.standardizedFullPath)
+        }
+    }
+
+    private func pathResolutionMessage(
+        for issue: PathResolutionIssue,
+        rawPath: String
+    ) -> String {
+        switch issue {
+        case .emptyInput:
+            PathResolutionIssueRenderer.message(for: issue)
+        case let .invalidPathCharacters(_, reason):
+            PathResolutionIssueRenderer.message(for: .invalidPathCharacters(input: rawPath, reason: reason))
+        case let .ambiguousAlias(alias, matchingRoots):
+            PathResolutionIssueRenderer.message(for: .ambiguousAlias(alias: alias, matchingRoots: matchingRoots))
+        case let .ambiguousRootMatch(_, candidateRoots):
+            PathResolutionIssueRenderer.message(for: .ambiguousRootMatch(input: rawPath, candidateRoots: candidateRoots))
+        case let .pathOutsideWorkspace(_, visibleRoots):
+            PathResolutionIssueRenderer.message(for: .pathOutsideWorkspace(input: rawPath, visibleRoots: visibleRoots))
+        case let .destinationOutsideSourceRoot(_, sourceRoot):
+            PathResolutionIssueRenderer.message(for: .destinationOutsideSourceRoot(input: rawPath, sourceRoot: sourceRoot))
+        case .unsupportedPseudoAbsoluteAlias:
+            PathResolutionIssueRenderer.message(for: .unsupportedPseudoAbsoluteAlias(input: rawPath))
+        case .unresolved:
+            PathResolutionIssueRenderer.message(for: .unresolved(input: rawPath))
+        }
     }
 
     private func normalizeSlices(_ slices: [String: [LineRange]]) -> [String: [LineRange]] {

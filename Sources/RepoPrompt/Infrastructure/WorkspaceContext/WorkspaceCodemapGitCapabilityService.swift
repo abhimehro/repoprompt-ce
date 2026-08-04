@@ -208,12 +208,35 @@ actor WorkspaceCodemapGitCapabilityService {
         let attributeGeneration: String
         let sparseGeneration: String
         let metadataGeneration: String
+
+        /// Per-file source-authority registration-to-demand windows prove the same repository/worktree
+        /// binding, not the absence of root-wide Git cache or metadata churn since registration.
+        /// Demand-window source and classification evidence is compared separately around issuance/revalidation.
+        /// Full `StableAuthority` equality remains the root-authority advancement contract used by resolution.
+        func matchesSourceAuthorityStability(of other: StableAuthority) -> Bool {
+            repositoryNamespace == other.repositoryNamespace &&
+                objectFormat == other.objectFormat &&
+                repositoryBindingEpoch == other.repositoryBindingEpoch &&
+                worktreeBindingEpoch == other.worktreeBindingEpoch
+        }
+    }
+
+    private struct SourceClassificationEvidence: Equatable {
+        let globalAttributeGeneration: String
+        let checkoutConfigurationValuesGeneration: String
     }
 
     private struct AuthorityCapture: Equatable {
         let layout: GitRepositoryLayout
         let objectFormat: GitObjectFormat
         let stableAuthority: StableAuthority
+        let sourceClassificationEvidence: SourceClassificationEvidence
+
+        func matchesSourceAuthorityStability(of other: AuthorityCapture) -> Bool {
+            layout == other.layout &&
+                objectFormat == other.objectFormat &&
+                stableAuthority.matchesSourceAuthorityStability(of: other.stableAuthority)
+        }
     }
 
     private struct RootBinding: Hashable {
@@ -739,7 +762,9 @@ actor WorkspaceCodemapGitCapabilityService {
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
-            guard preRepository.stableAuthority == stableAuthority else { return unavailable }
+            guard preRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority) else {
+                return unavailable
+            }
             await hooks.afterFirstAuthorityCapture()
             try Task.checkCancellation()
 
@@ -813,8 +838,10 @@ actor WorkspaceCodemapGitCapabilityService {
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
+            // Earlier root-wide churn does not invalidate the current request, but this request
+            // must observe one unchanged root authority across its two captures.
             guard preRepository == postRepository,
-                  postRepository.stableAuthority == stableAuthority,
+                  postRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority),
                   case let .eligible(currentCapability) = records[capability.rootEpoch]?.state,
                   currentCapability == capability
             else { return unavailable }
@@ -904,7 +931,9 @@ actor WorkspaceCodemapGitCapabilityService {
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
-            guard preRepository.stableAuthority == stableAuthority else { return false }
+            guard preRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority) else {
+                return false
+            }
 
             for token in tokens {
                 let path = token.standardizedRepositoryRelativePath
@@ -939,8 +968,11 @@ actor WorkspaceCodemapGitCapabilityService {
                 expectedLayout: capability.repositoryLayout,
                 prefix: capability.repositoryRelativeLoadedRootPrefix
             )
-            guard preRepository == postRepository,
-                  postRepository.stableAuthority == stableAuthority
+            // Demand-time classification owns current-state correctness. This pre/post window
+            // only fences classification-input races while revalidating per-file source authority.
+            guard preRepository.sourceClassificationEvidence == postRepository.sourceClassificationEvidence,
+                  preRepository.matchesSourceAuthorityStability(of: postRepository),
+                  postRepository.stableAuthority.matchesSourceAuthorityStability(of: stableAuthority)
             else { return false }
 
             for token in tokens {
@@ -1110,6 +1142,16 @@ actor WorkspaceCodemapGitCapabilityService {
             repositoryLayout: currentLayout,
             salt: namespaceSalt
         )
+        let sourceClassificationEvidence = try SourceClassificationEvidence(
+            globalAttributeGeneration: digestEvidence(
+                urls: Self.globalAttributeURLs(
+                    layout: currentLayout,
+                    configuredAttributesFile: configuration.attributesFilePath
+                ),
+                includeBoundedContents: true
+            ),
+            checkoutConfigurationValuesGeneration: Self.checkoutConfigurationValuesDigest(configuration)
+        )
 
         let layoutGeneration = try digestEvidence(
             urls: [
@@ -1190,7 +1232,8 @@ actor WorkspaceCodemapGitCapabilityService {
                 attributeGeneration: attributeGeneration,
                 sparseGeneration: sparseGeneration,
                 metadataGeneration: metadataGeneration
-            )
+            ),
+            sourceClassificationEvidence: sourceClassificationEvidence
         )
     }
 
@@ -1293,15 +1336,34 @@ actor WorkspaceCodemapGitCapabilityService {
         return urls
     }
 
-    private static func attributeURLs(
+    private static func globalAttributeURLs(
         layout: GitRepositoryLayout,
-        loadedRoot: URL,
         configuredAttributesFile: String?
     ) -> [URL] {
         var urls = [
             layout.gitDir.appendingPathComponent("info/attributes"),
             layout.commonDir.appendingPathComponent("info/attributes")
         ]
+        if let configuredAttributesFile {
+            // `git config --path --get core.attributesFile` expands `~` to an absolute path, while
+            // relative values remain relative and `git check-attr` resolves them from the worktree root.
+            let configuredURL = configuredAttributesFile.hasPrefix("/")
+                ? URL(fileURLWithPath: configuredAttributesFile)
+                : layout.workTreeRoot.appendingPathComponent(configuredAttributesFile)
+            urls.append(configuredURL.standardizedFileURL)
+        }
+        return urls
+    }
+
+    private static func attributeURLs(
+        layout: GitRepositoryLayout,
+        loadedRoot: URL,
+        configuredAttributesFile: String?
+    ) -> [URL] {
+        var urls = globalAttributeURLs(
+            layout: layout,
+            configuredAttributesFile: configuredAttributesFile
+        )
         var directory = layout.workTreeRoot.resolvingSymlinksInPath().standardizedFileURL
         let target = loadedRoot.resolvingSymlinksInPath().standardizedFileURL
         while true {
@@ -1311,11 +1373,6 @@ actor WorkspaceCodemapGitCapabilityService {
                 .split(separator: "/", omittingEmptySubsequences: true)
             guard let next = relative.first else { break }
             directory.appendPathComponent(String(next), isDirectory: true)
-        }
-        if let configuredAttributesFile {
-            let configuredURL = URL(fileURLWithPath: configuredAttributesFile, relativeTo: layout.commonDir)
-                .standardizedFileURL
-            urls.append(configuredURL)
         }
         return urls
     }
@@ -1573,6 +1630,21 @@ actor WorkspaceCodemapGitCapabilityService {
             if path.hasPrefix(alias + "/") { return target + path.dropFirst(alias.count) }
         }
         return path
+    }
+
+    private static func checkoutConfigurationValuesDigest(
+        _ configuration: GitCodemapAuthorityConfiguration
+    ) -> String {
+        var values = [
+            configuration.checkout.coreAutoCRLF ?? "<nil>",
+            configuration.checkout.coreEOL ?? "<nil>",
+            configuration.attributesFilePath ?? "<nil>"
+        ]
+        for key in configuration.checkout.filterDriverConfiguration.keys.sorted() {
+            values.append(key)
+            values.append(configuration.checkout.filterDriverConfiguration[key] ?? "")
+        }
+        return digestStrings(values)
     }
 
     private static func checkoutConfigurationDigest(

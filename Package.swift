@@ -47,6 +47,7 @@ var packageDependencies: [Package.Dependency] = [
 ]
 
 var repoPromptAppDependencies: [Target.Dependency] = [
+    "RepoPromptDomainRuntime",
     "RepoPromptCodeMapCore",
     "RepoPromptRegexCore",
     "RepoPromptWorkspaceCore",
@@ -78,6 +79,7 @@ var repoPromptAppSwiftSettings: [SwiftSetting] = [
 
 var repoPromptTestDependencies: [Target.Dependency] = [
     "RepoPromptApp",
+    "RepoPromptDomainRuntime",
     "RepoPromptCodeMapCore",
     "RepoPromptMCP",
     "RepoPromptShared",
@@ -124,6 +126,20 @@ let package = Package(
             path: "Sources/RepoPromptExecutable"
         ),
         .target(
+            name: "RepoPromptDomainRuntime",
+            dependencies: [
+                "RepoPromptShared",
+                "RepoPromptC",
+                "RepoPromptCodeMapCore",
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "MCP", package: "swift-sdk")
+            ],
+            path: "Sources/RepoPromptDomainRuntime",
+            swiftSettings: swift6LanguageMode + [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .target(
             name: "RepoPromptWorkspaceCore",
             path: "Sources/RepoPromptWorkspaceCore"
         ),
@@ -165,7 +181,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "RepoPromptMCP",
-            dependencies: ["RepoPromptShared", .product(name: "Logging", package: "swift-log"), .product(name: "MCP", package: "swift-sdk"), .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"), .product(name: "SystemPackage", package: "swift-system")],
+            dependencies: ["RepoPromptShared", "RepoPromptDomainRuntime", "RepoPromptCodeMapCore", "RepoPromptC", .product(name: "Logging", package: "swift-log"), .product(name: "MCP", package: "swift-sdk"), .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"), .product(name: "SystemPackage", package: "swift-system")],
             path: "Sources/RepoPromptMCP",
             swiftSettings: [.define("DEBUG", .when(configuration: .debug))]
         ),
@@ -180,6 +196,15 @@ let package = Package(
         // FileManager source probe evaluates false in this root package graph.
         .target(name: "TreeSitterScannerSupport", path: "Sources/TreeSitterScannerSupport", sources: ["src/javascript/scanner.c", "src/python/scanner.c"], publicHeadersPath: "include"),
         .binaryTarget(name: "Sparkle", path: "Vendor/Sparkle/Sparkle.xcframework"),
+        .testTarget(
+            name: "RepoPromptDomainRuntimeTests",
+            dependencies: [
+                "RepoPromptDomainRuntime",
+                .product(name: "MCP", package: "swift-sdk")
+            ],
+            path: "Tests/RepoPromptDomainRuntimeTests",
+            swiftSettings: swift6LanguageMode
+        ),
         .testTarget(
             name: "RepoPromptWorkspaceCoreTests",
             dependencies: ["RepoPromptWorkspaceCore"],

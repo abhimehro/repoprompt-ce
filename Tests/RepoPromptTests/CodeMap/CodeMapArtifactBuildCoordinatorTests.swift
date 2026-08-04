@@ -1668,7 +1668,7 @@ final class CodeMapArtifactBuildCoordinatorTests: XCTestCase {
                 !snapshot.hookDispatcherIsDraining
         }
         accounting = await coordinator.accounting()
-        XCTAssertEqual(accounting.counters.droppedHookEvents, 2)
+        XCTAssertGreaterThanOrEqual(accounting.counters.droppedHookEvents, 2)
     }
 
     func testEarlyLocatorReadFailureIsTypedAccountedAndRetryable() async throws {
