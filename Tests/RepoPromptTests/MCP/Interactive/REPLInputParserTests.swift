@@ -119,12 +119,7 @@ final class REPLInputParserTests: XCTestCase {
     func testEscapedQuotes() {
         let result = REPLInputParser.parse("echo \\\"hello\\\"")
         XCTAssertEqual(result.segments.count, 1)
-        // Note: The escape character \ before " is consumed in splitSegments? No, when NOT in double quotes, escaped quotes are appended as is if there's a backslash.
-        // Wait, splitSegments: if escaped, appends `ch` and resets `escaped`. But `escaped` is only set when `inDouble` and `ch == \\`.
-        // If not inDouble, and we see `\`, it just appends `\`.
-        // Let's verify: \ is only a special escape inside double quotes, and maybe in single quotes? No, the code says:
         // if ch == "\\", inDouble { escaped = true; ... }
-        // So a backslash outside double quotes is just a literal backslash.
         XCTAssertEqual(result.segments[0].command, "echo \\\"hello\\\"")
     }
 
