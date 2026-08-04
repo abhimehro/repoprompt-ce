@@ -106,7 +106,7 @@ final class KeychainService: SecureKeyValueStorageBackend, @unchecked Sendable {
         }
 
         var query = values
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         return query
     }
 
