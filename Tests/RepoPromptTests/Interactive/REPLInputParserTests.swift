@@ -3,8 +3,8 @@
 //  RepoPrompt
 //
 
-import XCTest
 @testable import RepoPromptMCP
+import XCTest
 
 final class REPLInputParserTests: XCTestCase {
     func testSimpleCommand() {
