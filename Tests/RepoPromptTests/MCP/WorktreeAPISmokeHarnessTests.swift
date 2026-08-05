@@ -7,9 +7,7 @@ import XCTest
 @MainActor
 final class WorktreeAPISmokeHarnessTests: XCTestCase {
     func testManageWorktreeAndAgentRunAPISmokeFlow() async throws {
-        // Skip intermittent flake in CI related to MCP connection bindings
-        print("Skipping known flake testManageWorktreeAndAgentRunAPISmokeFlow")
-        return
+        throw XCTSkip("Skipping known flake testManageWorktreeAndAgentRunAPISmokeFlow")
         Self.traceSmokePhase("fixture.begin")
         let fixture = try Self.makeGitFixture()
         Self.traceSmokePhase("fixture.ready")
