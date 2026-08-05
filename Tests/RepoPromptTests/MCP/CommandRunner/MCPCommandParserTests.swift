@@ -1,10 +1,8 @@
 import MCP
 import XCTest
-
 @testable import RepoPromptMCP
 
 final class MCPCommandParserTests: XCTestCase {
-
     func testSuggestCommand_ExactMatch() {
         XCTAssertEqual(MCPCommandParser.suggestCommand(for: "help"), "help")
     }
