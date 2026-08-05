@@ -4015,7 +4015,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         }
 
         // Content/target keys (if no path already added)
-        if !args.keys.contains("path") {
+        if args["path"] == nil {
             let contentKeys = ["pattern", "paths", "query", "compare", "command", "workspace", "chat_name", "chat_id"]
             for key in contentKeys {
                 if let value = args[key] {
