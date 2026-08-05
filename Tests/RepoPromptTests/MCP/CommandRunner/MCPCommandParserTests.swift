@@ -1,7 +1,6 @@
 import MCP
-import XCTest
-
 @testable import RepoPromptMCP
+import XCTest
 
 final class MCPCommandParserTests: XCTestCase {
     func testSuggestCommand_ExactMatch() {
