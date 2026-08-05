@@ -33,8 +33,20 @@ struct DeviceIdentity {
             #endif
         } else {
             let newID = UUID().uuidString
-            try? newID.data(using: .utf8)?
-                .write(to: fileURL, options: [.atomic])
+            if let data = newID.data(using: .utf8) {
+                let tempURL = baseDir.appendingPathComponent(UUID().uuidString)
+                if fm.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) {
+                    do {
+                        if fm.fileExists(atPath: fileURL.path) {
+                            _ = try fm.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+                        } else {
+                            try fm.moveItem(at: tempURL, to: fileURL)
+                        }
+                    } catch {
+                        try? fm.removeItem(at: tempURL)
+                    }
+                }
+            }
             id = newID
             #if DEBUG
                 fputs("CLI DeviceIdentity: Created new device ID: \(newID)\n", stderr)
