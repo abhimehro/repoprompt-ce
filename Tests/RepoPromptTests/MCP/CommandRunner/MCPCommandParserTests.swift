@@ -1,5 +1,6 @@
 import MCP
 import XCTest
+
 @testable import RepoPromptMCP
 
 final class MCPCommandParserTests: XCTestCase {
