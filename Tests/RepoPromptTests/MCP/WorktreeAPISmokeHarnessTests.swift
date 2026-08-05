@@ -7,7 +7,6 @@ import XCTest
 @MainActor
 final class WorktreeAPISmokeHarnessTests: XCTestCase {
     func testManageWorktreeAndAgentRunAPISmokeFlow() async throws {
-        return
         Self.traceSmokePhase("fixture.begin")
         let fixture = try Self.makeGitFixture()
         Self.traceSmokePhase("fixture.ready")
