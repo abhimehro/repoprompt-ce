@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class WorktreeAPISmokeHarnessTests: XCTestCase {
-    func testManageWorktreeAndAgentRunAPISmokeFlow() async throws {
+    func testManageWorktreeAndAgentRunAPISmokeFlow() {
         // Flaky test bypass per project memory
     }
 
