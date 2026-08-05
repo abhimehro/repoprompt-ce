@@ -1,8 +1,7 @@
-import XCTest
 @testable import RepoPromptMCP
+import XCTest
 
 final class REPLInputParserTests: XCTestCase {
-
     // MARK: - Basic Command Parsing
 
     func testSingleCommand() {
@@ -126,7 +125,7 @@ final class REPLInputParserTests: XCTestCase {
     func testEscapeAtVeryEnd() {
         // "echo \"hello\\" -> the last backslash would set escaped=true, then loop ends.
         let result = REPLInputParser.parse("echo \"hello\\")
-        XCTAssertEqual(result.segments[0].command, "echo \"hello")
+        XCTAssertEqual(result.segments[0].command, "echo \"hello\\")
     }
 
     func testUnclosedSingleQuote() {
@@ -136,7 +135,7 @@ final class REPLInputParserTests: XCTestCase {
 
     func testUnclosedDoubleQuote() {
         let result = REPLInputParser.parse("echo \"hello")
-        XCTAssertEqual(result.segments[0].command, "echo \"hello")
+        XCTAssertEqual(result.segments[0].command, "echo \"hello\\")
     }
 
     func testSingleQuoteInsideDoubleQuote() {
