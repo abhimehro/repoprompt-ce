@@ -135,7 +135,7 @@ final class REPLInputParserTests: XCTestCase {
 
     func testUnclosedDoubleQuote() {
         let result = REPLInputParser.parse("echo \"hello")
-        XCTAssertEqual(result.segments[0].command, "echo \"hello\\")
+        XCTAssertEqual(result.segments[0].command, "echo \"hello")
     }
 
     func testSingleQuoteInsideDoubleQuote() {
