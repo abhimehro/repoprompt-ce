@@ -182,7 +182,7 @@ import XCTest
                 XCTAssertEqual(heldSnapshot.activePermitCount, 1)
                 XCTAssertEqual(heldSnapshot.waiterCount, 0)
 
-                await gate.release()
+                gate.release()
                 let broadResult = try await broadTask.value
                 await fixture.store.setSearchLanePermitAcquiredHandlerForTesting(nil)
                 assertOrderedCappedResults(
@@ -194,7 +194,7 @@ import XCTest
             } catch {
                 broadTask.cancel()
                 scopedTasks.forEach { $0.cancel() }
-                await gate.release()
+                gate.release()
                 await drain([broadTask] + scopedTasks)
                 await fixture.store.setSearchLanePermitAcquiredHandlerForTesting(nil)
                 throw error
@@ -217,7 +217,7 @@ import XCTest
             }
             let allLanesAcquired = await barrier.waitUntilAllArrived()
             XCTAssertTrue(allLanesAcquired)
-            await barrier.release()
+            barrier.release()
             do {
                 let results = try await collect(tasks)
                 await clearSearchLaneHooks(fixtures)
@@ -229,7 +229,7 @@ import XCTest
                 )
             } catch {
                 tasks.forEach { $0.cancel() }
-                await barrier.release()
+                barrier.release()
                 await drain(tasks)
                 await clearSearchLaneHooks(fixtures)
                 throw error

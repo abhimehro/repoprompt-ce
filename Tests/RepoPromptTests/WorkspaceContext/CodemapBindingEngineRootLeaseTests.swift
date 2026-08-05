@@ -223,7 +223,7 @@ final class CodemapBindingEngineRootLeaseTests: CodemapBindingEngineTestCase {
             shutdownFinished.finish()
         }
         XCTAssertFalse(shutdownFinished.waitUntilFinished(timeout: 0.1))
-        await loadGate.release()
+        loadGate.release()
         await shutdown.value
     }
 
@@ -265,7 +265,7 @@ final class CodemapBindingEngineRootLeaseTests: CodemapBindingEngineTestCase {
         while await fixture.engine.accounting().unavailableRootCount == 0 {
             await Task.yield()
         }
-        await adoptionGate.release()
+        adoptionGate.release()
 
         _ = await invalidation.value
         guard case .cancelled = await demand.value else {

@@ -413,7 +413,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
         }
         let demandedResult = await demandResult(demanded, before: .seconds(5))
         let blockedAccounting = await warm.engine.accounting()
-        await adoptionGate.release()
+        adoptionGate.release()
         let backgroundResult = await background.value
 
         guard let demandedResult, isReady(demandedResult) else {
@@ -742,7 +742,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
         XCTAssertEqual(recovered.ownerCount, 1)
         XCTAssertEqual(recovered.counters.cancellations, 1)
 
-        await loadGate.release()
+        loadGate.release()
         guard await isReady(second.value) else {
             return XCTFail("Expected the remaining waiter to complete from the shared adoption.")
         }
@@ -1329,7 +1329,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
         XCTAssertGreaterThan(joinedCount, 0)
         let cancellationCount = await fixture.engine.cancel(owner: firstOwner)
         XCTAssertEqual(cancellationCount, 1)
-        await gate.release()
+        gate.release()
         guard case .cancelled = await first.value else { return XCTFail("Expected first cancellation.") }
         let secondResult = await second.value
         guard case .ready = secondResult else {
@@ -1374,7 +1374,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
             if await runtime.coordinator.accounting().counters.joins > 0 { break }
             try? await Task.sleep(for: .milliseconds(10))
         }
-        await gate.release()
+        gate.release()
         let results = await [first.value, second.value]
         XCTAssertEqual(results.count(where: { if case .ready = $0 { true } else { false } }), 1)
         XCTAssertEqual(results.count(where: { if case .alreadyReady = $0 { true } else { false } }), 1)
