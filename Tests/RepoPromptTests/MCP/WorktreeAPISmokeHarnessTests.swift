@@ -7,6 +7,16 @@ import XCTest
 @MainActor
 final class WorktreeAPISmokeHarnessTests: XCTestCase {
     func testManageWorktreeAndAgentRunAPISmokeFlow() async throws {
+        #if DEBUG
+            let startupTrace = WorktreeStartupEventTraceSink()
+            let startupTraceToken = WorktreeStartupInstrumentation.addEventObserverForTesting { event, sequence in
+                startupTrace.record(event, sequence: sequence)
+            }
+            defer {
+                WorktreeStartupInstrumentation.removeEventObserverForTesting(startupTraceToken)
+                startupTrace.finish()
+            }
+        #endif
         Self.traceSmokePhase("fixture.begin")
         let fixture = try Self.makeGitFixture()
         Self.traceSmokePhase("fixture.ready")
@@ -1079,8 +1089,7 @@ final class WorktreeAPISmokeHarnessTests: XCTestCase {
     private static func createBackgroundTab(in window: WindowState, name: String) async throws -> ComposeTabState {
         let tab = await window.promptManager.createBackgroundComposeTab(
             strategy: .blank,
-            name: name,
-            capacityPolicy: .mcpBackgroundAgent
+            name: name
         )
         return try XCTUnwrap(tab)
     }
@@ -1248,6 +1257,46 @@ final class WorktreeAPISmokeHarnessTests: XCTestCase {
 }
 
 #if DEBUG
+    private final class WorktreeStartupEventTraceSink: @unchecked Sendable {
+        private static let maximumPendingEventCount = 64
+
+        private let queue = DispatchQueue(label: "com.repoprompt.tests.worktree-startup-trace")
+        private let pendingCapacity = DispatchSemaphore(value: maximumPendingEventCount)
+        private var isActive = true
+        private var startNanosecondsByCorrelationID: [UUID: UInt64] = [:]
+
+        func record(_ event: WorktreeStartupInstrumentation.Event, sequence: UInt64) {
+            guard pendingCapacity.wait(timeout: .now()) == .success else { return }
+            queue.async { [self] in
+                defer { pendingCapacity.signal() }
+                guard isActive else { return }
+                emit(event, sequence: sequence)
+            }
+        }
+
+        func finish() {
+            queue.sync {
+                isActive = false
+            }
+        }
+
+        private func emit(_ event: WorktreeStartupInstrumentation.Event, sequence: UInt64) {
+            let startNanoseconds = startNanosecondsByCorrelationID[event.correlationID]
+                ?? event.timestampNanoseconds
+            startNanosecondsByCorrelationID[event.correlationID] = startNanoseconds
+            let elapsedNanoseconds = event.timestampNanoseconds >= startNanoseconds
+                ? event.timestampNanoseconds - startNanoseconds
+                : 0
+            let line = "[WorktreeAPISmoke] startup sequence=\(sequence)"
+                + " correlation=\(event.correlationID.uuidString)"
+                + " phase=\(event.phase.rawValue)"
+                + " elapsed_us=\(elapsedNanoseconds / 1000)"
+                + " route=\(event.route?.rawValue ?? "none")"
+                + " fallback=\(event.fallback?.rawValue ?? "none")\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+    }
+
     private final class WorktreeContextBuilderImmediateCompletionProvider: HeadlessAgentProvider {
         func streamAgentMessage(
             _ message: AgentMessage,
