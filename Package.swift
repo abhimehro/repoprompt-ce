@@ -197,13 +197,6 @@ let package = Package(
         .target(name: "TreeSitterScannerSupport", path: "Sources/TreeSitterScannerSupport", sources: ["src/javascript/scanner.c", "src/python/scanner.c"], publicHeadersPath: "include"),
         .binaryTarget(name: "Sparkle", path: "Vendor/Sparkle/Sparkle.xcframework"),
         .testTarget(
-            name: "RepoPromptExecutableTests",
-            dependencies: [
-                .target(name: "RepoPrompt")
-            ],
-            path: "Tests/RepoPromptExecutableTests"
-        ),
-        .testTarget(
             name: "RepoPromptDomainRuntimeTests",
             dependencies: [
                 "RepoPromptDomainRuntime",

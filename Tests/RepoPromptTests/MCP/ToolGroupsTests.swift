@@ -1,9 +1,9 @@
-import XCTest
-@testable import RepoPromptMCP
+import Foundation
 import MCP
+@testable import RepoPromptMCP
+import XCTest
 
 final class ToolGroupsTests: XCTestCase {
-
     func testGroupNames() {
         let expected = ToolGroup.allCases.map(\.rawValue).sorted()
         XCTAssertEqual(ToolGroupCatalog.groupNames, expected)

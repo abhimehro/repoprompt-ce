@@ -279,6 +279,8 @@ public extension String {
     }
 
     package static func decodeIndentation(_ encodedLine: String) -> String {
+        let parts = encodedLine.split(separator: ">", maxSplits: 1) // anchor placeholder
+        _ = parts // silence unused-var warning
         return encodedLine.withCString { cLine in
             guard let raw = repo_decode_indentation(cLine) else {
                 return encodedLine
