@@ -36,15 +36,20 @@ struct DeviceIdentity {
             if let data = newID.data(using: .utf8) {
                 // SECURITY: Prevent TOCTOU race condition by creating file with secure permissions first
                 let tempURL = fileURL.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
-                if fm.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) {
+                if FileManager.default.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) {
                     do {
                         if fm.fileExists(atPath: fileURL.path) {
+                            #if os(macOS)
                             _ = try fm.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+                            #else
+                            try? FileManager.default.removeItem(at: fileURL)
+                            try FileManager.default.moveItem(at: tempURL, to: fileURL)
+                            #endif
                         } else {
-                            try fm.moveItem(at: tempURL, to: fileURL)
+                            try FileManager.default.moveItem(at: tempURL, to: fileURL)
                         }
                     } catch {
-                        try? fm.removeItem(at: tempURL)
+                        try? FileManager.default.removeItem(at: tempURL)
                     }
                 }
             }

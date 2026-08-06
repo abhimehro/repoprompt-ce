@@ -139,7 +139,12 @@ actor MCPConfigExportService {
         }
         do {
             if fileManager.fileExists(atPath: configURL.path) {
+                #if os(macOS)
                 _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+                #else
+                try? fileManager.removeItem(at: configURL)
+                try fileManager.moveItem(at: tempURL, to: configURL)
+                #endif
             } else {
                 try fileManager.moveItem(at: tempURL, to: configURL)
             }
@@ -271,16 +276,8 @@ actor MCPConfigExportService {
         let flavor = identity.buildFlavor == .debug ? "D" : "R"
         let url = launchConfigDirectoryURL
             .appendingPathComponent("\(prefix)-\(flavor)-\(UUID().uuidString).json", isDirectory: false)
-        // SECURITY: Prevent TOCTOU race condition by creating file with secure permissions first
-        let tempURL = launchConfigDirectoryURL.appendingPathComponent(UUID().uuidString)
-        guard let data = contents.data(using: .utf8), fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o400]) else {
+        guard let data = contents.data(using: .utf8), fileManager.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o400]) else {
             throw CocoaError(.fileWriteUnknown)
-        }
-        do {
-            try fileManager.moveItem(at: tempURL, to: url)
-        } catch {
-            try? fileManager.removeItem(at: tempURL)
-            throw error
         }
         guard let createdIdentity = MCPConfigLease.identity(atPath: url.path),
               createdIdentity.owner == getuid(),

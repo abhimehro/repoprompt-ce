@@ -288,7 +288,12 @@ public enum MCPTerminalRecordStore {
         }
         do {
             if fileManager.fileExists(atPath: fileURL.path) {
+                #if os(macOS)
                 _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+                #else
+                try? fileManager.removeItem(at: fileURL)
+                try fileManager.moveItem(at: tempURL, to: fileURL)
+                #endif
             } else {
                 try fileManager.moveItem(at: tempURL, to: fileURL)
             }
