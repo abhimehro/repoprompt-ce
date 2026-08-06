@@ -41,6 +41,9 @@ struct AgentAutoEditPill: View {
         }
         .buttonStyle(.plain)
         .hoverTooltip(tooltipText, .top)
+        .accessibilityLabel("Auto Edit")
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(isOn ? [.isSelected] : [])
     }
 }
 
