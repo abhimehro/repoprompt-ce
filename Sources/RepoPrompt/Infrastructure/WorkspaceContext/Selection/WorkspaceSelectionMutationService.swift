@@ -108,10 +108,6 @@ private actor WorkspaceCodemapAutomaticSelectionDemandOwnership {
         defer { retainedTargetTickets.removeAll() }
         return Array(retainedTargetTickets)
     }
-
-    func unrecord(_ ticket: WorkspaceCodemapArtifactDemandTicket) {
-        retainedTargetTickets.remove(ticket)
-    }
 }
 
 struct WorkspaceSelectionMutationService {
@@ -924,7 +920,6 @@ struct WorkspaceSelectionMutationService {
                           let rootReceipt = rootReceiptByEpoch[target.rootEpoch]
                     else { continue }
                     if let priorTicket = ticketsByTarget.removeValue(forKey: target) {
-                        await ownership.unrecord(priorTicket)
                         _ = await store.cancelCodemapArtifactDemand(priorTicket)
                     }
                     if let owned = await store.requestAutomaticCodemapTargetWithOwnership(

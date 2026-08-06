@@ -56,6 +56,7 @@ protocol SettingsManaging {
     func effectiveAgentModelsProfile(workspaceID: UUID?) -> AgentModelsSettingsProfile
     func setAgentModelsMCPAgentRoleOverrides(_ overrides: [String: String]?, scope: AgentModelsEditingScope)
     func copyAgentModelsProfile(from source: AgentModelsEditingScope, to destination: AgentModelsEditingScope)
+    func maxBackgroundAgentComposeTabs() -> Int
     func commitWorkspace(_ workspaceID: UUID)
     func discardWindowOverrides(for workspaceID: UUID)
     func commitAllVisitedWorkspaces()
@@ -356,6 +357,10 @@ final class WindowSettingsManager: ObservableObject, SettingsManaging {
 
     func copyAgentModelsProfile(from source: AgentModelsEditingScope, to destination: AgentModelsEditingScope) {
         store.copyAgentModelsProfile(from: source, to: destination)
+    }
+
+    func maxBackgroundAgentComposeTabs() -> Int {
+        store.maxBackgroundAgentComposeTabs()
     }
 
     // MARK: - Lifecycle helpers

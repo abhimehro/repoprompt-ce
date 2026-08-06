@@ -6724,7 +6724,10 @@ class WorkspaceFilesViewModel: ObservableObject {
         let selectedFullPaths = selectedFiles.map(\.fullPath)
 
         // Use your String extension’s findClosestPath method to see if any match
-        return String.findClosestPath(trimmedRequest, among: selectedFullPaths) != nil
+        if let _ = String.findClosestPath(trimmedRequest, among: selectedFullPaths) {
+            return true
+        }
+        return false
     }
 
     @MainActor
