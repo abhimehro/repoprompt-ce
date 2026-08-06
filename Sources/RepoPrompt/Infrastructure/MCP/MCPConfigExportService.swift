@@ -132,6 +132,7 @@ actor MCPConfigExportService {
         let configJSON = try renderServerConfig()
         try prepareSecureDirectory(at: configDirectoryURL)
         let configURL = configDirectoryURL.appendingPathComponent(identity.stableWrapperConfigFileName, isDirectory: false)
+        // SECURITY: Prevent TOCTOU race condition by creating file with secure permissions first
         let tempURL = configDirectoryURL.appendingPathComponent(UUID().uuidString)
         guard let data = configJSON.data(using: .utf8), fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
@@ -270,6 +271,7 @@ actor MCPConfigExportService {
         let flavor = identity.buildFlavor == .debug ? "D" : "R"
         let url = launchConfigDirectoryURL
             .appendingPathComponent("\(prefix)-\(flavor)-\(UUID().uuidString).json", isDirectory: false)
+        // SECURITY: Prevent TOCTOU race condition by creating file with secure permissions first
         let tempURL = launchConfigDirectoryURL.appendingPathComponent(UUID().uuidString)
         guard let data = contents.data(using: .utf8), fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o400]) else {
             throw CocoaError(.fileWriteUnknown)

@@ -41,7 +41,8 @@ struct DeviceIdentity {
         } else {
             let newID = UUID().uuidString
             if let data = newID.data(using: .utf8) {
-                let tempURL = baseDir.appendingPathComponent(UUID().uuidString)
+                // SECURITY: Prevent TOCTOU race condition by creating file with secure permissions first
+                let tempURL = fileURL.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
                 if fm.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) {
                     do {
                         if fm.fileExists(atPath: fileURL.path) {

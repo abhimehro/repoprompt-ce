@@ -281,6 +281,7 @@ public enum MCPTerminalRecordStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
+        // SECURITY: Prevent TOCTOU race condition by creating file with secure permissions first
         let tempURL = directory.appendingPathComponent(UUID().uuidString)
         guard fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
