@@ -1,0 +1,4 @@
+## 2024-08-06 - Prevent TOCTOU vulnerabilities in file writing
+**Vulnerability:** Writing sensitive files using `String.write(to:)` or `Data.write(to:)` followed by `FileManager.setAttributes` creates a Time-of-Check-to-Time-of-Use (TOCTOU) race condition, allowing an attacker to intercept the file before permissions are restricted.
+**Learning:** This pattern was present when writing MCP configuration files (`MCPConfigExportService.swift`) and terminal records (`MCPTerminalRecord.swift`), where the files were momentarily exposed with default permissions before being locked down.
+**Prevention:** To prevent this while preserving atomicity, create a temporary file using `FileManager.default.createFile(atPath:contents:attributes:)` to ensure secure initial POSIX permissions, then atomically move or replace the target file.
