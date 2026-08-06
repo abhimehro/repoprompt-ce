@@ -59,6 +59,7 @@ struct AgentWorkflowPill: View {
                 .frame(height: height)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(selection != nil ? "Workflow: \(selection!.displayName)" : "Select Workflow")
 
             if selection != nil {
                 Button {
@@ -73,6 +74,7 @@ struct AgentWorkflowPill: View {
                 .buttonStyle(.plain)
                 .padding(.trailing, closeButtonTrailing)
                 .hoverTooltip("Clear workflow", .top)
+                .accessibilityLabel("Clear workflow")
             }
         }
         .background(.ultraThinMaterial)

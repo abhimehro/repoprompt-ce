@@ -52,6 +52,7 @@ struct AgentStagedSlashCommandPill: View {
                 .stroke(accentColor.opacity(staged.action == .setObjective ? 0.35 : 0.18), lineWidth: staged.action == .setObjective ? 0.8 : 0.5)
         )
         .hoverTooltip(tooltipText, .top)
+        .accessibilityLabel(tooltipText)
     }
 }
 
