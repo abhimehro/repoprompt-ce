@@ -59,10 +59,10 @@ Host drain cancels all owned invocations and polls actor-owned settlement state 
 - `make dev-test FILTER=DomainInteractionAppSeamTests`
   - conductor ticket `d7ceb0b1-152d-4f28-bec4-28b01d38e9ac`
   - 6 tests passed
-- `make dev-test-list`
+- ~~`make dev-test-list`~~ (removed in #704; use `make dev-test` / focused `FILTER=`)
   - conductor ticket `66b89d8c-c9a3-48f5-bbfb-37b1929a3947`
   - passed
-- `python3 Scripts/test_suite_optimizer.py verify-ledger --ledger Scripts/Fixtures/test-suite-contract-ledger.tsv`
+- ~~`Scripts/test_suite_optimizer.py verify-ledger`~~ (ledger tooling removed in #704)
   - passed with 3,681 exact methods
 - `make dev-lint`
   - conductor ticket `eed9515d-276d-43f9-bee3-4afe0f8bae36`
@@ -118,10 +118,10 @@ Corrective focused evidence:
 - `make dev-test FILTER=PersistentMCPResponseDeliveryTests`
   - conductor ticket `eb362895-f49b-4916-b048-c620c4779a20`
   - 24 tests passed
-- `make dev-test-list`
+- ~~`make dev-test-list`~~ (removed in #704; use `make dev-test` / focused `FILTER=`)
   - conductor ticket `7d68ad28-828e-4bcd-840f-cc51bf6c4384`
   - passed
-- `python3 Scripts/test_suite_optimizer.py verify-ledger --ledger Scripts/Fixtures/test-suite-contract-ledger.tsv`
+- ~~`Scripts/test_suite_optimizer.py verify-ledger`~~ (ledger tooling removed in #704)
   - passed with 3,684 exact methods; root/provider list tickets `75a31b9a-c4e6-4eba-b8d1-1441d34db65d` and `7bf553be-656b-4e0a-a4ff-36bc5fea0db3`
 - `make dev-swift-build PRODUCT=RepoPrompt`
   - conductor ticket `c23f9540-6487-4034-83c8-f05f3c76777c`
