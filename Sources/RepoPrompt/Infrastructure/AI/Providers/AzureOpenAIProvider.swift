@@ -239,8 +239,8 @@ extension AzureOpenAIProvider: ResponsesJobProvider {
 
                         // Check for terminal states
                         switch response.status {
-                        case .completed, .incomplete:
-                            // Extract any available output before reporting the terminal outcome
+                        case .completed:
+                            // Extract the output text from the response
                             var outputText = ""
                             var reasoningText = ""
                             for item in response.output {
@@ -286,16 +286,14 @@ extension AzureOpenAIProvider: ResponsesJobProvider {
                                 )
                             }
 
-                            let didComplete = response.status == .completed
                             continuation.yield(
                                 AIStreamResult(
-                                    type: didComplete ? "message_stop" : AIStreamResult.incompleteType,
+                                    type: "message_stop",
                                     text: nil,
                                     reasoning: nil,
                                     promptTokens: response.usage?.inputTokens,
                                     completionTokens: response.usage?.outputTokens,
-                                    cost: nil,
-                                    stopReason: didComplete ? nil : response.incompleteDetails?.reason ?? "unknown"
+                                    cost: nil
                                 )
                             )
                             continuation.finish()
@@ -304,6 +302,10 @@ extension AzureOpenAIProvider: ResponsesJobProvider {
                         case .failed:
                             let message = response.error?.message ?? "Background job failed."
                             throw AIProviderError.invalidResponse(detail: message)
+
+                        case .incomplete:
+                            let detail = response.incompleteDetails?.reason ?? "Background job incomplete."
+                            throw AIProviderError.invalidResponse(detail: detail)
 
                         case .cancelled:
                             throw AIProviderError.invalidResponse(detail: "Background job was cancelled.")
@@ -666,7 +668,6 @@ final class AzureOpenAIProvider: AIProvider {
                 do {
                     var promptTokens: Int?
                     var completionTokens: Int?
-                    var observedCompletionOutcome: AIProviderCompletionOutcome?
 
                     for try await event in stream {
                         if Task.isCancelled { break }
@@ -680,7 +681,6 @@ final class AzureOpenAIProvider: AIProvider {
                                 continuation.yield(AIStreamResult(type: "content", text: nil, reasoning: delta.delta, promptTokens: nil, completionTokens: nil))
                             }
                         case let .responseCompleted(completed):
-                            observedCompletionOutcome = .completed
                             if let usage = completed.response.usage {
                                 promptTokens = usage.inputTokens
                                 completionTokens = usage.outputTokens
@@ -689,8 +689,8 @@ final class AzureOpenAIProvider: AIProvider {
                             let message = failed.response.error?.message ?? "Responses API returned a failure."
                             throw AIProviderError.invalidResponse(detail: message)
                         case let .responseIncomplete(incomplete):
-                            let reason = incomplete.response.incompleteDetails?.reason ?? "unknown"
-                            observedCompletionOutcome = .incomplete(reason: reason)
+                            let detail = incomplete.response.incompleteDetails?.reason ?? "Responses API marked the response as incomplete."
+                            throw AIProviderError.invalidResponse(detail: detail)
                         case let .error(errorEvent):
                             throw APIError.requestFailed(description: errorEvent.prettyDescription)
                         default:
@@ -698,14 +698,7 @@ final class AzureOpenAIProvider: AIProvider {
                         }
                     }
 
-                    switch observedCompletionOutcome {
-                    case .completed:
-                        continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: promptTokens, completionTokens: completionTokens))
-                    case let .incomplete(reason):
-                        continuation.yield(AIStreamResult(type: AIStreamResult.incompleteType, text: nil, promptTokens: promptTokens, completionTokens: completionTokens, stopReason: reason))
-                    case nil:
-                        break
-                    }
+                    continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: promptTokens, completionTokens: completionTokens))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -718,9 +711,9 @@ final class AzureOpenAIProvider: AIProvider {
 
     private func performResponseCompletion(parameters: ModelResponseParameter) async throws -> ResponseModel {
         let response = try await azureService.responseCreate(parameters)
-        guard response.status == .completed || response.status == .incomplete else {
+        guard response.status == .completed else {
             let status = response.status?.rawValue ?? "unknown"
-            let detail = response.error?.message ?? "Response status was '\(status)'"
+            let detail = response.error?.message ?? response.incompleteDetails?.reason ?? "Response status was '\(status)'"
             throw AIProviderError.invalidResponse(detail: detail)
         }
         return response
@@ -767,12 +760,7 @@ final class AzureOpenAIProvider: AIProvider {
             let result = try await completeMessage(aiMessage, model: model, maxTokens: finalMaxTokens)
             return AsyncThrowingStream { continuation in
                 continuation.yield(AIStreamResult(type: "content", text: result.text, reasoning: nil, promptTokens: nil, completionTokens: nil))
-                switch result.completionOutcome {
-                case .completed:
-                    continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: result.promptTokens, completionTokens: result.completionTokens))
-                case let .incomplete(reason):
-                    continuation.yield(AIStreamResult(type: AIStreamResult.incompleteType, text: nil, promptTokens: result.promptTokens, completionTokens: result.completionTokens, stopReason: reason))
-                }
+                continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: result.promptTokens, completionTokens: result.completionTokens))
                 continuation.finish()
             }
         }
@@ -792,7 +780,6 @@ final class AzureOpenAIProvider: AIProvider {
                 do {
                     var promptTokens: Int?
                     var completionTokens: Int?
-                    var observedCompletionOutcome: AIProviderCompletionOutcome?
 
                     for try await chunk in stream {
                         if Task.isCancelled { break }
@@ -802,10 +789,8 @@ final class AzureOpenAIProvider: AIProvider {
                             completionTokens = usage.completionTokens
                         }
 
-                        let choice = chunk.choices?.first
-                        let content = choice?.delta?.content ?? ""
-                        let reasoning = choice?.delta?.reasoningContent ?? ""
-                        let finishReason = choice?.finishReason
+                        let content = chunk.choices?.first?.delta?.content ?? ""
+                        let reasoning = chunk.choices?.first?.delta?.reasoningContent ?? ""
 
                         if !content.isEmpty || !reasoning.isEmpty {
                             continuation.yield(
@@ -818,19 +803,9 @@ final class AzureOpenAIProvider: AIProvider {
                                 )
                             )
                         }
-                        if let completionOutcome = openAIChatCompletionOutcome(finishReason) {
-                            observedCompletionOutcome = completionOutcome
-                        }
                     }
 
-                    switch observedCompletionOutcome {
-                    case .completed:
-                        continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: promptTokens, completionTokens: completionTokens))
-                    case let .incomplete(reason):
-                        continuation.yield(AIStreamResult(type: AIStreamResult.incompleteType, text: nil, promptTokens: promptTokens, completionTokens: completionTokens, stopReason: reason))
-                    case nil:
-                        break
-                    }
+                    continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: promptTokens, completionTokens: completionTokens))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -866,17 +841,10 @@ final class AzureOpenAIProvider: AIProvider {
                 let promptTokens = response.usage?.inputTokens
                 let completionTokens = response.usage?.outputTokens
 
-                let completionOutcome: AIProviderCompletionOutcome = if response.status == .completed {
-                    .completed
-                } else {
-                    .incomplete(reason: response.incompleteDetails?.reason ?? "unknown")
-                }
-
                 return AICompletionResult(
                     text: text,
                     promptTokens: promptTokens,
-                    completionTokens: completionTokens,
-                    completionOutcome: completionOutcome
+                    completionTokens: completionTokens
                 )
             } catch let error as APIError {
                 throw AIProviderError.apiError(source: error)
@@ -896,16 +864,12 @@ final class AzureOpenAIProvider: AIProvider {
             maxTokens: finalMaxTokens
         )
         let response = try await azureService.startChat(parameters: parameters)
-        let choice = response.choices?.first
-        let text = choice?.message?.content ?? ""
-        let completionOutcome = openAIChatCompletionOutcome(choice?.finishReason)
-            ?? .incomplete(reason: "missing_finish_reason")
+        let text = response.choices?.first?.message?.content ?? ""
 
         return AICompletionResult(
             text: text,
             promptTokens: response.usage?.promptTokens,
-            completionTokens: response.usage?.completionTokens,
-            completionOutcome: completionOutcome
+            completionTokens: response.usage?.completionTokens
         )
     }
 

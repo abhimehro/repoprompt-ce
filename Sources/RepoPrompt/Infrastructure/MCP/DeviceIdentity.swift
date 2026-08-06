@@ -45,7 +45,7 @@ struct DeviceIdentity {
                 if fm.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) {
                     do {
                         if fm.fileExists(atPath: fileURL.path) {
-                            _ = try fm.replaceItemAt(fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+                            _ = try fm.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
                         } else {
                             try fm.moveItem(at: tempURL, to: fileURL)
                         }

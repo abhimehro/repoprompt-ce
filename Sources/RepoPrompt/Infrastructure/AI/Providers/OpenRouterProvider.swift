@@ -48,12 +48,7 @@ class OpenRouterProvider: AIProvider {
             let result = try await completeMessage(aiMessage, model: model, maxTokens: maxTokens)
             return AsyncThrowingStream { continuation in
                 continuation.yield(AIStreamResult(type: "content", text: result.text, reasoning: nil, promptTokens: nil, completionTokens: nil))
-                switch result.completionOutcome {
-                case .completed:
-                    continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: result.promptTokens, completionTokens: result.completionTokens, cost: result.cost))
-                case let .incomplete(reason):
-                    continuation.yield(AIStreamResult(type: AIStreamResult.incompleteType, text: nil, promptTokens: result.promptTokens, completionTokens: result.completionTokens, cost: result.cost, stopReason: reason))
-                }
+                continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: result.promptTokens, completionTokens: result.completionTokens, cost: result.cost))
                 continuation.finish()
             }
         }
@@ -85,14 +80,11 @@ class OpenRouterProvider: AIProvider {
                     var promptTokens: Int? = nil
                     var completionTokens: Int? = nil
                     var cost: Double? = nil
-                    var observedCompletionOutcome: AIProviderCompletionOutcome?
 
                     for try await chunk in stream {
                         // Use optional chaining to unwrap the optional 'choices'
-                        let choice = chunk.choices?.first
-                        let content = choice?.delta?.content
-                        let reasoning = choice?.delta?.reasoningContent
-                        let finishReason = choice?.finishReason
+                        let content = chunk.choices?.first?.delta?.content
+                        let reasoning = chunk.choices?.first?.delta?.reasoningContent
 
                         // Extract token usage from the final response chunk if available
                         if let usage = chunk.usage {
@@ -107,19 +99,10 @@ class OpenRouterProvider: AIProvider {
                         } else if let r = reasoning, !r.isEmpty {
                             continuation.yield(AIStreamResult(type: "content", text: nil, reasoning: r))
                         }
-                        if let completionOutcome = openAIChatCompletionOutcome(finishReason) {
-                            observedCompletionOutcome = completionOutcome
-                        }
                     }
 
-                    switch observedCompletionOutcome {
-                    case .completed:
-                        continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: promptTokens, completionTokens: completionTokens, cost: cost))
-                    case let .incomplete(reason):
-                        continuation.yield(AIStreamResult(type: AIStreamResult.incompleteType, text: nil, promptTokens: promptTokens, completionTokens: completionTokens, cost: cost, stopReason: reason))
-                    case nil:
-                        break
-                    }
+                    // Indicate the message has ended with token counts
+                    continuation.yield(AIStreamResult(type: "message_stop", text: nil, reasoning: nil, promptTokens: promptTokens, completionTokens: completionTokens, cost: cost))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -153,17 +136,14 @@ class OpenRouterProvider: AIProvider {
         let completionTokens = completion.usage?.completionTokens
         let cost = completion.usage?.cost
 
-        let choice = completion.choices?.first
-        let content = choice?.message?.content ?? ""
-        let completionOutcome = openAIChatCompletionOutcome(choice?.finishReason)
-            ?? .incomplete(reason: "missing_finish_reason")
+        // Use optional chaining for 'choices'
+        let content = completion.choices?.first?.message?.content ?? ""
 
         return AICompletionResult(
             text: content,
             promptTokens: promptTokens,
             completionTokens: completionTokens,
-            cost: cost,
-            completionOutcome: completionOutcome
+            cost: cost
         )
     }
 

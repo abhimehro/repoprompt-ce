@@ -900,8 +900,6 @@ enum WorktreeStartupInstrumentation {
         private static var storedDeltaCompatibilityEvaluations: [DeltaCompatibilityEvaluationRecord] = []
         private static var deltaCompatibilityEvaluationEvictionCount = 0
         private static var benchmarkMetricsByTag: [BenchmarkMetricTag: BenchmarkMetricSnapshot] = [:]
-        private static var eventObserversForTesting: [UUID: @Sendable (Event, UInt64) -> Void] = [:]
-        private static var eventObservationSequence: UInt64 = 0
     #endif
 
     static func record(
@@ -911,38 +909,25 @@ enum WorktreeStartupInstrumentation {
         fallback: WorkspaceRootSeedFallbackReason? = nil
     ) {
         lock.lock()
-        let event = Event(
-            phase: phase,
-            context: context,
-            route: route,
-            fallback: fallback
-        )
+        defer { lock.unlock() }
         if events.count == maximumEventCount {
             events.removeFirst()
             #if DEBUG
                 eventEvictionCount = incremented(eventEvictionCount)
             #endif
         }
-        events.append(event)
+        events.append(Event(
+            phase: phase,
+            context: context,
+            route: route,
+            fallback: fallback
+        ))
         if let route {
             routeCounts[route, default: 0] += 1
         }
         if let fallback {
             fallbackCounts[fallback, default: 0] += 1
         }
-        #if DEBUG
-            eventObservationSequence = eventObservationSequence == .max
-                ? .max
-                : eventObservationSequence + 1
-            let observationSequence = eventObservationSequence
-            let observers = Array(eventObserversForTesting.values)
-        #endif
-        lock.unlock()
-        #if DEBUG
-            for observer in observers {
-                observer(event, observationSequence)
-            }
-        #endif
     }
 
     static func recordGitCommand(
@@ -1527,22 +1512,6 @@ enum WorktreeStartupInstrumentation {
     }
 
     #if DEBUG
-        static func addEventObserverForTesting(
-            _ observer: @escaping @Sendable (Event, UInt64) -> Void
-        ) -> UUID {
-            let token = UUID()
-            lock.lock()
-            eventObserversForTesting[token] = observer
-            lock.unlock()
-            return token
-        }
-
-        static func removeEventObserverForTesting(_ token: UUID) {
-            lock.lock()
-            eventObserversForTesting.removeValue(forKey: token)
-            lock.unlock()
-        }
-
         static func resetForTesting() {
             lock.lock()
             events.removeAll(keepingCapacity: true)

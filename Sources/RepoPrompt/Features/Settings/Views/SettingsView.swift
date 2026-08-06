@@ -1073,15 +1073,7 @@ enum SettingsTab: String, CaseIterable {
                 "cleanup_sessions",
                 "investigate workflow",
                 "refactor workflow",
-                "orchestrate workflow",
-                "agent chats",
-                "compose tabs",
-                "show mcp-created chats",
-                "mcp-created chats",
-                "compose tabs without agent sessions",
-                "sessionless compose tabs",
-                "show compose tabs",
-                "agent session visibility"
+                "orchestrate workflow"
             ]
         case .agentModels:
             [
