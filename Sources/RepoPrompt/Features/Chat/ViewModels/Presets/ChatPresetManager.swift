@@ -237,11 +237,14 @@ class ChatPresetManager: ObservableObject {
     // MARK: - Model Preset Integration
 
     /// Validate that a chat preset's model reference is valid
-    /// This will need to be connected to ModelPresetsManager when available
     func validateModelReference(for preset: ChatPreset) -> Bool {
-        // TODO: Check against ModelPresetsManager
-        // For now, return true if no model specified (use default)
-        preset.modelPresetName == nil || !preset.modelPresetName!.isEmpty
+        guard let presetName = preset.modelPresetName, !presetName.isEmpty else {
+            // No model specified, use default
+            return true
+        }
+
+        // Check against ModelPresetsManager
+        return ModelPresetsManager.shared.preset(named: presetName) != nil
     }
 
     // MARK: - Copy Preset Integration
