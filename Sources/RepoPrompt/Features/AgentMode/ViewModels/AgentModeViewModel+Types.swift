@@ -184,7 +184,6 @@ extension AgentModeViewModel {
         let composeTabMetadataSignatures: [AgentSessionSidebarTabMetadataSignature]
         let stashedTabSignatures: [AgentSessionSidebarStashedTabSignature]
         let archivedSessionsExpanded: Bool
-        let showComposeTabsWithoutAgentSessions: Bool
     }
 
     struct SidebarListProjection {

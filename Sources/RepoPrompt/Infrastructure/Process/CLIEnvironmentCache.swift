@@ -186,7 +186,6 @@ actor CLIEnvironmentCache {
         defer {
             out.closeFile()
             err.closeFile()
-            group.wait()
         }
         let terminationGroup = DispatchGroup()
         terminationGroup.enter()
@@ -219,6 +218,10 @@ actor CLIEnvironmentCache {
         if timedOut {
             return nil
         }
+
+        // Wait for background threads to finish reading output before accessing accumulators
+        group.wait()
+
         log("Login shell exit status: \(process.terminationStatus)", enabled: enableLogging)
         if !stderrAccum.isEmpty {
             log("Login shell emitted \(stderrAccum.count) bytes to STDERR", enabled: enableLogging)

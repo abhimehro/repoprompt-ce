@@ -12,12 +12,6 @@ final class ACPHeadlessProviderLifecycle: @unchecked Sendable {
         let cancelAndShutdown: @Sendable () async -> Void
     }
 
-    private enum DisposalTransition {
-        case idle
-        case wait
-        case teardown(task: Task<Void, Never>?, handles: [ControllerHandle])
-    }
-
     private let lock = NSLock()
     private var nextGeneration: UInt64 = 0
     private var activeStreamGeneration: UInt64?
@@ -25,33 +19,22 @@ final class ACPHeadlessProviderLifecycle: @unchecked Sendable {
     private var controllerByGeneration: [UInt64: ControllerHandle] = [:]
     private var disposeInProgress = false
     private var disposeWaiters: [CheckedContinuation<Void, Never>] = []
-    #if DEBUG
-        private let testDidRegisterDisposalWaiter: (@Sendable () -> Void)?
-
-        init(testDidRegisterDisposalWaiter: (@Sendable () -> Void)? = nil) {
-            self.testDidRegisterDisposalWaiter = testDidRegisterDisposalWaiter
-        }
-    #else
-        init() {}
-    #endif
 
     func waitForDisposalIfNeeded() async {
-        let shouldWait = lock.withLock { disposeInProgress }
+        lock.lock()
+        let shouldWait = disposeInProgress
+        lock.unlock()
+
         guard shouldWait else { return }
 
         await withCheckedContinuation { continuation in
-            let shouldResumeImmediately = lock.withLock {
-                guard disposeInProgress else { return true }
+            lock.lock()
+            if disposeInProgress {
                 disposeWaiters.append(continuation)
-                return false
-            }
-
-            if shouldResumeImmediately {
-                continuation.resume()
+                lock.unlock()
             } else {
-                #if DEBUG
-                    testDidRegisterDisposalWaiter?()
-                #endif
+                lock.unlock()
+                continuation.resume()
             }
         }
     }
@@ -106,48 +89,42 @@ final class ACPHeadlessProviderLifecycle: @unchecked Sendable {
     }
 
     func dispose() async {
-        let transition = lock.withLock { () -> DisposalTransition in
-            if disposeInProgress {
-                return .wait
-            }
+        lock.lock()
+        if disposeInProgress {
+            lock.unlock()
+            await waitForDisposalIfNeeded()
+            return
+        }
 
-            let task = streamTask
-            let handles = Array(controllerByGeneration.values)
-            guard task != nil || !handles.isEmpty else {
-                streamTask = nil
-                activeStreamGeneration = nil
-                controllerByGeneration.removeAll()
-                return .idle
-            }
-
-            disposeInProgress = true
+        let task = streamTask
+        let handles = Array(controllerByGeneration.values)
+        guard task != nil || !handles.isEmpty else {
             streamTask = nil
             activeStreamGeneration = nil
             controllerByGeneration.removeAll()
-            return .teardown(task: task, handles: handles)
+            lock.unlock()
+            return
         }
 
-        switch transition {
-        case .idle:
-            return
-        case .wait:
-            await waitForDisposalIfNeeded()
-        case let .teardown(task, handles):
-            task?.cancel()
-            for handle in handles {
-                await handle.cancelAndShutdown()
-            }
+        disposeInProgress = true
+        streamTask = nil
+        activeStreamGeneration = nil
+        controllerByGeneration.removeAll()
+        lock.unlock()
 
-            let waiters = lock.withLock {
-                disposeInProgress = false
-                let waiters = disposeWaiters
-                disposeWaiters.removeAll()
-                return waiters
-            }
+        task?.cancel()
+        for handle in handles {
+            await handle.cancelAndShutdown()
+        }
 
-            for waiter in waiters {
-                waiter.resume()
-            }
+        lock.lock()
+        disposeInProgress = false
+        let waiters = disposeWaiters
+        disposeWaiters.removeAll()
+        lock.unlock()
+
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 }
