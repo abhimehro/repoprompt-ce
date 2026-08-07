@@ -260,10 +260,9 @@ actor MCPConfigExportService {
         }
         defer { try? fileManager.removeItem(at: tempURL) }
 
-        do {
-            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
-        } catch let error as CocoaError where error.code == .fileNoSuchFile {
-            // Destination doesn't exist, which is expected for new files
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItem(at: destinationURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+        } else {
             try fileManager.moveItem(at: tempURL, to: destinationURL)
         }
     }
