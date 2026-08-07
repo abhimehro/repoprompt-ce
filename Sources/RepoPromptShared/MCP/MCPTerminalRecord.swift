@@ -282,7 +282,7 @@ public enum MCPTerminalRecordStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
 
-        let tempURL = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        let tempURL = fileURL.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
         guard fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
         }
@@ -290,7 +290,7 @@ public enum MCPTerminalRecordStore {
 
         do {
             _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
-        } catch let nsError as NSError where nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError {
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
             try fileManager.moveItem(at: tempURL, to: fileURL)
         }
         // Retention is best-effort: never discard the terminal event we just
