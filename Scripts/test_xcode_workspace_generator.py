@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import shutil
+
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
@@ -25,6 +27,7 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@unittest.skipIf(not shutil.which('swift'), 'swift compiler missing')
 class XcodeWorkspaceGeneratorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
