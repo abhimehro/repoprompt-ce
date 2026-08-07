@@ -4,3 +4,6 @@
 ## 2026-08-06 - DateFormatter Instantiation Overhead
 **Learning:** In Swift, DateFormatter and ISO8601DateFormatter are notoriously expensive to initialize. Reusing a single static let instance is a standard, thread-safe performance optimization to avoid repeated instantiation overhead when formatting or parsing multiple dates. In Changelog.swift, ISO8601DateFormatter() is instantiated inline over 200 times.
 **Action:** Extract inline DateFormatter/ISO8601DateFormatter initializations to a static private property to avoid unnecessary allocation overhead.
+## 2026-08-07 - DateFormatter Instantiation Overhead in ToolOutputFormatter
+**Learning:** DateFormatter and ISO8601DateFormatter are notoriously expensive to initialize. Reusing a single static let instance is a standard, thread-safe performance optimization to avoid repeated instantiation overhead when formatting or parsing multiple dates.
+**Action:** Extract inline DateFormatter/ISO8601DateFormatter initializations to a static private property to avoid unnecessary allocation overhead.
