@@ -83,7 +83,7 @@ The mixed `RepoPromptApp` target should continue to use explicit `@MainActor` de
 - **Required seams:** Split core source/decode values from app-owned provenance; separate CodeMap parsing/query execution from app highlighting; separate canonical artifact rendering from app token accounting; keep shared decoding and performance aggregation app-owned; keep `CodeMapArtifactBuilderClient` app-side around a typed core API; move the single PCRE2 wrapper and JIT resolver into `RepoPromptRegexCore`.
 - **Test ownership:** `RepoPromptCodeMapCoreTests` becomes the sole resource owner for CodeMap parsing fixtures/goldens and the pure golden runner. Surviving app integration tests use programmatic inputs or move the relevant assertion to the core test target; do not add a resource-sharing support target.
 - **Stop conditions:** Any proposed core source imports SwiftUI/AppKit, concrete filesystem/CAS/Git/workspace/MCP types, app identity, or a mutable parser cache without a proved synchronization owner.
-- **Validation:** Identify the decoder, regex, syntax, generator, and golden suites through `make dev-test-list`; record the same-host corpus protocol and baseline; set the extraction acceptance band at this item’s exit before files move; run `make dev-swift-build PRODUCT=RepoPrompt`.
+- **Validation:** Identify the decoder, regex, syntax, generator, and golden suites through focused `make dev-test FILTER=` (former `make dev-test-list` removed in #704); record the same-host corpus protocol and baseline; set the extraction acceptance band at this item’s exit before files move; run `make dev-swift-build PRODUCT=RepoPrompt`.
 
 ### 3. Extract and validate the headless CodeMap target
 
