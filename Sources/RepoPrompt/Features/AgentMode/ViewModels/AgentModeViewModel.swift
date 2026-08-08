@@ -2405,7 +2405,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
     private func installPromptManagerCascadeResolvers(_ promptManager: PromptViewModel) {
         promptManager.composeTabAutoStashEligibilityProvider = { [weak self] tabID in
-            guard let self else { return true }
+            guard let self else { return false }
             return isComposeTabEligibleForAutomaticStash(tabID)
         }
         promptManager.composeTabCascadeResolver = { [weak self] tabIDs, reason in
@@ -2423,7 +2423,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     func isComposeTabEligibleForAutomaticStash(_ tabID: UUID) -> Bool {
-        guard let session = sessions[tabID] else { return true }
+        // Unloaded tabs are not eligible: index metadata may still describe
+        // active or MCP-controlled work that in-memory guards cannot see.
+        guard let session = sessions[tabID] else { return false }
         guard !session.runState.isActive else { return false }
         guard !tabsWithActiveAgentRun.contains(tabID) else { return false }
         guard session.mcpControlContext == nil else { return false }
@@ -11116,7 +11118,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 tabsWithActiveAgentRun.remove(tabID)
             case .close:
                 if let workspace = workspaceManager?.activeWorkspace {
-                    try? await dataService.deleteAgentSessions(forComposeTabID: tabID, for: workspace)
+                    do {
+                        try await dataService.deleteAgentSessions(forComposeTabID: tabID, for: workspace)
+                    } catch {
+                        print("[AgentModeVM] Failed to delete removed tab session data for \(tabID): \(error)")
+                    }
                 }
                 removeSessionIndex(forTabID: tabID)
                 tabDraftText.removeValue(forKey: tabID)
@@ -11125,7 +11131,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 tabsWithActiveAgentRun.remove(tabID)
             case .deleteStashed:
                 if let workspace = workspaceManager?.activeWorkspace {
-                    try? await dataService.deleteAgentSessions(forComposeTabID: tabID, for: workspace)
+                    do {
+                        try await dataService.deleteAgentSessions(forComposeTabID: tabID, for: workspace)
+                    } catch {
+                        print("[AgentModeVM] Failed to delete removed stashed session data for \(tabID): \(error)")
+                    }
                 }
                 removeSessionIndex(forTabID: tabID)
                 tabDraftText.removeValue(forKey: tabID)
@@ -16584,13 +16594,16 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     @discardableResult
     func createAndActivateSessionTab() async -> UUID? {
         guard let promptManager else { return nil }
-        await promptManager.createBlankComposeTab(createAgentSession: true)
-        guard let tabID = currentTabID else { return nil }
-        let session = session(for: tabID)
+        guard case let .created(createdTab) = await promptManager.createBlankComposeTab(createAgentSession: true) else {
+            return nil
+        }
+        let session = session(for: createdTab.id)
         markSessionAsFreshlyCreated(session)
         invalidateSidebarRestoreOrdering()
-        updateBindingsFromSession(session)
-        return tabID
+        if currentTabID == createdTab.id {
+            updateBindingsFromSession(session)
+        }
+        return createdTab.id
     }
 
     // MARK: - Session Handoff

@@ -1197,32 +1197,42 @@ extension OracleViewModel {
                 reviewGitContextOverride: reviewGitContextOverride
             )
         }
+        let queryId: UUID?
         #if DEBUG
             let trace = OracleReviewPackagingDiagnostics.makeTraceContext(
                 tabContext: tabContext,
                 observer: oracleReviewPackagingTraceObserverForTesting
             )
-            await OracleReviewPackagingDiagnostics.withTrace(trace, operation: send)
+            queryId = await OracleReviewPackagingDiagnostics.withTrace(trace, operation: send)
         #else
-            await send()
+            queryId = await send()
         #endif
-        let queryId = activeQueryId(for: chatID) ?? currentQueryId
-
-        if let q = queryId {
-            try await waitUntilMessageFinalised(q)
+        guard let queryId else {
+            throw ChatToolError.internalError("Chat send did not produce a query")
         }
 
+        try await waitUntilMessageFinalised(queryId)
+
         // ────────── 6. Build typed reply ──────────
-        let errors: [String] = []
-        let aiMsg = queryId.flatMap { id in
-            getChatMessage(withId: id)
-        }.flatMap { $0.isUser ? nil : $0 }
+        let aiMsg = getChatMessage(withId: queryId).flatMap { $0.isUser ? nil : $0 }
+        // Early-abort paths (e.g. unavailable model) finalize an error bubble without
+        // ever setting activeQueryId. Surface that as `errors` so MCP clients do not
+        // observe an empty success.
+        let errors: [String]
+        let response: String?
+        if let earlyError = consumeEarlyAbortedSendMessageError(for: queryId) {
+            errors = [earlyError]
+            response = nil
+        } else {
+            errors = []
+            response = aiMsg?.content
+        }
 
         let replyObj = ChatSendReply(
             chatId: chatID,
             shortId: sessions.first(where: { $0.id == chatID })?.shortID ?? "",
             mode: mode,
-            response: aiMsg?.content,
+            response: response,
             errors: errors.isEmpty ? nil : errors
         )
 

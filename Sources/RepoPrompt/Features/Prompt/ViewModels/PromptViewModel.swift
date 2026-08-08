@@ -188,6 +188,11 @@ class PromptViewModel: ObservableObject {
     var composeTabCascadeResolver: ComposeTabCascadeResolver?
     var stashedTabCascadeResolver: StashedTabCascadeResolver?
 
+    enum ForegroundComposeTabCreationResult: Equatable {
+        case created(ComposeTabState)
+        case failed
+    }
+
     var composeTabLimit: Int {
         maxComposeTabs
     }
@@ -2609,24 +2614,25 @@ class PromptViewModel: ObservableObject {
         return await autoStashLeastRecentlyUsedTab(excluding: excluded)
     }
 
+    @discardableResult
     @MainActor
     private func createComposeTab(
         strategy: ComposeTabCreationStrategy = .duplicateCurrent,
         name: String? = nil,
         blankAgentSessionID: UUID? = nil
-    ) async {
+    ) async -> ForegroundComposeTabCreationResult {
         guard
             let manager = workspaceManager,
             let workspace = manager.activeWorkspace,
             let index = manager.workspaces.firstIndex(where: { $0.id == workspace.id })
-        else { return }
+        else { return .failed }
 
         guard await ensureCapacityForNewComposeTab(
             in: manager,
             workspaceIndex: index,
             policy: .uiInteractive,
             excluding: manager.workspaces[index].activeComposeTabID
-        ) else { return }
+        ) else { return .failed }
 
         let didSnapshotSource = flushAndSnapshotSourceTabIfNeeded(for: strategy, in: manager, workspaceIndex: index)
         guard let newTab = makeComposeTab(
@@ -2635,7 +2641,7 @@ class PromptViewModel: ObservableObject {
             workspaceIndex: index,
             manager: manager,
             blankAgentSessionID: blankAgentSessionID
-        ) else { return }
+        ) else { return .failed }
 
         // Flush pending editor state and snapshot current tab before switching
         if !didSnapshotSource {
@@ -2655,17 +2661,24 @@ class PromptViewModel: ObservableObject {
 
         manager.markWorkspaceDirty()
         manager.pollAndSaveState()
+        guard manager.workspaces.indices.contains(index),
+              manager.workspaces[index].id == workspace.id,
+              manager.workspaces[index].composeTabs.contains(where: { $0.id == newTab.id })
+        else { return .failed }
+        return .created(newTab)
     }
 
+    @discardableResult
     @MainActor
-    func createDuplicateComposeTab(named name: String? = nil) async {
+    func createDuplicateComposeTab(named name: String? = nil) async -> ForegroundComposeTabCreationResult {
         await createComposeTab(strategy: .duplicateCurrent, name: name)
     }
 
+    @discardableResult
     @MainActor
-    func createBlankComposeTab(createAgentSession: Bool = false) async {
+    func createBlankComposeTab(createAgentSession: Bool = false) async -> ForegroundComposeTabCreationResult {
         let blankAgentSessionID = createAgentSession ? UUID() : nil
-        await createComposeTab(strategy: .blank, blankAgentSessionID: blankAgentSessionID)
+        return await createComposeTab(strategy: .blank, blankAgentSessionID: blankAgentSessionID)
     }
 
     /// Create a fork-duplicate tab in the background (without switching to it).
@@ -2709,7 +2722,7 @@ class PromptViewModel: ObservableObject {
 
     @MainActor
     func createComposeTab(from preset: WorkspacePreset) async {
-        await createComposeTab(strategy: .preset(preset), name: preset.name)
+        _ = await createComposeTab(strategy: .preset(preset), name: preset.name)
     }
 
     /// Create a new compose tab in the background without switching to it.
@@ -3433,6 +3446,9 @@ class PromptViewModel: ObservableObject {
                         activeComposeTabID = newActiveID
                     }
                 }
+                loadComposeTabsFromWorkspace(manager.workspaces[index])
+                manager.markWorkspaceDirty()
+                manager.pollAndSaveState()
             }
         }
 

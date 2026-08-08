@@ -1088,9 +1088,10 @@ extension AgentModeViewModel {
     }
 
     private func worktreeMergeOperations(forTabID tabID: UUID) -> [AgentSessionWorktreeMergeOperation] {
-        if let liveSession = sessions[tabID], !liveSession.worktreeMergeOperations.isEmpty {
-            return liveSession.worktreeMergeOperations
-        }
-        return []
+        guard let sessionID = boundSessionID(for: tabID),
+              let liveSession = sessions[tabID],
+              liveSession.activeAgentSessionID == sessionID
+        else { return [] }
+        return liveSession.worktreeMergeOperations
     }
 }

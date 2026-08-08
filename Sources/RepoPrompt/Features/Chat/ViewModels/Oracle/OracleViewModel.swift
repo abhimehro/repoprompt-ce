@@ -971,6 +971,10 @@ class OracleViewModel: ObservableObject {
     let workspaceManager: WorkspaceManagerViewModel // Changed from private to let for MCP access
 
     private let finalisationHub = MessageFinalisationHub()
+    /// Message IDs from `sendMessage` early-abort paths (e.g. unavailable model)
+    /// that finalize an error bubble without opening a stream. MCP uses this to
+    /// surface `errors` instead of an empty success.
+    private var earlyAbortedSendMessageIDs: Set<UUID> = []
 
     // Dependencies
     let aiQueriesService: AIQueriesService
@@ -2813,6 +2817,7 @@ class OracleViewModel: ObservableObject {
     // MARK: - Main Send/Receive Flow
 
     @MainActor
+    @discardableResult
     func sendMessage(
         _ newUserMessage: String,
         sessionID: UUID? = nil,
@@ -2826,8 +2831,8 @@ class OracleViewModel: ObservableObject {
         reviewGitContextOverride: FrozenPromptGitReviewContext? = nil,
         overrideAIMessage: AIMessage? = nil,
         onProgress: ((_ text: String, _ reasoning: String?) -> Void)? = nil
-    ) async {
-        guard !newUserMessage.isEmpty else { return }
+    ) async -> UUID? {
+        guard !newUserMessage.isEmpty else { return nil }
         _ = true
 
         let targetSessionID: UUID
@@ -2837,7 +2842,7 @@ class OracleViewModel: ObservableObject {
             targetSessionID = currentSessionID
         } else {
             await startNewChatSession()
-            guard let currentSessionID else { return }
+            guard let currentSessionID else { return nil }
             targetSessionID = currentSessionID
         }
 
@@ -2885,7 +2890,10 @@ class OracleViewModel: ObservableObject {
             }
             registerMessage(errorMessage.id, sessionID: targetSessionID)
             autosaveChatHistory(for: targetSessionID)
-            return
+            // Return the error bubble ID so MCP callers can surface it instead of
+            // treating a nil activeQueryId as an empty success.
+            earlyAbortedSendMessageIDs.insert(errorMessage.id)
+            return errorMessage.id
         }
 
         // Derive a string representation for storage / UI
@@ -3099,6 +3107,7 @@ class OracleViewModel: ObservableObject {
                 }
             }
         }
+        return aiResponseId
     }
 
     func cleanupOracleProviderConversation(
@@ -3614,6 +3623,13 @@ class OracleViewModel: ObservableObject {
             return sessionMessages.first { $0.id == id }
         }
         return messages.first { $0.id == id }
+    }
+
+    /// If `id` was produced by an early `sendMessage` abort (no stream), consume
+    /// that marker and return the finalized error content for MCP `errors`.
+    func consumeEarlyAbortedSendMessageError(for id: UUID) -> String? {
+        guard earlyAbortedSendMessageIDs.remove(id) != nil else { return nil }
+        return getChatMessage(withId: id).flatMap { $0.isUser ? nil : $0 }?.content
     }
 
     @MainActor
