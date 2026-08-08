@@ -838,7 +838,7 @@ actor GitWorkspaceStateAuthority {
                 }
             }
         } onCancel: {
-            Task { self.cancelUncachedPrefixControlWaiter(
+            Task { await self.cancelUncachedPrefixControlWaiter(
                 key: key,
                 flightID: flightID,
                 waiterID: waiterID
