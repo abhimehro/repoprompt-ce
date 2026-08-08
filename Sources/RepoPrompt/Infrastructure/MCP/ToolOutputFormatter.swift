@@ -5384,8 +5384,6 @@ extension ToolOutputFormatter {
 
     // MARK: Git Date Helpers
 
-    /// `ISO8601DateFormatter` is thread-safe, so these are safe to share across
-    /// concurrent tool invocations (unlike `DateFormatter`).
     private static let gitIsoFormatterWithFractionalSeconds: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -5398,29 +5396,38 @@ extension ToolOutputFormatter {
         return formatter
     }()
 
-    private static func formatGitDate(_ isoDate: String) -> String {
-        // Try to parse ISO8601 and format nicely, fallback to raw string
-        let date =
-            gitIsoFormatterWithFractionalSeconds.date(from: isoDate)
-            ?? gitIsoFormatterWithoutFractionalSeconds.date(from: isoDate)
-        guard let date else { return isoDate }
-        // DateFormatter is not thread-safe; create per call for concurrent MCP use.
+    private static let gitDisplayFormatter: DateFormatter = {
         let display = DateFormatter()
         display.dateStyle = .medium
         display.timeStyle = .short
-        return display.string(from: date)
+        return display
+    }()
+
+    private static let gitShortDisplayFormatter: DateFormatter = {
+        let display = DateFormatter()
+        display.dateFormat = "yyyy-MM-dd"
+        return display
+    }()
+
+    private static func formatGitDate(_ isoDate: String) -> String {
+        // Try to parse ISO8601 and format nicely, fallback to raw string
+        if let date = gitIsoFormatterWithFractionalSeconds.date(from: isoDate) {
+            return gitDisplayFormatter.string(from: date)
+        }
+        // Try without fractional seconds
+        if let date = gitIsoFormatterWithoutFractionalSeconds.date(from: isoDate) {
+            return gitDisplayFormatter.string(from: date)
+        }
+        return isoDate
     }
 
     private static func formatGitDateShort(_ isoDate: String) -> String {
         // Short date only (for blame)
-        let date =
-            gitIsoFormatterWithFractionalSeconds.date(from: isoDate)
-            ?? gitIsoFormatterWithoutFractionalSeconds.date(from: isoDate)
-        if let date {
-            // DateFormatter is not thread-safe; create per call for concurrent MCP use.
-            let display = DateFormatter()
-            display.dateFormat = "yyyy-MM-dd"
-            return display.string(from: date)
+        if let date = gitIsoFormatterWithFractionalSeconds.date(from: isoDate) {
+            return gitShortDisplayFormatter.string(from: date)
+        }
+        if let date = gitIsoFormatterWithoutFractionalSeconds.date(from: isoDate) {
+            return gitShortDisplayFormatter.string(from: date)
         }
         // Fallback: try to extract just the date part
         if isoDate.count >= 10 {

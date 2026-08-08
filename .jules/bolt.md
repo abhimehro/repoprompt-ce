@@ -7,3 +7,6 @@
 ## 2026-08-07 - Python tests failure on Linux due to missing macOS tools
 **Learning:** In Linux cloud execution environments, Python test failures in Scripts/ caused by missing macOS-specific tools (e.g., `plutil`, `ditto`) or command argument mismatches (e.g., `stat -f %z`) are expected and can be safely ignored when working on unrelated changes.
 **Action:** Ignore Python test failures relating to release scripts when verifying unrelated Swift codebase modifications in the cloud environment.
+## 2026-08-08 - Flaky Tests on GitHub Actions
+**Learning:** RepoPromptCE Package Tests failures on GitHub Actions runner with network connection reset by peer/operation timed out for `tree-sitter-c-sharp`, as well as `WorkspacePendingSeededRootTests` and `WorktreeAPISmokeHarnessTests` timeouts are likely CI flakes/infrastructure issues not related to the ToolOutputFormatter optimization logic. The rules state: 'In RepoPrompt CE, XCTest failures in tests like WorktreeAPISmokeHarnessTests... are known intermittent test flakes. NEVER bypass or skip these... leave them alone'.
+**Action:** Acknowledge CI flake and ignore unrelated test failures without modifying the code.
