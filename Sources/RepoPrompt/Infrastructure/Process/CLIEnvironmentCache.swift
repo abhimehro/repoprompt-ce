@@ -220,8 +220,8 @@ actor CLIEnvironmentCache {
             return nil
         }
         log("Login shell exit status: \(process.terminationStatus)", enabled: enableLogging)
-        if !stderrAccum.isEmpty, let errStr = String(data: stderrAccum, encoding: .utf8) {
-            log("STDERR from login shell:\n\(errStr)", enabled: enableLogging)
+        if !stderrAccum.isEmpty {
+            log("Login shell emitted \(stderrAccum.count) bytes to STDERR", enabled: enableLogging)
         }
         guard process.terminationStatus == 0 else { return nil }
         var env: [String: String] = [:]
