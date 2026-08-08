@@ -5,6 +5,7 @@ import RepoPromptDomainRuntime
 
 @MainActor
 final class MCPWorktreeToolProvider: MCPAppToolProviding {
+    private static let isoFormatter = ISO8601DateFormatter()
     let group: MCPAppToolGroup = .git
 
     private let runtime: MCPAppToolBinder
@@ -787,7 +788,7 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
             head: binding.head,
             visualLabel: binding.visualLabel,
             visualColorHex: binding.visualColorHex,
-            boundAt: ISO8601DateFormatter().string(from: binding.boundAt),
+            boundAt: Self.isoFormatter.string(from: binding.boundAt),
             source: binding.source
         )
     }

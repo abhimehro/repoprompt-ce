@@ -3390,7 +3390,7 @@ actor ACPAgentSessionController {
             sessionID: String?
         ) {
             var record: [String: Any] = [
-                "capturedAt": ISO8601DateFormatter().string(from: Date()),
+                "capturedAt": Self.isoFormatter.string(from: Date()),
                 "kind": kind,
                 "payload": sanitizeRawCaptureDictionary(payload),
                 "providerID": providerID.rawValue,
