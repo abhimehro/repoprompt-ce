@@ -4,3 +4,6 @@
 ## 2026-08-06 - DateFormatter Instantiation Overhead
 **Learning:** In Swift, DateFormatter and ISO8601DateFormatter are notoriously expensive to initialize. Reusing a single static let instance is a standard, thread-safe performance optimization to avoid repeated instantiation overhead when formatting or parsing multiple dates. In Changelog.swift, ISO8601DateFormatter() is instantiated inline over 200 times.
 **Action:** Extract inline DateFormatter/ISO8601DateFormatter initializations to a static private property to avoid unnecessary allocation overhead.
+## 2026-08-07 - Python tests failure on Linux due to missing macOS tools
+**Learning:** In Linux cloud execution environments, Python test failures in Scripts/ caused by missing macOS-specific tools (e.g., `plutil`, `ditto`) or command argument mismatches (e.g., `stat -f %z`) are expected and can be safely ignored when working on unrelated changes.
+**Action:** Ignore Python test failures relating to release scripts when verifying unrelated Swift codebase modifications in the cloud environment.
