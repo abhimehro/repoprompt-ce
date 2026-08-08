@@ -128,7 +128,7 @@ struct GitDiffSnapshotStore {
             let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { return nil }
             if trimmed.hasPrefix("/") {
-                let root = snapshotsRoot(workspaceDirectory: workspaceDirectory).path
+                _ = snapshotsRoot(workspaceDirectory: workspaceDirectory).path
                 if trimmed.hasPrefix(root) || trimmed.lowercased().hasPrefix(root.lowercased()) {
                     var rel = String(trimmed.dropFirst(root.count))
                     if rel.hasPrefix("/") { rel.removeFirst() }
@@ -145,7 +145,7 @@ struct GitDiffSnapshotStore {
     }
 
     func writeCurrentSnapshotID(_ snapshotID: String, workspaceDirectory: URL) throws {
-        let root = snapshotsRoot(workspaceDirectory: workspaceDirectory)
+        _ = snapshotsRoot(workspaceDirectory: workspaceDirectory)
         let pointerURL = currentPointerURL(workspaceDirectory: workspaceDirectory)
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: pointerURL.path) {
@@ -652,7 +652,7 @@ struct GitDiffSnapshotStore {
     }
 
     func listSnapshotEntries(workspaceDirectory: URL) throws -> [SnapshotEntry] {
-        let root = snapshotsRoot(workspaceDirectory: workspaceDirectory)
+        _ = snapshotsRoot(workspaceDirectory: workspaceDirectory)
         return try listSnapshotEntries(in: root, allowLegacyPaths: false, repoKey: nil)
     }
 
@@ -673,7 +673,7 @@ struct GitDiffSnapshotStore {
     /// - Parameter workspaceDirectory: The workspace directory containing the _git_data folder.
     /// - Returns: The number of snapshots deleted.
     func clearAllSnapshots(workspaceDirectory: URL) throws -> Int {
-        let root = snapshotsRoot(workspaceDirectory: workspaceDirectory)
+        _ = snapshotsRoot(workspaceDirectory: workspaceDirectory)
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: root.path) else { return 0 }
 
