@@ -57,8 +57,8 @@ No M5 AI/Agent execution authority, M6 direct host/backend, or M7 proxy cleanup 
 | `make dev-test FILTER=DomainMutationApprovalBrokerTests` | passed, ticket `dd9ca20d-ec78-4e20-83e1-814259360be7` |
 | `make dev-test FILTER=WorkspaceApprovalCancellationTests` | passed, ticket `16eae60b-696f-4cfb-b2b6-0c0d612d1de8` |
 | `make dev-test FILTER=HeadlessMCPDomainRuntimeM0ContractTests` | passed, ticket `06983bcc-1bb0-406f-ac10-737344cc194c` |
-| `make dev-test-list` | passed, ticket `04183487-83e2-4b17-a83a-54cf7eb31cea` |
-| `test_suite_optimizer.py verify-ledger` | passed; 3,634 exact root/provider IDs reconciled |
+| ~~`make dev-test-list`~~ (removed #704; use `make dev-test`) | passed, ticket `04183487-83e2-4b17-a83a-54cf7eb31cea` |
+| ~~`test_suite_optimizer.py verify-ledger`~~ (removed #704) | passed; 3,634 exact root/provider IDs reconciled |
 | `make dev-swift-build PRODUCT=RepoPrompt` | passed, ticket `893688a2-cb77-441e-abe3-28549f715a87` |
 | `make dev-swift-build PRODUCT=repoprompt-mcp` | passed, ticket `710c0e01-3ac0-419d-a1d8-cc3ae1822a79` |
 | `make dev-lint` | passed, ticket `c182fb45-f0b0-4ce2-af2d-6ee532cbdabf` |
@@ -99,7 +99,7 @@ Cancellation before the commit hook records `cancelledBeforeCommit` for the inte
 | focused apply-edits materialization test | passed, ticket `b58ef2f3-0170-47d9-b0dc-d1f4b9533963` |
 | `make dev-test FILTER=ManageWorktreeToolServiceTests` | passed 2 provider tests, ticket `4ee23570-2a76-41f3-96ab-3b2e3bd58db5` |
 | `make dev-test FILTER=ToolCatalogSnapshotTests` | passed 20 frozen catalog tests, ticket `0f8a0c6e-3538-44af-a753-b118f43348ae` |
-| `make dev-test-list` + `verify-ledger` | passed; 3,639 exact root/provider IDs reconciled, list ticket `d2f504c5-cc1e-4263-8fca-b6b5ea8141de` |
+| ~~`make dev-test-list` + `verify-ledger`~~ (removed #704; use `make dev-test`) | passed; 3,639 exact root/provider IDs reconciled, list ticket `d2f504c5-cc1e-4263-8fca-b6b5ea8141de` |
 | `make dev-swift-build PRODUCT=RepoPrompt` | passed, ticket `6a8b2c17-11f8-41a8-82da-ecf60948f4b6` |
 | `make dev-swift-build PRODUCT=repoprompt-mcp` | passed, ticket `1c59725c-f484-429a-be78-0d318cff6f34` |
 | `make dev-lint` | passed, ticket `dd1728b2-2b3e-407d-bbd2-17c59604a89d` |
@@ -119,7 +119,7 @@ Cancellation before the commit hook records `cancelledBeforeCommit` for the inte
 | routing generation/launch-token authority method | passed, ticket `18bc37ba-50ce-4f14-ab07-c41faaf78eda` |
 | `make dev-test FILTER=MCPFileActionPartialSuccessTests` | passed 3 file-action/apply-edits compatibility tests, ticket `238d5ff2-87ae-4906-89be-6d7d07ddea1f` |
 | `make dev-test FILTER=ManageWorktreeToolServiceTests` | passed 2 worktree compatibility tests, ticket `c35b7ea6-8ea7-478d-be00-57ee3baa4521` |
-| `make dev-test-list` + `verify-ledger` | passed; 3,645 exact root/provider IDs reconciled, list ticket `da0c0db8-a271-4719-b5e9-5f3e0011f978` |
+| ~~`make dev-test-list` + `verify-ledger`~~ (removed #704; use `make dev-test`) | passed; 3,645 exact root/provider IDs reconciled, list ticket `da0c0db8-a271-4719-b5e9-5f3e0011f978` |
 | `make dev-swift-build PRODUCT=RepoPrompt` | passed, ticket `fc625590-9fbf-46bb-837d-c720d1773e67` |
 | `make dev-swift-build PRODUCT=repoprompt-mcp` | passed, ticket `94086e9e-1dcc-478d-b1b9-46e601e596f6` |
 | `make dev-lint` | passed, ticket `c6cb6634-fd98-4c5e-b05a-68c8b18e8c56` |
