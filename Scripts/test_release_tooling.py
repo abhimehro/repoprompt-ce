@@ -25,6 +25,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+@unittest.skipIf(not shutil.which('ditto') or not shutil.which('plutil') or not shutil.which('stat'), 'macOS tools missing')
 class ReleaseToolingTests(unittest.TestCase):
     def test_debug_provenance_uses_json_validation_and_rejects_truncated_output(self) -> None:
         package_script = (SCRIPT_DIR / "package_app.sh").read_text(encoding="utf-8")

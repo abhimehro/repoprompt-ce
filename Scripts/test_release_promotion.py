@@ -15,6 +15,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+@unittest.skipIf(not shutil.which('ditto') or not shutil.which('plutil') or not shutil.which('stat'), 'macOS tools missing')
 class ReleasePromotionTests(unittest.TestCase):
     def test_verify_accepts_reviewed_draft_with_matching_key_and_assets(self) -> None:
         result, _capture, _tools = self.run_promotion("verify")
