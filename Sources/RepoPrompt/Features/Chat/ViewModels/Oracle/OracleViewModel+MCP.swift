@@ -1197,28 +1197,33 @@ extension OracleViewModel {
                 reviewGitContextOverride: reviewGitContextOverride
             )
         }
-        let queryId: UUID?
         #if DEBUG
             let trace = OracleReviewPackagingDiagnostics.makeTraceContext(
                 tabContext: tabContext,
                 observer: oracleReviewPackagingTraceObserverForTesting
             )
-            queryId = await OracleReviewPackagingDiagnostics.withTrace(trace, operation: send)
+            await OracleReviewPackagingDiagnostics.withTrace(trace, operation: send)
         #else
-            queryId = await send()
+            await send()
         #endif
-        guard let queryId else {
-            throw OracleContextBuilderCompletionError.missingExactQuery
+        let queryId = activeQueryId(for: chatID) ?? currentQueryId
+
+        if let q = queryId {
+            try await waitUntilMessageFinalised(q)
         }
-        let response = try await waitForContextBuilderCompletion(queryId)
 
         // ────────── 6. Build typed reply ──────────
+        let errors: [String] = []
+        let aiMsg = queryId.flatMap { id in
+            getChatMessage(withId: id)
+        }.flatMap { $0.isUser ? nil : $0 }
+
         let replyObj = ChatSendReply(
             chatId: chatID,
             shortId: sessions.first(where: { $0.id == chatID })?.shortID ?? "",
             mode: mode,
-            response: response,
-            errors: nil
+            response: aiMsg?.content,
+            errors: errors.isEmpty ? nil : errors
         )
 
         // Serialise to MCP Value → dictionary
@@ -1578,7 +1583,6 @@ extension OracleViewModel {
         finalReviewAuthorization: ContextBuilderFinalReviewAuthorization? = nil,
         agentModeSessionID: UUID? = nil,
         agentModeRunID: UUID? = nil,
-        completionPolicy: OracleResponseCompletionPolicy = .interactive,
         onProgress: ((_ text: String, _ reasoning: String?) -> Void)? = nil
     ) async throws -> ChatSendReply {
         // Check cancellation at entry
@@ -1663,8 +1667,8 @@ extension OracleViewModel {
         // (One Task.sleep for entire stream, not per-chunk - avoids CPU churn)
         let timeout: Duration = .seconds(4 * 60 * 60)
 
-        let (finalText, _, finalTokenInfo, providerCleanupHandle, terminalOutcome) = try await withThrowingTaskGroup(
-            of: (String, String, ChatTokenInfo, ProviderConversationCleanupHandle?, ChatStreamTerminalOutcome?).self
+        let (finalText, _, finalTokenInfo, providerCleanupHandle) = try await withThrowingTaskGroup(
+            of: (String, String, ChatTokenInfo, ProviderConversationCleanupHandle?).self
         ) { group in
             // Timeout task - throws after 4 hours
             group.addTask {
@@ -1678,7 +1682,6 @@ extension OracleViewModel {
                 var accReasoning = ""
                 var tokens = ChatTokenInfo()
                 var cleanupHandle: ProviderConversationCleanupHandle?
-                var terminalOutcome: ChatStreamTerminalOutcome?
                 var iterator = stream.makeAsyncIterator()
 
                 while let chunk = try await iterator.next() {
@@ -1703,12 +1706,8 @@ extension OracleViewModel {
                         let reasoning = accReasoning.isEmpty ? nil : accReasoning
                         await MainActor.run { onProgress(text, reasoning) }
                     }
-                    if let outcome = chunk.terminalOutcome {
-                        terminalOutcome = outcome
-                        break
-                    }
                 }
-                return (accText, accReasoning, tokens, cleanupHandle, terminalOutcome)
+                return (accText, accReasoning, tokens, cleanupHandle)
             }
 
             // Wait for stream to complete or timeout to fire
@@ -1717,22 +1716,8 @@ extension OracleViewModel {
             return result
         }
 
-        if completionPolicy == .contextBuilderStrict {
-            switch terminalOutcome {
-            case .completed:
-                break
-            case let .incomplete(reason):
-                throw OracleContextBuilderCompletionError.providerTerminatedIncomplete(reason: reason)
-            case nil:
-                throw OracleContextBuilderCompletionError.streamEndedWithoutProviderCompletion
-            }
-        }
-
         let trimmedResponse = finalText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         guard !trimmedResponse.isEmpty else {
-            if completionPolicy == .contextBuilderStrict {
-                throw OracleContextBuilderCompletionError.emptyProcessedContent
-            }
             throw ChatToolError.internalError("Request produced no content.")
         }
 

@@ -186,7 +186,8 @@ final class ContextBuilderSelectionTransactionTests: XCTestCase {
         let workspaceID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.id)
         let backgroundTab = await window.promptManager.createBackgroundComposeTab(
             strategy: .blank,
-            name: "Transaction \(name)"
+            name: "Transaction \(name)",
+            capacityPolicy: .mcpBackgroundAgent
         )
         let tabID = try XCTUnwrap(backgroundTab?.id)
         return Fixture(
