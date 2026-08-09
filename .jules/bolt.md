@@ -8,3 +8,6 @@
 ## 2026-08-06 - Redundant file read during decoding (re-salvage #195)
 **Learning:** Re-reading the same file during decoding wastes I/O and time.
 **Action:** Reuse the already read `Data` variable to decode instead of reading the file again.
+## 2024-08-09 - DateFormatter Instantiation Overhead
+**Learning:** DateFormatter and ISO8601DateFormatter are extremely expensive to initialize in Swift. We found several instances of inline ISO8601DateFormatter().string(from:) usage that could cause severe performance issues in high-frequency paths.
+**Action:** Refactored these instantiations by reusing static let instances of ISO8601DateFormatter to prevent unnecessary allocation overhead, specifically across multiple feature modules (like RuntimePolicyAdministration, ACPAgentSessionController, etc).
