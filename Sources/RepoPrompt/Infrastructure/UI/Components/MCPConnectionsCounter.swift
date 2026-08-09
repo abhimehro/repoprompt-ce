@@ -74,5 +74,6 @@ struct MCPConnectionsCounter: View {
             }
         }
         .hoverTooltip(connectionCount == 0 ? "No connections - View status" : "\(connectionCount) connection\(connectionCount == 1 ? "" : "s")\(hasActivity ? " - Active" : "") - View status")
+        .accessibilityLabel(connectionCount == 0 ? "No connections - View status" : "\(connectionCount) connection\(connectionCount == 1 ? "" : "s")\(hasActivity ? " - Active" : "") - View status")
     }
 }

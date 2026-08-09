@@ -124,6 +124,7 @@ struct CompactDualActionButton: View {
         .scaleEffect((isPressedMain || isPressedSecondary) ? 0.98 : 1.0)
         .animation(.easeInOut(duration: 0.1), value: isPressedMain || isPressedSecondary)
         .hoverTooltip(helpText)
+        .accessibilityLabel(helpText)
     }
 
     // MARK: - Backgrounds

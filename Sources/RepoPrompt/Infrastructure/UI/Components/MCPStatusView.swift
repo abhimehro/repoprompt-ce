@@ -335,6 +335,7 @@ struct MCPStatusView: View {
             }
             .buttonStyle(.plain)
             .hoverTooltip("Terminate this client (CLI will exit)")
+            .accessibilityLabel("Terminate this client (CLI will exit)")
         }
         .padding(12)
         .background(statusCardBackground)
@@ -441,6 +442,7 @@ struct MCPStatusView: View {
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Color.secondary.opacity(0.12)))
                     .hoverTooltip("Built-in clients are always trusted and can't be removed")
+                    .accessibilityLabel("Built-in clients are always trusted and can't be removed")
                     .accessibilityHint("Always trusted and cannot be removed")
             } else {
                 Button(action: { server.setAlwaysAllowed(clientID: client, allowed: false) }) {
