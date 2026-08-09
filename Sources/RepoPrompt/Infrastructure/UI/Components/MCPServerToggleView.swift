@@ -108,6 +108,7 @@ struct MCPServerToggleView: View {
         .padding(.trailing, 8)
         .hoverTooltip(toolbarStateObserver.visualState.helpText, .bottom)
         .accessibilityLabel(toolbarStateObserver.visualState.helpText)
+        .accessibilityHint(toolbarStateObserver.visualState.helpText)
         .popover(isPresented: $showPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
             popoverContent()
         }
@@ -410,7 +411,7 @@ struct MCPServerPopoverContent: View {
                 Toggle("Auto-Start", isOn: autoStartServerBinding)
                     .font(fontPreset.font)
                     .hoverTooltip("Automatically start the MCP server when RepoPrompt launches")
-                    .accessibilityHint("Automatically start the MCP server when RepoPrompt launches")
+                    .accessibilityLabel("Automatically start the MCP server when RepoPrompt launches")
 
                 Spacer()
 
@@ -523,7 +524,7 @@ struct MCPServerPopoverContent: View {
             Toggle("Use Oracle Model Presets for MCP", isOn: showModelPresetsBinding)
                 .font(fontPreset.font)
                 .hoverTooltip("When enabled, list_models returns user-defined presets. When disabled, returns only the current oracle model.")
-                .accessibilityHint("When enabled, list_models returns user-defined presets. When disabled, returns only the current oracle model.")
+                .accessibilityLabel("When enabled, list_models returns user-defined presets. When disabled, returns only the current oracle model.")
                 .onChange(of: showModelPresets) {
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(name: .recommendationsDidApply, object: nil)
@@ -623,7 +624,7 @@ struct MCPServerPopoverContent: View {
                     )
                 }
                 .hoverTooltip("Agent and model used when MCP clients run context-building operations.")
-                .accessibilityHint("Agent and model used when MCP clients run context-building operations.")
+                .accessibilityLabel("Agent and model used when MCP clients run context-building operations.")
             }
 
             Text("Used by context_builder MCP tool.")

@@ -1074,7 +1074,7 @@ actor WorkspaceCodemapSelectionGraph {
         revoke(reason)
         if let activeCandidateTask {
             activeCandidateTask.cancel()
-            await activeCandidateTask.value
+            _ = await activeCandidateTask.value
             self.activeCandidateTask = nil
         }
     }
