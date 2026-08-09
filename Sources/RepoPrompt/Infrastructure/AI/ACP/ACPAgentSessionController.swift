@@ -2,7 +2,6 @@ import Darwin
 import Foundation
 
 actor ACPAgentSessionController {
-    private static let isoFormatter = ISO8601DateFormatter()
     struct RequestTimeouts {
         let bootstrapSeconds: TimeInterval
 
@@ -3391,7 +3390,7 @@ actor ACPAgentSessionController {
             sessionID: String?
         ) {
             var record: [String: Any] = [
-                "capturedAt": Self.isoFormatter.string(from: Date()),
+                "capturedAt": ISO8601DateFormatter().string(from: Date()),
                 "kind": kind,
                 "payload": sanitizeRawCaptureDictionary(payload),
                 "providerID": providerID.rawValue,
