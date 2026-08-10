@@ -281,7 +281,7 @@ struct AgentContextDrawerFilesTab: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .hoverTooltip("Sort selected context")
-        .accessibilityLabel("Sort selected context")
+        .accessibilityLabel("Sort selected context, \(detailStore.selectionSort.label)")
     }
 
     private var subtabSwitcher: some View {
