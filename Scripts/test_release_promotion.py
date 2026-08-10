@@ -15,7 +15,6 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-@unittest.skipIf(not shutil.which('ditto') or not shutil.which('plutil') or not shutil.which('stat'), 'macOS tools missing')
 class ReleasePromotionTests(unittest.TestCase):
     def test_verify_accepts_reviewed_draft_with_matching_key_and_assets(self) -> None:
         result, _capture, _tools = self.run_promotion("verify")
@@ -482,7 +481,7 @@ class ReleasePromotionTests(unittest.TestCase):
                 https://sentry.io/api/0/organizations/repoprompt/releases/com.pvncher.repoprompt.ce%401.0.0%2B1/deploys/)
                     printf 'sentry %s %s\n' "$method" "$url" >> "$FAKE_TOOL_CAPTURE"
                     [[ "$args" != *"fixture-sentry-token"* ]] || { printf 'token leaked in curl args\n' >&2; exit 1; }
-                    [[ -n "$config" && "$(stat -f %Lp "$config")" == "600" ]] || {
+                    [[ -n "$config" && "$(stat -c %a < "$config" 2>/dev/null || stat -f %Lp "$config")" == "600" ]] || {
                         printf 'Sentry curl config is missing or not mode 0600\n' >&2
                         exit 1
                     }
