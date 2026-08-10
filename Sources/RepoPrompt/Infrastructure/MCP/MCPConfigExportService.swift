@@ -132,16 +132,19 @@ actor MCPConfigExportService {
         let configJSON = try renderServerConfig()
         try prepareSecureDirectory(at: configDirectoryURL)
         let configURL = configDirectoryURL.appendingPathComponent(identity.stableWrapperConfigFileName, isDirectory: false)
-        let tempURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        // Stage beside the destination so replaceItem stays same-volume even when TMPDIR is elsewhere.
+        let tempURL = configDirectoryURL.appendingPathComponent(".\(UUID().uuidString).tmp", isDirectory: false)
         guard let data = configJSON.data(using: .utf8),
               fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
         }
         defer { try? fileManager.removeItem(at: tempURL) }
-        if fileManager.fileExists(atPath: configURL.path) {
-            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
-        } else {
+        do {
             try fileManager.moveItem(at: tempURL, to: configURL)
+        } catch {
+            // Destination appeared or already existed — replace atomically instead of failing the refresh.
+            guard fileManager.fileExists(atPath: configURL.path) else { throw error }
+            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
         }
         return configURL
     }
