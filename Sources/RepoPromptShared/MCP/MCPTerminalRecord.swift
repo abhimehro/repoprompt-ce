@@ -285,7 +285,6 @@ public enum MCPTerminalRecordStore {
         guard fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: fileURL.path) {
             _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly], resultingItemURL: nil)
         } else {

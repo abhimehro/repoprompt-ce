@@ -137,7 +137,6 @@ actor MCPConfigExportService {
         guard fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: configURL.path) {
             _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly], resultingItemURL: nil)
         } else {
@@ -272,7 +271,6 @@ actor MCPConfigExportService {
         guard fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o400]) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: url.path) {
             _ = try fileManager.replaceItem(at: url, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly], resultingItemURL: nil)
         } else {
