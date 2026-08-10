@@ -281,18 +281,16 @@ public enum MCPTerminalRecordStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
-        // Stage beside the destination so replaceItem stays same-volume even when TMPDIR is elsewhere.
-        let tempURL = directory.appendingPathComponent(".\(UUID().uuidString).tmp", isDirectory: false)
-        guard fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+        let tempURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        guard fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600])
+        else {
             throw CocoaError(.fileWriteUnknown)
         }
         defer { try? fileManager.removeItem(at: tempURL) }
-        do {
+        if fileManager.fileExists(atPath: fileURL.path) {
+            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil)
+        } else {
             try fileManager.moveItem(at: tempURL, to: fileURL)
-        } catch {
-            // Destination appeared or already existed — replace atomically instead of failing the write.
-            guard fileManager.fileExists(atPath: fileURL.path) else { throw error }
-            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
         }
         // Retention is best-effort: never discard the terminal event we just
         // captured merely because an older diagnostic could not be removed.
