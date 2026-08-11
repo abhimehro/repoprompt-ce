@@ -89,35 +89,7 @@ class PromptViewModel: ObservableObject {
         case chat
     }
 
-    struct StoredPrompt: Identifiable, Codable, Equatable {
-        let id: UUID
-        var title: String
-        var content: String
-        /// Tracks whether the user has manually edited a built-in prompt.
-        /// When true, auto-upgrades of built-in content are skipped.
-        var isUserEdited: Bool
-
-        init(id: UUID, title: String, content: String, isUserEdited: Bool = false) {
-            self.id = id
-            self.title = title
-            self.content = content
-            self.isUserEdited = isUserEdited
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            id = try container.decode(UUID.self, forKey: .id)
-            title = try container.decode(String.self, forKey: .title)
-            content = try container.decode(String.self, forKey: .content)
-            isUserEdited = try container.decodeIfPresent(Bool.self, forKey: .isUserEdited) ?? false
-        }
-
-        static func == (lhs: StoredPrompt, rhs: StoredPrompt) -> Bool {
-            lhs.id == rhs.id &&
-                lhs.title == rhs.title &&
-                lhs.content == rhs.content
-        }
-    }
+    typealias StoredPrompt = StoredPromptRecord
 
     // MARK: - Core Properties
 
@@ -189,6 +161,11 @@ class PromptViewModel: ObservableObject {
     enum ForegroundComposeTabCreationResult: Equatable {
         case created(ComposeTabState)
         case failed
+    }
+
+    enum DurableBackgroundComposeTabCreationResult: Equatable {
+        case created(ComposeTabState, WorkspacePersistenceOutcome)
+        case rejected(WorkspacePersistenceOutcome)
     }
 
     typealias ComposeTabsWillCloseListener = @Sendable (_ tabIDs: Set<UUID>, _ reason: ComposeTabRemovalReason) async -> Void
@@ -2112,13 +2089,15 @@ class PromptViewModel: ObservableObject {
     // MARK: - Initialization
 
     private let settingsManager: SettingsManaging
+    private let storedPromptPersistence: any StoredPromptPersistenceServing
 
     init(
         fileManager: WorkspaceFilesViewModel,
         aiQueriesService: AIQueriesService? = nil,
         apiSettingsViewModel: APISettingsViewModel,
         windowID: Int,
-        settingsManager: SettingsManaging
+        settingsManager: SettingsManaging,
+        storedPromptPersistence: (any StoredPromptPersistenceServing)? = nil
     ) {
         self.fileManager = fileManager
         gitViewModel = GitViewModel(fileManager: fileManager)
@@ -2126,6 +2105,7 @@ class PromptViewModel: ObservableObject {
         self.apiSettingsViewModel = apiSettingsViewModel
         self.windowID = windowID
         self.settingsManager = settingsManager
+        self.storedPromptPersistence = storedPromptPersistence ?? StoredPromptPersistenceService()
         codeMapsGloballyDisabled = GlobalSettingsStore.shared.globalCodeMapsDisabled()
 
         // Removed usage of workspaceManager to load an initial prompt
@@ -2738,6 +2718,79 @@ class PromptViewModel: ObservableObject {
         manager.markWorkspaceDirty()
         manager.pollAndSaveState()
         return newTab
+    }
+
+    /// Transactional primitive used by Agent-session lifecycle admission.
+    /// The tab is created already bound to its intended durable session identity and
+    /// is not returned to provider-start callers until the workspace authority accepts it.
+    @MainActor
+    func createDurableBackgroundAgentSessionTab(
+        name: String?,
+        sessionID: UUID,
+        lifecycleAuthority: AgentSessionLifecycleAuthority
+    ) async -> DurableBackgroundComposeTabCreationResult {
+        guard
+            let manager = workspaceManager,
+            let workspace = manager.activeWorkspace,
+            let index = manager.workspaces.firstIndex(where: { $0.id == workspace.id }),
+            let newTab = makeComposeTab(
+                for: .blank,
+                explicitName: name,
+                workspaceIndex: index,
+                manager: manager,
+                blankAgentSessionID: sessionID
+            )
+        else {
+            return .rejected(.rejected(reason: "workspace_unavailable"))
+        }
+
+        flushAndSnapshotSourceTabIfNeeded(for: .blank, in: manager, workspaceIndex: index)
+        manager.workspaces[index].composeTabs.append(newTab)
+        loadComposeTabsFromWorkspace(manager.workspaces[index])
+        manager.markWorkspaceDirty()
+
+        let persistence = await manager.pollAndSaveStateWithOutcomeAsync(
+            workspaceID: workspace.id,
+            source: WorkspaceSaveSource("agentSessionLifecycleAdmission")
+        )
+        let bindingStillCurrent = manager.workspaces
+            .first(where: { $0.id == workspace.id })?
+            .composeTabs.contains(where: {
+                $0.id == newTab.id && $0.activeAgentSessionID == sessionID
+            }) == true
+        guard lifecycleAuthority.decideAdmission(
+            persistence: persistence,
+            targetWorkspaceID: workspace.id,
+            bindingStillCurrent: bindingStillCurrent
+        ) == .commit else {
+            rollbackProvisionalAgentSessionTab(
+                newTab.id,
+                workspaceID: workspace.id,
+                manager: manager
+            )
+            return .rejected(persistence)
+        }
+
+        return .created(newTab, persistence)
+    }
+
+    @MainActor
+    private func rollbackProvisionalAgentSessionTab(
+        _ tabID: UUID,
+        workspaceID: UUID,
+        manager: WorkspaceManagerViewModel
+    ) {
+        guard let index = manager.workspaces.firstIndex(where: { $0.id == workspaceID }) else {
+            return
+        }
+        manager.workspaces[index].composeTabs.removeAll { $0.id == tabID }
+        manager.workspaces[index].stashedTabs.removeAll { $0.tab.id == tabID }
+        if manager.workspaces[index].activeComposeTabID == tabID {
+            manager.workspaces[index].activeComposeTabID = manager.workspaces[index].composeTabs.first?.id
+        }
+        loadComposeTabsFromWorkspace(manager.workspaces[index])
+        dirtyTabIDs.remove(tabID)
+        manager.markWorkspaceDirty()
     }
 
     /// Switch to a compose tab and wait for the tab state to fully apply.
@@ -4360,25 +4413,23 @@ class PromptViewModel: ObservableObject {
     }
 
     func saveStoredPrompts() {
-        PromptStorage.shared.savePrompts(storedPrompts)
+        storedPromptPersistence.savePrompts(storedPrompts)
     }
 
     func exportPrompts(to url: URL) throws {
-        try PromptStorage.shared.exportPrompts(to: url, prompts: storedPrompts)
+        try storedPromptPersistence.exportPrompts(to: url, prompts: storedPrompts)
     }
 
     func importPrompts(from url: URL) throws -> Int {
-        let external = try PromptStorage.shared.loadExternalPrompts(from: url)
-        let (merged, addedCount) = PromptStorage.shared.mergeExternalPrompts(
-            current: storedPrompts,
-            external: external
+        let result = try storedPromptPersistence.importPrompts(
+            from: url,
+            mergingInto: storedPrompts
         )
-        if addedCount > 0 {
-            storedPrompts = merged
-            saveStoredPrompts()
+        if result.addedCount > 0 {
+            storedPrompts = result.mergedPrompts
             updateSelectedInstructions() // refresh anything that depends on storedPrompts
         }
-        return addedCount
+        return result.addedCount
     }
 
     /// Checks if a persisted built-in prompt matches a known previous canonical version.
@@ -4453,7 +4504,7 @@ class PromptViewModel: ObservableObject {
     }
 
     func loadStoredPrompts() {
-        let loadResult = PromptStorage.shared.loadPrompts()
+        let loadResult = storedPromptPersistence.loadPrompts()
 
         // Handle the load result
         let loadedPrompts: [StoredPrompt]
