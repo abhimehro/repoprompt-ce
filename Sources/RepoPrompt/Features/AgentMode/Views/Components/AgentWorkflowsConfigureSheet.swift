@@ -127,6 +127,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     .buttonStyle(.plain)
                     .disabled(index == 0)
                     .hoverTooltip("Move earlier", .top)
+                    .accessibilityLabel("Move earlier")
 
                     Button {
                         workflowStore.moveFeaturedWorkflow(withID: workflow.id, direction: 1)
@@ -138,6 +139,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     .buttonStyle(.plain)
                     .disabled(index == workflowStore.featuredWorkflows.count - 1)
                     .hoverTooltip("Move later", .top)
+                    .accessibilityLabel("Move later")
 
                     Button {
                         workflowStore.removeFeaturedWorkflow(withID: workflow.id)
@@ -148,6 +150,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("Remove from first page", .top)
+                    .accessibilityLabel("Remove from first page")
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -230,6 +233,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("Show in Finder", .top)
+                    .accessibilityLabel("Show in Finder")
 
                     Button {
                         try? workflowStore.deleteWorkflow(workflow)
@@ -240,6 +244,7 @@ struct AgentWorkflowsConfigureSheet: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("Delete workflow", .top)
+                    .accessibilityLabel("Delete workflow")
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -312,6 +317,13 @@ struct AgentWorkflowsConfigureSheet: View {
                 ? "Add to first page"
                 : "First page already has \(AgentWorkflowStore.maxFeaturedWorkflowCount) workflows",
             .top
+        )
+        .accessibilityLabel(
+            isFeatured
+                ? "Remove from first page"
+                : canFeature
+                ? "Add to first page"
+                : "First page already has \(AgentWorkflowStore.maxFeaturedWorkflowCount) workflows"
         )
     }
 
