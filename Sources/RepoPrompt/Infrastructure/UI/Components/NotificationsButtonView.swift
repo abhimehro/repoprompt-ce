@@ -292,6 +292,7 @@ private struct NotificationRow: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("Unmute")
+                    .accessibilityLabel("Unmute")
                 } else if item.mute != nil {
                     Button(action: { item.mute?() }) {
                         Image(systemName: "speaker.slash")
@@ -299,6 +300,7 @@ private struct NotificationRow: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("Mute")
+                    .accessibilityLabel("Mute")
                 }
 
                 Button(action: item.dismiss) {
@@ -307,6 +309,7 @@ private struct NotificationRow: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Dismiss")
+                .accessibilityLabel("Dismiss")
             }
         }
         .opacity(item.isMuted ? 0.7 : 1.0)

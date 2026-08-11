@@ -4,6 +4,7 @@ import RepoPromptDomainRuntime
 import RepoPromptShared
 
 actor DirectHeadlessProviderCoordinator {
+    private static let isoFormatter = ISO8601DateFormatter()
     struct ProviderDescriptor {
         let id: String
         let displayName: String
@@ -246,7 +247,7 @@ actor DirectHeadlessProviderCoordinator {
             values.append(.object([
                 "session_id": .string(metadata.sessionID.uuidString),
                 "status": .string(metadata.state.rawValue),
-                "updated_at": .string(ISO8601DateFormatter().string(from: metadata.updatedAt)),
+                "updated_at": .string(Self.isoFormatter.string(from: metadata.updatedAt)),
                 "resumable": .bool(metadata.resumable)
             ]))
         }

@@ -3,6 +3,7 @@ import Foundation
 import RepoPromptDomainRuntime
 
 enum RuntimePolicyAdministration {
+    private static let isoFormatter = ISO8601DateFormatter()
     enum CommandError: Error, LocalizedError {
         case ttyRequired
         case invalidArguments(String)
@@ -52,7 +53,7 @@ enum RuntimePolicyAdministration {
                             "principal": grant.principalKey,
                             "operations": grant.allowedOperations.sorted(),
                             "roots": grant.canonicalRoots.sorted(),
-                            "expires_at": ISO8601DateFormatter().string(from: grant.expiresAt),
+                            "expires_at": Self.isoFormatter.string(from: grant.expiresAt),
                             "revoked": grant.revokedAt != nil,
                             "revision": grant.revision
                         ] as [String: Any]

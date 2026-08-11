@@ -145,6 +145,10 @@ private actor WorkspaceCodemapAutomaticSelectionDemandOwnership {
         defer { retainedTargetTickets.removeAll() }
         return Array(retainedTargetTickets)
     }
+
+    func unrecord(_ ticket: WorkspaceCodemapArtifactDemandTicket) {
+        retainedTargetTickets.remove(ticket)
+    }
 }
 
 struct WorkspaceSelectionMutationService {

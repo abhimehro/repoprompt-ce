@@ -6654,7 +6654,7 @@ actor ServerNetworkManager {
         else {
             return false
         }
-        return props.keys.contains("window_id")
+        return props["window_id"] != nil
     }
 
     #if DEBUG

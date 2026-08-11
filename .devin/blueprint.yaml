@@ -1,0 +1,24 @@
+# https://docs.devin.ai/onboard-devin/environment-yaml
+# RepoPrompt CE is a native macOS/Swift Package app. Linux snapshots do not
+# build it, so initialization and dependency installation are intentionally
+# no-ops. Knowledge items record the macOS-coordinated commands for agents.
+
+initialize: |
+  true
+
+maintenance: |
+  true
+
+knowledge:
+  - name: lint
+    contents: |
+      make dev-lint
+  - name: test
+    contents: |
+      make dev-test
+  - name: build
+    contents: |
+      make dev-build
+  - name: guardrails
+    contents: |
+      make guardrails

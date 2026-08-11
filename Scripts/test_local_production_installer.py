@@ -190,6 +190,7 @@ class LocalProductionIdentityToolTests(unittest.TestCase):
             self.assertEqual(list(path.parent.glob(f".{path.name}.*")), [])
 
 
+@unittest.skipIf(not shutil.which('plutil') or not shutil.which('security') or not shutil.which('codesign'), 'macOS tools missing')
 class LocalProductionInstallerTests(unittest.TestCase):
     def test_full_xcode_resolver_preserves_explicit_compatible_developer_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

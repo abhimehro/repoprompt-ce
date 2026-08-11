@@ -1888,12 +1888,14 @@ package struct DomainPersistenceCoordinator {
             let rollbackName = "migration-\(Int(now.timeIntervalSince1970))-\(identity.runtimeID.uuidString)"
             let rollbackDirectory = rollbackRoot.appendingPathComponent(rollbackName, isDirectory: true)
             var artifacts: [RollbackManifest.Artifact] = []
-            if let indexBytes = try? Data(contentsOf: indexURL) {
+            let optionalIndexBytes = try? Data(contentsOf: indexURL)
+            if let indexBytes = optionalIndexBytes {
                 let destination = rollbackDirectory.appendingPathComponent("workspacesIndex.json")
                 try DomainPersistenceLock.atomicWrite(indexBytes, to: destination)
                 artifacts.append(.init(relativePath: "workspacesIndex.json", digest: DomainContentDigest.sha256(indexBytes)))
             }
-            for entry in (try? decoder.decode([LegacyWorkspaceIndexEntry].self, from: Data(contentsOf: indexURL))) ?? [] {
+            let legacyEntries = optionalIndexBytes.flatMap { try? decoder.decode([LegacyWorkspaceIndexEntry].self, from: $0) } ?? []
+            for entry in legacyEntries {
                 let url = entry.customStoragePath?.appendingPathComponent("workspace.json")
                     ?? workspaceRoot
                     .appendingPathComponent(
