@@ -543,10 +543,14 @@ final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
         (try? JSONSerialization.jsonObject(with: data)) != nil
     }
 
-    private static func backupTimestamp(for date: Date) -> String {
+    nonisolated(unsafe) private static let backupTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func backupTimestamp(for date: Date) -> String {
+        return backupTimestampFormatter.string(from: date)
             .replacingOccurrences(of: ":", with: "-")
     }
 
