@@ -835,7 +835,7 @@ final class SelectionSlicePersistenceAndRebaseTests: XCTestCase {
                 atomically: false,
                 encoding: .utf8
             )
-            _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: replacementURL)
+            _ = try FileManager.default.replaceItem(at: fileURL, withItemAt: replacementURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil as AutoreleasingUnsafeMutablePointer<NSURL?>?)
 
             let accepted = try await store.acceptWatcherPayloadForTesting(
                 rootID: rootID,

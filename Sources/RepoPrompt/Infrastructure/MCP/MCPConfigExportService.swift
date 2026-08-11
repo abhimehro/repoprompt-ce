@@ -138,18 +138,10 @@ actor MCPConfigExportService {
             throw CocoaError(.fileWriteUnknown)
         }
         defer { try? fileManager.removeItem(at: tempURL) }
-        do {
+        if fileManager.fileExists(atPath: configURL.path) {
+            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil as AutoreleasingUnsafeMutablePointer<NSURL?>?)
+        } else {
             try fileManager.moveItem(at: tempURL, to: configURL)
-        } catch {
-            // Destination may already exist, or appear after a concurrent create.
-            guard fileManager.fileExists(atPath: configURL.path) else { throw error }
-            _ = try fileManager.replaceItem(
-                at: configURL,
-                withItemAt: tempURL,
-                backupItemName: nil,
-                options: .usingNewMetadataOnly,
-                resultingItemURL: nil
-            )
         }
         return configURL
     }

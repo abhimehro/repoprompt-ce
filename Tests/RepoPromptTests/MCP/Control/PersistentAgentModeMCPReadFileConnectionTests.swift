@@ -523,7 +523,7 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 atomically: false,
                 encoding: .utf8
             )
-            _ = try FileManager.default.replaceItemAt(physicalURL, withItemAt: replacementURL)
+            _ = try FileManager.default.replaceItem(at: physicalURL, withItemAt: replacementURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil as AutoreleasingUnsafeMutablePointer<NSURL?>?)
             let accepted = try await fixture.window.workspaceFileContextStore.acceptWatcherPayloadForTesting(
                 rootID: fixture.installedWorktreeRootID,
                 events: [(
@@ -592,7 +592,7 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
             let staleReplacementText = try String(contentsOf: physicalURL, encoding: .utf8)
                 + "tail-stale-race\n"
             try staleReplacementText.write(to: staleReplacementURL, atomically: false, encoding: .utf8)
-            _ = try FileManager.default.replaceItemAt(physicalURL, withItemAt: staleReplacementURL)
+            _ = try FileManager.default.replaceItem(at: physicalURL, withItemAt: staleReplacementURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil as AutoreleasingUnsafeMutablePointer<NSURL?>?)
             let staleAccepted = try await fixture.window.workspaceFileContextStore.acceptWatcherPayloadForTesting(
                 rootID: fixture.installedWorktreeRootID,
                 events: [(
@@ -793,7 +793,7 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                 atomically: false,
                 encoding: .utf8
             )
-            _ = try FileManager.default.replaceItemAt(physicalURL, withItemAt: replacementURL)
+            _ = try FileManager.default.replaceItem(at: physicalURL, withItemAt: replacementURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil as AutoreleasingUnsafeMutablePointer<NSURL?>?)
             let modified = try await fixture.window.workspaceFileContextStore.acceptWatcherPayloadForTesting(
                 rootID: fixture.installedWorktreeRootID,
                 events: [(
