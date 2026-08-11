@@ -140,7 +140,7 @@ actor MCPConfigExportService {
         }
         defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: configURL.path) {
-            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil)
+            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
         } else {
             try fileManager.moveItem(at: tempURL, to: configURL)
         }
@@ -288,5 +288,13 @@ actor MCPConfigExportService {
             }
             throw error
         }
+    }
+}
+
+extension FileManager {
+    func replaceItem(at originalItemURL: URL, withItemAt newItemURL: URL, backupItemName: String?, options: FileManager.ItemReplacementOptions) throws -> URL? {
+        var resultingURL: NSURL? = nil
+        try self.replaceItem(at: originalItemURL, withItemAt: newItemURL, backupItemName: backupItemName, options: options, resultingItemURL: &resultingURL)
+        return resultingURL as URL?
     }
 }

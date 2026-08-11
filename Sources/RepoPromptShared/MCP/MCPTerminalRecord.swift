@@ -288,7 +288,7 @@ public enum MCPTerminalRecordStore {
         }
         defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: fileURL.path) {
-            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil)
+            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
         } else {
             try fileManager.moveItem(at: tempURL, to: fileURL)
         }
@@ -342,5 +342,13 @@ public enum MCPTerminalRecordStore {
         fileManager: FileManager = .default
     ) -> URL? {
         try? write(record, to: directory, fileManager: fileManager)
+    }
+}
+
+extension FileManager {
+    func replaceItem(at originalItemURL: URL, withItemAt newItemURL: URL, backupItemName: String?, options: FileManager.ItemReplacementOptions) throws -> URL? {
+        var resultingURL: NSURL? = nil
+        try self.replaceItem(at: originalItemURL, withItemAt: newItemURL, backupItemName: backupItemName, options: options, resultingItemURL: &resultingURL)
+        return resultingURL as URL?
     }
 }
