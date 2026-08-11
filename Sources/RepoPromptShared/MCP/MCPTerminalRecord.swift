@@ -286,10 +286,18 @@ public enum MCPTerminalRecordStore {
             throw CocoaError(.fileWriteUnknown)
         }
         defer { try? fileManager.removeItem(at: tempURL) }
-        if fileManager.fileExists(atPath: fileURL.path) {
-            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil)
-        } else {
+        do {
             try fileManager.moveItem(at: tempURL, to: fileURL)
+        } catch {
+            // Destination may already exist, or appear after a concurrent create.
+            guard fileManager.fileExists(atPath: fileURL.path) else { throw error }
+            _ = try fileManager.replaceItem(
+                at: fileURL,
+                withItemAt: tempURL,
+                backupItemName: nil,
+                options: .usingNewMetadataOnly,
+                resultingItemURL: nil
+            )
         }
         // Retention is best-effort: never discard the terminal event we just
         // captured merely because an older diagnostic could not be removed.
