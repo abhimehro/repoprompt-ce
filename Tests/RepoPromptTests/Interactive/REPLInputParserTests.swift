@@ -107,4 +107,135 @@ final class REPLInputParserTests: XCTestCase {
         XCTAssertEqual(result.outputRedirectPath, "file.txt")
         XCTAssertFalse(result.appendMode)
     }
+
+    // MARK: - Edge cases (salvaged from #186; unique vs main coverage)
+
+    func testEmptyString() {
+        let result = REPLInputParser.parse("")
+        XCTAssertTrue(result.segments.isEmpty)
+        XCTAssertNil(result.outputRedirectPath)
+    }
+
+    func testOnlyWhitespace() {
+        let result = REPLInputParser.parse("   \t  ")
+        XCTAssertTrue(result.segments.isEmpty)
+        XCTAssertNil(result.outputRedirectPath)
+    }
+
+    func testCommandWithTrailingWhitespace() {
+        let result = REPLInputParser.parse("echo hello  \t ")
+        XCTAssertEqual(result.segments.count, 1)
+        XCTAssertEqual(result.segments[0].command, "echo hello")
+    }
+
+    func testRepeatedSeparators() {
+        let result = REPLInputParser.parse("a ;; b && && c")
+        XCTAssertEqual(result.segments.count, 3)
+        XCTAssertEqual(result.segments[0].command, "a")
+        XCTAssertEqual(result.segments[1].command, "b")
+        XCTAssertEqual(result.segments[2].command, "c")
+    }
+
+    func testSeparatorAtStart() {
+        let result = REPLInputParser.parse("; a")
+        XCTAssertEqual(result.segments.count, 1)
+        XCTAssertEqual(result.segments[0].command, "a")
+    }
+
+    func testSeparatorAtEnd() {
+        let result = REPLInputParser.parse("a ;")
+        XCTAssertEqual(result.segments.count, 1)
+        XCTAssertEqual(result.segments[0].command, "a")
+        XCTAssertEqual(result.segments[0].separatorAfter, .always)
+    }
+
+    func testDoubleAmpersandAtEnd() {
+        let result = REPLInputParser.parse("a &&")
+        XCTAssertEqual(result.segments.count, 1)
+        XCTAssertEqual(result.segments[0].command, "a")
+        XCTAssertEqual(result.segments[0].separatorAfter, .onSuccess)
+    }
+
+    func testTripleAmpersand() {
+        let result = REPLInputParser.parse("a &&& b")
+        XCTAssertEqual(result.segments.count, 2)
+        XCTAssertEqual(result.segments[0].command, "a")
+        XCTAssertEqual(result.segments[0].separatorAfter, .onSuccess)
+        XCTAssertEqual(result.segments[1].command, "& b")
+    }
+
+    func testUnclosedSingleQuote() {
+        let result = REPLInputParser.parse("echo 'hello")
+        XCTAssertEqual(result.segments[0].command, "echo 'hello")
+    }
+
+    func testUnclosedDoubleQuote() {
+        let result = REPLInputParser.parse("echo \"hello")
+        XCTAssertEqual(result.segments[0].command, "echo \"hello")
+    }
+
+    func testEscapeAtVeryEnd() {
+        let result = REPLInputParser.parse("echo \"hello\\")
+        XCTAssertEqual(result.segments[0].command, "echo \"hello\\")
+    }
+
+    func testSingleQuoteInsideDoubleQuote() {
+        let result = REPLInputParser.parse("echo \"it's OK\"")
+        XCTAssertEqual(result.segments[0].command, "echo \"it's OK\"")
+    }
+
+    func testDoubleQuoteInsideSingleQuote() {
+        let result = REPLInputParser.parse("echo 'he said \"hello\"'")
+        XCTAssertEqual(result.segments[0].command, "echo 'he said \"hello\"'")
+    }
+
+    func testRedirectWithoutSpace() {
+        let result = REPLInputParser.parse("echo hello>out.txt")
+        XCTAssertEqual(result.segments[0].command, "echo hello")
+        XCTAssertEqual(result.outputRedirectPath, "out.txt")
+        XCTAssertFalse(result.appendMode)
+    }
+
+    func testEmptyQuotedRedirectTarget() {
+        let result = REPLInputParser.parse("echo hello > \"\"")
+        XCTAssertEqual(result.segments[0].command, "echo hello")
+        XCTAssertEqual(result.outputRedirectPath, "")
+    }
+
+    func testRedirectWithTrailingGarbageInQuotes() {
+        let result = REPLInputParser.parse("echo hello > \"out.txt\" foo")
+        XCTAssertEqual(result.segments[0].command, "echo hello > \"out.txt\" foo")
+        XCTAssertNil(result.outputRedirectPath)
+    }
+
+    func testMultipleRedirectOperators() {
+        let result = REPLInputParser.parse("echo hello > a.txt > b.txt")
+        XCTAssertEqual(result.segments[0].command, "echo hello > a.txt")
+        XCTAssertEqual(result.outputRedirectPath, "b.txt")
+        XCTAssertFalse(result.appendMode)
+    }
+
+    func testMultipleAppendRedirectOperators() {
+        let result = REPLInputParser.parse("echo hello >> a.txt > b.txt")
+        XCTAssertEqual(result.segments[0].command, "echo hello >> a.txt")
+        XCTAssertEqual(result.outputRedirectPath, "b.txt")
+        XCTAssertFalse(result.appendMode)
+    }
+
+    func testRedirectUnclosedQuote() {
+        let result = REPLInputParser.parse("echo hello > \"out.txt")
+        XCTAssertEqual(result.segments[0].command, "echo hello")
+        XCTAssertEqual(result.outputRedirectPath, "\"out.txt")
+    }
+
+    func testRedirectUnclosedQuoteWithSpace() {
+        let result = REPLInputParser.parse("echo hello > \"out txt")
+        XCTAssertEqual(result.segments[0].command, "echo hello > \"out txt")
+        XCTAssertNil(result.outputRedirectPath)
+    }
+
+    func testEscapedQuoteInRedirectDoubleQuotes() {
+        let result = REPLInputParser.parse("echo hello > \"out\\\"file.txt\"")
+        XCTAssertEqual(result.outputRedirectPath, "out\"file.txt")
+    }
 }
