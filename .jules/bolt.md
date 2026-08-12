@@ -17,3 +17,6 @@
 ## 2024-08-09 - DateFormatter Instantiation Overhead
 **Learning:** DateFormatter and ISO8601DateFormatter are extremely expensive to initialize in Swift. I found instances of inline ISO8601DateFormatter() usage in GitService.swift that could cause severe performance issues in high-frequency parsing paths like git blame.
 **Action:** Refactored these instantiations by reusing static let instances of ISO8601DateFormatter to prevent unnecessary allocation overhead.
+## 2026-08-12 - DateFormatter strict concurrency warnings
+**Learning:** When extracting DateFormatter or ISO8601DateFormatter to a static property inside a Sendable type (like an actor), Swift strict concurrency checks require marking the declaration with `nonisolated(unsafe)` because these formatters are not natively Sendable.
+**Action:** Marked `iso8601InternetFormatter` as `nonisolated(unsafe)` to resolve strict concurrency warnings or hangs in CI, like the one seen in `WorktreeAPISmokeHarnessTests`.
