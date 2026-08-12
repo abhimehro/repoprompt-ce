@@ -20,3 +20,6 @@
 ## 2026-08-12 - DateFormatter strict concurrency warnings
 **Learning:** When extracting DateFormatter or ISO8601DateFormatter to a static property inside a Sendable type (like an actor), Swift strict concurrency checks require marking the declaration with `nonisolated(unsafe)` because these formatters are not natively Sendable.
 **Action:** Marked `iso8601InternetFormatter` as `nonisolated(unsafe)` to resolve strict concurrency warnings or hangs in CI, like the one seen in `WorktreeAPISmokeHarnessTests`.
+## 2026-08-12 - SwiftLint modifierOrder
+**Learning:** SwiftLint enforces a strict `modifierOrder` rule. When combining access modifiers (`private`), concurrency modifiers (`nonisolated(unsafe)`), and scope modifiers (`static`), the correct order is `private nonisolated(unsafe) static`.
+**Action:** Reordered the modifiers on `iso8601InternetFormatter` to comply with SwiftLint.
