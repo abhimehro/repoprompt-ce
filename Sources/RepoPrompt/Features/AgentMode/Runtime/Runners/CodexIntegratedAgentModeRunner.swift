@@ -18,10 +18,10 @@ final class CodexIntegratedAgentModeRunner {
 
     func startRun(
         tabID: UUID,
-        session: AgentTabSession,
+        session: AgentModeViewModel.TabSession,
         initialMessageForRun: String,
         attachments: [AgentImageAttachment],
-        fallbackContext: AgentTabSession.CodexFallbackSubmissionContext?
+        fallbackContext: AgentModeViewModel.TabSession.CodexFallbackSubmissionContext?
     ) async -> CodexAgentModeCoordinator.NativeSendOutcome {
         let ownership: AgentRunOwnership
         let createdOwnership: Bool
@@ -33,7 +33,7 @@ final class CodexIntegratedAgentModeRunner {
             createdOwnership = true
             session.recordRunProgress(ownership: ownership, kind: .stageTransition, stage: .preparingRuntime)
         }
-        let attachmentReservationID = hooks.attachments.reserveAttachmentsForTurn(attachments, session)
+        let attachmentReservationID = hooks.reserveAttachmentsForTurn(attachments, session)
 
         let sendTask = Task<CodexAgentModeCoordinator.NativeSendOutcome, Never> { [weak self, weak session] in
             guard let self, let session else {
@@ -47,26 +47,35 @@ final class CodexIntegratedAgentModeRunner {
             #if DEBUG || EDIT_FLOW_PERF
                 EditFlowPerf.end(EditFlowPerf.Stage.MCPWindowToolCatalog.codexTurnMCPServerEnable, codexTurnMCPServerEnableState)
             #endif
-            let execution = await CodexIntegratedRunExecutionAdapter.execute {
-                guard mcpServerReady else {
-                    return .failed(message: "MCP catalog registration failed before Agent launch.")
-                }
-                return await codexCoordinator.sendCodexNativeMessage(
-                    session: session,
-                    text: initialMessageForRun,
-                    attachments: attachments,
-                    fallbackContext: fallbackContext,
-                    attachmentReservationID: attachmentReservationID,
-                    terminalizeRejectedSend: createdOwnership
+            guard mcpServerReady else {
+                let outcome = CodexAgentModeCoordinator.NativeSendOutcome.failed(
+                    message: "MCP catalog registration failed before Agent launch."
                 )
+                hooks.recordPendingHandoffSendOutcome(session, false)
+                if createdOwnership {
+                    session.endRunAttempt(ifCurrent: ownership, source: "codex.mcpBootstrapRejected")
+                }
+                return outcome
             }
-            let outcome = execution.nativeOutcome
-            hooks.providerInput.recordPendingHandoffSendOutcome(session, outcome.didSend)
-            if execution.didStartProviderRun {
+
+            let outcome = await codexCoordinator.sendCodexNativeMessage(
+                session: session,
+                text: initialMessageForRun,
+                attachments: attachments,
+                fallbackContext: fallbackContext,
+                attachmentReservationID: attachmentReservationID,
+                terminalizeRejectedSend: createdOwnership
+            )
+            hooks.recordPendingHandoffSendOutcome(session, outcome.didSend)
+            switch outcome {
+            case .sent:
                 session.recordRunProgress(ownership: ownership, kind: .stageTransition, stage: .running)
-            } else if createdOwnership, execution.shouldReleaseCreatedOwnership {
-                let source = mcpServerReady ? "codex.sendRejected" : "codex.mcpBootstrapRejected"
-                session.endRunAttempt(ifCurrent: ownership, source: source)
+            case .preDispatchRejected, .cancelled, .failed, .stale:
+                if createdOwnership {
+                    session.endRunAttempt(ifCurrent: ownership, source: "codex.sendRejected")
+                }
+            case .queuedFallback:
+                break
             }
             return outcome
         }

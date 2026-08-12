@@ -14,39 +14,13 @@ private func oracleViewModelDebugLog(_ message: @autoclosure () -> String) {
 
 /// MessageReaper - Gradually releases messages to prevent UI stalls
 @MainActor
-protocol MessageReaperTimerFactory {
-    func makeRepeatingTimer(
-        interval: TimeInterval,
-        block: @escaping (Timer) -> Void
-    ) -> Timer
-}
-
-private struct DefaultMessageReaperTimerFactory: MessageReaperTimerFactory {
-    func makeRepeatingTimer(
-        interval: TimeInterval,
-        block: @escaping (Timer) -> Void
-    ) -> Timer {
-        Timer.scheduledTimer(withTimeInterval: interval, repeats: true, block: block)
-    }
-}
-
-@MainActor
-private final class MessageReaperState {
+final class MessageReaper {
     private var bins: [[AIChatMessage]] = []
     private var timer: Timer?
     private var timerChunkSize = 0
-    private let timerFactory: any MessageReaperTimerFactory
 
     /// Minimum tick interval to prevent busy-loop when interval=0.0 is passed
     private static let minTickInterval: TimeInterval = 1.0 / 60.0 // ~16ms
-
-    init(timerFactory: any MessageReaperTimerFactory) {
-        self.timerFactory = timerFactory
-    }
-
-    deinit {
-        timer?.invalidate()
-    }
 
     func drain(
         _ source: inout [AIChatMessage],
@@ -66,16 +40,18 @@ private final class MessageReaperState {
         // Sanitize interval and enforce minimum to prevent busy-loop
         let sanitized = interval.isFinite ? interval : 0
         let tickInterval = max(Self.minTickInterval, max(0.0, sanitized))
-        let newTimer = timerFactory.makeRepeatingTimer(interval: tickInterval) { [state = self] timer in
-            MainActor.assumeIsolated {
-                state.handleDrainTimer(timer)
-            }
-        }
+        let newTimer = Timer.scheduledTimer(
+            timeInterval: tickInterval,
+            target: self,
+            selector: #selector(handleDrainTimer(_:)),
+            userInfo: nil,
+            repeats: true
+        )
         newTimer.tolerance = tickInterval * 0.2 // Reduce energy churn
         timer = newTimer
     }
 
-    private func handleDrainTimer(_ timer: Timer) {
+    @objc private func handleDrainTimer(_ timer: Timer) {
         guard !bins.isEmpty else {
             timer.invalidate()
             self.timer = nil
@@ -99,31 +75,7 @@ private final class MessageReaperState {
 
         if !bucket.isEmpty {
             bins.append(bucket)
-        } else if bins.isEmpty {
-            timer.invalidate()
-            self.timer = nil
         }
-    }
-}
-
-@MainActor
-final class MessageReaper {
-    private let state: MessageReaperState
-
-    convenience init() {
-        self.init(timerFactory: DefaultMessageReaperTimerFactory())
-    }
-
-    init(timerFactory: any MessageReaperTimerFactory) {
-        state = MessageReaperState(timerFactory: timerFactory)
-    }
-
-    func drain(
-        _ source: inout [AIChatMessage],
-        chunkSize: Int = 64,
-        interval: TimeInterval = 0.0
-    ) {
-        state.drain(&source, chunkSize: chunkSize, interval: interval)
     }
 }
 
@@ -467,6 +419,11 @@ class OracleViewModel: ObservableObject {
 
     /// Maps AI message/query IDs to the underlying AIQueriesService stream IDs for targeted cancellation.
     private var streamIDsByQueryId: [UUID: ChatStreamID] = [:]
+
+    /// Active headless (plan/question) streams keyed by tab ID.
+    /// Used by Discover to cancel background plan generation.
+    /// Note: Internal (not private) to allow access from OracleViewModel+MCP.swift extension.
+    var headlessStreamsByTabID: [UUID: ChatStreamID] = [:]
 
     /// Stores ephemeral message state that persists even when messages array is cleared
     let ephemeralState = EphemeralMessageState()
@@ -1066,7 +1023,6 @@ class OracleViewModel: ObservableObject {
 
     // Dependencies
     let aiQueriesService: AIQueriesService
-    let headlessRuntime: OracleHeadlessRuntime
     var promptViewModel: PromptViewModel
 
     #if DEBUG
@@ -1129,7 +1085,6 @@ class OracleViewModel: ObservableObject {
         chatData: ChatDataService
     ) {
         self.aiQueriesService = aiQueriesService
-        headlessRuntime = OracleHeadlessRuntime(aiQueriesService: aiQueriesService)
         self.promptViewModel = promptViewModel
         self.workspaceManager = workspaceManager
         self.chatData = chatData
@@ -1222,11 +1177,15 @@ class OracleViewModel: ObservableObject {
         activeRetryTask?.cancel()
 
         // Cancel any active headless and chat streams
-        let headlessRuntime = headlessRuntime
+        let headlessStreamIDs = Array(headlessStreamsByTabID.values)
         let chatStreamIDs = Array(streamIDsByQueryId.values)
         let queriesService = aiQueriesService
         Task {
-            await headlessRuntime.cancelAllStreams()
+            // Cancel headless streams (plan/question generation)
+            for streamID in headlessStreamIDs {
+                await queriesService.cancelStream(id: streamID)
+            }
+            // Cancel any active chat streams
             for streamID in chatStreamIDs {
                 await queriesService.cancelStream(id: streamID)
             }
@@ -3612,7 +3571,9 @@ class OracleViewModel: ObservableObject {
     /// Called by ContextBuilderAgentViewModel when user cancels background plan generation.
     @MainActor
     func cancelHeadlessStream(forTabID tabID: UUID) async {
-        await headlessRuntime.cancelStream(for: tabID)
+        guard let streamID = headlessStreamsByTabID[tabID] else { return }
+        headlessStreamsByTabID.removeValue(forKey: tabID)
+        await aiQueriesService.cancelStream(id: streamID)
     }
 
     @MainActor
@@ -3627,7 +3588,7 @@ class OracleViewModel: ObservableObject {
     private func handleComposeTabsWillClose(_ tabIDs: Set<UUID>) async {
         for tabID in tabIDs {
             // 1. Cancel headless stream (plan/question generation) for this tab
-            if headlessRuntime.hasActiveStream(for: tabID) {
+            if headlessStreamsByTabID[tabID] != nil {
                 await cancelHeadlessStream(forTabID: tabID)
             }
 

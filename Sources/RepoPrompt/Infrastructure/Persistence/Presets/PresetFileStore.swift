@@ -69,7 +69,7 @@ final class PresetFileStore {
             } catch {
                 let fallback = WorkflowPresetDocument(updatedAt: now())
                 if backupCorruptFile(at: workflowFileURL, prefix: "workflowPresets", error: error) {
-                    saveBootstrapWorkflowPresets(fallback)
+                    saveWorkflowPresets(fallback)
                 } else {
                     preservingUnbackedCorruptWorkflowDocument = true
                 }
@@ -78,39 +78,37 @@ final class PresetFileStore {
         }
 
         let document = WorkflowPresetDocument(updatedAt: now())
-        saveBootstrapWorkflowPresets(document)
+        saveWorkflowPresets(document)
         return document
     }
 
     func updateWorkflowPresets(
         _ mutation: (inout WorkflowPresetDocument) -> Void
-    ) throws {
+    ) {
         var document = loadWorkflowPresets()
         mutation(&document)
-        try saveWorkflowPresets(document)
+        saveWorkflowPresets(document)
     }
 
-    func saveWorkflowPresets(_ document: WorkflowPresetDocument) throws {
-        guard !preservingUnsupportedFutureWorkflowDocument else {
-            let version = unsupportedFutureSchemaVersionOnDisk(at: workflowFileURL)
-                ?? Self.currentSchemaVersion + 1
-            throw PresetFileStoreError.unsupportedFutureSchema(version)
-        }
-        guard !preservingUnbackedCorruptWorkflowDocument else {
-            throw PresetFileStoreError.unbackedCorruptDocumentPreserved
-        }
+    func saveWorkflowPresets(_ document: WorkflowPresetDocument) {
+        guard !preservingUnsupportedFutureWorkflowDocument else { return }
+        guard !preservingUnbackedCorruptWorkflowDocument else { return }
         if let version = unsupportedFutureSchemaVersionOnDisk(at: workflowFileURL) {
             preservingUnsupportedFutureWorkflowDocument = true
             print("⚠️ Workflow presets JSON schema v\(version) is newer than supported v\(Self.currentSchemaVersion); preserving file and skipping save.")
-            throw PresetFileStoreError.unsupportedFutureSchema(version)
+            return
         }
 
         var documentToWrite = document
         documentToWrite.schemaVersion = Self.currentSchemaVersion
         documentToWrite.updatedAt = now()
-        try ensurePresetDirectoryExists(for: workflowFileURL)
-        let data = try Self.fileEncoder.encode(documentToWrite)
-        try data.write(to: workflowFileURL, options: .atomic)
+        do {
+            try ensurePresetDirectoryExists(for: workflowFileURL)
+            let data = try Self.fileEncoder.encode(documentToWrite)
+            try data.write(to: workflowFileURL, options: .atomic)
+        } catch {
+            print("⚠️ Failed to save workflow presets JSON at \(workflowFileURL.path): \(error)")
+        }
     }
 
     func loadWorkflowDocument() throws -> WorkflowPresetDocument {
@@ -140,7 +138,7 @@ final class PresetFileStore {
             } catch {
                 let fallback = ModelPresetDocument(updatedAt: now())
                 if backupCorruptFile(at: modelFileURL, prefix: "modelPresets", error: error) {
-                    saveBootstrapModelPresets(fallback)
+                    saveModelPresets(fallback)
                 } else {
                     preservingUnbackedCorruptModelDocument = true
                 }
@@ -149,31 +147,29 @@ final class PresetFileStore {
         }
 
         let document = ModelPresetDocument(updatedAt: now())
-        saveBootstrapModelPresets(document)
+        saveModelPresets(document)
         return document
     }
 
-    func saveModelPresets(_ document: ModelPresetDocument) throws {
-        guard !preservingUnsupportedFutureModelDocument else {
-            let version = unsupportedFutureSchemaVersionOnDisk(at: modelFileURL)
-                ?? Self.currentSchemaVersion + 1
-            throw PresetFileStoreError.unsupportedFutureSchema(version)
-        }
-        guard !preservingUnbackedCorruptModelDocument else {
-            throw PresetFileStoreError.unbackedCorruptDocumentPreserved
-        }
+    func saveModelPresets(_ document: ModelPresetDocument) {
+        guard !preservingUnsupportedFutureModelDocument else { return }
+        guard !preservingUnbackedCorruptModelDocument else { return }
         if let version = unsupportedFutureSchemaVersionOnDisk(at: modelFileURL) {
             preservingUnsupportedFutureModelDocument = true
             print("⚠️ Model presets JSON schema v\(version) is newer than supported v\(Self.currentSchemaVersion); preserving file and skipping save.")
-            throw PresetFileStoreError.unsupportedFutureSchema(version)
+            return
         }
 
         var documentToWrite = document
         documentToWrite.schemaVersion = Self.currentSchemaVersion
         documentToWrite.updatedAt = now()
-        try ensurePresetDirectoryExists(for: modelFileURL)
-        let data = try Self.fileEncoder.encode(documentToWrite)
-        try data.write(to: modelFileURL, options: .atomic)
+        do {
+            try ensurePresetDirectoryExists(for: modelFileURL)
+            let data = try Self.fileEncoder.encode(documentToWrite)
+            try data.write(to: modelFileURL, options: .atomic)
+        } catch {
+            print("⚠️ Failed to save model presets JSON at \(modelFileURL.path): \(error)")
+        }
     }
 
     func loadModelDocument() throws -> ModelPresetDocument {
@@ -189,22 +185,6 @@ final class PresetFileStore {
     }
 
     // MARK: - Files
-
-    private func saveBootstrapWorkflowPresets(_ document: WorkflowPresetDocument) {
-        do {
-            try saveWorkflowPresets(document)
-        } catch {
-            print("⚠️ Failed to create workflow presets JSON at \(workflowFileURL.path): \(error)")
-        }
-    }
-
-    private func saveBootstrapModelPresets(_ document: ModelPresetDocument) {
-        do {
-            try saveModelPresets(document)
-        } catch {
-            print("⚠️ Failed to create model presets JSON at \(modelFileURL.path): \(error)")
-        }
-    }
 
     private func ensurePresetDirectoryExists(for fileURL: URL) throws {
         try fileManager.createDirectory(
@@ -263,18 +243,8 @@ final class PresetFileStore {
         let schemaVersion: Int
     }
 
-    enum PresetFileStoreError: LocalizedError, Equatable {
+    enum PresetFileStoreError: Error, Equatable {
         case unsupportedFutureSchema(Int)
-        case unbackedCorruptDocumentPreserved
-
-        var errorDescription: String? {
-            switch self {
-            case let .unsupportedFutureSchema(version):
-                "The preset file uses schema v\(version), but this build supports up to v\(PresetFileStore.currentSchemaVersion). The newer file was preserved."
-            case .unbackedCorruptDocumentPreserved:
-                "The unreadable preset file could not be backed up, so it was preserved."
-            }
-        }
     }
 
     private static let fileEncoder: JSONEncoder = {

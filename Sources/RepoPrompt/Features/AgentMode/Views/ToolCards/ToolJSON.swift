@@ -37,40 +37,25 @@ enum ToolJSON {
         return raw.data(using: .utf8)
     }
 
-    /// Decode args DTOs (uses convertFromSnakeCase for DTOs without explicit CodingKeys).
-    /// Memoized per unique payload via `ToolCardProjectionCache` so repeated
-    /// SwiftUI body evaluations reuse the derived DTO.
-    static func decodeArgs<T: Decodable>(
-        _ type: T.Type,
-        from json: String?,
-        cache: ToolCardProjectionCache = .shared
-    ) -> T? {
-        cache.projection(T.self, variant: "args", primary: json) {
-            guard let data = data(from: json) else { return nil }
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-            return try? decoder.decode(type, from: data)
-        }
+    /// Decode args DTOs (uses convertFromSnakeCase for DTOs without explicit CodingKeys)
+    static func decodeArgs<T: Decodable>(_ type: T.Type, from json: String?) -> T? {
+        guard let data = data(from: json) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(type, from: data)
     }
 
-    /// Decode result DTOs (no key conversion - result DTOs have explicit CodingKeys).
-    /// Memoized per unique payload via `ToolCardProjectionCache`.
-    static func decodeResult<T: Decodable>(
-        _ type: T.Type,
-        from json: String?,
-        cache: ToolCardProjectionCache = .shared
-    ) -> T? {
-        cache.projection(T.self, variant: "result", primary: json) {
-            guard let directData = data(from: json) else { return nil }
-            let decoder = JSONDecoder()
-            if let nestedJSON = preferredStructuredResultJSON(from: json, requireEnvelope: true, cache: cache),
-               let nestedData = data(from: nestedJSON),
-               let nested = try? decoder.decode(type, from: nestedData)
-            {
-                return nested
-            }
-            return try? decoder.decode(type, from: directData)
+    /// Decode result DTOs (no key conversion - result DTOs have explicit CodingKeys)
+    static func decodeResult<T: Decodable>(_ type: T.Type, from json: String?) -> T? {
+        guard let directData = data(from: json) else { return nil }
+        let decoder = JSONDecoder()
+        if let nestedJSON = preferredStructuredResultJSON(from: json, requireEnvelope: true),
+           let nestedData = data(from: nestedJSON),
+           let nested = try? decoder.decode(type, from: nestedData)
+        {
+            return nested
         }
+        return try? decoder.decode(type, from: directData)
     }
 
     /// Legacy decode - prefer decodeArgs or decodeResult
@@ -78,54 +63,31 @@ enum ToolJSON {
         decodeResult(type, from: json)
     }
 
-    /// Memoized `ToolRawJSON.object(from:)` for presentation-layer reads.
-    /// Tool cards should use this instead of calling `ToolRawJSON.object`
-    /// directly inside `body` evaluation.
-    static func rawObject(
-        from json: String?,
-        cache: ToolCardProjectionCache = .shared
-    ) -> [String: Any]? {
-        cache.projection([String: Any].self, variant: "rawObject", primary: json) {
-            ToolRawJSON.object(from: json)
+    static func preferredStructuredResultJSON(from json: String?, requireEnvelope: Bool = false) -> String? {
+        guard let data = data(from: json),
+              let root = try? JSONSerialization.jsonObject(with: data)
+        else {
+            return requireEnvelope ? nil : json?.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        guard let preferred = preferredStructuredValue(in: root) else {
+            return requireEnvelope ? nil : json?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return canonicalJSONString(from: preferred)
     }
 
-    static func preferredStructuredResultJSON(
-        from json: String?,
-        requireEnvelope: Bool = false,
-        cache: ToolCardProjectionCache = .shared
-    ) -> String? {
-        cache.projection(String.self, variant: "preferredJSON|env:\(requireEnvelope)", primary: json) {
-            guard let data = data(from: json),
-                  let root = try? JSONSerialization.jsonObject(with: data)
-            else {
-                return requireEnvelope ? nil : json?.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            guard let preferred = preferredStructuredValue(in: root) else {
-                return requireEnvelope ? nil : json?.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            return canonicalJSONString(from: preferred)
-        }
-    }
-
-    static func structuredResultObject(
-        from json: String?,
-        cache: ToolCardProjectionCache = .shared
-    ) -> [String: Any]? {
-        cache.projection([String: Any].self, variant: "structuredResultObject", primary: json) {
-            if let preferred = preferredStructuredResultJSON(from: json, cache: cache),
-               let data = preferred.data(using: .utf8),
-               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            {
-                return object
-            }
-            guard let data = data(from: json),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else {
-                return nil
-            }
+    static func structuredResultObject(from json: String?) -> [String: Any]? {
+        if let preferred = preferredStructuredResultJSON(from: json),
+           let data = preferred.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
             return object
         }
+        guard let data = data(from: json),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return object
     }
 
     static func prettyPrinted(_ json: String) -> String {

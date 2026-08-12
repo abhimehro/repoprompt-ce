@@ -1,5 +1,4 @@
 import Foundation
-import RepoPromptShared
 
 class SystemPromptService {
     /// Returns the Discover prompt with an optional token budget.

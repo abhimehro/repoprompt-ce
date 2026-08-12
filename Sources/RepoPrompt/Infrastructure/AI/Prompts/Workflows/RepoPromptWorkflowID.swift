@@ -1,6 +1,6 @@
 import Foundation
 
-public enum RepoPromptWorkflowID: String, CaseIterable, Sendable {
+enum RepoPromptWorkflowID: String, CaseIterable {
     case build
     case investigate
     case deepPlan
@@ -11,7 +11,7 @@ public enum RepoPromptWorkflowID: String, CaseIterable, Sendable {
     case orchestrate
     case optimize
 
-    public var commandName: String {
+    var commandName: String {
         switch self {
         case .build: "rp-build"
         case .investigate: "rp-investigate"
@@ -25,7 +25,7 @@ public enum RepoPromptWorkflowID: String, CaseIterable, Sendable {
         }
     }
 
-    public static let mcpPromptOrder: [RepoPromptWorkflowID] = [
+    static let mcpPromptOrder: [RepoPromptWorkflowID] = [
         .build,
         .investigate,
         .deepPlan,
@@ -37,7 +37,7 @@ public enum RepoPromptWorkflowID: String, CaseIterable, Sendable {
         .optimize
     ]
 
-    public static let installOrder: [RepoPromptWorkflowID] = [
+    static let installOrder: [RepoPromptWorkflowID] = [
         .investigate,
         .build,
         .reminder,

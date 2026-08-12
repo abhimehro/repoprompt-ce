@@ -52,20 +52,20 @@ protocol ContextUsageEstimating: AnyObject {
     @discardableResult
     func enqueueUserTurnEstimate(
         messageForProvider: String,
-        session: AgentTabSession
+        session: AgentModeViewModel.TabSession
     ) -> Int
 
     @discardableResult
     func replaceNextQueuedUserTurnEstimate(
         messageForProvider: String,
-        session: AgentTabSession
+        session: AgentModeViewModel.TabSession
     ) -> Int?
 
-    func dequeueQueuedUserTurnEstimate(session: AgentTabSession) -> Int?
-    func beginTurn(session: AgentTabSession, initialMessage: String)
-    func addUserInputTokens(_ tokens: Int, session: AgentTabSession)
-    func addToolInputPayload(_ payload: String?, session: AgentTabSession)
-    func addToolOutputPayload(_ payload: String?, session: AgentTabSession)
+    func dequeueQueuedUserTurnEstimate(session: AgentModeViewModel.TabSession) -> Int?
+    func beginTurn(session: AgentModeViewModel.TabSession, initialMessage: String)
+    func addUserInputTokens(_ tokens: Int, session: AgentModeViewModel.TabSession)
+    func addToolInputPayload(_ payload: String?, session: AgentModeViewModel.TabSession)
+    func addToolOutputPayload(_ payload: String?, session: AgentModeViewModel.TabSession)
 
     @discardableResult
     func ingestUsageSignal(
@@ -73,31 +73,31 @@ protocol ContextUsageEstimating: AnyObject {
         completionTokens: Int?,
         contextUsedTokens: Int?,
         modelContextWindow: Int?,
-        session: AgentTabSession
+        session: AgentModeViewModel.TabSession
     ) -> ContextUsageSnapshot?
 
     @discardableResult
     func ingestTurnFinalizationSignal(
         contextUsedTokens: Int?,
         modelContextWindow: Int?,
-        session: AgentTabSession
+        session: AgentModeViewModel.TabSession
     ) -> ContextUsageSnapshot?
 
-    func ingestStatusSignal(_ statusText: String?, session: AgentTabSession)
-    func ingestSystemSignal(_ systemText: String?, session: AgentTabSession)
+    func ingestStatusSignal(_ statusText: String?, session: AgentModeViewModel.TabSession)
+    func ingestSystemSignal(_ systemText: String?, session: AgentModeViewModel.TabSession)
 
     @discardableResult
     func finalizeTurn(
         promptTokens: Int?,
         completionTokens: Int?,
         contextUsedTokens: Int?,
-        session: AgentTabSession
+        session: AgentModeViewModel.TabSession
     ) -> Bool
 
     @discardableResult
     func ingestNativeContextUsage(
         _ usage: AgentContextUsage?,
-        session: AgentTabSession
+        session: AgentModeViewModel.TabSession
     ) -> ContextUsageSnapshot?
 }
 
@@ -105,7 +105,7 @@ extension ContextUsageEstimating {
     @discardableResult
     func ingestNativeContextUsage(
         _ usage: AgentContextUsage?,
-        session _: AgentTabSession
+        session _: AgentModeViewModel.TabSession
     ) -> ContextUsageSnapshot? {
         _ = usage
         return nil

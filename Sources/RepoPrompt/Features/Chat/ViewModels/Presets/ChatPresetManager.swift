@@ -23,19 +23,16 @@ class ChatPresetManager: ObservableObject {
         }
     }
 
-    @Published private(set) var persistenceErrorMessage: String?
-
     // MARK: - Storage
 
-    private let presetFileStore: PresetFileStore
+    private let presetFileStore = PresetFileStore.shared
 
     /// All presets (built-in + user), with overrides applied to built-ins
     @Published private(set) var allPresets: [ChatPreset] = []
 
     // MARK: - Initialization
 
-    init(presetFileStore: PresetFileStore = .shared) {
-        self.presetFileStore = presetFileStore
+    private init() {
         load()
         rebuildAllPresetsCache()
     }
@@ -80,15 +77,19 @@ class ChatPresetManager: ObservableObject {
         overrides = Dictionary(document.chatOverrides.map { ($0.presetID, $0) }, uniquingKeysWith: { _, new in new })
     }
 
+    /// Save user presets to Application Support JSON.
+    func save() {
+        persistChatState()
+    }
+
     /// Add a new user preset
     func add(_ preset: ChatPreset) {
         guard !preset.isBuiltIn else {
             print("Cannot add built-in preset as user preset")
             return
         }
-        mutateAndPersist {
-            userPresets.append(preset)
-        }
+        userPresets.append(preset)
+        save()
     }
 
     /// Update an existing user preset
@@ -99,9 +100,8 @@ class ChatPresetManager: ObservableObject {
         }
 
         if let index = userPresets.firstIndex(where: { $0.id == preset.id }) {
-            mutateAndPersist {
-                userPresets[index] = preset
-            }
+            userPresets[index] = preset
+            save()
         }
     }
 
@@ -112,16 +112,14 @@ class ChatPresetManager: ObservableObject {
             return
         }
 
-        mutateAndPersist {
-            userPresets.removeAll { $0.id == preset.id }
-        }
+        userPresets.removeAll { $0.id == preset.id }
+        save()
     }
 
     /// Remove a user preset by ID
     func remove(id: UUID) {
-        mutateAndPersist {
-            userPresets.removeAll { $0.id == id }
-        }
+        userPresets.removeAll { $0.id == id }
+        save()
     }
 
     /// Add a preset (convenience method matching the settings view)
@@ -141,10 +139,9 @@ class ChatPresetManager: ObservableObject {
 
     /// Toggle preset visibility
     func togglePresetVisibility(_ preset: ChatPreset) {
-        mutateAndPersist {
-            let currentVisibility = presetVisibility[preset.id] ?? true
-            presetVisibility[preset.id] = !currentVisibility
-        }
+        let currentVisibility = presetVisibility[preset.id] ?? true
+        presetVisibility[preset.id] = !currentVisibility
+        saveVisibility()
     }
 
     /// Check if a preset is visible
@@ -155,6 +152,11 @@ class ChatPresetManager: ObservableObject {
     /// Load visibility settings from Application Support JSON.
     private func loadVisibility() {
         presetVisibility = presetFileStore.loadWorkflowPresets().chatVisibility
+    }
+
+    /// Save visibility settings to Application Support JSON.
+    private func saveVisibility() {
+        persistChatState()
     }
 
     /// Create a chat preset from current settings
@@ -269,9 +271,8 @@ class ChatPresetManager: ObservableObject {
         if trimmed.isEmpty {
             clearOverrides(for: override.presetID)
         } else {
-            mutateAndPersist {
-                overrides[override.presetID] = trimmed
-            }
+            overrides[override.presetID] = trimmed
+            saveOverrides()
         }
     }
 
@@ -284,9 +285,8 @@ class ChatPresetManager: ObservableObject {
 
     /// Clear all overrides for a preset
     func clearOverrides(for id: UUID) {
-        mutateAndPersist {
-            overrides.removeValue(forKey: id)
-        }
+        overrides.removeValue(forKey: id)
+        saveOverrides()
     }
 
     /// Get a resolved preset with overrides applied
@@ -328,37 +328,17 @@ class ChatPresetManager: ObservableObject {
         overrides = Dictionary(overridesList.map { ($0.presetID, $0) }, uniquingKeysWith: { _, new in new })
     }
 
-    func clearPersistenceError() {
-        persistenceErrorMessage = nil
+    /// Save overrides to Application Support JSON.
+    private func saveOverrides() {
+        persistChatState()
     }
 
-    private func mutateAndPersist(_ mutation: () -> Void) {
-        let previousUserPresets = userPresets
-        let previousVisibility = presetVisibility
-        let previousOverrides = overrides
-        mutation()
-
-        do {
-            try persistChatState()
-            persistenceErrorMessage = nil
-        } catch {
-            userPresets = previousUserPresets
-            presetVisibility = previousVisibility
-            overrides = previousOverrides
-            reportPersistenceFailure(error)
-        }
-    }
-
-    private func persistChatState() throws {
+    private func persistChatState() {
         let overridesList = Array(overrides.values)
-        try presetFileStore.updateWorkflowPresets { document in
+        presetFileStore.updateWorkflowPresets { document in
             document.chatUserPresets = userPresets
             document.chatVisibility = presetVisibility
             document.chatOverrides = overridesList
         }
-    }
-
-    private func reportPersistenceFailure(_ error: Error) {
-        persistenceErrorMessage = "Your chat preset change wasn't saved and has been reverted. \(error.localizedDescription)"
     }
 }

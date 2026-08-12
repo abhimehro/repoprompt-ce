@@ -31,16 +31,11 @@ actor DirectHeadlessGlobalBackend: DomainGlobalControlBackend {
     private let context: DirectHeadlessDomainContext
     private let settingsStore: DomainDirectSettingsStore
 
-    init(
-        runtime: MCPDomainRuntime,
-        scopeID: DomainStandaloneScopeID,
-        context: DirectHeadlessDomainContext,
-        settingsStore: DomainDirectSettingsStore? = nil
-    ) {
+    init(runtime: MCPDomainRuntime, scopeID: DomainStandaloneScopeID, context: DirectHeadlessDomainContext) {
         self.runtime = runtime
         self.scopeID = scopeID
         self.context = context
-        self.settingsStore = settingsStore ?? DomainDirectSettingsStore(
+        settingsStore = DomainDirectSettingsStore(
             persistence: runtime.persistenceCoordinator,
             profileIdentifier: runtime.configuration.profileIdentifier
         )

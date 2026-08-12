@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 @testable import RepoPromptApp
 import XCTest
@@ -581,7 +580,6 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
             expectedTargetFileIDs: [target.id]
         )
         let ticketOffset = fixture.demandedTickets.values.count
-        let fixedRetryTime = ContinuousClock.now
         let service = WorkspaceSelectionMutationService(
             store: store,
             automaticSelectionPolicy: .init(
@@ -590,18 +588,12 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
                 maximumBackoffMilliseconds: 25,
                 maximumTotalWait: .seconds(10)
             ),
-            automaticSelectionWaiter: .init(sleep: { _ in await Task.yield() }),
-            automaticSelectionClock: .init(now: { fixedRetryTime }),
-            automaticSelectionDemandChangeWaiter: .init(wait: { store, ticket, _ in
-                await store.waitForCodemapArtifactDemandCompletionForTesting(ticket)
+            automaticSelectionWaiter: .init(sleep: { _ in
+                try await Task.sleep(for: .milliseconds(25))
             })
         )
         let result = try await service.resolveAutomaticCodemapSelection(sourceFileIDs: [source.id])
-        XCTAssertEqual(
-            result.targets.map(\.fileID),
-            [target.id],
-            "Busy retry must preserve a valid target; issues=\(result.issues)"
-        )
+        XCTAssertEqual(result.targets.map(\.fileID), [target.id])
         let demanded = Array(fixture.demandedTickets.values.dropFirst(ticketOffset))
         XCTAssertEqual(demanded.map(\.fileID), [target.id, target.id])
         XCTAssertEqual(demandAttempts.value, 2)
@@ -618,10 +610,12 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
             ]
         )
         let fixture = try CodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        let demandPublication = TestReleaseFence(name: "automatic target publication")
         let readinessWait = TestReleaseFence(name: "automatic target readiness wait")
         let demandGateEnabled = CodemapLockedCounter()
         let cleaned = CodemapLockedValues<WorkspaceCodemapArtifactDemandTicket>()
         addTeardownBlock {
+            demandPublication.release()
             readinessWait.release()
             await fixture.shutdown()
             repository.cleanup()
@@ -630,7 +624,7 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
             cancellationCleanupHook: { cleaned.append($0) },
             demandResultHook: { _, result in
                 if demandGateEnabled.value > 0 {
-                    return .busy(retryAfterMilliseconds: 0)
+                    await demandPublication.enterAndWaitIgnoringCancellationUntilRelease()
                 }
                 return result
             }
@@ -673,11 +667,11 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
         } catch is CancellationError {
             // Expected.
         }
+        demandPublication.release()
         XCTAssertEqual(
             Array(fixture.demandedTickets.values.dropFirst(ticketOffset)).map(\.fileID),
             [target.id]
         )
-        try await cleaned.waitUntilCount(cleanupOffset + 1)
         XCTAssertEqual(
             Array(cleaned.values.dropFirst(cleanupOffset)).map(\.fileID),
             [target.id]
@@ -695,12 +689,14 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
         )
         let fixture = try CodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
         let publication = TestReleaseFence(name: "automatic target publication")
+        let cleaned = CodemapLockedValues<WorkspaceCodemapArtifactDemandTicket>()
         addTeardownBlock {
             publication.release()
             await fixture.shutdown()
             repository.cleanup()
         }
         let store = fixture.makeStore(
+            cancellationCleanupHook: { cleaned.append($0) },
             demandResultHook: { _, result in
                 await publication.enterAndWait()
                 return result
@@ -731,7 +727,6 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
         }
         let publicationEntered = await publication.waitUntilEntered(timeout: TestFenceDefaults.enterWait)
         XCTAssertTrue(publicationEntered)
-        let demandTicket = try XCTUnwrap(fixture.demandedTickets.values.last)
         try "struct Target { let changed: Bool }\n".write(
             to: rootURL.appendingPathComponent("Sources/Target.swift"),
             atomically: true,
@@ -746,11 +741,7 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
         XCTAssertEqual(result.targets, [])
         XCTAssertFalse(result.issues.isEmpty)
         XCTAssertTrue([.pending, .unavailable].contains(result.roots[0].status))
-        let cleanup = await store.codemapArtifactDemandCleanupSnapshotForTesting(demandTicket)
-        XCTAssertFalse(cleanup.demandRecordPresent)
-        XCTAssertFalse(cleanup.bundlePresent)
-        XCTAssertEqual(cleanup.ownerCount, 0)
-        XCTAssertFalse(cleanup.liveOverlayPresent)
+        XCTAssertEqual(cleaned.values.map(\.fileID), [target.id])
     }
 
     func testDefaultCandidateDemandCapRejects1025Targets() {
@@ -1038,24 +1029,22 @@ final class CodemapAutomaticSelectionGraphNativeTests: WorkspaceFileContextStore
         _ = try manager.attachRootShell(for: root, workspaceID: UUID())
         let sourceViewModelValue = await manager.materializeFileForUserInput(source.standardizedFullPath)
         let sourceViewModel = try XCTUnwrap(sourceViewModelValue)
-        let committedSelection = AsyncTestCondition(manager.autoCodemapFiles.map(\.id))
-        let selectionCancellable = manager.$autoCodemapFiles.sink { files in
-            committedSelection.update { $0 = files.map(\.id) }
-        }
-        defer { selectionCancellable.cancel() }
         manager.selectFileForTesting(sourceViewModel)
-        try await fixture.demandedTickets.waitUntilCount(2)
+        let clock = ContinuousClock()
+        let retryDeadline = clock.now.advanced(by: .seconds(3))
+        while fixture.demandedTickets.values.count < 2, clock.now < retryDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
 
         XCTAssertTrue(manager.autoCodemapFiles.isEmpty)
         let unchangedRootStatus = manager.codemapRootStatus(rootID: root.id)
         XCTAssertEqual(fixture.demandedTickets.values.map(\.fileID), [target.id, target.id])
 
         readyPublication.release()
-        try await committedSelection.waitUntil(
-            "automatic codemap target selection commit",
-            timeout: TestFenceDefaults.releaseWait
-        ) { $0 == [target.id] }
-        await manager.waitForAutoCodemapSyncForTesting()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while manager.autoCodemapFiles.map(\.id) != [target.id], clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
 
         XCTAssertEqual(manager.autoCodemapFiles.map(\.id), [target.id])
         XCTAssertFalse(manager.automaticCodemapReadinessRetryPendingForTesting)

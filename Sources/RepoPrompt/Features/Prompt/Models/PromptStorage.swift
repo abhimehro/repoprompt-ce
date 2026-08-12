@@ -7,36 +7,6 @@
 
 import Foundation
 
-struct StoredPromptRecord: Identifiable, Codable, Equatable {
-    let id: UUID
-    var title: String
-    var content: String
-    /// Tracks whether the user has manually edited a built-in prompt.
-    /// When true, auto-upgrades of built-in content are skipped.
-    var isUserEdited: Bool
-
-    init(id: UUID, title: String, content: String, isUserEdited: Bool = false) {
-        self.id = id
-        self.title = title
-        self.content = content
-        self.isUserEdited = isUserEdited
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        title = try container.decode(String.self, forKey: .title)
-        content = try container.decode(String.self, forKey: .content)
-        isUserEdited = try container.decodeIfPresent(Bool.self, forKey: .isUserEdited) ?? false
-    }
-
-    static func == (lhs: StoredPromptRecord, rhs: StoredPromptRecord) -> Bool {
-        lhs.id == rhs.id &&
-            lhs.title == rhs.title &&
-            lhs.content == rhs.content
-    }
-}
-
 /// <summary>
 /// Represents the external structure used for importing and exporting prompts,
 /// without relying on our internal UUID.
@@ -55,25 +25,12 @@ class PromptStorage {
     static let shared = PromptStorage()
 
     private let filename = "SavedPrompts.json"
-    private let configuredFileURL: URL?
 
     /// This serial queue ensures file reads/writes are never interleaved.
     private static let queue = DispatchQueue(label: "com.pvncher.repoprompt.PromptStorageQueue")
 
-    init(fileURL: URL? = nil) {
-        configuredFileURL = fileURL
-    }
-
-    /// Compute the file URL in Application Support under com.pvncher.repoprompt.
+    /// Compute the file URL in Application Support under com.pvncher.repoprompt
     private var fileURL: URL {
-        if let configuredFileURL {
-            try? FileManager.default.createDirectory(
-                at: configuredFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            return configuredFileURL
-        }
-
         let supportDir = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -95,8 +52,8 @@ class PromptStorage {
     /// Returns .success([]) if the file doesn't exist (first run scenario).
     /// Returns .failure(error) if the file exists but can't be read/decoded.
     /// </summary>
-    func loadPrompts() -> Result<[StoredPromptRecord], Error> {
-        var result: Result<[StoredPromptRecord], Error> = .success([])
+    func loadPrompts() -> Result<[PromptViewModel.StoredPrompt], Error> {
+        var result: Result<[PromptViewModel.StoredPrompt], Error> = .success([])
 
         // Use a synchronous block so we can return the result directly
         Self.queue.sync {
@@ -109,7 +66,7 @@ class PromptStorage {
 
             do {
                 let data = try Data(contentsOf: fileURL)
-                let prompts = try JSONDecoder().decode([StoredPromptRecord].self, from: data)
+                let prompts = try JSONDecoder().decode([PromptViewModel.StoredPrompt].self, from: data)
                 result = .success(prompts)
             } catch {
                 // File exists but can't be read or decoded - this is an error!
@@ -128,7 +85,7 @@ class PromptStorage {
     /// This version supports an optional callback that fires after success/failure.
     /// </summary>
     func savePrompts(
-        _ prompts: [StoredPromptRecord],
+        _ prompts: [PromptViewModel.StoredPrompt],
         completion: ((Result<Void, Error>) -> Void)? = nil
     ) {
         Self.queue.async {
@@ -156,9 +113,9 @@ class PromptStorage {
 
 extension PromptStorage {
     /// <summary>
-    /// Export our internal `StoredPromptRecord` array into an array of `PromptExport` for writing to disk.
+    /// Export our internal `StoredPrompt` array into an array of `PromptExport` for writing to disk.
     /// </summary>
-    func exportPrompts(to url: URL, prompts: [StoredPromptRecord]) throws {
+    func exportPrompts(to url: URL, prompts: [PromptViewModel.StoredPrompt]) throws {
         let exports = prompts.map { PromptExport(title: $0.title, content: $0.content) }
         let data = try JSONEncoder().encode(exports)
 
@@ -175,18 +132,18 @@ extension PromptStorage {
     }
 
     /// <summary>
-    /// Given the array of existing `StoredPromptRecord` and newly loaded external `PromptExport`,
-    /// convert the external prompts into new records, skipping duplicates.
+    /// Given the array of existing `StoredPrompt` and newly loaded external `PromptExport`,
+    /// convert the external prompts into new `StoredPrompt`s, skipping duplicates.
     /// Returns a tuple: (merged array, count of new items).
     ///
     /// Duplicates are checked by matching (title, content).
     /// If a prompt with the same title + content already exists, we skip adding a new one.
-    /// Otherwise, create a new record with a fresh UUID.
+    /// Otherwise, create a new `StoredPrompt` with a fresh UUID.
     /// </summary>
     func mergeExternalPrompts(
-        current: [StoredPromptRecord],
+        current: [PromptViewModel.StoredPrompt],
         external: [PromptExport]
-    ) -> (merged: [StoredPromptRecord], addedCount: Int) {
+    ) -> (merged: [PromptViewModel.StoredPrompt], addedCount: Int) {
         var merged = current
         var addedCount = 0
 
@@ -197,7 +154,7 @@ extension PromptStorage {
             })
 
             if !duplicateExists {
-                let newPrompt = StoredPromptRecord(
+                let newPrompt = PromptViewModel.StoredPrompt(
                     id: UUID(), // Always new ID
                     title: item.title,
                     content: item.content

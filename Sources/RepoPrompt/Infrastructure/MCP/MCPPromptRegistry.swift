@@ -9,7 +9,6 @@
 
 import Foundation
 import MCP
-import RepoPromptShared
 
 /// Registry for MCP prompt templates.
 /// Exposes RepoPrompt's built-in workflow prompts (rp-build, rp-investigate)

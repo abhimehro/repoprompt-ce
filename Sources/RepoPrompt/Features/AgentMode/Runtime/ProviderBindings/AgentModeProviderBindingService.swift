@@ -115,7 +115,7 @@ final class AgentModeProviderBindingService {
     }
 
     func autoEditGuidance(
-        for session: AgentTabSession
+        for session: AgentModeViewModel.TabSession
     ) -> AgentModeViewModel.AutoEditPermissionGuidance? {
         autoEditGuidance(
             agent: session.selectedAgent,
@@ -166,11 +166,11 @@ final class AgentModeProviderBindingService {
 
     func providerPreferenceChanged(
         providerID: AgentProviderBindingID,
-        sessions: [AgentTabSession],
+        sessions: [AgentModeViewModel.TabSession],
         currentTabID: UUID?,
         codexCoordinator: CodexAgentModeCoordinator,
         scheduleSave: @escaping (UUID) -> Void,
-        updateActiveBindings: @escaping (AgentTabSession) -> Void,
+        updateActiveBindings: @escaping (AgentModeViewModel.TabSession) -> Void,
         refreshGuidance: @escaping () -> Void
     ) {
         var shouldRefreshActiveBindings = false

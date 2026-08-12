@@ -213,7 +213,7 @@ final class GlobalKeyboardShortcutsCoordinator {
     private func registerAgentShortcuts() {
         register(.agentNewChat) { [weak self] in self?.startNewAgentSessionFromShortcut() }
         register(.toggleNavigationSidebar) { [weak self] in self?.toggleNavigationSidebarFromShortcut() }
-        register(.toggleContextComposer) { [weak self] in self?.toggleContextComposerFromShortcut() }
+        register(.toggleComposeInspector) { [weak self] in self?.toggleComposeInspectorFromShortcut() }
         register(.previousParentAgentSession) { [weak self] in self?.focusAdjacentParentAgentSession(forward: false) }
         register(.nextParentAgentSession) { [weak self] in self?.focusAdjacentParentAgentSession(forward: true) }
         register(.showCurrentWindowAgentNavigationHUD) { [weak self] in self?.showAgentNavigationHUD(mode: .currentWindow) }
@@ -234,18 +234,18 @@ final class GlobalKeyboardShortcutsCoordinator {
         )
     }
 
-    private func toggleContextComposerFromShortcut() {
+    private func toggleComposeInspectorFromShortcut() {
         guard let win = guardedFocusedWindowState() else { return }
-        toggleContextComposer(in: win)
+        toggleComposeInspector(in: win)
     }
 
-    private func toggleContextComposer(in win: WindowState) {
-        win.agentModeViewModel.toggleContextComposerIfActive()
+    private func toggleComposeInspector(in win: WindowState) {
+        win.agentModeViewModel.toggleComposeInspectorIfActive()
     }
 
     #if DEBUG
-        func test_toggleContextComposer(in win: WindowState) {
-            toggleContextComposer(in: win)
+        func test_toggleComposeInspector(in win: WindowState) {
+            toggleComposeInspector(in: win)
         }
     #endif
 

@@ -23,11 +23,7 @@ package enum DomainWorkspaceCommand: Codable, Equatable, Sendable {
     case replaceWorkingDocument(DomainWorkspaceDocument)
     case saveWorkspaceDocument(workspaceID: UUID)
     case deleteWorkspace(workspaceID: UUID)
-    case resolveExternalConflict(
-        workspaceID: UUID,
-        acceptExternal: Bool,
-        protectedAgentIdentities: [DomainProtectedAgentIdentity]
-    )
+    case resolveExternalConflict(workspaceID: UUID, acceptExternal: Bool)
 }
 
 package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
@@ -71,23 +67,8 @@ package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
             components += ["save", workspaceID.uuidString]
         case let .deleteWorkspace(workspaceID):
             components += ["delete", workspaceID.uuidString]
-        case let .resolveExternalConflict(workspaceID, acceptExternal, protectedAgentIdentities):
+        case let .resolveExternalConflict(workspaceID, acceptExternal):
             components += ["resolve", workspaceID.uuidString, acceptExternal ? "external" : "local"]
-            components += protectedAgentIdentities
-                .sorted {
-                    if $0.location.rawValue != $1.location.rawValue {
-                        return $0.location.rawValue < $1.location.rawValue
-                    }
-                    return $0.tabID.uuidString < $1.tabID.uuidString
-                }
-                .flatMap {
-                    [
-                        $0.location.rawValue,
-                        $0.tabID.uuidString,
-                        $0.activeAgentSessionID?.uuidString ?? "nil",
-                        $0.isPinned ? "pinned" : "unpinned"
-                    ]
-                }
         }
         let canonical = components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
         return DomainContentDigest.sha256(Data(canonical.utf8))
@@ -107,9 +88,6 @@ package enum DomainCommandDisposition: String, Codable, Sendable {
 package enum DomainCommandErrorCode: String, Codable, Sendable {
     case stateConflict = "state_conflict"
     case runtimeReadOnlyDegraded = "runtime_read_only_degraded"
-    case workspaceExternalConflict = "workspace_external_conflict"
-    case workspaceReadOnlyDegraded = "workspace_read_only_degraded"
-    case protectedAgentIdentityConflict = "protected_agent_identity_conflict"
     case operationIDCollision = "operation_id_collision"
     case workspaceUnavailable = "workspace_unavailable"
     case invalidDocument = "invalid_document"
