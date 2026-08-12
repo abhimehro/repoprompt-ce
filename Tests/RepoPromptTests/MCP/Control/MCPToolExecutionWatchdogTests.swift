@@ -559,10 +559,6 @@ final class MCPToolExecutionWatchdogTests: XCTestCase {
         let invocationID = UUID()
         let event = MCPToolExecutionTraceEvent(
             toolName: MCPWindowToolName.manageSelection,
-            operationIdentity: MCPDomainToolCatalog.operationIdentity(
-                for: MCPWindowToolName.manageSelection,
-                input: .missing
-            ),
             connectionID: UUID(),
             invocationID: invocationID,
             runID: nil,

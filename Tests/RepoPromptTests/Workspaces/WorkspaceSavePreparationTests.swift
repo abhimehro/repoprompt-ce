@@ -78,7 +78,7 @@ import XCTest
             await saveTask.value
             manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
 
-            let savedA = try WorkspaceManagerViewModel.loadWorkspaceFromFile(at: arrival.fileURL, scheduleNormalizationWriteback: false)
+            let savedA = try WorkspaceManagerViewModel.loadWorkspaceFromFile(at: arrival.fileURL)
             XCTAssertEqual(savedA.id, workspaceA.id)
             XCTAssertFalse(FileManager.default.fileExists(atPath: manager.workspaceFileURL(for: workspaceB).path))
         }
@@ -187,18 +187,11 @@ import XCTest
             // End-to-end: a domain projection publication re-validates the cache through the same
             // seam. Without an authority client this composition conservatively clears it.
             try confirmRegistration()
-            manager.reportDomainProjectionFailure(NSError(
-                domain: "WorkspaceSavePreparationTests",
-                code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "transient projection failure"]
-            ))
-            XCTAssertEqual(manager.domainWorkspaceAuthorityIssue?.kind, .projectionFailure)
             manager.applyDomainWorkspaceProjection(
                 [workspace],
                 fileURLsByWorkspaceID: [workspace.id: fileURL],
                 revisionsByWorkspaceID: [:],
                 digestsByWorkspaceID: [workspace.id: "digest-c"],
-                healthByWorkspaceID: [workspace.id: .writable],
                 catalogRevision: 1,
                 preferredActiveWorkspaceID: workspace.id,
                 publicationSequence: 1
@@ -206,10 +199,6 @@ import XCTest
             XCTAssertNotNil(
                 manager.domainReadRegistrationToken(for: workspace, fileURL: fileURL),
                 "A projected catalog publication must invalidate confirmed read registrations."
-            )
-            XCTAssertNil(
-                manager.domainWorkspaceAuthorityIssue,
-                "A successful full-model projection must clear its stale projection failure."
             )
         }
 
@@ -329,8 +318,7 @@ import XCTest
             let diagnostics = manager.workspaceSaveDiagnosticsForTesting(workspaceID: workspace.id)
             XCTAssertEqual(diagnostics.attemptCount, 2)
             let saved = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
-                at: manager.workspaceFileURL(for: workspace),
-                scheduleNormalizationWriteback: false
+                at: manager.workspaceFileURL(for: workspace)
             )
             XCTAssertEqual(saved.currentPromptText, "newer state")
             XCTAssertEqual(
@@ -647,15 +635,6 @@ import XCTest
             XCTAssertEqual(decoded.currentPromptText, "newer runtime state")
             XCTAssertEqual(decoded.repoPaths, ["/tmp/runtime-baseline"])
 
-            let deniedDirectWriteRoot = root.appendingPathComponent("DeniedDirectWrite", isDirectory: true)
-            do {
-                _ = try await manager.saveWorkspaceToFileAsync(decoded, baseRoot: deniedDirectWriteRoot)
-                XCTFail("A domain-owned workspace must reject the legacy direct writer")
-            } catch {
-                XCTAssertTrue(error.localizedDescription.contains("domain workspace authority"))
-            }
-            XCTAssertFalse(FileManager.default.fileExists(atPath: deniedDirectWriteRoot.path))
-
             let staleID = UUID()
             let staleIndex: [[String: Any]] = [[
                 "id": staleID.uuidString,
@@ -675,12 +654,8 @@ import XCTest
                     && !manager.workspaces.contains { $0.id == staleID }
             }
 
-            guard let localIndex = manager.workspaces.firstIndex(where: { $0.id == workspaceID }) else {
-                return XCTFail("Runtime workspace disappeared before external reconciliation")
-            }
-            manager.workspaces[localIndex].currentPromptText = "local working state preserved"
-            manager.markWorkspaceDirty()
-            let localDirty = manager.workspaces[localIndex]
+            var localDirty = decoded
+            localDirty.currentPromptText = "local unresolved state"
             await manager.debugPublishWorkingDocumentToDomainAuthority(localDirty)
             let dirtySnapshot = try await waitForDomainWorkspace(
                 runtime,
@@ -692,54 +667,56 @@ import XCTest
                     documentBytes: snapshot.document.documentBytes,
                     fileURL: snapshot.document.fileURL
                 )
-                return projected.currentPromptText == "local working state preserved"
+                return projected.currentPromptText == "local unresolved state"
             }
             XCTAssertGreaterThan(dirtySnapshot.revisions.workingRevision, dirtySnapshot.revisions.savedRevision)
             XCTAssertEqual(dirtySnapshot.revisions.dirtyRevision, dirtySnapshot.revisions.workingRevision)
-
             var external = decoded
-            external.currentPromptText = "external saved baseline"
+            external.currentPromptText = "external accepted state"
             try JSONEncoder().encode(external).write(
                 to: savedDocument.document.fileURL,
                 options: .atomic
             )
-            let reloadActivity = await runtime.workspaceStore.reloadExternalChanges()
-            XCTAssertEqual(reloadActivity, .changed)
-            let reconciledCatalog = await runtime.workspaceStore.snapshot()
-            let reconciliationProjectionCompleted = await presentationBridge.waitUntilProjected(
-                through: reconciledCatalog.publicationSequence
+            await manager.refreshDomainWorkspaceAuthority()
+            let conflictedSnapshot = try await waitForDomainWorkspace(
+                runtime,
+                workspaceID: workspaceID,
+                description: "external conflict classification"
+            ) { snapshot in
+                if case .externalConflict = snapshot.health { return true }
+                return false
+            }
+            guard case .externalConflict = conflictedSnapshot.health else {
+                return XCTFail("Expected an authoritative external conflict")
+            }
+            let issue = try XCTUnwrap(manager.domainWorkspaceAuthorityIssue)
+            XCTAssertEqual(issue.workspaceID, workspaceID)
+            XCTAssertTrue(issue.canResolveExternalConflict)
+            let conflictResolved = await manager.resolveDomainWorkspaceConflict(
+                workspaceID: workspaceID,
+                acceptExternal: true
             )
-            XCTAssertTrue(reconciliationProjectionCompleted)
+            XCTAssertTrue(conflictResolved)
+            XCTAssertNil(manager.domainWorkspaceAuthorityIssue)
             let resolved = try await waitForDomainWorkspace(
                 runtime,
                 workspaceID: workspaceID,
-                description: "automatic dirty external reconciliation"
+                description: "accepted external conflict resolution"
             ) { snapshot in
-                guard snapshot.health == .writable,
-                      snapshot.revisions.dirtyRevision != nil
-                else { return false }
-                let projected = try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
-                    documentBytes: snapshot.document.documentBytes,
-                    fileURL: snapshot.document.fileURL
-                )
-                return projected.currentPromptText == "local working state preserved"
+                snapshot.health == .writable && snapshot.revisions.dirtyRevision == nil
             }
             XCTAssertEqual(resolved.health, .writable)
-            XCTAssertNotNil(resolved.revisions.dirtyRevision)
-            XCTAssertNil(manager.domainWorkspaceAuthorityIssue)
-
-            let canonicalBaseline = manager.debugDomainAuthorityBaseline(for: workspaceID)
-            XCTAssertEqual(canonicalBaseline.revisions, resolved.revisions)
-            XCTAssertEqual(canonicalBaseline.digest, resolved.document.contentDigest)
-            XCTAssertEqual(canonicalBaseline.health, .writable)
-            let admissionIssue = await manager.domainAuthorityAdmissionIssue(for: workspaceID)
-            XCTAssertNil(admissionIssue)
-
+            XCTAssertNil(resolved.revisions.dirtyRevision)
+            let resolvedCatalog = await runtime.workspaceStore.snapshot()
+            let resolvedProjectionCompleted = await presentationBridge.waitUntilProjected(
+                through: resolvedCatalog.publicationSequence
+            )
+            XCTAssertTrue(resolvedProjectionCompleted)
             let accepted = try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
                 documentBytes: resolved.document.documentBytes,
                 fileURL: resolved.document.fileURL
             )
-            XCTAssertEqual(accepted.currentPromptText, "local working state preserved")
+            XCTAssertEqual(accepted.currentPromptText, "external accepted state")
 
             let authoritativeURL = resolved.document.fileURL
             let authoritativeDirectory = authoritativeURL.deletingLastPathComponent().standardizedFileURL

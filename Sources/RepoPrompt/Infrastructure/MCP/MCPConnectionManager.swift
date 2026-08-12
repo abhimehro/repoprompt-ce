@@ -2955,8 +2955,7 @@ actor ServerNetworkManager {
     private func mapConnectionToRunIDForPendingPolicy(
         _ connectionID: UUID,
         runID: UUID,
-        windowID: Int,
-        clientName: String
+        windowID: Int
     ) async -> MCPServerViewModel.PendingPolicyRunIDMappingToken? {
         let token = await MainActor.run { () -> MCPServerViewModel.PendingPolicyRunIDMappingToken? in
             guard let window = WindowStatesManager.shared.window(withID: windowID) else {
@@ -2966,8 +2965,7 @@ actor ServerNetworkManager {
             return window.mcpServer.registerPendingPolicyRunIDMapping(
                 connectionID: connectionID,
                 runID: runID,
-                windowID: windowID,
-                clientName: clientName
+                windowID: windowID
             )
         }
         guard let token else {
@@ -10217,8 +10215,7 @@ actor ServerNetworkManager {
                 pendingPolicyRunIDMappingToken = await mapConnectionToRunIDForPendingPolicy(
                     connectionID,
                     runID: runID,
-                    windowID: policy.windowID,
-                    clientName: clientName
+                    windowID: policy.windowID
                 )
                 routed = pendingPolicyRunIDMappingToken != nil
             }
@@ -10976,6 +10973,13 @@ actor ServerNetworkManager {
             let evidenceClass = MCPToolConcurrencyEvidenceClass(
                 admissionClass: MCPToolAdmissionPolicy.classification(forCanonicalToolName: toolName)
             )
+            defer {
+                MCPToolConcurrencyEvidenceRecorder.shared.recordCallCompleted(
+                    classKey: evidenceClass,
+                    canonicalToolName: toolName,
+                    totalMilliseconds: evidenceArrival.duration(to: evidenceClock.now).mcpMilliseconds
+                )
+            }
             let preLimiterEnvelopeState = EditFlowPerf.begin(
                 EditFlowPerf.Stage.MCPToolCall.preLimiterEnvelope,
                 EditFlowPerf.Dimensions(toolName: toolName)
@@ -11013,18 +11017,6 @@ actor ServerNetworkManager {
             let extractedRawJSON = normalized.rawJSON
             let cleanedArguments = normalized.payload
             let capturedRawJSON = extractedRawJSON
-            let evidenceOperationIdentity = MCPToolAdmissionPolicy.operationIdentity(
-                forCanonicalToolName: toolName,
-                arguments: cleanedArguments
-            )
-            defer {
-                MCPToolConcurrencyEvidenceRecorder.shared.recordCallCompleted(
-                    classKey: evidenceClass,
-                    canonicalToolName: toolName,
-                    operationIdentity: evidenceOperationIdentity,
-                    totalMilliseconds: evidenceArrival.duration(to: evidenceClock.now).mcpMilliseconds
-                )
-            }
             connectionLog("tools/call \(toolName): args normalized keys=\(cleanedArguments.keys.sorted().joined(separator: ","))")
 
             // tools/list already performs any needed persisted routing hydration.
@@ -11194,7 +11186,6 @@ actor ServerNetworkManager {
             } catch {
                 MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
                     classKey: .unclassified,
-                    operationIdentity: evidenceOperationIdentity,
                     reason: .unclassifiedTool
                 )
                 return Self.executionContractToolErrorResult(
@@ -11304,7 +11295,6 @@ actor ServerNetworkManager {
                         MCPToolConcurrencyEvidenceRecorder.shared.recordLaneWaitAbandoned(classKey: evidenceClass)
                         MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
                             classKey: evidenceClass,
-                            operationIdentity: evidenceOperationIdentity,
                             reason: .laneWaitCancelled
                         )
                         return Self.executionContractToolErrorResult(
@@ -11316,7 +11306,6 @@ actor ServerNetworkManager {
                 ) {
                     MCPToolConcurrencyEvidenceRecorder.shared.recordLaneAdmitted(
                         classKey: evidenceClass,
-                        operationIdentity: evidenceOperationIdentity,
                         waitMilliseconds: evidenceLaneWaitStart.duration(to: evidenceClock.now).mcpMilliseconds
                     )
                     defer { MCPToolConcurrencyEvidenceRecorder.shared.recordLanePermitReleased(classKey: evidenceClass) }
@@ -11565,13 +11554,11 @@ actor ServerNetworkManager {
                                         mutationAdmissionLease = try await self.domainHost.acquireMutationResourceAdmission(mutationResource)
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
-                                            operationIdentity: evidenceOperationIdentity,
                                             milliseconds: evidenceLeaseWaitStart.duration(to: evidenceClock.now).mcpMilliseconds
                                         )
                                     } catch {
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
                                             classKey: evidenceClass,
-                                            operationIdentity: evidenceOperationIdentity,
                                             reason: .leaseWaitTermination(for: error)
                                         )
                                         return Self.executionContractToolErrorResult(
@@ -11599,13 +11586,11 @@ actor ServerNetworkManager {
                                         smallReadAdmissionLease = try await self.domainHost.acquireSmallReadResourceAdmission(windowID: chosenID)
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordLeaseWait(
                                             classKey: evidenceClass,
-                                            operationIdentity: evidenceOperationIdentity,
                                             milliseconds: evidenceLeaseWaitStart.duration(to: evidenceClock.now).mcpMilliseconds
                                         )
                                     } catch {
                                         MCPToolConcurrencyEvidenceRecorder.shared.recordRejection(
                                             classKey: evidenceClass,
-                                            operationIdentity: evidenceOperationIdentity,
                                             reason: .leaseWaitTermination(for: error)
                                         )
                                         return Self.executionContractToolErrorResult(
@@ -11824,7 +11809,6 @@ actor ServerNetworkManager {
                                         }
                                         MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
                                             toolName: toolName,
-                                            operationIdentity: evidenceOperationIdentity,
                                             connectionID: connectionID,
                                             invocationID: invocationID,
                                             runID: observerRunIDForCallbacksFinal,

@@ -167,21 +167,11 @@ actor DirectHeadlessMCPService {
             workingDirectories: workingDirectories
         )
         let context = DirectHeadlessDomainContext(runtime: runtime, scopeID: scopeID)
-        let settingsStore = DomainDirectSettingsStore(
-            persistence: runtime.persistenceCoordinator,
-            profileIdentifier: runtime.configuration.profileIdentifier
-        )
         let workspace = DirectHeadlessWorkspaceBackend(context: context)
-        let global = DirectHeadlessGlobalBackend(
-            runtime: runtime,
-            scopeID: scopeID,
-            context: context,
-            settingsStore: settingsStore
-        )
+        let global = DirectHeadlessGlobalBackend(runtime: runtime, scopeID: scopeID, context: context)
         let providerCoordinator = DirectHeadlessProviderCoordinator(
             runtime: runtime,
             context: context,
-            settingsStore: settingsStore,
             environment: environment
         )
         let backends = MCPDomainStandaloneCapabilityBackends(

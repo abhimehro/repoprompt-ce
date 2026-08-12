@@ -712,8 +712,7 @@ package struct DomainPersistenceCoordinator {
     func persistConflictRebase(
         document: DomainWorkspaceDocument,
         externalSavedDigest: String,
-        expectedRevisions: DomainRevisionState,
-        newRevisions: DomainRevisionState,
+        expectedRevision: UInt64,
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
@@ -723,8 +722,7 @@ package struct DomainPersistenceCoordinator {
             try blockingWorker(cancellation).persistConflictRebaseBlocking(
                 document: document,
                 externalSavedDigest: externalSavedDigest,
-                expectedRevisions: expectedRevisions,
-                newRevisions: newRevisions,
+                expectedRevision: expectedRevision,
                 contextRevisions: contextRevisions,
                 contextTombstones: contextTombstones,
                 operations: operations,
@@ -1508,8 +1506,7 @@ package struct DomainPersistenceCoordinator {
     private func persistConflictRebaseBlocking(
         document: DomainWorkspaceDocument,
         externalSavedDigest: String,
-        expectedRevisions: DomainRevisionState,
-        newRevisions: DomainRevisionState,
+        expectedRevision: UInt64,
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
@@ -1518,30 +1515,18 @@ package struct DomainPersistenceCoordinator {
         try ensureLazyMigration(now: now)
         return try withExistingWorkspaceLocks(document: document, now: now) { catalogRevision in
             let current = try readCurrentJournalOrSeed(document: document)
-            guard current.revisions == expectedRevisions else {
+            guard current.revisions.workingRevision == expectedRevision else {
                 throw DomainPersistenceError.stateConflict(
-                    expected: expectedRevisions.workingRevision,
+                    expected: expectedRevision,
                     actual: current.revisions.workingRevision
                 )
-            }
-            let keepsRevision = newRevisions == current.revisions
-            let advancesRevision = newRevisions.workingRevision == current.revisions.workingRevision &+ 1
-                && newRevisions.savedRevision == current.revisions.savedRevision
-                && newRevisions.dirtyRevision == newRevisions.workingRevision
-            guard keepsRevision || advancesRevision else {
-                throw DomainPersistenceError.invalidWorkspaceDocument
-            }
-            guard let externalBytes = try? Data(contentsOf: document.fileURL),
-                  DomainContentDigest.sha256(externalBytes) == externalSavedDigest
-            else {
-                throw DomainPersistenceError.externalDocumentConflict
             }
             let journal = DomainWorkingJournal(
                 workspaceID: document.workspaceID,
                 fileURL: document.fileURL,
-                revisions: newRevisions,
+                revisions: current.revisions,
                 savedDigest: externalSavedDigest,
-                workingDocument: newRevisions.dirtyRevision == nil ? nil : document.documentBytes,
+                workingDocument: document.documentBytes,
                 contextRevisions: contextRevisions,
                 contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
                     ($0.identity.contextID, $0.contentDigest)

@@ -7,7 +7,7 @@ final class CodexContextUsageEstimator: ContextUsageEstimating {
     @discardableResult
     func enqueueUserTurnEstimate(
         messageForProvider _: String,
-        session _: AgentTabSession
+        session _: AgentModeViewModel.TabSession
     ) -> Int {
         0
     }
@@ -15,28 +15,28 @@ final class CodexContextUsageEstimator: ContextUsageEstimating {
     @discardableResult
     func replaceNextQueuedUserTurnEstimate(
         messageForProvider _: String,
-        session _: AgentTabSession
+        session _: AgentModeViewModel.TabSession
     ) -> Int? {
         nil
     }
 
-    func dequeueQueuedUserTurnEstimate(session _: AgentTabSession) -> Int? {
+    func dequeueQueuedUserTurnEstimate(session _: AgentModeViewModel.TabSession) -> Int? {
         nil
     }
 
-    func beginTurn(session _: AgentTabSession, initialMessage _: String) {
+    func beginTurn(session _: AgentModeViewModel.TabSession, initialMessage _: String) {
         // Codex uses native token usage events.
     }
 
-    func addUserInputTokens(_ tokens: Int, session _: AgentTabSession) {
+    func addUserInputTokens(_ tokens: Int, session _: AgentModeViewModel.TabSession) {
         _ = tokens
     }
 
-    func addToolInputPayload(_ payload: String?, session _: AgentTabSession) {
+    func addToolInputPayload(_ payload: String?, session _: AgentModeViewModel.TabSession) {
         _ = payload
     }
 
-    func addToolOutputPayload(_ payload: String?, session _: AgentTabSession) {
+    func addToolOutputPayload(_ payload: String?, session _: AgentModeViewModel.TabSession) {
         _ = payload
     }
 
@@ -46,7 +46,7 @@ final class CodexContextUsageEstimator: ContextUsageEstimating {
         completionTokens _: Int?,
         contextUsedTokens _: Int?,
         modelContextWindow _: Int?,
-        session _: AgentTabSession
+        session _: AgentModeViewModel.TabSession
     ) -> ContextUsageSnapshot? {
         nil
     }
@@ -55,16 +55,16 @@ final class CodexContextUsageEstimator: ContextUsageEstimating {
     func ingestTurnFinalizationSignal(
         contextUsedTokens _: Int?,
         modelContextWindow _: Int?,
-        session _: AgentTabSession
+        session _: AgentModeViewModel.TabSession
     ) -> ContextUsageSnapshot? {
         nil
     }
 
-    func ingestStatusSignal(_ statusText: String?, session _: AgentTabSession) {
+    func ingestStatusSignal(_ statusText: String?, session _: AgentModeViewModel.TabSession) {
         _ = statusText
     }
 
-    func ingestSystemSignal(_ systemText: String?, session _: AgentTabSession) {
+    func ingestSystemSignal(_ systemText: String?, session _: AgentModeViewModel.TabSession) {
         _ = systemText
     }
 
@@ -73,7 +73,7 @@ final class CodexContextUsageEstimator: ContextUsageEstimating {
         promptTokens _: Int?,
         completionTokens _: Int?,
         contextUsedTokens _: Int?,
-        session _: AgentTabSession
+        session _: AgentModeViewModel.TabSession
     ) -> Bool {
         false
     }
@@ -81,7 +81,7 @@ final class CodexContextUsageEstimator: ContextUsageEstimating {
     @discardableResult
     func ingestNativeContextUsage(
         _ usage: AgentContextUsage?,
-        session: AgentTabSession
+        session: AgentModeViewModel.TabSession
     ) -> ContextUsageSnapshot? {
         let next = ContextUsageSnapshot.fromAgentContextUsage(
             usage,

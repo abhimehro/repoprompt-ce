@@ -1,7 +1,6 @@
 import Foundation
 import MCP
 import RepoPromptDomainRuntime
-import RepoPromptShared
 
 actor DirectHeadlessFilesystemBackend: DomainFilesystemMutationBackend {
     private let context: DirectHeadlessDomainContext
@@ -790,22 +789,6 @@ actor DirectHeadlessAgentBackend: DomainAgentCapabilityBackend {
             return try .object(["agents": .array(providers), "backend": .string("headless")])
         case "list", "list_sessions":
             return try await .object(["sessions": .array(coordinator.listAgents()), "backend": .string("headless")])
-        case "list_workflows":
-            let workflows = RepoPromptBuiltInAgentWorkflow.displayOrder.map { workflow in
-                let metadata = workflow.metadata
-                return Value.object([
-                    "id": .string(metadata.id),
-                    "name": .string(metadata.displayName),
-                    "source": .string("built_in"),
-                    "icon": .string(metadata.iconName),
-                    "description": .string(metadata.descriptionText),
-                    "tooltip": .string(metadata.tooltipText)
-                ])
-            }
-            return try .object([
-                "workflows": .array(workflows),
-                "backend": .string("headless")
-            ])
         case "cancel":
             let sessionID = try Self.sessionID(args)
             await coordinator.cancelAgent(sessionID: sessionID)

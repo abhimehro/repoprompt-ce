@@ -44,12 +44,10 @@ struct RecommendationToolbarButtonView: View {
             }
             showPopover.toggle()
         }) {
-            Label("Setup Wizard", systemImage: "lightbulb")
-                .labelStyle(.iconOnly)
+            Image(systemName: "lightbulb")
                 .imageScale(.medium)
                 .foregroundColor(toolbarStateObserver.state.hasActiveRecommendations ? .yellow : .secondary)
         }
-        .hoverTooltip("Setup Wizard", .bottom)
         .popover(isPresented: $showPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
             RecommendationWizardPopoverView(
                 viewModel: viewModel,

@@ -1,34 +1,11 @@
 import Foundation
 
-/// Bookkeeping snapshot captured by the first, prepare phase of workspace-switch
-/// discard, before the canonical cancellation awaits run. Provider/controller
-/// ownership is intentionally NOT captured here: graceful `cancelAgentRun`
-/// still needs the live session's provider state.
-struct WorkspaceSwitchSessionDiscardContext {
-    let tabID: UUID
-    let session: AgentTabSession
-    let boundSessionID: UUID?
-    /// Run identity observed when the discard decision was made.
-    let preparedRunID: UUID?
-}
-
-/// Ownership-transfer snapshot produced by the second, finalize phase of
-/// workspace-switch discard. Finalize runs synchronously after all cancellation
-/// awaits and in the same main-actor slice as `sessions.removeAll()`, so these
-/// handles are provably the discarded session's own — background cleanup
-/// operates on them exclusively and never reads live session or tab-keyed
-/// coordinator state after a suspension point.
+/// Snapshot of a session needed for background cleanup after workspace switch.
 struct WorkspaceSwitchSessionCleanupTarget {
     let tabID: UUID
-    let session: AgentTabSession
+    let session: AgentModeViewModel.TabSession
     let boundSessionID: UUID?
-    /// Distinct run IDs needing MCP run-routing cleanup: the run captured at
-    /// prepare time plus any successor run present at finalize time.
-    let runIDs: [UUID]
-    let provider: HeadlessAgentProvider?
-    let acpController: ACPAgentSessionController?
-    let detachedClaude: ClaudeAgentModeCoordinator.DetachedClaudeController?
-    let detachedCodex: CodexAgentModeCoordinator.DetachedCodexController?
+    let runID: UUID?
 }
 
 /// Owns the background cleanup of sessions discarded during a workspace switch.
@@ -49,7 +26,7 @@ protocol WorkspaceSwitchSessionProviderDelegate: AnyObject {
     /// clears mcpControlContext, etc.). The session is already detached
     /// from the active workspace.
     func teardownMCPControlForDiscardedSession(
-        _ session: AgentTabSession,
+        _ session: AgentModeViewModel.TabSession,
         cleanupSessionStore: Bool,
         publishChanges: Bool,
         deactivateLiveControlContext: Bool
@@ -58,7 +35,7 @@ protocol WorkspaceSwitchSessionProviderDelegate: AnyObject {
     /// Cleanup MCP run routing for a discarded session.
     func cleanupMCPRunRoutingForDiscardedSession(
         boundSessionID: UUID?,
-        liveSession: AgentTabSession,
+        liveSession: AgentModeViewModel.TabSession,
         explicitRunID: UUID?,
         reason: String
     ) async
@@ -126,15 +103,12 @@ final class AgentModeWorkspaceSwitchCleanupProvider {
                         publishChanges: false,
                         deactivateLiveControlContext: false
                     )
-                    let explicitRunIDs: [UUID?] = target.runIDs.isEmpty ? [nil] : target.runIDs
-                    for explicitRunID in explicitRunIDs {
-                        await delegate.cleanupMCPRunRoutingForDiscardedSession(
-                            boundSessionID: target.boundSessionID,
-                            liveSession: target.session,
-                            explicitRunID: explicitRunID,
-                            reason: reason
-                        )
-                    }
+                    await delegate.cleanupMCPRunRoutingForDiscardedSession(
+                        boundSessionID: target.boundSessionID,
+                        liveSession: target.session,
+                        explicitRunID: target.runID,
+                        reason: reason
+                    )
                     await Task.yield()
                 }
             }
@@ -156,31 +130,24 @@ final class AgentModeWorkspaceSwitchCleanupProvider {
         #endif
     }
 
-    /// Handle-only disposal: every provider/controller reference was captured by
-    /// the synchronous finalize phase. The discarded `AgentTabSession`'s provider,
-    /// controller, run, and presentation state must not be read or mutated here
-    /// — a same-tab successor may already be live by the time this runs.
     private static func disposeDetachedTarget(
         _ target: WorkspaceSwitchSessionCleanupTarget,
         codexCoordinator: CodexAgentModeCoordinator,
         claudeCoordinator: ClaudeAgentModeCoordinator
     ) async {
-        if let provider = target.provider {
-            await provider.dispose()
-        }
-        if let acpController = target.acpController {
-            await acpController.cancelPrompt()
-            await acpController.shutdown()
-        }
-        if let detachedCodex = target.detachedCodex {
-            await codexCoordinator.retireDetachedControllerForWorkspaceSwitch(detachedCodex)
-        }
-        if let detachedClaude = target.detachedClaude {
-            await claudeCoordinator.retireDetachedControllerForWorkspaceSwitch(
-                detachedClaude,
-                discardedSession: target.session
-            )
-        }
+        let session = target.session
+        await session.disposeProviderIfPresent()
+        await session.teardownACPControllerIfPresent()
+        await codexCoordinator.shutdownCodexSession(
+            session,
+            clearTabScopedCoordinatorState: false,
+            detachedRunID: target.runID
+        )
+        await claudeCoordinator.shutdownClaudeSession(
+            session,
+            clearTabScopedCoordinatorState: false,
+            detachedRunID: target.runID
+        )
     }
 
     // MARK: - Debug test support
@@ -249,7 +216,7 @@ final class AgentModeWorkspaceSwitchCleanupProvider {
     }
 }
 
-extension AgentTabSession {
+extension AgentModeViewModel.TabSession {
     func disposeProviderIfPresent() async {
         let provider = provider
         self.provider = nil

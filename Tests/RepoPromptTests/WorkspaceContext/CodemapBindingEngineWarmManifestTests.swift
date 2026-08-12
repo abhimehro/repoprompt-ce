@@ -193,21 +193,10 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
         )
         let artifactRoot = try makeSecureDirectory(in: repository.sandbox, named: "artifacts")
         let runtime = try CodeMapArtifactRuntime(rootURL: artifactRoot)
-        let seedEvents = EngineHookEvents()
-        let seed = try await makeEngineFixture(
-            root: root,
-            runtime: runtime,
-            hooks: WorkspaceCodemapBindingEngineHooks { seedEvents.record($0) }
-        )
+        let seed = try await makeEngineFixture(root: root, runtime: runtime)
         _ = await seed.engine.registerRoot(seed.registration)
-        let seedResult = await seed.engine.demand(seed.demand(path: "Sources/Warm.swift"))
-        guard case .ready = seedResult else {
-            return await XCTFail(bindingDemandFailureMessage(
-                "Expected warm artifact seed.",
-                result: seedResult,
-                accounting: seed.engine.accounting(),
-                events: seedEvents.snapshot()
-            ))
+        guard case .ready = await seed.engine.demand(seed.demand(path: "Sources/Warm.swift")) else {
+            return XCTFail("Expected warm artifact seed.")
         }
         await seed.engine.unloadRoot(rootEpoch: seed.rootEpoch)
 
@@ -546,14 +535,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
                 let runtime = try CodeMapArtifactRuntime(
                     rootURL: makeSecureDirectory(in: repository.sandbox, named: "artifacts")
                 )
-                let sourceAuthorityRejections = CodemapLockedValues<WorkspaceCodemapSourceAuthorityRejection>()
-                let fixture = try await makeEngineFixture(
-                    root: root,
-                    runtime: runtime,
-                    capabilityHooks: WorkspaceCodemapGitCapabilityServiceHooks(
-                        sourceAuthorityRejected: { sourceAuthorityRejections.append($0) }
-                    )
-                )
+                let fixture = try await makeEngineFixture(root: root, runtime: runtime)
                 guard case .registered = await fixture.engine.registerRoot(fixture.registration) else {
                     return XCTFail("Expected registration for \(state.rawValue) / \(churn.rawValue).")
                 }
@@ -604,8 +586,7 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
                 )
                 XCTAssertNotNil(
                     directSourceAuthority,
-                    "Expected source authority after \(state.rawValue) / \(churn.rawValue); " +
-                        "rejections=\(sourceAuthorityRejections.values)."
+                    "Expected source authority after \(state.rawValue) / \(churn.rawValue)."
                 )
                 let result = await fixture.engine.demand(fixture.demand(path: targetPath))
                 guard isReady(result) else {
@@ -663,11 +644,12 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
                 priority: .background
             ))
         }
-        guard await adoptionGate.waitUntilResolutionCount(2) else {
-            return XCTFail("Expected replacement adoption to enter after invalidation.")
-        }
-        let replacementResult = await replacement.value
-        guard isReady(replacementResult) else {
+        guard let replacementResult = await demandResult(
+            replacement,
+            before: .seconds(5)
+        ), await adoptionGate.resolutionCount >= 2,
+        isReady(replacementResult)
+        else {
             return XCTFail("Expected warm manifest adoption to retry after invalidation.")
         }
         await adoptionGate.releaseFirstResolution()
@@ -856,11 +838,10 @@ final class CodemapBindingEngineWarmManifestTests: CodemapBindingEngineTestCase 
         guard case .cancelled = await blocked.value else {
             return XCTFail("Expected logical cancellation before blocked I/O drained.")
         }
-        guard await gate.waitUntilResolutionCount(2) else {
-            return XCTFail("Expected replacement read admission while stale I/O remained blocked.")
-        }
-        let replacementResult = await replacement.value
-        guard isReady(replacementResult) else {
+        guard let replacementResult = await demandResult(replacement, before: .seconds(5)),
+              isReady(replacementResult),
+              await gate.resolutionCount >= 2
+        else {
             return XCTFail("Expected immediate replacement admission while stale I/O remained blocked.")
         }
         let recovered = await fixture.engine.accounting()

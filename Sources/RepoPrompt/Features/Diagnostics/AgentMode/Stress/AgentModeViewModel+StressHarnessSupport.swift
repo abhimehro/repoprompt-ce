@@ -54,7 +54,7 @@
             session.waitingPrompt = nil
             session.runningStatusText = nil
             session.runState = .idle
-            AgentModeProcessRunIdentity.clearProcessRunID(for: session)
+            session.runID = nil
             session.endCurrentRunAttempt(source: "stress.reset")
             session.provider = nil
             session.agentTask?.cancel()

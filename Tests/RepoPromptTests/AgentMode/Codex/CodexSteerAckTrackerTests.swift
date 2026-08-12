@@ -245,7 +245,7 @@ final class CodexSteerAckTrackerTests: XCTestCase {
 
         let replacementController = AckTrackerCodexController(gate: AckTrackerSteerGate())
         let replacementRunID = UUID()
-        session.installRunID(replacementRunID)
+        session.runID = replacementRunID
         session.runState = .running
         session.beginRunAttempt(source: "test.codexAckReplacementNoWake.replacement")
         session.codexController = replacementController
@@ -408,7 +408,7 @@ final class CodexSteerAckTrackerTests: XCTestCase {
         )
         viewModel.test_setMCPControlledTabIDs([tabID])
         session.selectedAgent = .codexExec
-        session.installRunID(runID)
+        session.runID = runID
         session.runState = .running
         session.beginRunAttempt(source: source)
         session.codexController = controller

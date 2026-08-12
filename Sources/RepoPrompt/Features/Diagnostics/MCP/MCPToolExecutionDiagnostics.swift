@@ -115,7 +115,6 @@ struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {
     }
 
     let toolName: String
-    let operationIdentity: MCPToolOperationIdentity
     let connectionID: UUID
     let invocationID: UUID
     let runID: UUID?
@@ -142,7 +141,6 @@ struct MCPToolExecutionTraceEvent: Equatable, CustomStringConvertible {
         var fields = [
             "phase=\(phase.rawValue)",
             "tool=\(toolName)",
-            "operation=\(operationIdentity.normalizedOperation)",
             "connection_id=\(connectionID.uuidString)",
             "invocation_id=\(invocationID.uuidString)",
             "contract=\(contractKind.rawValue)",

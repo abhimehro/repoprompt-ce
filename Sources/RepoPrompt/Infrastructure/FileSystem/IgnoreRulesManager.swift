@@ -534,7 +534,7 @@ actor IgnoreRulesManager {
         // Create a single shared compilation task.
         let task = Task<CompiledIgnoreRules, Error> {
             // Bounded parallelism
-            guard await ioSemaphore.acquire() else { throw CancellationError() }
+            await ioSemaphore.acquire()
             do {
                 // Perform the (blocking) file read on the current executor – it's fine
                 // because we have limited the total number of concurrent reads.

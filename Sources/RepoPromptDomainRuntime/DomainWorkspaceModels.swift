@@ -48,45 +48,6 @@ package enum DomainAuthorityHealth: Codable, Equatable {
         if case .writable = self { return true }
         return false
     }
-
-    package var reason: String? {
-        switch self {
-        case .writable:
-            nil
-        case let .externalConflict(reason), let .degradedReadOnly(reason):
-            reason
-        case .removed:
-            "workspace_removed"
-        }
-    }
-}
-
-package enum DomainWorkspaceTabLocation: String, Codable, Equatable, Hashable, Sendable {
-    case composed
-    case stashed
-}
-
-package struct DomainProtectedAgentIdentity: Codable, Equatable, Hashable, Sendable {
-    package let tabID: UUID
-    package let location: DomainWorkspaceTabLocation
-    package let activeAgentSessionID: UUID?
-    package let isPinned: Bool
-
-    package init(
-        tabID: UUID,
-        location: DomainWorkspaceTabLocation,
-        activeAgentSessionID: UUID?,
-        isPinned: Bool
-    ) {
-        self.tabID = tabID
-        self.location = location
-        self.activeAgentSessionID = activeAgentSessionID
-        self.isPinned = isPinned
-    }
-
-    package var requiresProtection: Bool {
-        activeAgentSessionID != nil || isPinned
-    }
 }
 
 package struct DomainContextMetadata: Codable, Equatable {
@@ -125,7 +86,6 @@ package struct DomainWorkspaceMetadata: Codable, Equatable {
     package let isEphemeral: Bool
     package let activeContextID: UUID?
     package let contexts: [DomainContextMetadata]
-    package let agentIdentityClaims: [DomainProtectedAgentIdentity]
 
     package init(
         workspaceID: UUID,
@@ -137,8 +97,7 @@ package struct DomainWorkspaceMetadata: Codable, Equatable {
         isHiddenInMenus: Bool,
         isEphemeral: Bool,
         activeContextID: UUID?,
-        contexts: [DomainContextMetadata],
-        agentIdentityClaims: [DomainProtectedAgentIdentity] = []
+        contexts: [DomainContextMetadata]
     ) {
         self.workspaceID = workspaceID
         self.schemaVersion = schemaVersion
@@ -150,7 +109,6 @@ package struct DomainWorkspaceMetadata: Codable, Equatable {
         self.isEphemeral = isEphemeral
         self.activeContextID = activeContextID
         self.contexts = contexts
-        self.agentIdentityClaims = agentIdentityClaims
     }
 }
 
@@ -278,7 +236,6 @@ private enum DomainWorkspaceDocumentDecoder {
             throw DomainWorkspaceDocumentError.futureSchema(schemaVersion)
         }
         var contextIDs = Set<UUID>()
-        var agentIdentityClaims: [DomainProtectedAgentIdentity] = []
         let contexts = try ((object["composeTabs"] as? [Any]) ?? []).map { raw -> DomainContextMetadata in
             guard let context = raw as? [String: Any],
                   let contextIDString = context["id"] as? String,
@@ -289,12 +246,6 @@ private enum DomainWorkspaceDocumentDecoder {
             guard contextIDs.insert(contextID).inserted else {
                 throw DomainWorkspaceDocumentError.invalidContext(contextID)
             }
-            agentIdentityClaims.append(DomainProtectedAgentIdentity(
-                tabID: contextID,
-                location: .composed,
-                activeAgentSessionID: (context["activeAgentSessionID"] as? String).flatMap(UUID.init(uuidString:)),
-                isPinned: context["isPinned"] as? Bool ?? false
-            ))
             let bytes = try JSONSerialization.data(withJSONObject: context, options: [.sortedKeys])
             return DomainContextMetadata(
                 identity: DomainContextIdentity(workspaceID: workspaceID, contextID: contextID),
@@ -304,23 +255,6 @@ private enum DomainWorkspaceDocumentDecoder {
                 documentBytes: bytes,
                 contentDigest: DomainContentDigest.sha256(bytes)
             )
-        }
-        // WorkspaceModel treats stashed tabs as recoverable compatibility data: malformed arrays
-        // decode as empty and composed/stashed ID collisions are removed during normalization.
-        // Mirror that behavior for identity claims instead of making the whole workspace unreadable.
-        for raw in (object["stashedTabs"] as? [Any]) ?? [] {
-            guard let stashed = raw as? [String: Any],
-                  let tab = stashed["tab"] as? [String: Any],
-                  let tabIDString = tab["id"] as? String,
-                  let tabID = UUID(uuidString: tabIDString),
-                  contextIDs.insert(tabID).inserted
-            else { continue }
-            agentIdentityClaims.append(DomainProtectedAgentIdentity(
-                tabID: tabID,
-                location: .stashed,
-                activeAgentSessionID: (tab["activeAgentSessionID"] as? String).flatMap(UUID.init(uuidString:)),
-                isPinned: tab["isPinned"] as? Bool ?? false
-            ))
         }
         let customStoragePath: URL? = if let raw = object["customStoragePath"] as? String {
             URL(string: raw) ?? URL(fileURLWithPath: raw)
@@ -337,8 +271,7 @@ private enum DomainWorkspaceDocumentDecoder {
             isHiddenInMenus: object["isHiddenInMenus"] as? Bool ?? false,
             isEphemeral: object["ephemeralFlag"] as? Bool ?? false,
             activeContextID: (object["activeComposeTabID"] as? String).flatMap(UUID.init(uuidString:)),
-            contexts: contexts,
-            agentIdentityClaims: agentIdentityClaims
+            contexts: contexts
         )
     }
 }
