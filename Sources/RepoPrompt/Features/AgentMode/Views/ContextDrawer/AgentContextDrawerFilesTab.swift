@@ -209,7 +209,6 @@ struct AgentContextDrawerFilesTab: View {
                 .buttonStyle(CustomButtonStyle(verticalPadding: 4, horizontalPadding: 9))
                 .disabled(rows.isEmpty || !canMutateCurrentModel || currentModel == nil)
                 .hoverTooltip(canMutateCurrentModel ? "Clear selected context" : "Selection mutation is unavailable for this Agent context")
-                .accessibilityLabel(canMutateCurrentModel ? "Clear selected context" : "Selection mutation is unavailable for this Agent context")
             }
         }
     }
@@ -229,7 +228,6 @@ struct AgentContextDrawerFilesTab: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Clear filter")
-                .accessibilityLabel("Clear filter")
             }
         }
         .padding(.horizontal, 10)
@@ -281,7 +279,6 @@ struct AgentContextDrawerFilesTab: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .hoverTooltip("Sort selected context")
-        .accessibilityLabel("Sort selected context, \(detailStore.selectionSort.label)")
     }
 
     private var subtabSwitcher: some View {

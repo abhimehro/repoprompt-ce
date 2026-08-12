@@ -1,5 +1,4 @@
 @testable import RepoPromptApp
-@testable import RepoPromptShared
 import XCTest
 
 final class WorkflowPromptCatalogTests: XCTestCase {
@@ -77,26 +76,9 @@ final class WorkflowPromptCatalogTests: XCTestCase {
 
     func testAgentWorkflowTemplatesRenderFromProviderNeutralCatalog() {
         for workflow in AgentWorkflow.allCases {
-            let shared = RepoPromptBuiltInAgentWorkflow(rawValue: workflow.rawValue)
-            let rendered = shared?.template ?? ""
+            let rendered = RepoPromptWorkflowPrompts.render(id: workflow.workflowPromptID, variant: .agent)
             XCTAssertFalse(rendered.isEmpty, workflow.rawValue)
             XCTAssertEqual(workflow.template, rendered, workflow.rawValue)
-        }
-    }
-
-    func testBuiltInAgentWorkflowMetadataAndOrderAreProviderNeutral() {
-        XCTAssertEqual(
-            RepoPromptBuiltInAgentWorkflow.displayOrder.map(\.rawValue),
-            ["orchestrate", "deepPlan", "optimize", "build", "review", "refactor", "investigate", "oracleExport"]
-        )
-        XCTAssertEqual(RepoPromptBuiltInAgentWorkflow.allCases.count, 8)
-
-        for workflow in AgentWorkflow.allCases {
-            let shared = RepoPromptBuiltInAgentWorkflow(rawValue: workflow.rawValue)
-            XCTAssertEqual(workflow.displayName, shared?.metadata.displayName)
-            XCTAssertEqual(workflow.iconName, shared?.metadata.iconName)
-            XCTAssertEqual(workflow.tooltipText, shared?.metadata.tooltipText)
-            XCTAssertEqual(workflow.descriptionText, shared?.metadata.descriptionText)
         }
     }
 }

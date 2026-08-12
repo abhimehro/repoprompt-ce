@@ -1,25 +1,25 @@
 import Foundation
 
-public struct WorkflowPromptArgument: Equatable, Sendable {
-    public let name: String
-    public let description: String
-    public let required: Bool
+struct WorkflowPromptArgument: Equatable {
+    let name: String
+    let description: String
+    let required: Bool
 }
 
-public struct WorkflowPromptDescriptor: Equatable, Sendable {
-    public let id: RepoPromptWorkflowID
-    public let description: String
-    public let arguments: [WorkflowPromptArgument]
+struct WorkflowPromptDescriptor: Equatable {
+    let id: RepoPromptWorkflowID
+    let description: String
+    let arguments: [WorkflowPromptArgument]
 
-    public var name: String {
+    var name: String {
         id.commandName
     }
 }
 
-public enum WorkflowPromptCatalog {
+enum WorkflowPromptCatalog {
     static let descriptorsByID: [RepoPromptWorkflowID: WorkflowPromptDescriptor] = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.id, $0) })
 
-    public static let descriptors: [WorkflowPromptDescriptor] = [
+    static let descriptors: [WorkflowPromptDescriptor] = [
         WorkflowPromptDescriptor(
             id: .build,
             description: "Build with RepoPrompt MCP context_builder plan → implement. A structured workflow for implementing features using deep codebase context.",
@@ -115,8 +115,8 @@ public enum WorkflowPromptCatalog {
         )
     ]
 
-    public static let mcpPromptDescriptors: [WorkflowPromptDescriptor] = RepoPromptWorkflowID.mcpPromptOrder.map { descriptor(for: $0) }
-    public static let installDescriptors: [WorkflowPromptDescriptor] = RepoPromptWorkflowID.installOrder.map { descriptor(for: $0) }
+    static let mcpPromptDescriptors: [WorkflowPromptDescriptor] = RepoPromptWorkflowID.mcpPromptOrder.map { descriptor(for: $0) }
+    static let installDescriptors: [WorkflowPromptDescriptor] = RepoPromptWorkflowID.installOrder.map { descriptor(for: $0) }
 
     static func descriptor(for id: RepoPromptWorkflowID) -> WorkflowPromptDescriptor {
         guard let descriptor = descriptorsByID[id] else {

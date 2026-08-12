@@ -1,19 +1,8 @@
 import Foundation
-import RepoPromptDomainRuntime
 
 extension AgentSessionRunState {
     var isTerminalForCommit: Bool {
         self == .completed || self == .cancelled || self == .failed
-    }
-
-    /// MCP snapshot status equivalent of a committed terminal run state.
-    var mcpTerminalSnapshotStatus: DomainAgentRunSnapshot.Status? {
-        switch self {
-        case .completed: .completed
-        case .failed: .failed
-        case .cancelled: .cancelled
-        case .idle, .running, .waitingForUser, .waitingForQuestion, .waitingForApproval: nil
-        }
     }
 }
 
@@ -21,7 +10,6 @@ struct AgentRunTerminalCommitRevision: Equatable {
     let commitID: UUID
     let ownership: AgentRunOwnership
     let terminalState: AgentSessionRunState
-    let failureReason: DomainAgentRunSnapshot.FailureReason?
     let expectedRunID: UUID?
     let sourceItemsRevision: Int
     let assistantDeltaFlushGeneration: UInt64
@@ -43,19 +31,15 @@ final class AgentRunTerminalCommitBarrier {
     }
 
     struct Request {
-        // This request carries no concrete app session class. Its domain command values
-        // carry no settlement authority; the exact-object binding applies them
-        // through host-owned capabilities.
-        let binding: AgentRunTerminalSessionBinding
+        let session: AgentModeViewModel.TabSession
         let ownership: AgentRunOwnership
         let expectedRunID: UUID?
         let terminalState: AgentSessionRunState
         let source: String
-        let completion: DomainAgentRunCancellationCompletion
+        let completion: AgentModeRunService.CancellationCompletion
         let errorText: String?
-        let failureReason: DomainAgentRunSnapshot.FailureReason?
         let attachmentReservationID: UUID?
-        let attachmentDisposition: DomainAgentRunAttachmentTurnDisposition
+        let attachmentDisposition: AgentModeViewModel.AttachmentTurnDisposition
         let finalizeNonCodexUsage: Bool
         let supportsFollowUp: Bool
         let providerSuccessor: ProviderSuccessor?
@@ -66,16 +50,15 @@ final class AgentRunTerminalCommitBarrier {
         let postCommit: () -> Void
 
         init(
-            binding: AgentRunTerminalSessionBinding,
+            session: AgentModeViewModel.TabSession,
             ownership: AgentRunOwnership,
             expectedRunID: UUID?,
             terminalState: AgentSessionRunState,
             source: String,
-            completion: DomainAgentRunCancellationCompletion = .terminalPublished,
+            completion: AgentModeRunService.CancellationCompletion = .terminalPublished,
             errorText: String? = nil,
-            failureReason: DomainAgentRunSnapshot.FailureReason? = nil,
             attachmentReservationID: UUID? = nil,
-            attachmentDisposition: DomainAgentRunAttachmentTurnDisposition,
+            attachmentDisposition: AgentModeViewModel.AttachmentTurnDisposition,
             finalizeNonCodexUsage: Bool,
             supportsFollowUp: Bool,
             providerSuccessor: ProviderSuccessor? = nil,
@@ -85,14 +68,13 @@ final class AgentRunTerminalCommitBarrier {
             prepareProviderState: @escaping () -> (@MainActor () async -> Void)? = { nil },
             postCommit: @escaping () -> Void = {}
         ) {
-            self.binding = binding
+            self.session = session
             self.ownership = ownership
             self.expectedRunID = expectedRunID
             self.terminalState = terminalState
             self.source = source
             self.completion = completion
             self.errorText = errorText
-            self.failureReason = failureReason
             self.attachmentReservationID = attachmentReservationID
             self.attachmentDisposition = attachmentDisposition
             self.finalizeNonCodexUsage = finalizeNonCodexUsage
@@ -124,17 +106,19 @@ final class AgentRunTerminalCommitBarrier {
         #endif
     }
 
+    private let hooks: AgentModeRunService.Hooks
     private var terminalTeardownTasks: [AgentRunOwnership: Task<Void, Never>] = [:]
     private var consumedProviderSuccessorIDs: Set<UUID> = []
     private var consumedProviderSuccessorOrder: [UUID] = []
     private let maxConsumedProviderSuccessorTombstones = 512
 
-    init() {}
+    init(hooks: AgentModeRunService.Hooks) {
+        self.hooks = hooks
+    }
 
     @discardableResult
     func commit(_ request: Request) async -> AgentRunTerminalCommitRevision? {
-        let binding = request.binding
-        let lifecycle = binding.lifecycle
+        let session = request.session
         guard request.terminalState == .completed
             || request.terminalState == .cancelled
             || request.terminalState == .failed
@@ -142,33 +126,31 @@ final class AgentRunTerminalCommitBarrier {
             assertionFailure("Terminal commit requires a terminal run state")
             return nil
         }
-        guard !lifecycle.terminalCommitInProgress else {
+        guard !session.terminalCommitInProgress else {
             recordRejection("commit_in_progress", request: request)
             return nil
         }
-        if let existingRevision = lifecycle.lastTerminalCommitRevision,
+        if let existingRevision = session.lastTerminalCommitRevision,
            existingRevision.ownership == request.ownership
         {
             recordRejection("duplicate_commit", request: request)
-            if lifecycle.lastTerminalPublicationResult?.isResolved != true {
-                // Duplicate retry: records a result while no terminal commit is
-                // in progress; the facade operation is intentionally unguarded.
-                let retriedResult = await binding.hooks.publishTerminalCommit(
+            if session.lastTerminalPublicationResult?.isResolved != true {
+                session.lastTerminalPublicationResult = await hooks.publishTerminalCommit(
+                    session,
                     existingRevision,
                     existingRevision.successorKind
                 )
-                lifecycle.recordTerminalPublicationResult(retriedResult)
             }
             if let followUpInstruction = takeQueuedFollowUpIfReady(
-                binding: binding,
+                session: session,
                 revision: existingRevision,
-                publicationResult: lifecycle.lastTerminalPublicationResult
+                publicationResult: session.lastTerminalPublicationResult
             ) {
-                binding.hooks.startFollowUpRun(followUpInstruction)
+                hooks.startFollowUpRun(session.tabID, followUpInstruction)
             }
             if let providerSuccessor = request.providerSuccessor,
                providerSuccessor.id == existingRevision.providerSuccessorID,
-               let publicationResult = lifecycle.lastTerminalPublicationResult
+               let publicationResult = session.lastTerminalPublicationResult
             {
                 notifyProviderSuccessor(
                     providerSuccessor,
@@ -182,7 +164,7 @@ final class AgentRunTerminalCommitBarrier {
             recordRejection("stale_ownership", request: request)
             return nil
         }
-        guard binding.providerDrainGeneration == request.providerDrainGeneration else {
+        guard session.providerTerminalDrainGeneration == request.providerDrainGeneration else {
             recordRejection("stale_provider_drain_generation", request: request)
             return nil
         }
@@ -191,27 +173,26 @@ final class AgentRunTerminalCommitBarrier {
             recordRejection("provider_buffers_pending", request: request)
             return nil
         }
-        let terminalTurnID = binding.terminalTurnID
+        let terminalTurnID = session.items.last(where: { $0.kind == .user })?.id
 
-        let acquiredTerminalCommitPhase = lifecycle.beginTerminalCommit()
-        assert(acquiredTerminalCommitPhase, "Terminal commit phase acquisition must succeed after the in-progress guard")
+        session.terminalCommitInProgress = true
         recordTerminalBarrierState(true, request: request)
-        binding.hooks.flushPendingAssistantDelta()
+        hooks.flushPendingAssistantDelta(session)
         guard validatesOwnership(request) else {
-            lifecycle.abortTerminalCommit()
+            session.terminalCommitInProgress = false
             recordTerminalBarrierState(false, request: request)
             recordRejection("ownership_changed_during_drain", request: request)
             return nil
         }
 
-        binding.hooks.finalizeStreamingItems()
-        binding.hooks.finalizePendingToolCalls(request.terminalState)
+        hooks.finalizeStreamingItems(session)
+        hooks.finalizePendingToolCalls(session, request.terminalState)
         if request.finalizeNonCodexUsage {
-            binding.hooks.finalizeNonCodexTurnUsage()
+            hooks.finalizeNonCodexTurnUsage(session, nil, nil, nil)
         }
 
         let queuedInstruction = request.terminalState == .completed && request.supportsFollowUp
-            ? binding.queuedFollowUp
+            ? session.pendingInstructions.first
             : nil
         let providerSuccessor = request.terminalState == .completed
             ? request.providerSuccessor
@@ -221,9 +202,11 @@ final class AgentRunTerminalCommitBarrier {
             "Generic and provider-specific successors must not drain from the same terminal commit"
         )
         if queuedInstruction != nil || providerSuccessor != nil {
-            binding.setFollowUpPending(true)
+            session.mcpFollowUpRunPending = true
         }
 
+        hooks.cancelPendingQuestion(session)
+        hooks.cancelPendingApproval(session)
         let reviewCancellationReason = switch request.terminalState {
         case .completed:
             "Run completed before review decision"
@@ -234,8 +217,10 @@ final class AgentRunTerminalCommitBarrier {
         default:
             "Run finished"
         }
-        binding.hooks.cancelPendingInteractions(reviewCancellationReason)
-        binding.hooks.finalizeAttachments(
+        hooks.cancelPendingApplyEditsReview(session, reviewCancellationReason)
+        hooks.cancelPendingWorktreeMergeReview(session, reviewCancellationReason)
+        hooks.finalizeAttachmentsForTurn(
+            session,
             request.attachmentReservationID,
             request.attachmentDisposition
         )
@@ -243,20 +228,20 @@ final class AgentRunTerminalCommitBarrier {
         if let errorText = request.errorText?.trimmingCharacters(in: .whitespacesAndNewlines),
            !errorText.isEmpty
         {
-            binding.appendError(errorText)
+            session.appendItem(AgentChatItem.error(errorText, sequenceIndex: session.nextSequenceIndex))
         }
 
         guard validatesOwnership(request),
-              binding.providerDrainGeneration == request.providerDrainGeneration,
+              session.providerTerminalDrainGeneration == request.providerDrainGeneration,
               request.providerBuffersAreDrained()
         else {
-            lifecycle.abortTerminalCommit()
+            session.terminalCommitInProgress = false
             recordTerminalBarrierState(false, request: request)
             recordRejection("ownership_or_drain_changed_before_commit", request: request)
             return nil
         }
 
-        let attemptTeardown = lifecycle.claimTerminalTeardown(
+        let attemptTeardown = session.claimRunAttemptTerminalTeardown(
             ownership: request.ownership,
             terminalState: request.terminalState
         )
@@ -269,15 +254,20 @@ final class AgentRunTerminalCommitBarrier {
         } else {
             nil
         }
-        binding.finishActiveState(
-            ownership: request.ownership,
-            terminalState: request.terminalState,
-            source: request.source
-        )
-        binding.hooks.setAgentRunInactive()
-        binding.hooks.prepareTerminalPublication()
+        session.agentTask = nil
+        session.clearClaudeReasoningStatus(clearDisplayedStatus: true)
+        session.setRunningStatus(nil, source: nil)
+        session.waitingPrompt = nil
+        session.runState = request.terminalState
+        _ = session.endRunAttempt(ifCurrent: request.ownership, source: request.source)
+        hooks.setAgentRunActive(session.tabID, false)
+        hooks.prepareTerminalPublication(session)
         if let runID = request.expectedRunID, let terminalTurnID {
-            binding.retainProcessRunIdentity(runID, terminalTurnID: terminalTurnID)
+            AgentModeProcessRunIdentity.retainProcessRunID(
+                runID,
+                inTranscriptTurnID: terminalTurnID,
+                for: session
+            )
         }
 
         let successorKind: AgentRunEpochTransitionKind? = if queuedInstruction != nil {
@@ -285,46 +275,43 @@ final class AgentRunTerminalCommitBarrier {
         } else {
             providerSuccessor?.transitionKind
         }
-        // Resolved exactly once at settlement; the publication envelope is built
-        // before the revision is stored, so the reason is threaded explicitly.
-        let failureReason = resolveTerminalFailureReason(request: request, binding: binding)
         let revision = AgentRunTerminalCommitRevision(
             commitID: UUID(),
             ownership: request.ownership,
             terminalState: request.terminalState,
-            failureReason: failureReason,
             expectedRunID: request.expectedRunID,
-            sourceItemsRevision: binding.sourceItemsRevision,
-            assistantDeltaFlushGeneration: binding.assistantDeltaFlushGeneration,
+            sourceItemsRevision: session.sourceItemsRevision,
+            assistantDeltaFlushGeneration: session.assistantDeltaFlushGeneration,
             providerDrainGeneration: request.providerDrainGeneration,
-            mcpPublicationEnvelope: binding.hooks.makeTerminalPublicationEnvelope(
+            mcpPublicationEnvelope: hooks.makeTerminalPublicationEnvelope(
+                session,
                 request.ownership,
                 request.terminalState,
-                request.expectedRunID,
-                failureReason
+                request.expectedRunID
             ),
             successorKind: successorKind,
             providerSuccessorID: providerSuccessor?.id
         )
-        lifecycle.stageTerminalRevision(revision)
+        session.lastTerminalCommitRevision = revision
+        session.lastTerminalPublicationResult = nil
 
-        binding.hooks.updateBindings()
+        hooks.updateBindings(session)
         if request.notifyTurnComplete {
-            binding.hooks.notifyAgentTurnComplete()
+            hooks.notifyAgentTurnComplete(session)
         }
-        binding.hooks.scheduleSave()
-        let publicationResult = await binding.hooks.publishTerminalCommit(
+        hooks.scheduleSave(session.tabID)
+        session.lastTerminalPublicationResult = await hooks.publishTerminalCommit(
+            session,
             revision,
             successorKind
         )
-        lifecycle.recordTerminalPublicationResult(publicationResult)
         let followUpInstruction = takeQueuedFollowUpIfReady(
-            binding: binding,
+            session: session,
             revision: revision,
-            publicationResult: lifecycle.lastTerminalPublicationResult
+            publicationResult: session.lastTerminalPublicationResult
         )
         if let providerSuccessor,
-           let publicationResult = lifecycle.lastTerminalPublicationResult
+           let publicationResult = session.lastTerminalPublicationResult
         {
             notifyProviderSuccessor(
                 providerSuccessor,
@@ -335,49 +322,27 @@ final class AgentRunTerminalCommitBarrier {
         let teardownTask = registerTerminalTeardown(
             teardown,
             ownership: request.ownership,
-            tabID: binding.tabID
+            tabID: session.tabID
         )
-        lifecycle.completeTerminalCommit()
+        session.terminalCommitInProgress = false
         recordTerminalBarrierState(false, request: request)
         request.postCommit()
 
         if let followUpInstruction {
-            binding.hooks.startFollowUpRun(followUpInstruction)
+            hooks.startFollowUpRun(session.tabID, followUpInstruction)
         }
         if request.completion == .terminalTeardownCompleted {
             await teardownTask?.value
         }
 
         #if DEBUG
-            AgentModePerfDiagnostics.increment("run.terminal.commit.accepted", tabID: binding.tabID)
+            AgentModePerfDiagnostics.increment("run.terminal.commit.accepted", tabID: session.tabID)
             AgentModePerfDiagnostics.increment(
                 "run.terminal.commit.accepted.\(request.terminalState.rawValue)",
-                tabID: binding.tabID
+                tabID: session.tabID
             )
         #endif
         return revision
-    }
-
-    /// Settles the terminal failure classification for a commit. Runs after the
-    /// transcript flush/finalization and after any request error item has been
-    /// appended, so the failed-state text classification sees the same latest
-    /// settled error text the publication snapshot projects today.
-    private func resolveTerminalFailureReason(
-        request: Request,
-        binding: AgentRunTerminalSessionBinding
-    ) -> DomainAgentRunSnapshot.FailureReason? {
-        switch request.terminalState {
-        case .cancelled:
-            return .cancelled
-        case .failed:
-            if let failureReason = request.failureReason {
-                return failureReason
-            }
-            let settledFailureText = binding.latestFailureText
-            return DomainAgentRunSnapshot.FailureReason.classify(status: .failed, statusText: settledFailureText)
-        default:
-            return nil
-        }
     }
 
     private func notifyProviderSuccessor(
@@ -404,7 +369,7 @@ final class AgentRunTerminalCommitBarrier {
     }
 
     private func takeQueuedFollowUpIfReady(
-        binding: AgentRunTerminalSessionBinding,
+        session: AgentModeViewModel.TabSession,
         revision: AgentRunTerminalCommitRevision,
         publicationResult: AgentRunTerminalPublicationResult?
     ) -> String? {
@@ -420,23 +385,25 @@ final class AgentRunTerminalCommitBarrier {
         case .rejected:
             return nil
         case .stale:
-            _ = binding.removeFirstQueuedFollowUp()
-            binding.setFollowUpPending(false)
+            if !session.pendingInstructions.isEmpty {
+                session.pendingInstructions.removeFirst()
+            }
+            session.mcpFollowUpRunPending = false
             return nil
         }
-        guard binding.queuedFollowUp != nil else {
-            binding.setFollowUpPending(false)
+        guard !session.pendingInstructions.isEmpty else {
+            session.mcpFollowUpRunPending = false
             return nil
         }
-        return binding.removeFirstQueuedFollowUp()
+        return session.pendingInstructions.removeFirst()
     }
 
     func awaitTerminalPublication(
         for ownership: AgentRunOwnership,
-        lifecycle: AgentRunAttemptLifecycle
+        session: AgentModeViewModel.TabSession
     ) async {
-        while lifecycle.terminalCommitInProgress {
-            if let revision = lifecycle.lastTerminalCommitRevision,
+        while session.terminalCommitInProgress {
+            if let revision = session.lastTerminalCommitRevision,
                revision.ownership != ownership
             {
                 return
@@ -447,10 +414,10 @@ final class AgentRunTerminalCommitBarrier {
 
     func awaitTerminalTeardown(
         for ownership: AgentRunOwnership,
-        lifecycle: AgentRunAttemptLifecycle
+        session: AgentModeViewModel.TabSession
     ) async {
-        await awaitTerminalPublication(for: ownership, lifecycle: lifecycle)
-        guard lifecycle.lastTerminalCommitRevision?.ownership == ownership else { return }
+        await awaitTerminalPublication(for: ownership, session: session)
+        guard session.lastTerminalCommitRevision?.ownership == ownership else { return }
         await terminalTeardownTasks[ownership]?.value
     }
 
@@ -475,7 +442,7 @@ final class AgentRunTerminalCommitBarrier {
     }
 
     private func validatesOwnership(_ request: Request) -> Bool {
-        request.binding.validatesOwnership(
+        request.session.isCurrentRunAttemptForCurrentBinding(
             request.ownership,
             expectedRunID: request.expectedRunID
         )
@@ -483,10 +450,10 @@ final class AgentRunTerminalCommitBarrier {
 
     private func recordRejection(_ reason: String, request: Request) {
         #if DEBUG
-            AgentModePerfDiagnostics.increment("run.terminal.commit.rejected.\(reason)", tabID: request.binding.tabID)
+            AgentModePerfDiagnostics.increment("run.terminal.commit.rejected.\(reason)", tabID: request.session.tabID)
             AgentModePerfDiagnostics.event(
                 "run.terminal.commitRejected",
-                tabID: request.binding.tabID,
+                tabID: request.session.tabID,
                 fields: [
                     "reason": reason,
                     "source": request.source,

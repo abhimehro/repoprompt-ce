@@ -245,20 +245,20 @@ final class AgentModeChatSwitchActivationTests: XCTestCase {
         )
     }
 
-    func testToggleContextComposerShortcutOutsideAgentModeDoesNotArmPresentation() async throws {
+    func testToggleComposeShortcutOutsideAgentModeDoesNotArmPresentation() async throws {
         try await withFixture { fixture in
             let drawerStore = fixture.viewModel.ui.contextDrawer
             XCTAssertFalse(drawerStore.isPresented)
 
             fixture.viewModel.setAgentModeActive(false)
-            GlobalKeyboardShortcutsCoordinator.shared.test_toggleContextComposer(in: fixture.window)
+            GlobalKeyboardShortcutsCoordinator.shared.test_toggleComposeInspector(in: fixture.window)
             XCTAssertFalse(drawerStore.isPresented)
 
             fixture.viewModel.setAgentModeActive(true)
-            GlobalKeyboardShortcutsCoordinator.shared.test_toggleContextComposer(in: fixture.window)
+            GlobalKeyboardShortcutsCoordinator.shared.test_toggleComposeInspector(in: fixture.window)
             XCTAssertTrue(drawerStore.isPresented)
 
-            GlobalKeyboardShortcutsCoordinator.shared.test_toggleContextComposer(in: fixture.window)
+            GlobalKeyboardShortcutsCoordinator.shared.test_toggleComposeInspector(in: fixture.window)
             XCTAssertFalse(drawerStore.isPresented)
         }
     }
