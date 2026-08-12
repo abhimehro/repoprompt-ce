@@ -14,9 +14,3 @@
 ## 2024-08-09 - WorkspaceFileContextStoreTests flakes
 **Learning:** `WorkspaceFileContextStoreTests` tests sometimes flake in GitHub Actions CI (e.g., `testWriteAdaptersAndApplyEditsMaterializeCreateOverwriteAndFailurePostconditions`), returning exit code 1. This appears to be an environmental or timing issue unrelated to simple code improvements like caching DateFormatter.
 **Action:** Recognize this as a CI flake when it appears disjointed from the code under modification, and ignore the flake.
-## 2026-08-06 - DateFormatter Instantiation Overhead
-**Learning:** In Swift, DateFormatter and ISO8601DateFormatter are notoriously expensive to initialize. Reusing a single static let instance is a standard, thread-safe performance optimization to avoid repeated instantiation overhead when formatting or parsing multiple dates.
-**Action:** Extract inline DateFormatter/ISO8601DateFormatter initializations to a static private property to avoid unnecessary allocation overhead.
-## 2026-08-11 - Intermittent CI Failures on Performance Optimizations
-**Learning:** `WorktreeAPISmokeHarnessTests` and `DomainAgentRunSessionStoreTests` failed intermittently with timeouts or race conditions in GitHub Actions CI after caching DateFormatter instances. These tests are inherently flaky and disconnected from the formatting changes in `GlobalSettingsFileStore.swift` and `DomainAgentSessionModels.swift`.
-**Action:** Ignore these CI flakes since the formatting optimizations are safe and do not interact with worktree smoke testing or session store race conditions.

@@ -543,7 +543,7 @@ final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
         (try? JSONSerialization.jsonObject(with: data)) != nil
     }
 
-    private nonisolated(unsafe) static let backupTimestampFormatter: ISO8601DateFormatter = {
+    private static let backupTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter

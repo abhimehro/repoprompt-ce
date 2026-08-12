@@ -595,7 +595,7 @@ package struct DomainAgentRunSnapshot: Equatable, Sendable {
         ]
     }
 
-    fileprivate nonisolated(unsafe) static let timestampFormatter: ISO8601DateFormatter = {
+    fileprivate static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
