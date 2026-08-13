@@ -6837,9 +6837,7 @@ actor GitService {
                 // Unix timestamp
                 if let timestamp = Int(line.dropFirst("author-time ".count)) {
                     let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime]
-                    currentAuthorTime = formatter.string(from: date)
+                    currentAuthorTime = Self.blameDateFormatter.string(from: date)
                 }
             } else if line.hasPrefix("\t") {
                 // Content line
@@ -8187,6 +8185,12 @@ actor GitService {
                 return Tag(name: name, commitDate: date)
             }
     }
+
+    nonisolated(unsafe) private static let blameDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 
     /// Accept both Git's "yyyy-MM-dd HH:mm:ss Z" (e.g. "+0000") and RFC3339
     private static let gitDateFormatter: DateFormatter = {

@@ -217,13 +217,18 @@ enum GitWorktreeDefaultPathPlanner {
         return String(slug.prefix(8)).isEmpty ? shortHash(sessionID) : String(slug.prefix(8))
     }
 
-    private static func dateStamp(_ date: Date) -> String {
+
+    nonisolated(unsafe) private static let sharedDateStampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func dateStamp(_ date: Date) -> String {
+        return Self.sharedDateStampFormatter.string(from: date)
     }
 
     private static func shortHash(_ text: String) -> String {
