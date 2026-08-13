@@ -216,6 +216,7 @@ struct AgentSessionRow: View {
                 .buttonStyle(.plain)
                 .onHover { isPinHovered = $0 }
                 .hoverTooltip(pinActionLabel)
+                .accessibilityLabel(pinActionLabel)
 
                 Button(action: beginRename) {
                     Image(systemName: "pencil")
@@ -225,6 +226,7 @@ struct AgentSessionRow: View {
                 .buttonStyle(.plain)
                 .onHover { isRenameHovered = $0 }
                 .hoverTooltip(renameActionLabel)
+                .accessibilityLabel(renameActionLabel)
 
                 if let onStash {
                     Button(action: onStash) {
@@ -235,6 +237,7 @@ struct AgentSessionRow: View {
                     .buttonStyle(.plain)
                     .onHover { isStashHovered = $0 }
                     .hoverTooltip(stashActionLabel)
+                    .accessibilityLabel(stashActionLabel)
                 }
 
                 Button(action: requestDeleteConfirmation) {
@@ -245,6 +248,7 @@ struct AgentSessionRow: View {
                 .buttonStyle(.plain)
                 .onHover { isDeleteHovered = $0 }
                 .hoverTooltip(deleteActionLabel)
+                .accessibilityLabel(deleteActionLabel)
             }
             // Selected state is already signaled by the accent-tinted background +
             // semibold title weight; a trailing checkmark was redundant.
@@ -781,6 +785,7 @@ struct AgentStashedSessionRow: View {
                 .buttonStyle(.plain)
                 .onHover { isRestoreHovered = $0 }
                 .hoverTooltip(restoreActionLabel)
+                .accessibilityLabel(restoreActionLabel)
 
                 Button(action: onDelete) {
                     Image(systemName: "trash")
@@ -790,6 +795,7 @@ struct AgentStashedSessionRow: View {
                 .buttonStyle(.plain)
                 .onHover { isDeleteHovered = $0 }
                 .hoverTooltip(deleteActionLabel)
+                .accessibilityLabel(deleteActionLabel)
             }
         }
         .padding(.horizontal, rowHorizontalPadding)
