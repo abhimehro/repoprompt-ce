@@ -151,8 +151,8 @@ actor GitDiffSnapshotPublisher {
             return override
         }
         let now = Date()
-        let datePart = Self.sharedDateFormatter.string(from: now)
-        let timePart = Self.sharedTimeFormatter.string(from: now)
+        let datePart = sharedDateFormatter.string(from: now)
+        let timePart = sharedTimeFormatter.string(from: now)
         let baseID = "\(datePart)/\(timePart)"
         if !store.snapshotExists(workspaceDirectory: workspaceDirectory, repoKey: repoKey, snapshotID: baseID) {
             return baseID

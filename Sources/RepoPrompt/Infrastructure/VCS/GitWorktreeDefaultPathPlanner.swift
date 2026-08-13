@@ -227,7 +227,7 @@ enum GitWorktreeDefaultPathPlanner {
     }()
 
     private static func dateStamp(_ date: Date) -> String {
-        Self.sharedDateStampFormatter.string(from: date)
+        sharedDateStampFormatter.string(from: date)
     }
 
     private static func shortHash(_ text: String) -> String {
