@@ -217,7 +217,8 @@ enum GitWorktreeDefaultPathPlanner {
         return String(slug.prefix(8)).isEmpty ? shortHash(sessionID) : String(slug.prefix(8))
     }
 
-    private nonisolated(unsafe) static let sharedDateStampFormatter: DateFormatter = {
+    // PERFORMANCE: Cached DateFormatter avoids expensive redundant initialization when naming new worktrees
+    nonisolated(unsafe) private static let sharedDateStampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -227,7 +228,7 @@ enum GitWorktreeDefaultPathPlanner {
     }()
 
     private static func dateStamp(_ date: Date) -> String {
-        sharedDateStampFormatter.string(from: date)
+        return sharedDateStampFormatter.string(from: date)
     }
 
     private static func shortHash(_ text: String) -> String {

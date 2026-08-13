@@ -3,7 +3,8 @@ import Foundation
 actor GitDiffSnapshotPublisher {
     static let shared = GitDiffSnapshotPublisher()
 
-    private nonisolated(unsafe) static let sharedDateFormatter: DateFormatter = {
+    // PERFORMANCE: Cached DateFormatter avoids expensive redundant initialization when stamping logs/snapshots
+    nonisolated(unsafe) private static let sharedDateFormatter: DateFormatter = {
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = TimeZone.current
@@ -11,7 +12,8 @@ actor GitDiffSnapshotPublisher {
         return df
     }()
 
-    private nonisolated(unsafe) static let sharedTimeFormatter: DateFormatter = {
+    // PERFORMANCE: Cached DateFormatter avoids expensive redundant initialization when stamping logs/snapshots
+    nonisolated(unsafe) private static let sharedTimeFormatter: DateFormatter = {
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = TimeZone.current

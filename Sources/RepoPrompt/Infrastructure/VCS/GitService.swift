@@ -4289,7 +4289,7 @@ actor GitService {
             fence: authorityFence,
             sealedAuthority: sealedAuthority
         )
-        return try GitTargetEvidenceArtifactIdentity(
+        return GitTargetEvidenceArtifactIdentity(
             physicalWorktree: sealedAuthority.physicalWorktree,
             repositoryCommonDirectory: sealedAuthority.repositoryCommonDirectory,
             repositoryGitDirectory: sealedAuthority.repositoryGitDirectory,
@@ -5397,7 +5397,7 @@ actor GitService {
         func snapshot() -> GitPrefixControlCollectionDetail {
             lock.lock()
             defer { lock.unlock() }
-            var summary = prunedRootSummary
+            let summary = prunedRootSummary
             return GitPrefixControlCollectionDetail(
                 collectionCompleted: collectionCompleted,
                 ignoreControlCount: ignoreControlCount,
@@ -8186,7 +8186,8 @@ actor GitService {
             }
     }
 
-    private nonisolated(unsafe) static let blameDateFormatter: ISO8601DateFormatter = {
+    // PERFORMANCE: Cached ISO8601DateFormatter avoids severe overhead when parsing git blame line-by-line
+    nonisolated(unsafe) private static let blameDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
