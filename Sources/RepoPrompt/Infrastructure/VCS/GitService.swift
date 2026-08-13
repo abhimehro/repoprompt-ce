@@ -8186,7 +8186,7 @@ actor GitService {
             }
     }
 
-    nonisolated(unsafe) private static let blameDateFormatter: ISO8601DateFormatter = {
+    private nonisolated(unsafe) static let blameDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter

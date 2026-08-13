@@ -3,7 +3,7 @@ import Foundation
 actor GitDiffSnapshotPublisher {
     static let shared = GitDiffSnapshotPublisher()
 
-    nonisolated(unsafe) private static let sharedDateFormatter: DateFormatter = {
+    private nonisolated(unsafe) static let sharedDateFormatter: DateFormatter = {
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = TimeZone.current
@@ -11,14 +11,13 @@ actor GitDiffSnapshotPublisher {
         return df
     }()
 
-    nonisolated(unsafe) private static let sharedTimeFormatter: DateFormatter = {
+    private nonisolated(unsafe) static let sharedTimeFormatter: DateFormatter = {
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = TimeZone.current
         df.dateFormat = "HHmm"
         return df
     }()
-
 
     private let engine: GitDiffEngine
     private let store: GitDiffSnapshotStore
