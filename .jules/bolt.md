@@ -14,3 +14,6 @@
 ## 2024-08-09 - WorkspaceFileContextStoreTests flakes
 **Learning:** `WorkspaceFileContextStoreTests` tests sometimes flake in GitHub Actions CI (e.g., `testWriteAdaptersAndApplyEditsMaterializeCreateOverwriteAndFailurePostconditions`), returning exit code 1. This appears to be an environmental or timing issue unrelated to simple code improvements like caching DateFormatter.
 **Action:** Recognize this as a CI flake when it appears disjointed from the code under modification, and ignore the flake.
+## 2026-08-14 - WorktreeAPISmokeHarnessTests Flake
+**Learning:** CI failures on `RepoPromptTests.WorktreeAPISmokeHarnessTests` (specifically `testManageWorktreeAndAgentRunAPISmokeFlow` timing out after 180s) appear unrelated to the small UI/accessibility changes made in `AgentSessionRows.swift`. This is a known intermittent test flake according to the project guidelines, which strictly instruct never to bypass or skip these integration tests to force frontend/UX changes through.
+**Action:** Let the test run naturally; if it flakes on unrelated frontend changes, leave the test file alone rather than modifying it to skip.
