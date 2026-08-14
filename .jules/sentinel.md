@@ -1,0 +1,4 @@
+## 2024-05-24 - TOCTOU with write(to:) and setAttributes
+**Vulnerability:** A Time-of-Check-to-Time-of-Use (TOCTOU) race condition exists when writing sensitive files using String/Data.write(to:) followed by FileManager.setAttributes. An attacker could potentially intercept or modify the file in the brief window between its creation (with default permissions) and the application of restrictive permissions.
+**Learning:** The write(to:) method creates the file with default (potentially less secure) POSIX permissions. A race condition is created if you try to tighten the permissions immediately after.
+**Prevention:** Use FileManager.default.createFile(atPath:contents:attributes:) to create a temporary file with the correct secure permissions initially, explicitly checking for failure. Then atomically move or replace the temp file into the final destination.

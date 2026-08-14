@@ -132,8 +132,17 @@ actor MCPConfigExportService {
         let configJSON = try renderServerConfig()
         try prepareSecureDirectory(at: configDirectoryURL)
         let configURL = configDirectoryURL.appendingPathComponent(identity.stableWrapperConfigFileName, isDirectory: false)
-        try configJSON.write(to: configURL, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+        guard let data = configJSON.data(using: .utf8) else { throw CocoaError(.fileWriteUnknown) }
+        let tempURL = configDirectoryURL.appendingPathComponent(UUID().uuidString)
+        defer { try? fileManager.removeItem(at: tempURL) }
+        if !fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        if fileManager.fileExists(atPath: configURL.path) {
+            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
+        } else {
+            try fileManager.moveItem(at: tempURL, to: configURL)
+        }
         return configURL
     }
 
