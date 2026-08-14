@@ -250,7 +250,7 @@ public struct MCPTerminalFingerprint: Codable, CustomStringConvertible, Equatabl
 }
 
 public enum MCPTerminalRecordStore {
-    private static let iso8601Formatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter

@@ -107,7 +107,7 @@ public enum RepoPromptProgressKind: String, Codable, Sendable, Hashable {
 
 /// Parameters for the progress control notification.
 public struct RepoPromptProgressParams: Codable, Sendable, Hashable {
-    private static let iso8601Formatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         return formatter
     }()
