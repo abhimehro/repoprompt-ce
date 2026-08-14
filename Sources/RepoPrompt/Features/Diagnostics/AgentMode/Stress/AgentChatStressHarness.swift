@@ -293,7 +293,10 @@
 
     @MainActor
     final class AgentChatStressHarness: ObservableObject {
-        private static let isoFormatter = ISO8601DateFormatter()
+        private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
         static let forceDetachRequestedNotification = Notification.Name("AgentChatStressHarness.forceDetachRequested")
         enum Status: Equatable {
             case idle

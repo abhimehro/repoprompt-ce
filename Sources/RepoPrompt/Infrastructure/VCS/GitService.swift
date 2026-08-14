@@ -87,6 +87,11 @@ private final class GitFileManagerPrefixControlCandidateSource: GitPrefixControl
 /// Async Git helper for fetching repository information
 /// Based on the macOS 14+ Swift Git integration guide
 actor GitService {
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
     private static let gitProcessTimeout: Duration = .seconds(120)
     private static let gitProcessTerminationGrace: Duration = .seconds(5)
     private static let gitCheckAttrOutputByteLimit = 4 * 1024 * 1024
@@ -6837,9 +6842,7 @@ actor GitService {
                 // Unix timestamp
                 if let timestamp = Int(line.dropFirst("author-time ".count)) {
                     let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime]
-                    currentAuthorTime = formatter.string(from: date)
+                    currentAuthorTime = Self.iso8601Formatter.string(from: date)
                 }
             } else if line.hasPrefix("\t") {
                 // Content line

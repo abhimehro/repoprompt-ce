@@ -142,7 +142,8 @@ actor PartitionStore {
     private let baseURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private let dateFormatter = ISO8601DateFormatter()
+    private static let dateFormatter = ISO8601DateFormatter()
+    private var dateFormatter: ISO8601DateFormatter { Self.dateFormatter }
 
     #if DEBUG
         private var didPersistHandlerForTesting: (@Sendable () -> Void)?

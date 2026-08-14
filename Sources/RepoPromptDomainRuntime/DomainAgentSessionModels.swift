@@ -73,6 +73,11 @@ package enum DomainAgentRunTerminalPublicationResult: Equatable, Sendable {
 }
 
 package struct DomainAgentRunSnapshot: Equatable, Sendable {
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
     package static let startupPendingStatusText = "Queued to start"
 
     package enum Status: String, Codable, Equatable, Sendable {
@@ -600,9 +605,7 @@ package struct DomainAgentRunSnapshot: Equatable, Sendable {
     }
 
     fileprivate static func timestamp(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        return Self.iso8601Formatter.string(from: date)
     }
 }
 

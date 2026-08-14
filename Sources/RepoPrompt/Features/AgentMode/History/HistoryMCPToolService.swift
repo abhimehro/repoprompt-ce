@@ -1959,7 +1959,10 @@ enum HistoryMCPToolService {
 
     /// ISO 8601 datetime without fractional seconds — used both to parse inputs and to
     /// render response timestamps (`first_activity_at`, `last_activity_at`, `timestamp`).
-    private static let iso8601DateTime = ISO8601DateFormatter()
+    private static let iso8601DateTime: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
 
     /// ISO 8601 full date (`yyyy-MM-dd`) — used to parse date-only bounds and to render
     /// day/week group keys.

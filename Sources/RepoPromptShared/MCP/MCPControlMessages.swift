@@ -107,6 +107,10 @@ public enum RepoPromptProgressKind: String, Codable, Sendable, Hashable {
 
 /// Parameters for the progress control notification.
 public struct RepoPromptProgressParams: Codable, Sendable, Hashable {
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
     /// Tool or operation name (e.g., "context_builder", "oracle_send")
     public let tool: String
 
@@ -128,8 +132,7 @@ public struct RepoPromptProgressParams: Codable, Sendable, Hashable {
         self.stage = stage
         self.message = message
         // Format date as ISO8601 string for cross-decoder compatibility
-        let formatter = ISO8601DateFormatter()
-        self.emittedAt = formatter.string(from: emittedAt)
+        self.emittedAt = Self.iso8601Formatter.string(from: emittedAt)
     }
 }
 

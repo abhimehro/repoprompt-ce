@@ -14,3 +14,6 @@
 ## 2024-08-09 - WorkspaceFileContextStoreTests flakes
 **Learning:** `WorkspaceFileContextStoreTests` tests sometimes flake in GitHub Actions CI (e.g., `testWriteAdaptersAndApplyEditsMaterializeCreateOverwriteAndFailurePostconditions`), returning exit code 1. This appears to be an environmental or timing issue unrelated to simple code improvements like caching DateFormatter.
 **Action:** Recognize this as a CI flake when it appears disjointed from the code under modification, and ignore the flake.
+## 2026-08-07 - DateFormatter Instantiation Overhead
+**Learning:** In Swift, DateFormatter and ISO8601DateFormatter are notoriously expensive to initialize. Repeated inline initializations, especially in high-frequency paths like UI rendering, JSON parsing, or VCS history reading, can cause severe performance issues.
+**Action:** Refactored these instantiations by reusing static let instances of DateFormatter/ISO8601DateFormatter to prevent unnecessary allocation overhead.
