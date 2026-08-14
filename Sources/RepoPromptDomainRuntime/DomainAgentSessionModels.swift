@@ -73,7 +73,7 @@ package enum DomainAgentRunTerminalPublicationResult: Equatable, Sendable {
 }
 
 package struct DomainAgentRunSnapshot: Equatable, Sendable {
-    private static let iso8601Formatter: ISO8601DateFormatter = {
+    private nonisolated(unsafe) static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter

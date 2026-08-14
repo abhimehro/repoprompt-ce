@@ -45,11 +45,13 @@ enum GlobalSettingsPersistenceBlockReason: Equatable {
 /// Schema identity is `(schemaLineage, schemaVersion)`, not `schemaVersion` alone.
 /// See `docs/architecture/settings-persistence.md` before changing the preservation rules.
 final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
+
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+
     static let appSupportDirectoryName = "RepoPrompt CE"
     static let settingsDirectoryName = "Settings"
     static let filename = "globalSettings.json"
@@ -710,8 +712,8 @@ final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
     }
 
     private static func backupTimestamp(for date: Date) -> String {
-        return Self.iso8601Formatter.string(from: date)
-            .replacingOccurrences(of: ":", with: "-")
+        iso8601Formatter.string(from: date)
+            .replacingOccurrences(of: \":\", with: \"-\")
     }
 
     private struct GlobalSettingsDocumentHeader: Decodable {

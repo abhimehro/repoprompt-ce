@@ -8,11 +8,13 @@ import RepoPromptDomainRuntime
 /// This service intentionally does not expose the raw global settings document. Only
 /// keys present in `AppSettingsMCPRegistry.definitions` are visible to MCP clients.
 final class AppSettingsMCPService: Service {
+
     private static let iso8601DateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
+
     static let toolName = MCPGlobalToolName.appSettings
 
     let domainRegistrationID = MCPDomainToolRegistrationID()

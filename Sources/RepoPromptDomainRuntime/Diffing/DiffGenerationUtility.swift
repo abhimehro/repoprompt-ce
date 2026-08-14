@@ -527,9 +527,6 @@ package class DiffGenerationUtility {
             throw DiffGenerationError.noMatchFound
         }
 
-        if enableDetailedLogging {
-            print("❌ No consecutive exact match found, falling back to n-gram matching")
-        }
 
         // ---------- FALL BACK TO N-GRAM LOGIC ----------
 

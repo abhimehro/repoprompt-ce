@@ -49,7 +49,7 @@ package struct ApplyEditsResult: Equatable {
 }
 
 package extension ApplyEditsResult {
-    package func toolCardLineStats() -> ApplyEditsLineStats? {
+    func toolCardLineStats() -> ApplyEditsLineStats? {
         guard !diffChunks.isEmpty else { return nil }
         var addedLines = 0
         var deletedLines = 0
@@ -71,7 +71,7 @@ package extension ApplyEditsResult {
     /// UI-safe unified diff source:
     /// - Prefer explicit verbose diff when present.
     /// - Otherwise synthesize from applied diff chunks for tool-card rendering.
-    package func unifiedDiffForToolCard(filePath: String) -> String? {
+    func unifiedDiffForToolCard(filePath: String) -> String? {
         if let toolCardUnifiedDiff, !toolCardUnifiedDiff.isEmpty {
             return toolCardUnifiedDiff
         }

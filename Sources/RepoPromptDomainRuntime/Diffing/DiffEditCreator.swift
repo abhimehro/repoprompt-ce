@@ -70,7 +70,7 @@ package class DiffEditCreator {
         for d in stride(from: trace.count - 1, through: 0, by: -1) {
             let v = trace[d]
             let k = x - y
-            var prevK: Int = if k == -d || (k != d && v[k - 1, default: -1] < v[k + 1, default: -1]) {
+            let prevK: Int = if k == -d || (k != d && v[k - 1, default: -1] < v[k + 1, default: -1]) {
                 k + 1
             } else {
                 k - 1

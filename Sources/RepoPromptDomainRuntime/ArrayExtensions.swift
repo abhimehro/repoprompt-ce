@@ -4,7 +4,7 @@ import Foundation
 package extension Array {
     /// Splits array into consecutive windows of at most `size`.
     /// Returns [] when size <= 0, per tests.
-    package func chunked(into size: Int) -> [[Element]] {
+    func chunked(into size: Int) -> [[Element]] {
         guard size > 0 else { return [] }
         var result: [[Element]] = []
         result.reserveCapacity((count + size - 1) / size)
