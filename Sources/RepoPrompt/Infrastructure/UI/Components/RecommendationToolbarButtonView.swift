@@ -50,6 +50,7 @@ struct RecommendationToolbarButtonView: View {
                 .foregroundColor(toolbarStateObserver.state.hasActiveRecommendations ? .yellow : .secondary)
         }
         .hoverTooltip("Setup Wizard", .bottom)
+        .accessibilityLabel("Setup Wizard")
         .popover(isPresented: $showPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
             RecommendationWizardPopoverView(
                 viewModel: viewModel,

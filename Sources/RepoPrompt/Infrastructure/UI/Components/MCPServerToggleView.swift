@@ -358,6 +358,7 @@ struct MCPServerPopoverContent: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("View error details")
+                    .accessibilityLabel("View error details")
                     .popover(isPresented: $showErrorPopover) {
                         errorDetailsPopover
                             .frame(width: 350)
@@ -375,6 +376,7 @@ struct MCPServerPopoverContent: View {
                     .buttonStyle(.borderless)
                     .disabled(didCancelTool)
                     .hoverTooltip("Abort the current tool call")
+                    .accessibilityLabel("Abort the current tool call")
                 }
 
                 if isProcessing {
@@ -395,6 +397,7 @@ struct MCPServerPopoverContent: View {
                 .toggleStyle(SwitchToggleStyle())
                 .disabled(isProcessing)
                 .hoverTooltip("Enable MCP tools for this window")
+                .accessibilityLabel("Enable MCP tools for this window")
             }
 
             // Auto-start toggle and status
@@ -402,6 +405,7 @@ struct MCPServerPopoverContent: View {
                 Toggle("Auto-Start", isOn: autoStartServerBinding)
                     .font(fontPreset.font)
                     .hoverTooltip("Automatically start the MCP server when RepoPrompt launches")
+                    .accessibilityLabel("Automatically start the MCP server when RepoPrompt launches")
 
                 Spacer()
 
@@ -468,6 +472,7 @@ struct MCPServerPopoverContent: View {
      }
      .buttonStyle(.plain)
      .hoverTooltip("Learn about planning models")
+     .accessibilityLabel("Learn about planning models")
 
      Spacer()
      }
@@ -513,6 +518,7 @@ struct MCPServerPopoverContent: View {
             Toggle("Use Oracle Model Presets for MCP", isOn: showModelPresetsBinding)
                 .font(fontPreset.font)
                 .hoverTooltip("When enabled, list_models returns user-defined presets. When disabled, returns only the current oracle model.")
+                .accessibilityLabel("When enabled, list_models returns user-defined presets. When disabled, returns only the current oracle model.")
                 .onChange(of: showModelPresets) {
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(name: .recommendationsDidApply, object: nil)
@@ -612,6 +618,7 @@ struct MCPServerPopoverContent: View {
                     )
                 }
                 .hoverTooltip("Agent and model used when MCP clients run context-building operations.")
+                .accessibilityLabel("Agent and model used when MCP clients run context-building operations.")
             }
 
             Text("Used by context_builder MCP tool.")
@@ -764,6 +771,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minHeight: buttonMinHeight)
                 .hoverTooltip("Install the RepoPrompt MCP server or CLI")
+                .accessibilityLabel("Install the RepoPrompt MCP server or CLI")
 
                 // Skills menu
                 Menu {
@@ -886,6 +894,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minHeight: buttonMinHeight)
                 .hoverTooltip("Install /rp-investigate and /rp-build slash skills")
+                .accessibilityLabel("Install /rp-investigate and /rp-build slash skills")
 
                 // Copy JSON (minimal)
                 Button(action: {
@@ -897,6 +906,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minWidth: buttonMinHeight, minHeight: buttonMinHeight)
                 .hoverTooltip("Copy MCP JSON configuration")
+                .accessibilityLabel("Copy MCP JSON configuration")
             }
 
             Text("If the integration doesn't show up right away, restart the client app after installing the server.")
