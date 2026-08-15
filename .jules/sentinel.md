@@ -1,0 +1,4 @@
+## 2024-05-23 - Prevent TOCTOU vulnerabilities with atomic file writing and permissions setting
+**Vulnerability:** TOCTOU race condition when writing files and setting POSIX permissions separately.
+**Learning:** Writing data first and setting permissions afterward creates a window where the file is readable with default (too broad) permissions. Using `FileManager.default.createFile` with `attributes` sets permissions atomically at creation, preventing this race condition. Atomic writing via `.atomic` uses a temporary file, but does not allow specifying custom initial permissions.
+**Prevention:** Create a temporary file with `FileManager.default.createFile(atPath:contents:attributes:)` to set permissions atomically at creation, then move it securely using `FileManager.default.replaceItem(at:withItemAt:backupItemName:options:)` (if replacing) or `FileManager.default.moveItem(at:to:)`.
