@@ -2682,12 +2682,13 @@ struct AgentModeChatDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 let transcript = transcriptSnapshot
                 let runInteraction = runInteractionSnapshot
+                let lockTargetID = transcript.presentation.metadata.dynamicSummaryLockTargetTurnID
                 ForEach(block.rows) { item in
                     transcriptRowView(
                         item: item,
                         block: block,
                         renderContext: renderContext,
-                        autoExpandEnabled: toolCardAutoExpandEnabled(for: block),
+                        autoExpandEnabled: toolCardAutoExpandEnabled(for: block, lockTargetID: lockTargetID),
                         transcript: transcript,
                         runInteraction: runInteraction
                     )
@@ -2777,8 +2778,8 @@ struct AgentModeChatDetailView: View {
         .environment(\.agentApprovalVisible, renderContext.interactionBlockerVisible)
     }
 
-    private func toolCardAutoExpandEnabled(for block: AgentTranscriptRenderBlock) -> Bool {
-        block.turnID != dynamicSummaryLockTargetTurnID
+    private func toolCardAutoExpandEnabled(for block: AgentTranscriptRenderBlock, lockTargetID: UUID?) -> Bool {
+        block.turnID != lockTargetID
             && !block.isArchived
             && block.retentionTier == .full
             && block.kind != .activityCluster
@@ -2787,8 +2788,8 @@ struct AgentModeChatDetailView: View {
 
     /// Per-item auto-expand policy that allows bash to auto-expand inside grouped/cluster blocks
     /// while keeping other tools collapsed in those contexts.
-    private func toolCardAutoExpandEnabled(for item: AgentChatItem, in block: AgentTranscriptRenderBlock) -> Bool {
-        guard block.turnID != dynamicSummaryLockTargetTurnID, !block.isArchived, block.retentionTier == .full else {
+    private func toolCardAutoExpandEnabled(for item: AgentChatItem, in block: AgentTranscriptRenderBlock, lockTargetID: UUID?) -> Bool {
+        guard block.turnID != lockTargetID, !block.isArchived, block.retentionTier == .full else {
             return false
         }
         if block.kind == .activityCluster || block.kind == .groupedHistory {
@@ -2969,13 +2970,14 @@ struct AgentModeChatDetailView: View {
     private func expandedClusterContent(block: AgentTranscriptRenderBlock, renderContext: TranscriptRenderContext) -> some View {
         let transcript = transcriptSnapshot
         let runInteraction = runInteractionSnapshot
+        let lockTargetID = transcript.presentation.metadata.dynamicSummaryLockTargetTurnID
         return VStack(alignment: .leading, spacing: 6) {
             ForEach(block.rows) { item in
                 transcriptRowView(
                     item: item,
                     block: block,
                     renderContext: renderContext,
-                    autoExpandEnabled: toolCardAutoExpandEnabled(for: item, in: block),
+                    autoExpandEnabled: toolCardAutoExpandEnabled(for: item, in: block, lockTargetID: lockTargetID),
                     transcript: transcript,
                     runInteraction: runInteraction
                 )
@@ -2986,9 +2988,10 @@ struct AgentModeChatDetailView: View {
     private func expandedGroupedContent(sections: [AgentTranscriptGroupedSection], renderContext: TranscriptRenderContext) -> some View {
         let transcript = transcriptSnapshot
         let runInteraction = runInteractionSnapshot
+        let lockTargetID = transcript.presentation.metadata.dynamicSummaryLockTargetTurnID
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(sections) { section in
-                groupedHistorySectionView(section: section, renderContext: renderContext, transcript: transcript, runInteraction: runInteraction)
+                groupedHistorySectionView(section: section, renderContext: renderContext, transcript: transcript, runInteraction: runInteraction, lockTargetID: lockTargetID)
             }
         }
     }
@@ -2997,7 +3000,8 @@ struct AgentModeChatDetailView: View {
         section: AgentTranscriptGroupedSection,
         renderContext: TranscriptRenderContext,
         transcript: AgentTranscriptUISnapshot,
-        runInteraction: AgentRunInteractionUISnapshot
+        runInteraction: AgentRunInteractionUISnapshot,
+        lockTargetID: UUID?
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // Section header — compact inline
@@ -3040,7 +3044,7 @@ struct AgentModeChatDetailView: View {
                             item: item,
                             block: childBlock,
                             renderContext: renderContext,
-                            autoExpandEnabled: toolCardAutoExpandEnabled(for: item, in: childBlock),
+                            autoExpandEnabled: toolCardAutoExpandEnabled(for: item, in: childBlock, lockTargetID: lockTargetID),
                             transcript: transcript,
                             runInteraction: runInteraction
                         )
