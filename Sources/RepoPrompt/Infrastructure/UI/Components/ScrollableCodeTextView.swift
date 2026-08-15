@@ -159,6 +159,7 @@ struct ScrollableCodeBlock: View {
             }
         }
         .hoverTooltip("Copy to clipboard")
+        .accessibilityLabel("Copy to clipboard")
         .padding(4)
     }
 }
