@@ -139,7 +139,7 @@ actor MCPConfigExportService {
         }
         defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: configURL.path) {
-            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
+            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil)
         } else {
             try fileManager.moveItem(at: tempURL, to: configURL)
         }
@@ -274,7 +274,7 @@ actor MCPConfigExportService {
         }
         defer { try? fileManager.removeItem(at: tempURL) }
         if fileManager.fileExists(atPath: url.path) {
-            _ = try fileManager.replaceItem(at: url, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
+            _ = try fileManager.replaceItem(at: url, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil)
         } else {
             try fileManager.moveItem(at: tempURL, to: url)
         }
