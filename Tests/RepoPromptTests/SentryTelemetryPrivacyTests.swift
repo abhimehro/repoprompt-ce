@@ -205,7 +205,7 @@ final class SentryTelemetryPrivacyTests: XCTestCase {
 
         func containsKey(_ key: String, in value: Any) -> Bool {
             if let dictionary = value as? [String: Any] {
-                return dictionary.keys.contains(key) ||
+                return dictionary[key] != nil ||
                     dictionary.values.contains { containsKey(key, in: $0) }
             }
             if let array = value as? [Any] {
