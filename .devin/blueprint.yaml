@@ -2,12 +2,23 @@
 # RepoPrompt CE is a native macOS/Swift Package app. Linux snapshots do not
 # build it, so initialization and dependency installation are intentionally
 # no-ops. Knowledge items record the macOS-coordinated commands for agents.
+#
+# Use a shallow clone without submodules or tags: this repo is not built on
+# Linux, full history is not required, and a depth-1 clone avoids carrying
+# diverged or stale local main history between snapshot builds.
 
+# One-time setup (e.g., install system tools, global CLIs).
 initialize: |
   true
 
+# Install project dependencies (runs during builds, surfaced to agent at session start).
 maintenance: |
   true
+
+clone:
+  depth: 1
+  submodules: false
+  tags: false
 
 knowledge:
   - name: lint
