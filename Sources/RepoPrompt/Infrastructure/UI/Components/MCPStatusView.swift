@@ -335,6 +335,7 @@ struct MCPStatusView: View {
             }
             .buttonStyle(.plain)
             .hoverTooltip("Terminate this client (CLI will exit)")
+            .accessibilityLabel("Terminate this client (CLI will exit)")
         }
         .padding(12)
         .background(statusCardBackground)

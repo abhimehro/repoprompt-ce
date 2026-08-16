@@ -358,6 +358,7 @@ struct MCPServerPopoverContent: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("View error details")
+                    .accessibilityLabel("View error details")
                     .popover(isPresented: $showErrorPopover) {
                         errorDetailsPopover
                             .frame(width: 350)
