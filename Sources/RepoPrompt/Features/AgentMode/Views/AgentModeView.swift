@@ -1926,6 +1926,7 @@ struct AgentModeChatDetailView: View {
                                 }
                                 .buttonStyle(SmallRoundButtonStyle())
                                 .hoverTooltip("Force detach for stress validation")
+                                .accessibilityLabel("Force detach for stress validation")
                                 .accessibilityIdentifier("agentStress.forceDetach")
                             }
                         #endif
@@ -1955,6 +1956,7 @@ struct AgentModeChatDetailView: View {
                             }
                             .buttonStyle(SmallRoundButtonStyle(size: 24, iconSize: 12))
                             .hoverTooltip("Scroll to bottom")
+                            .accessibilityLabel("Scroll to bottom")
                             .accessibilityIdentifier("agentTranscript.scrollToBottom")
                         }
                     }
