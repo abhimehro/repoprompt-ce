@@ -142,7 +142,8 @@ actor PartitionStore {
     private let baseURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private let dateFormatter = ISO8601DateFormatter()
+    // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
+    private static let dateFormatter = ISO8601DateFormatter()
 
     #if DEBUG
         private var didPersistHandlerForTesting: (@Sendable () -> Void)?
@@ -199,7 +200,7 @@ actor PartitionStore {
         try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true, attributes: nil)
 
         var dataToPersist = data
-        dataToPersist.updatedAt = dateFormatter.string(from: Date())
+        dataToPersist.updatedAt = Self.dateFormatter.string(from: Date())
 
         let encoded = try encoder.encode(dataToPersist)
         try Task.checkCancellation()

@@ -250,6 +250,12 @@ public struct MCPTerminalFingerprint: Codable, CustomStringConvertible, Equatabl
 }
 
 public enum MCPTerminalRecordStore {
+    // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
     private static let retainedRecordLimit = 256
 
     @discardableResult
@@ -268,9 +274,7 @@ public enum MCPTerminalRecordStore {
             ofItemAtPath: directory.path
         )
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let timestamp = formatter.string(from: record.timestamp)
+        let timestamp = Self.timestampFormatter.string(from: record.timestamp)
             .replacingOccurrences(of: ":", with: "-")
         let fileURL = directory.appendingPathComponent(
             "terminal-\(timestamp)-\(record.id.uuidString).json",

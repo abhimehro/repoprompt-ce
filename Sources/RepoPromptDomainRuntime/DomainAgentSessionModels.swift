@@ -599,10 +599,15 @@ package struct DomainAgentRunSnapshot: Equatable, Sendable {
         ]
     }
 
-    fileprivate static func timestamp(_ date: Date) -> String {
+    // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
+    private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    fileprivate static func timestamp(_ date: Date) -> String {
+        return timestampFormatter.string(from: date)
     }
 }
 

@@ -891,7 +891,8 @@ actor DirectHeadlessAgentBackend: DomainAgentCapabilityBackend {
 
 actor DirectHeadlessHistoryBackend: DomainHistoryCapabilityBackend {
     private let runtime: MCPDomainRuntime
-    private let formatter = ISO8601DateFormatter()
+    // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
+    private static let formatter = ISO8601DateFormatter()
 
     init(runtime: MCPDomainRuntime) {
         self.runtime = runtime
@@ -938,7 +939,7 @@ actor DirectHeadlessHistoryBackend: DomainHistoryCapabilityBackend {
                 Value.object([
                     "session_id": .string(item.sessionID.uuidString),
                     "snippet": .string("Standalone session \(item.state.rawValue)"),
-                    "updated_at": .string(formatter.string(from: item.updatedAt))
+                    "updated_at": .string(Self.formatter.string(from: item.updatedAt))
                 ])
             }
             return try .object([
@@ -967,7 +968,7 @@ actor DirectHeadlessHistoryBackend: DomainHistoryCapabilityBackend {
         .object([
             "session_id": .string(metadata.sessionID.uuidString),
             "state": .string(metadata.state.rawValue),
-            "last_activity": .string(formatter.string(from: metadata.updatedAt)),
+            "last_activity": .string(Self.formatter.string(from: metadata.updatedAt)),
             "resumable": .bool(metadata.resumable),
             "runtime_id": .string(metadata.owningRuntimeID.uuidString),
             "runtime_generation": .int(Int(metadata.owningRuntimeGeneration)),
