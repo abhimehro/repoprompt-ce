@@ -297,14 +297,14 @@ final class AppSettingsMCPService: Service {
     }
 
     // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
-    nonisolated(unsafe) private static let isoFormatter: ISO8601DateFormatter = {
+    private nonisolated(unsafe) static let isoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
 
     private static func iso8601Timestamp() -> String {
-        return isoFormatter.string(from: Date())
+        isoFormatter.string(from: Date())
     }
 
     private static func valuesEqual(_ lhs: Value, _ rhs: Value) -> Bool {
