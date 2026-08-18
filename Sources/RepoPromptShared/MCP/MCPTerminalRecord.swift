@@ -256,6 +256,7 @@ public enum MCPTerminalRecordStore {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+
     private static let retainedRecordLimit = 256
 
     @discardableResult
