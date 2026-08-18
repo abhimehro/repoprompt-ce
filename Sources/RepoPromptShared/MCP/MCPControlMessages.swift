@@ -123,7 +123,7 @@ public struct RepoPromptProgressParams: Codable, Sendable, Hashable {
     public let emittedAt: String
 
     // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
-    private static let isoFormatter = ISO8601DateFormatter()
+    nonisolated(unsafe) private static let isoFormatter = ISO8601DateFormatter()
 
     public init(tool: String, kind: RepoPromptProgressKind, stage: String, message: String, emittedAt: Date = Date()) {
         self.tool = tool

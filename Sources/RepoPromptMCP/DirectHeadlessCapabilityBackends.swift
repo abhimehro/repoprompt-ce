@@ -892,7 +892,7 @@ actor DirectHeadlessAgentBackend: DomainAgentCapabilityBackend {
 actor DirectHeadlessHistoryBackend: DomainHistoryCapabilityBackend {
     private let runtime: MCPDomainRuntime
     // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
-    private static let formatter = ISO8601DateFormatter()
+    nonisolated(unsafe) private static let formatter = ISO8601DateFormatter()
 
     init(runtime: MCPDomainRuntime) {
         self.runtime = runtime

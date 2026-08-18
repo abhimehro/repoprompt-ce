@@ -251,7 +251,7 @@ public struct MCPTerminalFingerprint: Codable, CustomStringConvertible, Equatabl
 
 public enum MCPTerminalRecordStore {
     // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
-    private static let timestampFormatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter

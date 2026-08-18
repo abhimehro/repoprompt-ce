@@ -297,7 +297,7 @@ final class AppSettingsMCPService: Service {
     }
 
     // PERFORMANCE: Reuse static ISO8601DateFormatter to avoid expensive instantiation overhead
-    private static let isoFormatter: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let isoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
