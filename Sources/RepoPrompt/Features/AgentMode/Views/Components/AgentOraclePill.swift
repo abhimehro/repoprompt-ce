@@ -283,6 +283,7 @@ struct AgentOraclePill: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip(isStreaming ? "Oracle is thinking — click to view the live chat" : "Open the latest Oracle chat for this tab", .top)
+                .accessibilityLabel(isStreaming ? "Oracle is thinking" : "Open Oracle chat")
                 .animation(.easeInOut(duration: 0.2), value: isStreaming)
             } else {
                 Color.clear.frame(width: 0, height: 0)

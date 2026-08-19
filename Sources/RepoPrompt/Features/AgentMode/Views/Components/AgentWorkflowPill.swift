@@ -89,6 +89,7 @@ struct AgentWorkflowPill: View {
                 )
         )
         .hoverTooltip("Wrap your message with a workflow template", .top)
+        .accessibilityLabel("Select workflow template")
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             AgentWorkflowsPopoverView(
                 statusPillsUI: statusPillsUI,
