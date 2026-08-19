@@ -8187,13 +8187,13 @@ actor GitService {
     }
 
     // ⚡ Bolt: Extracted to a static property to avoid expensive repeated instantiation during high-frequency git blame parsing
-    nonisolated(unsafe) private static let authorTimeFormatter: ISO8601DateFormatter = {
+    private nonisolated(unsafe) static let authorTimeFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
 
-    /// Accept both Git's "yyyy-MM-dd HH:mm:ss Z" (e.g. "+0000") and RFC3339
+    // Accept both Git's "yyyy-MM-dd HH:mm:ss Z" (e.g. "+0000") and RFC3339
     private static let gitDateFormatter: DateFormatter = {
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
