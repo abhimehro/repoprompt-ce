@@ -1,0 +1,4 @@
+## 2025-02-23 - TOCTOU Vulnerability in File Writes
+**Vulnerability:** In Swift codebases, writing sensitive files using `String.write(to:)` or `Data.write(to:)` followed by `FileManager.setAttributes` creates a Time-of-Check-to-Time-of-Use (TOCTOU) race condition.
+**Learning:** During the brief window between writing the file and changing its permissions, the file is readable with default system permissions (often `0o644`). If an attacker watches the filesystem, they can read the contents before they are secured.
+**Prevention:** Create a temporary file with secure permissions using `FileManager.default.createFile(atPath:contents:attributes:)`, and then atomically move it into place using `FileManager.default.replaceItem(at:withItemAt:backupItemName:options:)` or `FileManager.default.moveItem(at:to:)`.

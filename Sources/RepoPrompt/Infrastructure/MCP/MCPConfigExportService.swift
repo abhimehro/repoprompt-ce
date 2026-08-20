@@ -132,8 +132,19 @@ actor MCPConfigExportService {
         let configJSON = try renderServerConfig()
         try prepareSecureDirectory(at: configDirectoryURL)
         let configURL = configDirectoryURL.appendingPathComponent(identity.stableWrapperConfigFileName, isDirectory: false)
-        try configJSON.write(to: configURL, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+        let tempURL = configDirectoryURL.appendingPathComponent(UUID().uuidString, isDirectory: false)
+        guard let data = configJSON.data(using: .utf8),
+              fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? fileManager.removeItem(at: tempURL) }
+
+        if fileManager.fileExists(atPath: configURL.path) {
+            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
+        } else {
+            try fileManager.moveItem(at: tempURL, to: configURL)
+        }
+
         return configURL
     }
 
@@ -157,9 +168,18 @@ actor MCPConfigExportService {
     func writeTempFile(prefix: String, contents: String) throws -> URL {
         let baseDir = fileManager.temporaryDirectory
             .appendingPathComponent("RepoPromptDiscover", isDirectory: true)
-        try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: baseDir.path)
         let fileURL = baseDir.appendingPathComponent("\(prefix)-\(UUID().uuidString).txt")
-        try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let tempURL = baseDir.appendingPathComponent(UUID().uuidString, isDirectory: false)
+        guard let data = contents.data(using: .utf8),
+              fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? fileManager.removeItem(at: tempURL) }
+
+        try fileManager.moveItem(at: tempURL, to: fileURL)
         return fileURL
     }
 
@@ -258,7 +278,15 @@ actor MCPConfigExportService {
         let flavor = identity.buildFlavor == .debug ? "D" : "R"
         let url = launchConfigDirectoryURL
             .appendingPathComponent("\(prefix)-\(flavor)-\(UUID().uuidString).json", isDirectory: false)
-        try contents.write(to: url, atomically: true, encoding: .utf8)
+        let tempURL = launchConfigDirectoryURL.appendingPathComponent(UUID().uuidString, isDirectory: false)
+        guard let data = contents.data(using: .utf8),
+              fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o400]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? fileManager.removeItem(at: tempURL) }
+
+        try fileManager.moveItem(at: tempURL, to: url)
+
         guard let createdIdentity = MCPConfigLease.identity(atPath: url.path),
               createdIdentity.owner == getuid(),
               createdIdentity.fileType == mode_t(S_IFREG)
@@ -266,17 +294,6 @@ actor MCPConfigExportService {
             try? fileManager.removeItem(at: url)
             throw CocoaError(.fileWriteUnknown)
         }
-        do {
-            try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: url.path)
-            guard MCPConfigLease.identity(atPath: url.path) == createdIdentity else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-            return MCPConfigLease(url: url, fileManager: fileManager, identity: createdIdentity)
-        } catch {
-            if MCPConfigLease.identity(atPath: url.path) == createdIdentity {
-                try? fileManager.removeItem(at: url)
-            }
-            throw error
-        }
+        return MCPConfigLease(url: url, fileManager: fileManager, identity: createdIdentity)
     }
 }
