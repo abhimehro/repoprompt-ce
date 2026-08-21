@@ -154,6 +154,18 @@ import XCTest
                     await manager.debugAwaitCodeStructureSettlementDrain(
                         windowID: fixture.contextA.window.windowID
                     )
+
+                    // Wait for the detached event to be emitted
+                    let settled = await AsyncTestCondition.waitUntil {
+                        let events = recorder.snapshot()
+                        return events.contains {
+                            $0.connectionID == nestedConnectionID &&
+                            $0.toolName == MCPWindowToolName.readFile &&
+                            $0.phase == .detachedSettled
+                        }
+                    }
+                    XCTAssertTrue(settled)
+
                     let settledNestedEvents = recorder.snapshot().filter {
                         $0.connectionID == nestedConnectionID &&
                             $0.toolName == MCPWindowToolName.readFile
