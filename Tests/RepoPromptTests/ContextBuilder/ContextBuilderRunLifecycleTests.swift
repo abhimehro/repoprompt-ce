@@ -315,17 +315,21 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             saveState: false,
             reason: "ContextBuilderRunLifecycleTests.promptFallback"
         )
-        let workspaceID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.id)
-        let tabID = try XCTUnwrap(
-            window.workspaceManager.activeWorkspace?.activeComposeTabID
-                ?? window.workspaceManager.activeWorkspace?.composeTabs.first?.id
-        )
+        let (workspaceID, tabID) = try await MainActor.run {
+            let wid = try XCTUnwrap(window.workspaceManager.activeWorkspace?.id)
+            let tid = try XCTUnwrap(
+                window.workspaceManager.activeWorkspace?.activeComposeTabID
+                    ?? window.workspaceManager.activeWorkspace?.composeTabs.first?.id
+            )
+            return (wid, tid)
+        }
         let identity = WorkspaceSelectionIdentity(workspaceID: workspaceID, tabID: tabID)
-        var tab = try XCTUnwrap(window.workspaceManager.composeTab(for: identity))
+        var tab = try await MainActor.run { try XCTUnwrap(window.workspaceManager.composeTab(for: identity)) }
         tab.promptText = ""
         tab.contextOverrides.useOverridePrompt = true
         tab.contextOverrides.overridePromptText = "stale override"
-        XCTAssertTrue(window.workspaceManager.updateComposeTabStoredOnly(tab, inWorkspaceID: workspaceID))
+        let wasUpdated = await MainActor.run { window.workspaceManager.updateComposeTabStoredOnly(tab, inWorkspaceID: workspaceID) }
+        XCTAssertTrue(wasUpdated)
 
         let connectionID = UUID()
         let runID = UUID()
