@@ -13,7 +13,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         _ workspacePaths: CodexRuntimeWorkspacePaths,
         _ permissionProfile: AgentModeViewModel.AgentPermissionProfile,
         _ taskLabelKind: AgentModelCatalog.TaskLabelKind?,
-        _ computerUseEnabled: Bool
+        _ computerUseEnabled: Bool,
+        _ capabilities: CodexCapabilitySettings
     ) -> any CodexSessionControlling
 
     typealias ConnectionPolicyInstaller = (
@@ -257,6 +258,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     private let windowID: Int
     private let runtimeWorkspacePathsProvider: (AgentTabSession) throws -> CodexRuntimeWorkspacePaths
     private let codexControllerFactory: CodexControllerFactory
+    private let codexCapabilitiesForLaunch: (_ isMCPRelated: Bool) -> CodexCapabilitySettings
     private let connectionPolicyInstaller: ConnectionPolicyInstaller
     private let shouldManageCodexTooling: Bool
     private let activeToolQuery: ActiveToolQuery
@@ -372,6 +374,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         codexControllerFactory: @escaping CodexControllerFactory,
         connectionPolicyInstaller: @escaping ConnectionPolicyInstaller,
         shouldManageCodexTooling: Bool,
+        codexCapabilitiesForLaunch: @escaping (_ isMCPRelated: Bool) -> CodexCapabilitySettings = { _ in .disabled },
         authRecovery: any CodexManagedAuthRecovering = CodexManagedAuthRecoveryService.shared,
         codexHookApprovalSettings: any CodexHookApprovalSettingsProviding,
         activeToolQuery: @escaping ActiveToolQuery = { _ in false },
@@ -391,6 +394,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         self.windowID = windowID
         self.runtimeWorkspacePathsProvider = runtimeWorkspacePathsProvider
         self.codexControllerFactory = codexControllerFactory
+        self.codexCapabilitiesForLaunch = codexCapabilitiesForLaunch
         self.connectionPolicyInstaller = connectionPolicyInstaller
         self.shouldManageCodexTooling = shouldManageCodexTooling
         self.authRecovery = authRecovery
@@ -5363,6 +5367,18 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         if previous.memoriesEnabled != desired.memoriesEnabled {
             return desired.memoriesEnabled ? "memories-enabled" : "memories-disabled"
         }
+        if previous.capabilities.appsEnabled != desired.capabilities.appsEnabled {
+            return desired.capabilities.appsEnabled ? "apps-enabled" : "apps-disabled"
+        }
+        if previous.capabilities.pluginsEnabled != desired.capabilities.pluginsEnabled {
+            return desired.capabilities.pluginsEnabled ? "plugins-enabled" : "plugins-disabled"
+        }
+        if previous.capabilities.mcpElicitationEnabled != desired.capabilities.mcpElicitationEnabled {
+            return desired.capabilities.mcpElicitationEnabled ? "mcp-elicitation-enabled" : "mcp-elicitation-disabled"
+        }
+        if previous.capabilities.toolSuggestionsEnabled != desired.capabilities.toolSuggestionsEnabled {
+            return desired.capabilities.toolSuggestionsEnabled ? "tool-suggestions-enabled" : "tool-suggestions-disabled"
+        }
         return "feature-state-unknown"
     }
 
@@ -5768,6 +5784,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         let wantsGoalSupport = CodexGoalSupport.isEnabled
         let wantsReasoningSummaries = CodexReasoningSummaries.isEnabled
         let wantsMemories = CodexMemories.isEnabled
+        let wantsCapabilities = codexCapabilitiesForLaunch(session.isMCPRelated)
         let codexComputerUseFeatureEnabled = CodexComputerUseWorkflow.isEnabled
         if !codexComputerUseFeatureEnabled {
             session.pendingCodexComputerUseActivation = nil
@@ -5777,7 +5794,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
             computerUseEnabled: wantsComputerUse,
             goalSupportEnabled: wantsGoalSupport,
             reasoningSummariesEnabled: wantsReasoningSummaries,
-            memoriesEnabled: wantsMemories
+            memoriesEnabled: wantsMemories,
+            capabilities: wantsCapabilities
         )
         if let existingController = session.codexController,
            session.codexControllerFeatureState != desiredFeatureState
@@ -5866,7 +5884,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                 computerUseEnabled: refreshedWantsComputerUse,
                 goalSupportEnabled: CodexGoalSupport.isEnabled,
                 reasoningSummariesEnabled: CodexReasoningSummaries.isEnabled,
-                memoriesEnabled: CodexMemories.isEnabled
+                memoriesEnabled: CodexMemories.isEnabled,
+                capabilities: codexCapabilitiesForLaunch(session.isMCPRelated)
             )
 
             if let existingController = session.codexController,
@@ -5900,7 +5919,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
                     runtimeWorkspacePaths,
                     controllerPermissionProfile,
                     currentTaskLabelKind,
-                    wantsComputerUse
+                    wantsComputerUse,
+                    desiredFeatureState.capabilities
                 )
                 guard managedSessionFence.allowsCodexSessionInstallation(sessionInstallationToken) else {
                     logCodex("[AgentModeVM][CodexLogout] retiring controller created after managed sign-out invalidated its session token tab=\(session.tabID)")
