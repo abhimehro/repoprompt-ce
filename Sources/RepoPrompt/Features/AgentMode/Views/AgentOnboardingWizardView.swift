@@ -1460,6 +1460,7 @@ private struct QuickActionRow: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) {
                 isHovered = hovering
