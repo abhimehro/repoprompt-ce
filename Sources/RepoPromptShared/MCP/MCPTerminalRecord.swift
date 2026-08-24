@@ -290,7 +290,7 @@ public enum MCPTerminalRecordStore {
         defer { try? fileManager.removeItem(at: tempURL) }
 
         if fileManager.fileExists(atPath: fileURL.path) {
-            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
+            _ = try fileManager.replaceItem(at: fileURL, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly, resultingItemURL: nil)
         } else {
             try fileManager.moveItem(at: tempURL, to: fileURL)
         }
