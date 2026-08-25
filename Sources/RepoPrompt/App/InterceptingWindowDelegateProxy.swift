@@ -48,6 +48,10 @@ final class InterceptingWindowDelegateProxy: NSObject, NSWindowDelegate {
         forwardedDelegate?.windowDidBecomeKey?(notification)
     }
 
+    func windowDidOrderOffScreen(_ notification: Notification) {
+        forwardedDelegate?.windowDidOrderOffScreen?(notification)
+    }
+
     override func responds(to aSelector: Selector!) -> Bool {
         if super.responds(to: aSelector) {
             return true
