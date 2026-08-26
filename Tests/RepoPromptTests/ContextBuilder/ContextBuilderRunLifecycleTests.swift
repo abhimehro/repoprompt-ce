@@ -329,7 +329,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
 
         let connectionID = UUID()
         let runID = UUID()
-        try window.mcpServer.bindTabForConnection(
+        try await window.mcpServer.bindTabForConnection(
             connectionID: connectionID,
             clientName: "context-builder-prompt-fallback-test",
             tabID: tabID,
@@ -720,7 +720,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
 
             let connectionID = UUID()
             let runID = UUID()
-            try window.mcpServer.bindTabForConnection(
+            try await window.mcpServer.bindTabForConnection(
                 connectionID: connectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -799,7 +799,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let transitioningConnectionID = UUID()
             let transitioningRunID = UUID()
             let transitioningPrompt = "context detached during response drain"
-            try window.mcpServer.bindTabForConnection(
+            try await window.mcpServer.bindTabForConnection(
                 connectionID: transitioningConnectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -955,7 +955,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let failureConnectionID = UUID()
             let failureRunID = UUID()
             let failurePrompt = "must not auto-commit after read error"
-            try window.mcpServer.bindTabForConnection(
+            try await window.mcpServer.bindTabForConnection(
                 connectionID: failureConnectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -1055,7 +1055,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             // the compose tab is not mutated.
             let cancelledConnectionID = UUID()
             let cancelledRunID = UUID()
-            try window.mcpServer.bindTabForConnection(
+            try await window.mcpServer.bindTabForConnection(
                 connectionID: cancelledConnectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -1111,7 +1111,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                 prompt: String? = nil,
                 authoritative: Bool = true
             ) async throws {
-                try window.mcpServer.bindTabForConnection(
+                try await window.mcpServer.bindTabForConnection(
                     connectionID: connectionID,
                     clientName: clientName,
                     tabID: tabID,
