@@ -329,7 +329,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
 
         let connectionID = UUID()
         let runID = UUID()
-        try await window.mcpServer.bindTabForConnection(
+        try window.mcpServer.bindTabForConnection(
             connectionID: connectionID,
             clientName: "context-builder-prompt-fallback-test",
             tabID: tabID,
@@ -341,7 +341,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
         let result = await window.mcpServer.commitContextBuilderTabContext(
             connectionID: connectionID,
             expectedRunID: runID,
-            isStillCurrent: { @MainActor in true },
+            isStillCurrent: { true },
             promptFallback: "Discovery response"
         )
         let committed = try XCTUnwrap(result.committedTab)
@@ -672,7 +672,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let commitOutcome = await window.mcpServer.commitContextBuilderTabContext(
                 connectionID: connectionID,
                 expectedRunID: runID,
-                isStillCurrent: { @MainActor in true }
+                isStillCurrent: { true }
             )
             XCTAssertEqual(commitOutcome.outcome, .committed)
             XCTAssertEqual(commitOutcome.committedTab?.nestedRunID, runID)
@@ -720,7 +720,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
 
             let connectionID = UUID()
             let runID = UUID()
-            try await window.mcpServer.bindTabForConnection(
+            try window.mcpServer.bindTabForConnection(
                 connectionID: connectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -768,7 +768,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let commitOutcome = await window.mcpServer.commitContextBuilderTabContext(
                 connectionID: connectionID,
                 expectedRunID: runID,
-                isStillCurrent: { @MainActor in true }
+                isStillCurrent: { true }
             )
             XCTAssertEqual(commitOutcome.outcome, .committed)
             XCTAssertEqual(commitOutcome.committedTab?.nestedRunID, runID)
@@ -786,7 +786,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let secondCommitOutcome = await window.mcpServer.commitContextBuilderTabContext(
                 connectionID: connectionID,
                 expectedRunID: runID,
-                isStillCurrent: { @MainActor in true }
+                isStillCurrent: { true }
             )
             XCTAssertEqual(
                 secondCommitOutcome.outcome,
@@ -799,7 +799,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let transitioningConnectionID = UUID()
             let transitioningRunID = UUID()
             let transitioningPrompt = "context detached during response drain"
-            try await window.mcpServer.bindTabForConnection(
+            try window.mcpServer.bindTabForConnection(
                 connectionID: transitioningConnectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -868,7 +868,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                         let outcome = await window.mcpServer.commitContextBuilderTabContext(
                             connectionID: committedID,
                             expectedRunID: transitioningRunID,
-                            isStillCurrent: { @MainActor in true },
+                            isStillCurrent: { true },
                             deferRunMappingCleanupUntilCaller: true
                         )
                         return outcome.outcome == .committed
@@ -937,7 +937,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let transitioningSecondCommit = await window.mcpServer.commitContextBuilderTabContext(
                 connectionID: transitioningConnectionID,
                 expectedRunID: transitioningRunID,
-                isStillCurrent: { @MainActor in true }
+                isStillCurrent: { true }
             )
             XCTAssertEqual(
                 transitioningSecondCommit.outcome,
@@ -955,7 +955,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let failureConnectionID = UUID()
             let failureRunID = UUID()
             let failurePrompt = "must not auto-commit after read error"
-            try await window.mcpServer.bindTabForConnection(
+            try window.mcpServer.bindTabForConnection(
                 connectionID: failureConnectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -1055,7 +1055,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             // the compose tab is not mutated.
             let cancelledConnectionID = UUID()
             let cancelledRunID = UUID()
-            try await window.mcpServer.bindTabForConnection(
+            try window.mcpServer.bindTabForConnection(
                 connectionID: cancelledConnectionID,
                 clientName: clientName,
                 tabID: tabID,
@@ -1093,7 +1093,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
             let cancelledOutcome = await window.mcpServer.commitContextBuilderTabContext(
                 connectionID: cancelledConnectionID,
                 expectedRunID: cancelledRunID,
-                isStillCurrent: { @MainActor in false }
+                isStillCurrent: { false }
             )
             XCTAssertEqual(cancelledOutcome.outcome, .staleOrNoLongerCurrent)
             XCTAssertEqual(window.workspaceManager.composeTab(with: tabID)?.promptText, transitioningPrompt)
@@ -1111,7 +1111,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                 prompt: String? = nil,
                 authoritative: Bool = true
             ) async throws {
-                try await window.mcpServer.bindTabForConnection(
+                try window.mcpServer.bindTabForConnection(
                     connectionID: connectionID,
                     clientName: clientName,
                     tabID: tabID,
@@ -1173,7 +1173,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                 let commitOutcome = await window.mcpServer.commitContextBuilderTabContext(
                     connectionID: detachedConnectionID,
                     expectedRunID: detachedRunID,
-                    isStillCurrent: { @MainActor in true }
+                    isStillCurrent: { true }
                 )
                 XCTAssertEqual(commitOutcome.outcome, .committed)
                 XCTAssertEqual(commitOutcome.committedTab?.nestedRunID, detachedRunID)
@@ -1216,7 +1216,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
                 let excludedCommitOutcome = await window.mcpServer.commitContextBuilderTabContext(
                     connectionID: excludedConnectionID,
                     expectedRunID: excludedRunID,
-                    isStillCurrent: { @MainActor in true }
+                    isStillCurrent: { true }
                 )
                 XCTAssertEqual(
                     excludedCommitOutcome.outcome,
