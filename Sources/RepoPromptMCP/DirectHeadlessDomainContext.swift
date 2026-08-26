@@ -198,7 +198,7 @@ actor DirectHeadlessDomainContext {
         _ = try await snapshot(identity: identity)
     }
 
-    func validateWorkspaceRoots(_ rawRoots: [String]) async throws {
+    func validateWorkspaceRoots(_ rawRoots: [String], switching: Bool = false) async throws {
         let canonicalRoots = try rawRoots.map { raw -> URL in
             let url = URL(fileURLWithPath: raw).standardizedFileURL.resolvingSymlinksInPath()
             var isDirectory: ObjCBool = false
@@ -207,6 +207,11 @@ actor DirectHeadlessDomainContext {
             }
             return url
         }
+
+        if !processRootOverlay.mappings.isEmpty, canonicalRoots.isEmpty {
+            throw Error.rootMappingUnavailable
+        }
+
         _ = try await resolveRootOverlay(canonicalRoots: canonicalRoots, sessionID: nil)
     }
 

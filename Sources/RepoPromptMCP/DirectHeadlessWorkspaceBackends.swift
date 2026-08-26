@@ -260,7 +260,7 @@ actor DirectHeadlessGlobalBackend: DomainGlobalControlBackend {
             let fileURL = runtime.configuration.workspaceStorageDirectory
                 .appendingPathComponent("\(workspaceID.uuidString).json", isDirectory: false)
             let document = try DomainWorkspaceDocument.decode(documentBytes: bytes, fileURL: fileURL)
-            try await context.validateWorkspaceRoots(document.metadata.repoPaths)
+            try await context.validateWorkspaceRoots(document.metadata.repoPaths, switching: args["switch_to_created"]?.boolValue == true)
             try await MCPDomainMutationCommitContext.willCommit()
             let outcome = await runtime.workspaceStore.execute(DomainWorkspaceCommandEnvelope(
                 operationID: operationID,
