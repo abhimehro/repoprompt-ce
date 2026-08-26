@@ -27,7 +27,7 @@ final class DiffGenerationUtilityRoutingTests: XCTestCase {
             to: fileContent.joined(separator: "\n")
         )
 
-        XCTAssertEqual(chunks.map { $0.startLine }, [2, 4])
+        XCTAssertEqual(chunks.map(\.startLine), [2, 4])
         XCTAssertEqual(result, "same\nskip\nreplacement\nmiddle\nreplacement")
     }
 
