@@ -707,7 +707,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         var test_sidebarListProjectionBuildCount = 0
         private var test_afterMCPStoreEpochBegan: (@MainActor () async -> Void)?
         private var test_afterDurableChildTabCreation: (@MainActor () async -> Void)?
-        private var test_composeTabRemovalTeardownObserver: (@MainActor (UUID) -> Void)?
+        private var test_composeTabRemovalTeardownObserver: (@MainActor (UUID) async -> Void)?
         private var test_terminalPublicationOverride: ((
             AgentRunTerminalCommitRevision,
             AgentRunEpochTransitionKind?,
@@ -757,7 +757,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             }
         }
 
-        func test_setComposeTabRemovalTeardownObserver(_ observer: @escaping @MainActor (UUID) -> Void) {
+        func test_setComposeTabRemovalTeardownObserver(_ observer: @escaping @MainActor (UUID) async -> Void) {
             test_composeTabRemovalTeardownObserver = observer
         }
 
@@ -12458,7 +12458,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
         for tabID in orderedRuntimeCleanupTabIDs {
             #if DEBUG
-                test_composeTabRemovalTeardownObserver?(tabID)
+                if let test_composeTabRemovalTeardownObserver {
+                    await test_composeTabRemovalTeardownObserver(tabID)
+                }
             #endif
             let capturedSession = capturedSessionsByTabID[tabID] ?? nil
             let boundID = capturedBoundSessionIDByTabID[tabID] ?? nil
