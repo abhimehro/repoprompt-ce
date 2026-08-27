@@ -6181,6 +6181,102 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         XCTAssertEqual(match.canonicalPath, qualified)
     }
 
+    #if DEBUG
+        func testQualifiedExactReadDoesNotEnterBlockedPeerCompactionWhileBareRelativeStillClassifiesPeer() async throws {
+            let rootA = try makeTemporaryRoot(name: "QualifiedBlockedPeerA")
+            let rootB = try makeTemporaryRoot(name: "QualifiedBlockedPeerB")
+            let target = rootA.appendingPathComponent("Target.swift")
+            try write("target", to: target)
+            try write("peer", to: rootB.appendingPathComponent("Peer.swift"))
+
+            let store = WorkspaceFileContextStore()
+            _ = try await store.loadRoot(path: rootA.path)
+            let recordB = try await store.loadRoot(path: rootB.path)
+            let roots = await store.rootRefs(scope: .visibleWorkspace)
+            let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+            let peerSerialPosition = try XCTUnwrap(namespace.rootBindings.firstIndex {
+                $0.lookupRoot.id == recordB.id
+            })
+
+            let qualifiedGate = AsyncGate()
+            let relativeGate = AsyncGate()
+            await store.setExactFileCandidateProbeGateForTesting(
+                purpose: .canonicalCompaction,
+                rootID: recordB.id,
+                serialPosition: peerSerialPosition
+            ) {
+                await qualifiedGate.markStartedAndWaitForRelease()
+            }
+            addTeardownBlock {
+                await qualifiedGate.release()
+                await relativeGate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+
+            let qualifiedCompleted = AsyncSignal()
+            let qualifiedTask = Task {
+                let resolution = try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(target.path),
+                    namespace: namespace
+                )
+                await qualifiedCompleted.mark()
+                return resolution
+            }
+            let qualifiedSettledBeforePeerEntry = await waitForAsyncCondition {
+                let completed = await qualifiedCompleted.isMarked()
+                let gateEntered = await qualifiedGate.startCount() > 0
+                return completed || gateEntered
+            }
+            let qualifiedDidComplete = await qualifiedCompleted.isMarked()
+            let qualifiedPeerGateEntered = await qualifiedGate.startCount() > 0
+            XCTAssertTrue(qualifiedSettledBeforePeerEntry)
+            XCTAssertTrue(qualifiedDidComplete)
+            XCTAssertFalse(qualifiedPeerGateEntered)
+            await qualifiedGate.release()
+
+            let qualifiedResolution = try await qualifiedTask.value
+            guard case let .matched(qualifiedMatch) = qualifiedResolution else {
+                return XCTFail("Expected the qualified target, got \(qualifiedResolution)")
+            }
+            XCTAssertTrue(qualifiedMatch.canonicalPath.hasSuffix("//Target.swift"))
+
+            await store.setExactFileCandidateProbeGateForTesting(
+                purpose: .bareRelativeNamespaceClassification,
+                rootID: recordB.id,
+                serialPosition: peerSerialPosition
+            ) {
+                await relativeGate.markStartedAndWaitForRelease()
+            }
+            let relativeCompleted = AsyncSignal()
+            let relativeTask = Task {
+                let resolution = try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse("Target.swift"),
+                    namespace: namespace
+                )
+                await relativeCompleted.mark()
+                return resolution
+            }
+
+            let relativeObservationArrived = await waitForAsyncCondition {
+                let completed = await relativeCompleted.isMarked()
+                let gateEntered = await relativeGate.startCount() > 0
+                return completed || gateEntered
+            }
+            let relativeDidCompleteBeforeRelease = await relativeCompleted.isMarked()
+            let relativeGateEnteredBeforeRelease = await relativeGate.startCount() > 0
+            await relativeGate.release()
+            XCTAssertTrue(relativeObservationArrived)
+            XCTAssertTrue(relativeGateEnteredBeforeRelease)
+            XCTAssertFalse(relativeDidCompleteBeforeRelease)
+            let relativeResolution = try await relativeTask.value
+            guard case let .matched(relativeMatch) = relativeResolution else {
+                return XCTFail("Expected the bare-relative target after peer classification")
+            }
+            XCTAssertEqual(relativeMatch.file.id, qualifiedMatch.file.id)
+            await store.clearExactFileCandidateProbeGateForTesting()
+        }
+    #endif
+
     func testIgnoredFilesRemainExactlyManageableAcrossVisibilityAndMoveTransitions() async throws {
         do {
             let caseLabel = "testIgnoredCreateRemainsExactlyManageableWithoutDiscoveryExposure"

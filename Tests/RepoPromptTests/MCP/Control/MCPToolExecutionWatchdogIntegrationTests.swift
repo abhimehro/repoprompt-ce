@@ -155,6 +155,96 @@ import XCTest
             }
         }
 
+        func testQualifiedReadBypassesBlockedPeerCompactionAndLeavesSameWindowSettlementUsable() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(lease: lease)
+                let endpoint = try fixture.endpointA()
+                let store = fixture.contextA.window.workspaceFileContextStore
+                let peerRootURL = fixture.rootURL.appendingPathComponent("qualified-read-peer", isDirectory: true)
+                try FileManager.default.createDirectory(at: peerRootURL, withIntermediateDirectories: true)
+                try "peer\n".write(
+                    to: peerRootURL.appendingPathComponent("Peer.swift"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+                let peerRoot = try await store.loadRoot(path: peerRootURL.path)
+                let namespace = await WorkspaceExactFileNamespace.identity(
+                    roots: store.rootRefs(scope: .visibleWorkspace)
+                )
+                let peerSerialPosition = try XCTUnwrap(namespace.rootBindings.firstIndex {
+                    $0.lookupRoot.id == peerRoot.id
+                })
+                let peerGate = TestReleaseFence(name: "qualified provider peer compaction")
+                let completion = MCPQualifiedReadCompletionProbe()
+                var responseTask: Task<PersistentMCPTestRPCResponse, Error>?
+
+                await store.setExactFileCandidateProbeGateForTesting(
+                    purpose: .canonicalCompaction,
+                    rootID: peerRoot.id,
+                    serialPosition: peerSerialPosition
+                ) {
+                    await peerGate.enterAndWaitIgnoringCancellationUntilRelease()
+                }
+
+                do {
+                    let activeResponseTask = Task {
+                        let response = try await endpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: [
+                                "path": fixture.contextA.fileURL.path,
+                                "context_id": fixture.contextA.tabID.uuidString
+                            ]
+                        )
+                        await completion.markCompleted()
+                        return response
+                    }
+                    responseTask = activeResponseTask
+
+                    let firstObservationArrived = await Self.waitUntil {
+                        let completed = await completion.isCompleted()
+                        return completed || peerGate.hasEntered
+                    }
+                    let readCompletedBeforeRelease = await completion.isCompleted()
+                    let peerGateEnteredBeforeRelease = peerGate.hasEntered
+                    peerGate.release()
+                    XCTAssertTrue(firstObservationArrived)
+                    XCTAssertTrue(readCompletedBeforeRelease)
+                    XCTAssertFalse(peerGateEnteredBeforeRelease)
+
+                    let firstResponse = try await activeResponseTask.value
+                    responseTask = nil
+                    let firstText = try Self.toolResultText(firstResponse)
+                    XCTAssertTrue(firstText.contains(fixture.contextA.sentinel), firstText)
+
+                    let secondResponse = try await endpoint.callTool(
+                        name: MCPWindowToolName.readFile,
+                        arguments: [
+                            "path": fixture.contextA.fileURL.path,
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ]
+                    )
+                    let secondText = try Self.toolResultText(secondResponse)
+                    XCTAssertTrue(secondText.contains(fixture.contextA.sentinel), secondText)
+                    XCTAssertFalse(secondText.contains("tool_execution_structure_settlement_busy"), secondText)
+
+                    await store.clearExactFileCandidateProbeGateForTesting()
+                    await store.unloadRoot(id: peerRoot.id)
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                } catch {
+                    peerGate.release()
+                    responseTask?.cancel()
+                    if let responseTask {
+                        _ = try? await responseTask.value
+                    }
+                    await store.clearExactFileCandidateProbeGateForTesting()
+                    await store.unloadRoot(id: peerRoot.id)
+                    await fixture.cleanup()
+                    throw error
+                }
+            }
+        }
+
         func testHistoryPartialResultLeavesPersistentConnectionUsable() async throws {
             try await MCPSharedServerTestLease.shared.withLease { lease in
                 let fixture = try await PersistentMCPTestFixture.make(lease: lease)
@@ -3074,6 +3164,18 @@ import XCTest
             lock.lock()
             defer { lock.unlock() }
             return events
+        }
+    }
+
+    private actor MCPQualifiedReadCompletionProbe {
+        private var completed = false
+
+        func markCompleted() {
+            completed = true
+        }
+
+        func isCompleted() -> Bool {
+            completed
         }
     }
 

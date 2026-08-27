@@ -809,6 +809,446 @@
             }
         }
 
+        @MainActor
+        func testQualifiedMultiRootReadLifecycleDiagnosticsAreCorrelatedOrderedAndPathFree() async throws {
+            let rootA = try temporaryRoots.makeRoot(suiteName: "QualifiedReadLifecycleA")
+            let rootB = try temporaryRoots.makeRoot(suiteName: "QualifiedReadLifecycleB")
+            let filename = "SensitiveTarget.swift"
+            let content = "private payload"
+            let target = rootA.appendingPathComponent(filename)
+            try FileSystemTestSupport.write(content, to: target)
+            try FileSystemTestSupport.write("peer", to: rootB.appendingPathComponent("Peer.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let recordA = try await store.loadRoot(path: rootA.path)
+            let recordB = try await store.loadRoot(path: rootB.path)
+            let loadedServiceB = await store.fileSystemServiceForTesting(rootID: recordB.id)
+            let serviceB = try XCTUnwrap(loadedServiceB)
+            let peerRootToken = serviceB.diagnosticRootToken.uuidString
+            let roots = await store.rootRefs(scope: .visibleWorkspace)
+            let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+            let identity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("qualified-read-lifecycle"),
+                connectionID: UUID().uuidString,
+                connectionGeneration: 2,
+                appInvocationID: UUID().uuidString,
+                requestOrdinal: 5
+            )
+            _ = startedCapture(label: "qualified-read-lifecycle", maxSamples: 100)
+
+            try await MCPRequestTimelineContext.$current.withValue(identity) {
+                let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                    let resolution = try await store.resolveExactExistingWorkspaceFile(
+                        WorkspaceExactFileInput.parse(target.path),
+                        namespace: namespace
+                    )
+                    guard case let .matched(match) = resolution else {
+                        return XCTFail("Expected the qualified cataloged file, got \(resolution)")
+                    }
+                    let contentSnapshot = try await MCPServerViewModel.workspaceContentLoadForTesting(
+                        store: store,
+                        file: match.file
+                    )
+                    XCTAssertEqual(contentSnapshot?.preparedContent.linesWithEndings.joined(), content)
+                    XCTAssertEqual(contentSnapshot?.cacheHit, false)
+                }
+            }
+
+            let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let relevantEventNames: Set = [
+                "WorkspaceExactResolution.Checkpoint",
+                "ReadFile.ContentLoadBegan",
+                "ReadFile.ContentLoadEnded"
+            ]
+            let relevantEvents = capture.lifecycleEvents.filter {
+                relevantEventNames.contains($0.eventName)
+            }
+            let exactEvents = relevantEvents.filter {
+                $0.eventName == "WorkspaceExactResolution.Checkpoint"
+            }
+            let contentEvents = relevantEvents.filter {
+                ["ReadFile.ContentLoadBegan", "ReadFile.ContentLoadEnded"].contains($0.eventName)
+            }
+
+            XCTAssertFalse(exactEvents.isEmpty)
+            XCTAssertEqual(contentEvents.map(\.eventName), [
+                "ReadFile.ContentLoadBegan",
+                "ReadFile.ContentLoadEnded"
+            ])
+            XCTAssertEqual(relevantEvents.map(\.ordinal), relevantEvents.map(\.ordinal).sorted())
+            XCTAssertLessThan(
+                try XCTUnwrap(exactEvents.last?.ordinal),
+                try XCTUnwrap(contentEvents.first?.ordinal)
+            )
+            XCTAssertLessThan(
+                try XCTUnwrap(contentEvents.first?.ordinal),
+                try XCTUnwrap(contentEvents.last?.ordinal)
+            )
+            XCTAssertEqual(Set(relevantEvents.map(\.correlationID)).count, 1)
+            XCTAssertTrue(relevantEvents.allSatisfy { $0.requestIdentity == identity })
+            XCTAssertTrue(contentEvents.last?.sanitizedDimensions.contains("outcome=returned") == true)
+            XCTAssertTrue(contentEvents.last?.sanitizedDimensions.contains("cacheHit=false") == true)
+            XCTAssertTrue(capture.stages.contains {
+                $0.stageName == "EditFlow.ReadFile.WorkspaceContentLoad"
+            })
+
+            let orderedPurposeStages = [
+                ("purpose=qualifiedTargetValidation", "status=catalogValidationBegan"),
+                ("purpose=qualifiedTargetValidation", "status=catalogValidationEnded")
+            ]
+            var searchStart = exactEvents.startIndex
+            for (purpose, status) in orderedPurposeStages {
+                guard let index = exactEvents[searchStart...].firstIndex(where: {
+                    $0.sanitizedDimensions.contains(purpose)
+                        && $0.sanitizedDimensions.contains(status)
+                }) else {
+                    return XCTFail("Missing or out-of-order lifecycle checkpoint: \(purpose) \(status)")
+                }
+                XCTAssertTrue(exactEvents[index].sanitizedDimensions.contains("serialPosition="))
+                XCTAssertTrue(exactEvents[index].sanitizedDimensions.contains("rootToken="))
+                searchStart = exactEvents.index(after: index)
+            }
+            XCTAssertFalse(exactEvents.contains {
+                $0.sanitizedDimensions.contains("purpose=canonicalCompaction")
+            })
+            XCTAssertFalse(exactEvents.contains {
+                $0.sanitizedDimensions.contains("rootToken=\(peerRootToken)")
+            })
+
+            let allowedPurposes: Set = [
+                "qualifiedTargetValidation",
+                "bareRelativeNamespaceClassification",
+                "canonicalCompaction",
+                "explicitMaterialization"
+            ]
+            let allowedStatuses: Set = [
+                "bindingProbeBegan",
+                "bindingProbeEnded",
+                "catalogValidationBegan",
+                "catalogValidationEnded",
+                "eligibilityBegan",
+                "eligibilityEnded",
+                "missingFilePruneBegan",
+                "missingFilePruneEnded",
+                "materializationBegan",
+                "materializationEnded",
+                "candidateEligibilityBegan",
+                "candidateEligibilityEnded",
+                "candidateMissingFilePruneBegan",
+                "candidateMissingFilePruneEnded",
+                "managedRegistrationBegan",
+                "managedRegistrationEnded",
+                "codemapRootFenceBegan",
+                "codemapRootFenceEnded",
+                "codemapCleanupFlightsBegan",
+                "codemapCleanupFlightsEnded"
+            ]
+            let allowedExactResolutionOutcomes: Set = [
+                "current",
+                "missing",
+                "catalogCurrent",
+                "eligible",
+                "ignored",
+                "missingOrDirectory",
+                "ineligible",
+                "unavailable",
+                "completed",
+                "acquired",
+                "materialized",
+                "noCandidate",
+                "blocked",
+                "ambiguous",
+                "cancelled",
+                "error"
+            ]
+            var bindingProbeBalance: [String: Int] = [:]
+
+            for event in relevantEvents {
+                let dimensions = strictLifecycleDimensions(event)
+
+                let allowedKeys: Set<String> = switch event.eventName {
+                case "WorkspaceExactResolution.Checkpoint": ["purpose", "status", "outcome", "rootToken", "serialPosition"]
+                case "ReadFile.ContentLoadBegan": []
+                case "ReadFile.ContentLoadEnded": ["outcome", "cacheHit"]
+                default: []
+                }
+                XCTAssertTrue(Set(dimensions.keys).isSubset(of: allowedKeys))
+                if let purpose = dimensions["purpose"] {
+                    XCTAssertTrue(allowedPurposes.contains(purpose))
+                }
+                if let status = dimensions["status"] {
+                    XCTAssertTrue(allowedStatuses.contains(status))
+                }
+                if let outcome = dimensions["outcome"] {
+                    let allowedOutcomes: Set<String> = event.eventName == "WorkspaceExactResolution.Checkpoint"
+                        ? allowedExactResolutionOutcomes
+                        : ["returned", "unavailable", "cancelled", "error"]
+                    XCTAssertTrue(allowedOutcomes.contains(outcome))
+                }
+                if let rootToken = dimensions["rootToken"] {
+                    XCTAssertNotNil(UUID(uuidString: rootToken))
+                }
+                if let serialPosition = dimensions["serialPosition"] {
+                    XCTAssertNotNil(UInt(serialPosition))
+                    XCTAssertTrue(serialPosition.allSatisfy(\.isNumber))
+                }
+                if let cacheHit = dimensions["cacheHit"] {
+                    XCTAssertTrue(["true", "false"].contains(cacheHit))
+                }
+
+                switch event.eventName {
+                case "WorkspaceExactResolution.Checkpoint":
+                    let purpose = try XCTUnwrap(dimensions["purpose"])
+                    let status = try XCTUnwrap(dimensions["status"])
+                    let serialPosition = try XCTUnwrap(dimensions["serialPosition"])
+                    XCTAssertNotNil(dimensions["rootToken"])
+                    if status.hasSuffix("Ended") {
+                        XCTAssertNotNil(dimensions["outcome"])
+                    }
+                    let balanceKey = "\(purpose):\(serialPosition)"
+                    if status == "bindingProbeBegan" {
+                        bindingProbeBalance[balanceKey, default: 0] += 1
+                    } else if status == "bindingProbeEnded" {
+                        bindingProbeBalance[balanceKey, default: 0] -= 1
+                    }
+                case "ReadFile.ContentLoadBegan":
+                    XCTAssertTrue(dimensions.isEmpty)
+                case "ReadFile.ContentLoadEnded":
+                    XCTAssertEqual(dimensions["outcome"], "returned")
+                    XCTAssertEqual(dimensions["cacheHit"], "false")
+                default:
+                    XCTFail("Unexpected lifecycle event: \(event.eventName)")
+                }
+
+                XCTAssertFalse(event.sanitizedDimensions.contains("/"))
+                XCTAssertFalse(event.sanitizedDimensions.contains(rootA.path))
+                XCTAssertFalse(event.sanitizedDimensions.contains(rootB.path))
+                XCTAssertFalse(event.sanitizedDimensions.contains(filename))
+                XCTAssertFalse(event.sanitizedDimensions.contains(content))
+                for canary in ["QualifiedReadLifecycleA", "QualifiedReadLifecycleB", "SensitiveTarget", "private", "payload"] {
+                    XCTAssertFalse(event.sanitizedDimensions.contains(canary))
+                }
+            }
+            XCTAssertTrue(bindingProbeBalance.values.allSatisfy { $0 == 0 })
+
+            await store.unloadRoot(id: recordA.id)
+            await store.unloadRoot(id: recordB.id)
+        }
+
+        @MainActor
+        func testQualifiedExplicitMaterializationDiagnosticsAreOrderedBalancedAndPathFree() async throws {
+            let rootA = try temporaryRoots.makeRoot(suiteName: "QualifiedMaterializationLifecycleA")
+            let rootB = try temporaryRoots.makeRoot(suiteName: "QualifiedMaterializationLifecycleB")
+            try FileSystemTestSupport.write("peer", to: rootB.appendingPathComponent("Peer.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let recordA = try await store.loadRoot(path: rootA.path)
+            let recordB = try await store.loadRoot(path: rootB.path)
+            let filename = "MaterializedSecret.swift"
+            let content = "sensitive materialized payload"
+            let target = rootA.appendingPathComponent(filename)
+            let catalogBeforeWrite = await store.file(rootID: recordA.id, relativePath: filename)
+            XCTAssertNil(catalogBeforeWrite)
+            try FileSystemTestSupport.write(content, to: target)
+            let catalogAfterWrite = await store.file(rootID: recordA.id, relativePath: filename)
+            XCTAssertNil(catalogAfterWrite)
+
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let identity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("qualified-materialization-lifecycle"),
+                connectionID: UUID().uuidString,
+                connectionGeneration: 3,
+                appInvocationID: UUID().uuidString,
+                requestOrdinal: 8
+            )
+            _ = startedCapture(label: "qualified-materialization-lifecycle", maxSamples: 100)
+
+            try await MCPRequestTimelineContext.$current.withValue(identity) {
+                let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                    let resolution = try await store.resolveExactExistingWorkspaceFile(
+                        WorkspaceExactFileInput.parse(target.path),
+                        namespace: namespace
+                    )
+                    guard case let .matched(match) = resolution else {
+                        return XCTFail("Expected explicit materialization, got \(resolution)")
+                    }
+                    XCTAssertTrue(match.canonicalPath.hasSuffix("//\(filename)"))
+                    let contentSnapshot = try await MCPServerViewModel.workspaceContentLoadForTesting(
+                        store: store,
+                        file: match.file
+                    )
+                    XCTAssertEqual(contentSnapshot?.preparedContent.linesWithEndings.joined(), content)
+                }
+            }
+
+            let relevantEventNames: Set = [
+                "WorkspaceExactResolution.Checkpoint",
+                "ReadFile.ContentLoadBegan",
+                "ReadFile.ContentLoadEnded"
+            ]
+            let events = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                relevantEventNames.contains($0.eventName)
+            }
+            let exactEvents = events.filter { $0.eventName == "WorkspaceExactResolution.Checkpoint" }
+            let contentEvents = events.filter {
+                ["ReadFile.ContentLoadBegan", "ReadFile.ContentLoadEnded"].contains($0.eventName)
+            }
+            XCTAssertFalse(exactEvents.isEmpty)
+            XCTAssertEqual(contentEvents.map(\.eventName), [
+                "ReadFile.ContentLoadBegan",
+                "ReadFile.ContentLoadEnded"
+            ])
+            XCTAssertEqual(events.map(\.ordinal), events.map(\.ordinal).sorted())
+            XCTAssertEqual(Set(events.map(\.correlationID)).count, 1)
+            XCTAssertTrue(events.allSatisfy { $0.requestIdentity == identity })
+            XCTAssertLessThan(
+                try XCTUnwrap(exactEvents.last?.ordinal),
+                try XCTUnwrap(contentEvents.first?.ordinal)
+            )
+
+            let orderedStages = [
+                ("qualifiedTargetValidation", "bindingProbeBegan"),
+                ("qualifiedTargetValidation", "eligibilityBegan"),
+                ("qualifiedTargetValidation", "eligibilityEnded"),
+                ("qualifiedTargetValidation", "bindingProbeEnded"),
+                ("explicitMaterialization", "materializationBegan"),
+                ("explicitMaterialization", "candidateEligibilityBegan"),
+                ("explicitMaterialization", "candidateEligibilityEnded"),
+                ("explicitMaterialization", "managedRegistrationBegan"),
+                ("explicitMaterialization", "managedRegistrationEnded"),
+                ("explicitMaterialization", "codemapRootFenceBegan"),
+                ("explicitMaterialization", "codemapRootFenceEnded"),
+                ("explicitMaterialization", "codemapCleanupFlightsBegan"),
+                ("explicitMaterialization", "codemapCleanupFlightsEnded"),
+                ("explicitMaterialization", "materializationEnded")
+            ]
+            var searchStart = exactEvents.startIndex
+            for (purpose, status) in orderedStages {
+                guard let index = exactEvents[searchStart...].firstIndex(where: {
+                    let eventDimensions = strictLifecycleDimensions($0)
+                    return eventDimensions["purpose"] == purpose && eventDimensions["status"] == status
+                }) else {
+                    return XCTFail("Missing or out-of-order materialization checkpoint: \(purpose) \(status)")
+                }
+                searchStart = exactEvents.index(after: index)
+            }
+
+            let balancedPairs = [
+                ("qualifiedTargetValidation", "bindingProbeBegan", "bindingProbeEnded"),
+                ("qualifiedTargetValidation", "eligibilityBegan", "eligibilityEnded"),
+                ("explicitMaterialization", "materializationBegan", "materializationEnded"),
+                ("explicitMaterialization", "candidateEligibilityBegan", "candidateEligibilityEnded"),
+                ("explicitMaterialization", "managedRegistrationBegan", "managedRegistrationEnded"),
+                ("explicitMaterialization", "codemapRootFenceBegan", "codemapRootFenceEnded"),
+                ("explicitMaterialization", "codemapCleanupFlightsBegan", "codemapCleanupFlightsEnded")
+            ]
+            for (purpose, began, ended) in balancedPairs {
+                let beganCount = exactEvents.count {
+                    let eventDimensions = strictLifecycleDimensions($0)
+                    return eventDimensions["purpose"] == purpose && eventDimensions["status"] == began
+                }
+                let endedCount = exactEvents.count {
+                    let eventDimensions = strictLifecycleDimensions($0)
+                    return eventDimensions["purpose"] == purpose && eventDimensions["status"] == ended
+                }
+                XCTAssertEqual(beganCount, 1, "Expected one \(purpose) \(began)")
+                XCTAssertEqual(endedCount, beganCount, "Unbalanced \(purpose) \(began)/\(ended)")
+            }
+
+            XCTAssertFalse(exactEvents.contains {
+                strictLifecycleDimensions($0)["purpose"] == "canonicalCompaction"
+            })
+            let materializationTerminal = try XCTUnwrap(exactEvents.first {
+                let eventDimensions = strictLifecycleDimensions($0)
+                return eventDimensions["purpose"] == "explicitMaterialization"
+                    && eventDimensions["status"] == "materializationEnded"
+            })
+            XCTAssertEqual(strictLifecycleDimensions(materializationTerminal)["outcome"], "materialized")
+
+            for event in events {
+                let eventDimensions = strictLifecycleDimensions(event)
+                if let rootToken = eventDimensions["rootToken"] {
+                    XCTAssertNotNil(UUID(uuidString: rootToken))
+                }
+                XCTAssertFalse(event.sanitizedDimensions.contains("/"))
+                XCTAssertFalse(event.sanitizedDimensions.contains(rootA.path))
+                XCTAssertFalse(event.sanitizedDimensions.contains(rootB.path))
+                XCTAssertFalse(event.sanitizedDimensions.contains(filename))
+                XCTAssertFalse(event.sanitizedDimensions.contains(content))
+                for canary in ["QualifiedMaterialization", "MaterializedSecret", "sensitive", "payload"] {
+                    XCTAssertFalse(event.sanitizedDimensions.contains(canary))
+                }
+            }
+
+            await store.unloadRoot(id: recordA.id)
+            await store.unloadRoot(id: recordB.id)
+        }
+
+        @MainActor
+        func testBareRelativeMultiRootTraceRetainsNamespaceWidePeerClassification() async throws {
+            let rootA = try temporaryRoots.makeRoot(suiteName: "BareRelativeLifecycleA")
+            let rootB = try temporaryRoots.makeRoot(suiteName: "BareRelativeLifecycleB")
+            try FileSystemTestSupport.write("target", to: rootA.appendingPathComponent("Target.swift"))
+            try FileSystemTestSupport.write("peer", to: rootB.appendingPathComponent("Peer.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let recordA = try await store.loadRoot(path: rootA.path)
+            let recordB = try await store.loadRoot(path: rootB.path)
+            let loadedServiceA = await store.fileSystemServiceForTesting(rootID: recordA.id)
+            let loadedServiceB = await store.fileSystemServiceForTesting(rootID: recordB.id)
+            let serviceA = try XCTUnwrap(loadedServiceA)
+            let serviceB = try XCTUnwrap(loadedServiceB)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let identity = MCPRequestTimelineIdentity(
+                jsonRPCRequestID: .string("bare-relative-lifecycle"),
+                connectionID: UUID().uuidString,
+                connectionGeneration: 1,
+                appInvocationID: UUID().uuidString,
+                requestOrdinal: 1
+            )
+            _ = startedCapture(label: "bare-relative-lifecycle", maxSamples: 100)
+
+            try await MCPRequestTimelineContext.$current.withValue(identity) {
+                let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                    let resolution = try await store.resolveExactExistingWorkspaceFile(
+                        WorkspaceExactFileInput.parse("Target.swift"),
+                        namespace: namespace
+                    )
+                    guard case .matched = resolution else {
+                        return XCTFail("Expected the bare-relative target, got \(resolution)")
+                    }
+                }
+            }
+
+            let events = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                $0.eventName == "WorkspaceExactResolution.Checkpoint"
+                    && $0.sanitizedDimensions.contains("purpose=bareRelativeNamespaceClassification")
+                    && $0.sanitizedDimensions.contains("status=bindingProbeBegan")
+            }
+            let observedRootTokens = Set(events.compactMap { event -> String? in
+                event.sanitizedDimensions.split(separator: " ").lazy
+                    .map(String.init)
+                    .first { $0.hasPrefix("rootToken=") }?
+                    .replacingOccurrences(of: "rootToken=", with: "")
+            })
+            XCTAssertEqual(
+                observedRootTokens,
+                Set([serviceA.diagnosticRootToken.uuidString, serviceB.diagnosticRootToken.uuidString])
+            )
+            XCTAssertTrue(events.allSatisfy { $0.requestIdentity == identity })
+            XCTAssertTrue(events.allSatisfy { !$0.sanitizedDimensions.contains("/") })
+
+            await store.unloadRoot(id: recordA.id)
+            await store.unloadRoot(id: recordB.id)
+        }
+
         func testCorrelatedRequestTimelineJoinsAllWI2StagesAndWorkloadMatrices() throws {
             let connectionID = UUID().uuidString
             let identity = MCPRequestTimelineIdentity(
@@ -2223,6 +2663,26 @@
             try XCTContext.runActivity(named: caseLabel) { _ in
                 try body()
             }
+        }
+
+        private func strictLifecycleDimensions(
+            _ event: EditFlowPerf.DebugCaptureLifecycleEvent,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) -> [String: String] {
+            var dimensions: [String: String] = [:]
+            for field in event.sanitizedDimensions.split(separator: " ") {
+                let pair = field.split(separator: "=", maxSplits: 1).map(String.init)
+                XCTAssertEqual(pair.count, 2, "Malformed lifecycle dimension: \(field)", file: file, line: line)
+                guard pair.count == 2 else { continue }
+                XCTAssertNil(
+                    dimensions.updateValue(pair[1], forKey: pair[0]),
+                    "Duplicate dimension key: \(pair[0])",
+                    file: file,
+                    line: line
+                )
+            }
+            return dimensions
         }
 
         private func startedCapture(

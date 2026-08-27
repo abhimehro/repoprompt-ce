@@ -6240,10 +6240,8 @@ final class MCPServerViewModel: ObservableObject {
         let cacheHit: Bool
         switch readableFile {
         case let .workspace(file):
-            guard let snapshot = try await EditFlowPerf.measure(
-                EditFlowPerf.Stage.ReadFile.workspaceContentLoad,
-                operation: { try await store.interactiveReadSnapshot(for: file) }
-            ) else { throw MCPError.internalError("content unavailable") }
+            guard let snapshot = try await Self.workspaceContentLoad(store: store, file: file)
+            else { throw MCPError.internalError("content unavailable") }
             preparedContent = snapshot.preparedContent
             cacheHit = snapshot.cacheHit
         case let .external(externalFile):
@@ -6285,6 +6283,42 @@ final class MCPServerViewModel: ObservableObject {
             return .nonSelecting(reply: preparedReply.reply)
         }
     }
+
+    private static func workspaceContentLoad(
+        store: WorkspaceFileContextStore,
+        file: WorkspaceFileRecord
+    ) async throws -> WorkspaceInteractiveReadSnapshot? {
+        EditFlowPerf.lifecycleEvent(EditFlowPerf.Lifecycle.ReadFile.contentLoadBegan)
+        do {
+            let snapshot = try await EditFlowPerf.measure(
+                EditFlowPerf.Stage.ReadFile.workspaceContentLoad,
+                operation: { try await store.interactiveReadSnapshot(for: file) }
+            )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.contentLoadEnded,
+                EditFlowPerf.Dimensions(
+                    outcome: snapshot == nil ? "unavailable" : "returned",
+                    cacheHit: snapshot?.cacheHit
+                )
+            )
+            return snapshot
+        } catch {
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.ReadFile.contentLoadEnded,
+                EditFlowPerf.Dimensions(outcome: error is CancellationError ? "cancelled" : "error")
+            )
+            throw error
+        }
+    }
+
+    #if DEBUG
+        static func workspaceContentLoadForTesting(
+            store: WorkspaceFileContextStore,
+            file: WorkspaceFileRecord
+        ) async throws -> WorkspaceInteractiveReadSnapshot? {
+            try await workspaceContentLoad(store: store, file: file)
+        }
+    #endif
 
     /// Performs a file action (create, delete, or move/rename)
     private func performFileAction(

@@ -3,6 +3,112 @@ import RepoPromptDomainRuntime
 import XCTest
 
 final class MCPReadMutationPathContractTests: XCTestCase {
+    func testQualifiedMultiRootTokensReplayOnlyToAddressedRecordAndFailClosedAcrossRootLifetime() async throws {
+        let parent = try makeTemporaryDirectory(name: "QualifiedReplayIdentity")
+        let rootA = parent.appendingPathComponent("A", isDirectory: true)
+        let rootB = parent.appendingPathComponent("B", isDirectory: true)
+        let fileA = rootA.appendingPathComponent("Target.swift")
+        let fileB = rootB.appendingPathComponent("Target.swift")
+        try write("addressed token\n", to: fileA)
+        try write("peer token\n", to: fileB)
+
+        let store = WorkspaceFileContextStore()
+        let recordA = try await store.loadRoot(path: rootA.path)
+        _ = try await store.loadRoot(path: rootB.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+
+        let absoluteResolution = try await store.resolveExactExistingWorkspaceFile(
+            WorkspaceExactFileInput.parse(fileA.path),
+            namespace: namespace
+        )
+        guard case let .matched(absoluteMatch) = absoluteResolution else {
+            return XCTFail("Expected the absolute target")
+        }
+        guard case let .explicitRoot(alias, relativePath) = try WorkspaceExactFileInput.parse(
+            absoluteMatch.canonicalPath
+        ) else {
+            return XCTFail("Expected a binding-explicit canonical token")
+        }
+        XCTAssertEqual(relativePath, "Target.swift")
+
+        let explicitResolution = try await store.resolveExactExistingWorkspaceFile(
+            .explicitRoot(alias: alias, relativePath: relativePath),
+            namespace: namespace
+        )
+        guard case let .matched(explicitMatch) = explicitResolution else {
+            return XCTFail("Expected the explicit token to replay")
+        }
+        XCTAssertEqual(explicitMatch.file.id, absoluteMatch.file.id)
+        XCTAssertEqual(explicitMatch.canonicalPath, absoluteMatch.canonicalPath)
+
+        let host = WorkspaceFileEditHost(store: store, target: .existing(explicitMatch.file))
+        _ = try await ApplyEditsService(engine: .default, host: host).run(
+            ApplyEditsRequest(
+                path: absoluteMatch.canonicalPath,
+                mode: .single(search: "addressed", replace: "edited", replaceAll: false),
+                verbose: true
+            )
+        )
+        XCTAssertEqual(try String(contentsOf: fileA, encoding: .utf8), "edited token\n")
+        XCTAssertEqual(try String(contentsOf: fileB, encoding: .utf8), "peer token\n")
+
+        await store.unloadRoot(id: recordA.id)
+        let unloadedNamespace = await WorkspaceExactFileNamespace.identity(
+            roots: store.rootRefs(scope: .visibleWorkspace)
+        )
+        let unloadedReplay = try await store.resolveExactExistingWorkspaceFile(
+            WorkspaceExactFileInput.parse(absoluteMatch.canonicalPath),
+            namespace: unloadedNamespace
+        )
+        if case let .matched(unloadedMatch) = unloadedReplay {
+            XCTFail("An unloaded qualified token selected record \(unloadedMatch.file.id)")
+        }
+
+        let replacementA = try await store.loadRoot(path: rootA.path)
+        XCTAssertNotEqual(replacementA.id, recordA.id)
+        let replacementNamespace = await WorkspaceExactFileNamespace.identity(
+            roots: store.rootRefs(scope: .visibleWorkspace)
+        )
+        let staleReplay = try await store.resolveExactExistingWorkspaceFile(
+            WorkspaceExactFileInput.parse(absoluteMatch.canonicalPath),
+            namespace: replacementNamespace
+        )
+        if case let .matched(staleMatch) = staleReplay {
+            XCTFail("A stale qualified token selected record \(staleMatch.file.id)")
+        }
+    }
+
+    func testQualifiedSingleBindingAliasLookingPathUsesExplicitToken() async throws {
+        let parent = try makeTemporaryDirectory(name: "QualifiedAliasLookingPath")
+        let root = parent.appendingPathComponent("mimic", isDirectory: true)
+        let nested = root.appendingPathComponent("mimic/session.py")
+        try write("nested token\n", to: nested)
+
+        let store = WorkspaceFileContextStore()
+        _ = try await store.loadRoot(path: root.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+        let resolution = try await store.resolveExactExistingWorkspaceFile(
+            WorkspaceExactFileInput.parse(nested.path),
+            namespace: namespace
+        )
+        guard case let .matched(match) = resolution else {
+            return XCTFail("Expected the qualified nested target")
+        }
+        guard case .explicitRoot = try WorkspaceExactFileInput.parse(match.canonicalPath) else {
+            return XCTFail("Expected an explicit token for an alias-looking relative component")
+        }
+        let replay = try await store.resolveExactExistingWorkspaceFile(
+            WorkspaceExactFileInput.parse(match.canonicalPath),
+            namespace: namespace
+        )
+        guard case let .matched(replayMatch) = replay else {
+            return XCTFail("Expected the alias-looking token to replay")
+        }
+        XCTAssertEqual(replayMatch.file.id, match.file.id)
+    }
+
     func testReadDisplayPathAppliesEditsToLiteralCollisionFile() async throws {
         let parent = try makeTemporaryDirectory(name: "LiteralCollision")
         let root = parent.appendingPathComponent("mimic", isDirectory: true)

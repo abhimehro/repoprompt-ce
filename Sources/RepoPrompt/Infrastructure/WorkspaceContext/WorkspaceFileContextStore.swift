@@ -1249,6 +1249,14 @@ actor WorkspaceFileContextStore {
         private var rootUnloadTerminationDidCompleteHandler: (@Sendable (WorkspaceRootUnloadTerminationDiagnostics) async -> Void)?
         private var appliedIngressDidCaptureWatermarksHandler: (@Sendable ([UUID: UInt64]) async -> Void)?
         private var scopedIngressBarrierWillFlushHandler: (@Sendable (UUID) async -> Void)?
+        private struct ExactFileCandidateProbeGateForTesting {
+            let purpose: ExactFileCandidatePurpose
+            let rootID: UUID
+            let serialPosition: Int
+            let wait: @Sendable () async -> Void
+        }
+
+        private var exactFileCandidateProbeGateForTesting: ExactFileCandidateProbeGateForTesting?
         private var watcherActivationFailurePointForNewServicesForTesting: FileSystemService.WatcherActivationFailurePoint?
         private var seededShardPreparationShouldFailForTesting = false
         private var pendingSeededRootDidBecomeReadyHandler: (@Sendable (String) async -> Void)?
@@ -1995,6 +2003,24 @@ actor WorkspaceFileContextStore {
 
         func setScopedIngressBarrierWillFlushHandler(_ handler: (@Sendable (UUID) async -> Void)?) {
             scopedIngressBarrierWillFlushHandler = handler
+        }
+
+        func setExactFileCandidateProbeGateForTesting(
+            purpose: ExactFileCandidatePurpose,
+            rootID: UUID,
+            serialPosition: Int,
+            wait: @escaping @Sendable () async -> Void
+        ) {
+            exactFileCandidateProbeGateForTesting = ExactFileCandidateProbeGateForTesting(
+                purpose: purpose,
+                rootID: rootID,
+                serialPosition: serialPosition,
+                wait: wait
+            )
+        }
+
+        func clearExactFileCandidateProbeGateForTesting() {
+            exactFileCandidateProbeGateForTesting = nil
         }
 
         func setWatcherActivationFailureForNewServicesForTesting(
@@ -16885,7 +16911,8 @@ actor WorkspaceFileContextStore {
             }
             let candidates = await exactFileCandidates(
                 relativePath: target.relativePath,
-                bindings: [target.binding]
+                bindings: [target.binding],
+                purpose: .qualifiedTargetValidation
             )
             if let directoryBinding = candidates.directoryBindings.first {
                 return try .directory(exactDirectoryMatch(
@@ -16899,7 +16926,11 @@ actor WorkspaceFileContextStore {
                 relativePath: target.relativePath
             ) {
             case let .materialized(file):
-                return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+                return try .matched(exactQualifiedExistingFileMatch(
+                    file,
+                    addressedBinding: target.binding,
+                    namespace: namespace
+                ))
             case .blocked:
                 return .issue(.unresolved(input: path))
             case .noCandidate:
@@ -16915,7 +16946,8 @@ actor WorkspaceFileContextStore {
             case let .success(binding):
                 let candidates = await exactFileCandidates(
                     relativePath: relativePath,
-                    bindings: [binding]
+                    bindings: [binding],
+                    purpose: .qualifiedTargetValidation
                 )
                 if let directoryBinding = candidates.directoryBindings.first {
                     return try .directory(exactDirectoryMatch(
@@ -16926,7 +16958,11 @@ actor WorkspaceFileContextStore {
                 }
                 switch try await materializeSingleExactFile(from: candidates, relativePath: relativePath) {
                 case let .materialized(file):
-                    return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+                    return try .matched(exactQualifiedExistingFileMatch(
+                        file,
+                        addressedBinding: binding,
+                        namespace: namespace
+                    ))
                 case .blocked:
                     return .issue(.unresolved(input: input.renderedPath))
                 case .noCandidate:
@@ -16943,7 +16979,8 @@ actor WorkspaceFileContextStore {
         case let .relative(relativePath):
             let literalCandidates = await exactFileCandidates(
                 relativePath: relativePath,
-                bindings: namespace.rootBindings
+                bindings: namespace.rootBindings,
+                purpose: .bareRelativeNamespaceClassification
             )
             if literalCandidates.matches.count > 1 {
                 return .issue(.ambiguousRootMatch(
@@ -16960,7 +16997,10 @@ actor WorkspaceFileContextStore {
                     relativePath: relativePath
                 ) {
                 case let .materialized(file):
-                    return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+                    return try await .matched(exactNamespaceCompactedExistingFileMatch(
+                        file,
+                        namespace: namespace
+                    ))
                 case .blocked:
                     return .issue(.unresolved(input: relativePath))
                 case .noCandidate:
@@ -16999,7 +17039,8 @@ actor WorkspaceFileContextStore {
                 }) else { return .noCandidate }
                 let aliasCandidates = await exactFileCandidates(
                     relativePath: remainder,
-                    bindings: [binding]
+                    bindings: [binding],
+                    purpose: .qualifiedTargetValidation
                 )
                 if let directoryBinding = aliasCandidates.directoryBindings.first {
                     return try .directory(exactDirectoryMatch(
@@ -17010,7 +17051,10 @@ actor WorkspaceFileContextStore {
                 }
                 switch try await materializeSingleExactFile(from: aliasCandidates, relativePath: remainder) {
                 case let .materialized(file):
-                    return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+                    return try await .matched(exactNamespaceCompactedExistingFileMatch(
+                        file,
+                        namespace: namespace
+                    ))
                 case .blocked:
                     return .issue(.unresolved(input: relativePath))
                 case .noCandidate:
@@ -17116,39 +17160,232 @@ actor WorkspaceFileContextStore {
         let directoryBindings: [WorkspaceExactFileNamespace.RootBinding]
     }
 
+    enum ExactFileCandidatePurpose: String {
+        case qualifiedTargetValidation
+        case bareRelativeNamespaceClassification
+        case canonicalCompaction
+    }
+
     private func exactFileCandidates(
         relativePath: String,
-        bindings: [WorkspaceExactFileNamespace.RootBinding]
+        bindings: [WorkspaceExactFileNamespace.RootBinding],
+        purpose: ExactFileCandidatePurpose
     ) async -> ExactFileCandidates {
         var matches: [ExactFileCandidate] = []
         var blocked = false
         var hasUnavailableBinding = false
         var directoryBindings: [WorkspaceExactFileNamespace.RootBinding] = []
-        for binding in bindings {
-            if let candidate = file(rootID: binding.lookupRoot.id, relativePath: relativePath),
-               let current = await validateCatalogFileStillPresent(candidate)
-            {
-                matches.append(ExactFileCandidate(binding: binding, file: current))
-                continue
+        for (serialPosition, binding) in bindings.enumerated() {
+            #if DEBUG
+                if let gate = exactFileCandidateProbeGateForTesting,
+                   gate.purpose == purpose,
+                   gate.rootID == binding.lookupRoot.id,
+                   gate.serialPosition == serialPosition
+                {
+                    await gate.wait()
+                }
+            #endif
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                EditFlowPerf.Dimensions(
+                    runPurpose: purpose.rawValue,
+                    status: "bindingProbeBegan",
+                    rootToken: rootStatesByID[binding.lookupRoot.id]?.service.diagnosticRootToken.uuidString,
+                    serialPosition: serialPosition
+                )
+            )
+            if let candidate = file(rootID: binding.lookupRoot.id, relativePath: relativePath) {
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "catalogValidationBegan",
+                        rootToken: rootStatesByID[binding.lookupRoot.id]?.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
+                let current = await validateCatalogFileStillPresent(candidate)
+                let currentState = rootStatesByID[binding.lookupRoot.id]
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "catalogValidationEnded",
+                        outcome: currentState == nil ? "unavailable" : current == nil ? "missing" : "current",
+                        rootToken: currentState?.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
+                if let current, let currentState {
+                    matches.append(ExactFileCandidate(binding: binding, file: current))
+                    EditFlowPerf.lifecycleEvent(
+                        EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                        EditFlowPerf.Dimensions(
+                            runPurpose: purpose.rawValue,
+                            status: "bindingProbeEnded",
+                            outcome: "catalogCurrent",
+                            rootToken: currentState.service.diagnosticRootToken.uuidString,
+                            serialPosition: serialPosition
+                        )
+                    )
+                    continue
+                }
+                guard currentState != nil else {
+                    hasUnavailableBinding = true
+                    EditFlowPerf.lifecycleEvent(
+                        EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                        EditFlowPerf.Dimensions(
+                            runPurpose: purpose.rawValue,
+                            status: "bindingProbeEnded",
+                            outcome: "unavailable",
+                            serialPosition: serialPosition
+                        )
+                    )
+                    continue
+                }
             }
             guard let state = rootStatesByID[binding.lookupRoot.id] else {
                 hasUnavailableBinding = true
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "bindingProbeEnded",
+                        outcome: "unavailable",
+                        serialPosition: serialPosition
+                    )
+                )
                 continue
             }
-            switch await state.service.catalogRegularFileEligibility(relativePath: relativePath) {
-            case .eligible, .ineligible(.ignored):
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                EditFlowPerf.Dimensions(
+                    runPurpose: purpose.rawValue,
+                    status: "eligibilityBegan",
+                    rootToken: state.service.diagnosticRootToken.uuidString,
+                    serialPosition: serialPosition
+                )
+            )
+            let eligibility = await state.service.catalogRegularFileEligibility(relativePath: relativePath)
+            guard let currentState = rootStatesByID[binding.lookupRoot.id] else {
+                hasUnavailableBinding = true
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "eligibilityEnded",
+                        outcome: "unavailable",
+                        serialPosition: serialPosition
+                    )
+                )
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "bindingProbeEnded",
+                        outcome: "unavailable",
+                        serialPosition: serialPosition
+                    )
+                )
+                continue
+            }
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                EditFlowPerf.Dimensions(
+                    runPurpose: purpose.rawValue,
+                    status: "eligibilityEnded",
+                    outcome: {
+                        switch eligibility {
+                        case .eligible: "eligible"
+                        case .ineligible(.ignored): "ignored"
+                        case .ineligible(.missingOrDirectory): "missingOrDirectory"
+                        case .ineligible: "ineligible"
+                        }
+                    }(),
+                    rootToken: currentState.service.diagnosticRootToken.uuidString,
+                    serialPosition: serialPosition
+                )
+            )
+            switch eligibility {
+            case .eligible:
                 matches.append(ExactFileCandidate(binding: binding, file: nil))
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "bindingProbeEnded",
+                        outcome: "eligible",
+                        rootToken: currentState.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
+            case .ineligible(.ignored):
+                matches.append(ExactFileCandidate(binding: binding, file: nil))
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "bindingProbeEnded",
+                        outcome: "ignored",
+                        rootToken: currentState.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
             case .ineligible(.missingOrDirectory):
-                if directoryAppearsPresentOnDisk(root: state.root, relativePath: relativePath) {
-                    directoryBindings.append(binding)
-                }
+                let isDirectory = directoryAppearsPresentOnDisk(root: currentState.root, relativePath: relativePath)
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "missingFilePruneBegan",
+                        rootToken: currentState.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
                 _ = await fenceAndPruneCatalogFileMissingOnDisk(
                     rootID: binding.lookupRoot.id,
                     relativePath: relativePath,
                     publishDelta: true
                 )
+                let stateAfterPrune = rootStatesByID[binding.lookupRoot.id]
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "missingFilePruneEnded",
+                        outcome: stateAfterPrune == nil ? "unavailable" : "completed",
+                        rootToken: stateAfterPrune?.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
+                if isDirectory, stateAfterPrune != nil {
+                    directoryBindings.append(binding)
+                }
+                if stateAfterPrune == nil {
+                    hasUnavailableBinding = true
+                }
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "bindingProbeEnded",
+                        outcome: stateAfterPrune == nil ? "unavailable" : "missingOrDirectory",
+                        rootToken: stateAfterPrune?.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
             case .ineligible:
                 blocked = true
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "bindingProbeEnded",
+                        outcome: "ineligible",
+                        rootToken: currentState.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
             }
         }
         return ExactFileCandidates(
@@ -17178,14 +17415,36 @@ actor WorkspaceFileContextStore {
         )
     }
 
-    private func exactExistingFileMatch(
+    private func exactQualifiedExistingFileMatch(
+        _ file: WorkspaceFileRecord,
+        addressedBinding: WorkspaceExactFileNamespace.RootBinding,
+        namespace: WorkspaceExactFileNamespace
+    ) throws -> WorkspaceExactExistingFileMatch {
+        guard addressedBinding.lookupRoot.id == file.rootID else {
+            throw WorkspaceFileContextStoreError.exactFileNamespaceMissingRoot(file.rootID)
+        }
+        guard let namespaceBinding = namespace.binding(lookupRootID: file.rootID),
+              namespaceBinding == addressedBinding
+        else {
+            throw WorkspaceFileContextStoreError.exactFileNamespaceMissingRoot(file.rootID)
+        }
+
+        // Multi-binding namespaces need a binding-explicit replay token; the addressed
+        // binding already establishes identity, so canonicalization must not consult peers.
+        if namespace.rootBindings.count == 1,
+           namespace.rootBindings[0].lookupRoot.id == file.rootID,
+           namespace.binding(lookupRootID: file.rootID) == namespace.rootBindings[0],
+           exactRelativeTokenIsStructurallySafe(file, namespace: namespace)
+        {
+            return WorkspaceExactExistingFileMatch(file: file, canonicalPath: file.standardizedRelativePath)
+        }
+        return try exactExplicitExistingFileMatch(file, binding: namespaceBinding, namespace: namespace)
+    }
+
+    private func exactRelativeTokenIsStructurallySafe(
         _ file: WorkspaceFileRecord,
         namespace: WorkspaceExactFileNamespace
-    ) async throws -> WorkspaceExactExistingFileMatch {
-        let candidates = await exactFileCandidates(
-            relativePath: file.standardizedRelativePath,
-            bindings: namespace.rootBindings
-        )
+    ) -> Bool {
         let relativePathUsesAliasFallback = switch WorkspaceAliasResolver.resolve(
             userPath: file.standardizedRelativePath,
             roots: namespace.clientRoots,
@@ -17198,16 +17457,38 @@ actor WorkspaceFileContextStore {
         }
         let relativePathRoundTrips = try? WorkspaceExactFileInput.parse(file.standardizedRelativePath)
             == .relative(file.standardizedRelativePath)
+        return !relativePathUsesAliasFallback && relativePathRoundTrips == true
+    }
+
+    private func exactNamespaceCompactedExistingFileMatch(
+        _ file: WorkspaceFileRecord,
+        namespace: WorkspaceExactFileNamespace
+    ) async throws -> WorkspaceExactExistingFileMatch {
+        let candidates = await exactFileCandidates(
+            relativePath: file.standardizedRelativePath,
+            bindings: namespace.rootBindings,
+            purpose: .canonicalCompaction
+        )
         if candidates.matches.count == 1,
            candidates.matches[0].file?.id == file.id,
            !candidates.blocked,
            !candidates.hasUnavailableBinding,
-           !relativePathUsesAliasFallback,
-           relativePathRoundTrips == true
+           exactRelativeTokenIsStructurallySafe(file, namespace: namespace)
         {
             return WorkspaceExactExistingFileMatch(file: file, canonicalPath: file.standardizedRelativePath)
         }
         guard let binding = namespace.binding(lookupRootID: file.rootID) else {
+            throw WorkspaceFileContextStoreError.exactFileNamespaceMissingRoot(file.rootID)
+        }
+        return try exactExplicitExistingFileMatch(file, binding: binding, namespace: namespace)
+    }
+
+    private func exactExplicitExistingFileMatch(
+        _ file: WorkspaceFileRecord,
+        binding: WorkspaceExactFileNamespace.RootBinding,
+        namespace: WorkspaceExactFileNamespace
+    ) throws -> WorkspaceExactExistingFileMatch {
+        guard binding.lookupRoot.id == file.rootID else {
             throw WorkspaceFileContextStoreError.exactFileNamespaceMissingRoot(file.rootID)
         }
         guard let alias = namespace.explicitAlias(clientRootID: binding.preferredClientRoot.id) else {
@@ -17236,43 +17517,203 @@ actor WorkspaceFileContextStore {
         _ userPath: String,
         rootRefs roots: [WorkspaceRootRef]
     ) async throws -> WorkspaceExplicitFileMaterializationResult {
+        let lifecycleCorrelation = EditFlowPerf.currentLifecycleCorrelation
+        var diagnosticRootToken: UUID?
+        var terminalOutcome: String?
+        func setTerminalOutcome(_ outcome: @autoclosure () -> String) {
+            guard lifecycleCorrelation != nil else { return }
+            terminalOutcome = outcome()
+        }
+        func setDiagnosticRootToken(_ rootToken: UUID) {
+            guard lifecycleCorrelation != nil else { return }
+            diagnosticRootToken = rootToken
+        }
+        EditFlowPerf.lifecycleEvent(
+            EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+            correlation: lifecycleCorrelation,
+            EditFlowPerf.Dimensions(runPurpose: "explicitMaterialization", status: "materializationBegan")
+        )
+        defer {
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "materializationEnded",
+                    outcome: terminalOutcome ?? "error",
+                    rootToken: diagnosticRootToken?.uuidString
+                )
+            )
+        }
         let trimmed = userPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .noCandidate }
-        guard !StandardizedPath.containsNUL(trimmed) else { return .blocked }
-        guard (trimmed as NSString).expandingTildeInPath.hasPrefix("/") else { return .noCandidate }
+        guard !trimmed.isEmpty else {
+            setTerminalOutcome("noCandidate")
+            return .noCandidate
+        }
+        guard !StandardizedPath.containsNUL(trimmed) else {
+            setTerminalOutcome("blocked")
+            return .blocked
+        }
+        guard (trimmed as NSString).expandingTildeInPath.hasPrefix("/") else {
+            setTerminalOutcome("noCandidate")
+            return .noCandidate
+        }
 
         let candidates: [(rootID: UUID, relativePath: String)]
         switch explicitDiskLookupCandidates(for: trimmed, rootRefs: roots) {
         case let .candidates(resolvedCandidates):
             candidates = resolvedCandidates
         case .ambiguousAlias:
+            setTerminalOutcome("ambiguous")
             return .ambiguous
         }
         var materializable: [(rootID: UUID, relativePath: String, managedOnly: Bool)] = []
         var foundBlockedCandidate = false
-        for candidate in candidates {
-            guard let state = rootStatesByID[candidate.rootID] else { continue }
-            switch await state.service.catalogRegularFileEligibility(relativePath: candidate.relativePath) {
+        for (serialPosition, candidate) in candidates.enumerated() {
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "candidateEligibilityBegan",
+                    rootToken: rootStatesByID[candidate.rootID]?.service.diagnosticRootToken.uuidString,
+                    serialPosition: serialPosition
+                )
+            )
+            guard let state = rootStatesByID[candidate.rootID] else {
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    correlation: lifecycleCorrelation,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: "explicitMaterialization",
+                        status: "candidateEligibilityEnded",
+                        outcome: "unavailable",
+                        serialPosition: serialPosition
+                    )
+                )
+                continue
+            }
+            let eligibility = await state.service.catalogRegularFileEligibility(relativePath: candidate.relativePath)
+            guard let currentState = rootStatesByID[candidate.rootID] else {
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    correlation: lifecycleCorrelation,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: "explicitMaterialization",
+                        status: "candidateEligibilityEnded",
+                        outcome: "unavailable",
+                        serialPosition: serialPosition
+                    )
+                )
+                continue
+            }
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "candidateEligibilityEnded",
+                    outcome: {
+                        switch eligibility {
+                        case .eligible: "eligible"
+                        case .ineligible(.ignored): "ignored"
+                        case .ineligible(.missingOrDirectory): "missingOrDirectory"
+                        case .ineligible: "ineligible"
+                        }
+                    }(),
+                    rootToken: currentState.service.diagnosticRootToken.uuidString,
+                    serialPosition: serialPosition
+                )
+            )
+            switch eligibility {
             case .eligible:
                 materializable.append((candidate.rootID, candidate.relativePath, false))
             case .ineligible(.ignored):
                 materializable.append((candidate.rootID, candidate.relativePath, true))
             case .ineligible(.missingOrDirectory):
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    correlation: lifecycleCorrelation,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: "explicitMaterialization",
+                        status: "candidateMissingFilePruneBegan",
+                        rootToken: currentState.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
+                )
                 _ = await fenceAndPruneCatalogFileMissingOnDisk(
                     rootID: candidate.rootID,
                     relativePath: candidate.relativePath,
                     publishDelta: true
+                )
+                let stateAfterPrune = rootStatesByID[candidate.rootID]
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    correlation: lifecycleCorrelation,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: "explicitMaterialization",
+                        status: "candidateMissingFilePruneEnded",
+                        outcome: stateAfterPrune == nil ? "unavailable" : "completed",
+                        rootToken: stateAfterPrune?.service.diagnosticRootToken.uuidString,
+                        serialPosition: serialPosition
+                    )
                 )
                 continue
             case .ineligible:
                 foundBlockedCandidate = true
             }
         }
-        guard materializable.count <= 1 else { return .ambiguous }
+        guard materializable.count <= 1 else {
+            setTerminalOutcome("ambiguous")
+            return .ambiguous
+        }
         guard let candidate = materializable.first,
               let state = rootStatesByID[candidate.rootID]
-        else { return foundBlockedCandidate ? .blocked : .noCandidate }
+        else {
+            setTerminalOutcome(foundBlockedCandidate ? "blocked" : "noCandidate")
+            return foundBlockedCandidate ? .blocked : .noCandidate
+        }
+        setDiagnosticRootToken(state.service.diagnosticRootToken)
+        EditFlowPerf.lifecycleEvent(
+            EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+            correlation: lifecycleCorrelation,
+            EditFlowPerf.Dimensions(
+                runPurpose: "explicitMaterialization",
+                status: "managedRegistrationBegan",
+                rootToken: state.service.diagnosticRootToken.uuidString
+            )
+        )
         let registeredEligibility = await state.service.registerExplicitlyManagedRegularFile(relativePath: candidate.relativePath)
+        guard let currentState = rootStatesByID[candidate.rootID] else {
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "managedRegistrationEnded",
+                    outcome: "unavailable"
+                )
+            )
+            setTerminalOutcome("noCandidate")
+            return .noCandidate
+        }
+        EditFlowPerf.lifecycleEvent(
+            EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+            correlation: lifecycleCorrelation,
+            EditFlowPerf.Dimensions(
+                runPurpose: "explicitMaterialization",
+                status: "managedRegistrationEnded",
+                outcome: {
+                    switch registeredEligibility {
+                    case .eligible: "eligible"
+                    case .ineligible(.ignored): "ignored"
+                    case .ineligible(.missingOrDirectory): "missingOrDirectory"
+                    case .ineligible: "ineligible"
+                    }
+                }(),
+                rootToken: currentState.service.diagnosticRootToken.uuidString
+            )
+        )
         let managedOnly: Bool
         switch registeredEligibility {
         case .eligible:
@@ -17280,30 +17721,96 @@ actor WorkspaceFileContextStore {
         case .ineligible(.ignored):
             managedOnly = true
         case .ineligible(.missingOrDirectory):
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "missingFilePruneBegan",
+                    rootToken: currentState.service.diagnosticRootToken.uuidString
+                )
+            )
             _ = await fenceAndPruneCatalogFileMissingOnDisk(
                 rootID: candidate.rootID,
                 relativePath: candidate.relativePath,
                 publishDelta: true
             )
+            let stateAfterPrune = rootStatesByID[candidate.rootID]
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "missingFilePruneEnded",
+                    outcome: stateAfterPrune == nil ? "unavailable" : "completed",
+                    rootToken: stateAfterPrune?.service.diagnosticRootToken.uuidString
+                )
+            )
+            setTerminalOutcome("noCandidate")
             return .noCandidate
         case .ineligible:
+            setTerminalOutcome("blocked")
             return .blocked
         }
-        guard let codemapFence = await beginCodemapRootMutationFence(
+        EditFlowPerf.lifecycleEvent(
+            EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+            correlation: lifecycleCorrelation,
+            EditFlowPerf.Dimensions(
+                runPurpose: "explicitMaterialization",
+                status: "codemapRootFenceBegan",
+                rootToken: currentState.service.diagnosticRootToken.uuidString
+            )
+        )
+        let codemapFence = await beginCodemapRootMutationFence(
             rootID: candidate.rootID,
             command: .catalogAdvanced
-        ) else { return .noCandidate }
+        )
+        EditFlowPerf.lifecycleEvent(
+            EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+            correlation: lifecycleCorrelation,
+            EditFlowPerf.Dimensions(
+                runPurpose: "explicitMaterialization",
+                status: "codemapRootFenceEnded",
+                outcome: codemapFence == nil ? "unavailable" : "acquired",
+                rootToken: rootStatesByID[candidate.rootID]?.service.diagnosticRootToken.uuidString
+            )
+        )
+        guard let codemapFence else {
+            setTerminalOutcome("noCandidate")
+            return .noCandidate
+        }
         do {
             let materialized = try materializeCatalogRegularFile(
                 rootID: candidate.rootID,
                 relativePath: candidate.relativePath,
                 managedOnly: managedOnly
             )
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "codemapCleanupFlightsBegan",
+                    rootToken: diagnosticRootToken?.uuidString
+                )
+            )
             await awaitCodemapCleanupFlights(rootIDs: [candidate.rootID])
+            EditFlowPerf.lifecycleEvent(
+                EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                correlation: lifecycleCorrelation,
+                EditFlowPerf.Dimensions(
+                    runPurpose: "explicitMaterialization",
+                    status: "codemapCleanupFlightsEnded",
+                    outcome: "completed",
+                    rootToken: diagnosticRootToken?.uuidString
+                )
+            )
             finishCodemapRootMutationFence(codemapFence, didCommitMutation: true)
+            setTerminalOutcome("materialized")
             return .materialized(materialized)
         } catch {
             finishCodemapRootMutationFence(codemapFence, didCommitMutation: false)
+            setTerminalOutcome(error is CancellationError ? "cancelled" : "error")
             throw error
         }
     }
