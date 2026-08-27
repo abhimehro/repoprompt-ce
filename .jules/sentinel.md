@@ -1,0 +1,4 @@
+## 2024-05-18 - Fix TOCTOU vulnerability when creating secure files
+**Vulnerability:** Files like `MCPTerminalRecord` and `MCPConfigExportService` configs were created by calling `Data.write(to:options:)` followed by `FileManager.setAttributes()`. This created a Time-of-Check-to-Time-of-Use (TOCTOU) race condition where the file briefly existed with default permissions before being secured, potentially allowing unauthorized read/write access.
+**Learning:** In Swift, writing sensitive files using standard `.write()` followed by permission modification is not atomic and leaves a window of vulnerability.
+**Prevention:** Create a temporary file with `FileManager.default.createFile(atPath:contents:attributes:)` to guarantee atomic POSIX permissions upon creation, then use `replaceItem(at:withItemAt:)` (or `moveItem(at:to:)`) to securely place the file.
