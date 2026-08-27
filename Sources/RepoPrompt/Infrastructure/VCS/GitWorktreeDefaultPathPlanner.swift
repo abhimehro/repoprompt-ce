@@ -157,7 +157,8 @@ enum GitWorktreeDefaultPathPlanner {
     private static func uniqueDefaultPath(in container: URL, leaf: String, occupiedRoots: [URL]) -> URL {
         var candidate = container.appendingPathComponent(leaf, isDirectory: true).standardizedFileURL
         var suffix = 2
-        while pathExists(candidate) || occupiedRoots.contains(where: { samePath($0, candidate) }) {
+        let occupiedPaths = Set(occupiedRoots.map { $0.standardizedFileURL.path })
+        while pathExists(candidate) || occupiedPaths.contains(candidate.path) {
             candidate = container.appendingPathComponent("\(leaf)-\(suffix)", isDirectory: true).standardizedFileURL
             suffix += 1
         }
@@ -165,9 +166,13 @@ enum GitWorktreeDefaultPathPlanner {
     }
 
     private static func standardizedExistingRoots(_ roots: [URL], mainRoot: URL) -> [URL] {
-        var result = [mainRoot.standardizedFileURL]
-        for root in roots.map({ expandTilde(in: $0).standardizedFileURL }) where !result.contains(where: { samePath($0, root) }) {
-            result.append(root)
+        let standardizedMain = mainRoot.standardizedFileURL
+        var result = [standardizedMain]
+        var seen = Set([standardizedMain.path])
+        for root in roots.map({ expandTilde(in: $0).standardizedFileURL }) {
+            if seen.insert(root.path).inserted {
+                result.append(root)
+            }
         }
         return result
     }
@@ -251,6 +256,6 @@ enum GitWorktreeDefaultPathPlanner {
     }
 
     private static func samePath(_ lhs: URL, _ rhs: URL) -> Bool {
-        lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
+        lhs.path == rhs.path
     }
 }
