@@ -1,0 +1,3 @@
+## 2025-08-27 - ISO8601DateFormatter Initialization Overhead
+**Learning:** `ISO8601DateFormatter` initialization in Swift is extremely expensive. In classes with a large number of static constants (like `Changelog.swift` with over 200 `Version` entries), repeatedly initializing `ISO8601DateFormatter()` for each entry causes significant compilation and runtime overhead.
+**Action:** When extracting date formatters to a static property inside a `Sendable` type (or any class/struct where concurrency checks might flag it), use `nonisolated(unsafe) static let formatter = ISO8601DateFormatter()` to avoid strict concurrency warnings, as these formatters are not natively `Sendable`. Always reuse a single static instance instead of inline instantiation.
