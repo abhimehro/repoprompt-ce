@@ -254,9 +254,10 @@ updates the stable appcast.
 
 `Publish Tip` can be notified automatically after successful CI on `main` or dispatched manually.
 The automatic `workflow_run` path publishes only the legacy role. For P, T, and S it ends in a
-successful read-only diagnostic before credentials, staging, signing, or publication. A nonlegacy
-role is published only by an explicit dispatch from `main` whose
-`confirm_identity_rollout_role` exactly matches the checked-in role.
+successful read-only diagnostic before credentials, staging, signing, or publication. Every manual
+dispatch from `main` requires a non-empty `confirm_identity_rollout_role` input that exactly matches
+the checked-in role; this applies to legacy and nonlegacy manual runs so the dispatch UI cannot start
+an ambiguously authorized release.
 
 There is deliberately no commit input. For a manual dispatch, GitHub's selected `main` ref and
 `github.sha` are the immutable candidate. Setup fetches protected `origin/main` and requires the

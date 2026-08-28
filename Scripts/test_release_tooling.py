@@ -266,7 +266,7 @@ APP_SIGN_ARGS=(){app_signing_body}
             signer.index('sign_path "$APP_BUNDLE" --entitlements "$app_entitlements"'),
         )
 
-    def test_release_workflows_gate_stable_preparer_and_require_explicit_nonlegacy_tip_dispatch(self) -> None:
+    def test_release_workflows_gate_stable_preparer_and_require_explicit_tip_dispatch_confirmation(self) -> None:
         workflows = SCRIPT_DIR.parent / ".github" / "workflows"
         release_workflow = (workflows / "release.yml").read_text(encoding="utf-8")
         tip_workflow = (workflows / "main-tip.yml").read_text(encoding="utf-8")
@@ -290,13 +290,19 @@ APP_SIGN_ARGS=(){app_signing_body}
         dispatch = tip_workflow.split("  workflow_dispatch:", 1)[1].split("\n\nconcurrency:", 1)[0]
         self.assertNotIn("      commit:", dispatch)
         self.assertIn("confirm_identity_rollout_role:", dispatch)
+        confirmation = dispatch.split("      confirm_identity_rollout_role:", 1)[1]
+        self.assertIn("        required: true", confirmation)
+        self.assertNotIn("        required: false", confirmation)
         self.assertIn("DISPATCH_COMMIT: ${{ github.sha }}", tip_workflow)
         self.assertIn("DISPATCH_REF: ${{ github.ref }}", tip_workflow)
         self.assertIn('[[ "$DISPATCH_REF" == "refs/heads/main" ]]', tip_workflow)
         self.assertIn('[[ "$commit" == "$live_main" ]]', tip_workflow)
         self.assertIn('[[ "$tooling_commit" == "$commit" ]]', tip_workflow)
-        self.assertIn('if [[ "$EVENT_NAME" != "workflow_dispatch" ]]', tip_workflow)
-        self.assertIn('[[ "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]', tip_workflow)
+        self.assertIn('[[ "$EVENT_NAME" == "workflow_dispatch" && "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]', tip_workflow)
+        self.assertIn('[[ "$ROLLOUT_ROLE" != "legacy" && "$EVENT_NAME" != "workflow_dispatch" ]]', tip_workflow)
+        self.assertIn("Automatic Tip Publication Dormant (Manual Review Required)", tip_workflow)
+        self.assertIn("This diagnostic does not authorize a release", tip_workflow)
+        self.assertNotIn("To publish this role", tip_workflow)
         self.assertIn("if: needs.setup.outputs.rollout-role == 'preparer'", tip_workflow)
         self.assertIn("EXPECTED_MIGRATION_ANCHOR_SIGN_IDENTITY", tip_workflow)
         self.assertIn('--identifier "$EXPECTED_MIGRATION_ANCHOR_BUNDLE_ID"', tip_workflow)
@@ -5490,7 +5496,8 @@ class IdentityTransitionReleaseToolingTests(unittest.TestCase):
         self.assertIn("tip-rollout.json", tip_workflow)
         self.assertIn("stable_rollout.py packaging-context", tip_workflow)
         self.assertIn("confirm_identity_rollout_role", tip_workflow)
-        self.assertIn('if [[ "$EVENT_NAME" != "workflow_dispatch" ]]', tip_workflow)
+        self.assertIn("required: true", tip_workflow)
+        self.assertIn('[[ "$EVENT_NAME" == "workflow_dispatch" && "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]', tip_workflow)
         self.assertNotIn("release-rollout.json", tip_workflow)
 
         release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")

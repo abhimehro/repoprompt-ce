@@ -34,11 +34,12 @@ All three roles use the same Tip feed and `appcast.xml`; the rollout manifest is
 `workflow_run` notifications publish only legacy Tip builds. For P, T, and S they stop successfully
 in a read-only diagnostic before credentials or builds; that outcome is not release authorization.
 
-Each nonlegacy role requires an explicit `workflow_dispatch` from protected `main` with
-`confirm_identity_rollout_role` exactly equal to the checked-in role. There is no operator-supplied
-commit field. GitHub's selected `main` SHA is the candidate, and setup requires that SHA, the workflow
-definition, the release-tooling checkout, and freshly fetched protected `origin/main` to be the same
-commit.
+Each nonlegacy role requires an explicit `workflow_dispatch` from protected `main`. Every manual
+dispatch, including legacy, requires a non-empty `confirm_identity_rollout_role` input exactly equal
+to the checked-in role, preventing an empty confirmation from starting a release job. There is no
+operator-supplied commit field. GitHub's selected `main` SHA is the candidate, and setup requires that
+SHA, the workflow definition, the release-tooling checkout, and freshly fetched protected
+`origin/main` to be the same commit.
 
 Automatic and manual runs occupy separate concurrency lanes and queue without cancelling in-flight
 release work. Publication is serialized across the lanes. Before any draft mutation and again

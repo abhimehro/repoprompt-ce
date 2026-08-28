@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       confirm_identity_rollout_role:
-        description: For preparer/transition/successor, enter the exact checked-in role
-        required: false
+        description: Enter the exact checked-in role (legacy/preparer/transition/successor)
+        required: true
         type: string
 
 concurrency:
@@ -126,15 +126,14 @@ jobs:
 
           should_publish=true
           skip_reason=""
-          if [[ "$ROLLOUT_ROLE" != "legacy" ]]; then
-            if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
-              should_publish=false
-              skip_reason="role-requires-dispatch"
-              echo "Identity rollout role $ROLLOUT_ROLE requires an explicit workflow dispatch; skipping automatic publication."
-            elif [[ "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]; then
-              echo "confirm_identity_rollout_role must exactly match checked-in role $ROLLOUT_ROLE" >&2
-              exit 1
-            fi
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]; then
+            echo "confirm_identity_rollout_role must exactly match checked-in role $ROLLOUT_ROLE" >&2
+            exit 1
+          fi
+          if [[ "$ROLLOUT_ROLE" != "legacy" && "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            should_publish=false
+            skip_reason="role-requires-dispatch"
+            echo "Identity rollout role $ROLLOUT_ROLE requires an explicit workflow dispatch; skipping automatic publication."
           fi
 
           stable_appcast="$RUNNER_TEMP/stable-appcast.xml"
@@ -184,7 +183,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   automatic-tip-dormant:
-    name: Automatic Tip Publication Dormant (Dispatch Required)
+    name: Automatic Tip Publication Dormant (Manual Review Required)
     needs: setup
     if: >-
       github.event_name == 'workflow_run' &&
@@ -205,7 +204,7 @@ jobs:
           commit="${TIP_COMMIT:-unresolved}"
           tag="${TIP_TAG:-unresolved}"
           {
-            echo "## Automatic Tip Publication Dormant (Dispatch Required)"
+            echo "## Automatic Tip Publication Dormant (Manual Review Required)"
             echo
             echo "- Rollout role: $ROLLOUT_ROLE"
             echo "- Commit: $commit"
@@ -214,9 +213,10 @@ jobs:
             echo "This automatic workflow_run was intentionally suppressed because the nonlegacy rollout role requires an explicit dispatch."
             echo "Nothing was built, signed, or published."
             echo
-            echo "To publish this role, dispatch Publish Tip from protected main and enter confirm_identity_rollout_role=$ROLLOUT_ROLE. The candidate commit is selected automatically from main."
+            echo "This diagnostic does not authorize a release. Review docs/releasing.md and docs/architecture/apple-identity-migration.md and obtain an explicit go/no-go decision before any manual dispatch."
+            echo "If separately authorized, the dispatch must run from protected main with confirm_identity_rollout_role=$ROLLOUT_ROLE; the candidate commit is selected automatically."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Automatic Tip publication is intentionally dormant for rollout role $ROLLOUT_ROLE."
+          echo "Automatic Tip publication is dormant for rollout role $ROLLOUT_ROLE; manual review is required."
 
   credential-preflight:
     name: Preflight Tip Rollout Credentials
