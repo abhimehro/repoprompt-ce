@@ -571,6 +571,8 @@ class WorkspaceManagerViewModel: ObservableObject {
             (@MainActor (UUID) async -> Void)?
         private var workspaceActivationLeaseDidAcquireHandlerForTesting:
             (@MainActor (UUID) async -> Void)?
+        private var composeTabFastStateDidApplyHandlerForTesting:
+            (@MainActor (UUID) async -> Void)?
     #endif
 
     @MainActor
@@ -838,6 +840,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             workspaceSavePreparationDidFinishHandlerForTesting = handler
         }
 
+        func setComposeTabFastStateDidApplyHandlerForTesting(
+            _ handler: (@MainActor (UUID) async -> Void)?
+        ) {
+            composeTabFastStateDidApplyHandlerForTesting = handler
+        }
+
         func resetWorkspaceSaveDiagnosticsForTesting() {
             workspaceSaveAttemptCountByWorkspaceIDForTesting.removeAll()
             workspaceSaveCapturePublicationCountByWorkspaceIDForTesting.removeAll()
@@ -928,6 +936,10 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     func markWorkspaceDirty() {
         bumpStateVersion(for: activeWorkspaceID)
+    }
+
+    func markWorkspaceDirty(workspaceID: UUID) {
+        bumpStateVersion(for: workspaceID)
     }
 
     /// Quick lookup cache replaced with index-based lookup
@@ -1176,6 +1188,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     private var beforeSaveListeners: [BeforeSaveListener] = []
     private var composeTabApplyTask: Task<Void, Never>?
     private var composeTabApplyTaskID = UUID()
+    private var composeTabApplyTaskTabID: UUID?
 
     func composeTabSnapshotPublisher() -> AnyPublisher<ComposeTabState, Never> {
         composeTabSnapshotSubject.eraseToAnyPublisher()
@@ -2277,6 +2290,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         reloadPresetsTask = nil
         composeTabApplyTask?.cancel()
         composeTabApplyTask = nil
+        composeTabApplyTaskTabID = nil
         domainWorkingCommitTasks.values.forEach { $0.cancel() }
         domainWorkingCommitTasks.removeAll()
         postSwitchGitDataLoadTask?.cancel()
@@ -4931,13 +4945,26 @@ class WorkspaceManagerViewModel: ObservableObject {
             defer {
                 if self.composeTabApplyTaskID == taskID {
                     self.composeTabApplyTask = nil
+                    self.composeTabApplyTaskTabID = nil
                 }
             }
             await applyComposeTabStateInternal(tabID: tabID, markWorkspaceDirtyAfterApply: true)
         }
 
         composeTabApplyTask = applyTask
+        composeTabApplyTaskTabID = tabID
         await applyTask.value
+    }
+
+    @MainActor
+    func cancelComposeTabStateApplication(forTabID tabID: UUID) async {
+        guard composeTabApplyTaskTabID == tabID else { return }
+        composeTabApplyTaskID = UUID()
+        let task = composeTabApplyTask
+        composeTabApplyTask = nil
+        composeTabApplyTaskTabID = nil
+        task?.cancel()
+        await task?.value
     }
 
     @MainActor
@@ -4955,6 +4982,9 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         await applyComposeTabFastUIState(initialTab)
+        #if DEBUG
+            await composeTabFastStateDidApplyHandlerForTesting?(tabID)
+        #endif
         await Task.yield()
         guard !Task.isCancelled else { return }
         guard let refreshedTab = composeTab(with: tabID) else { return }
@@ -5452,7 +5482,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 workspaces[workspaceIndex].composeTabs[tabIndex].activeAgentSessionID = sessionID
                 workspaces[workspaceIndex].composeTabs[tabIndex].lastModified = Date()
                 workspaces[workspaceIndex].dateModified = Date()
-                markWorkspaceDirty()
+                markWorkspaceDirty(workspaceID: workspaces[workspaceIndex].id)
                 return true
             }
 
@@ -5461,7 +5491,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 workspaces[workspaceIndex].stashedTabs[stashedIndex].tab.activeAgentSessionID = sessionID
                 workspaces[workspaceIndex].stashedTabs[stashedIndex].tab.lastModified = Date()
                 workspaces[workspaceIndex].dateModified = Date()
-                markWorkspaceDirty()
+                markWorkspaceDirty(workspaceID: workspaces[workspaceIndex].id)
                 return true
             }
         }

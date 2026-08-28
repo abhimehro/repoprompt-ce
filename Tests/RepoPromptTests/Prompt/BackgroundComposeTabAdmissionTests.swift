@@ -847,6 +847,1468 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
         XCTAssertEqual(Set(viewModel.sessions.keys), Set([tabID]))
     }
 
+    func testDurableBackgroundAdmissionCommitsExactlyOneTabWithoutForegroundMutation() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-Commit-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 3,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer { fixture.manager.prepareForWindowClose() }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let sessionID = UUID()
+
+        let result = try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+            name: "Atomic background",
+            sessionID: sessionID,
+            expectedWorkspaceID: workspaceID,
+            lifecycleAuthority: AgentSessionLifecycleAuthority()
+        )
+
+        guard case let .created(createdTab, persistence) = result else {
+            return XCTFail("Expected the background admission to commit: \(result)")
+        }
+        guard case let .persisted(persistedWorkspaceID, _) = persistence else {
+            return XCTFail("Expected durable persistence: \(persistence)")
+        }
+        XCTAssertEqual(persistedWorkspaceID, workspaceID)
+        let finalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        XCTAssertEqual(finalWorkspace.composeTabs.count, originalWorkspace.composeTabs.count + 1)
+        let retainedTabs = Array(finalWorkspace.composeTabs.dropLast())
+        XCTAssertEqual(retainedTabs.map(\.id), originalWorkspace.composeTabs.map(\.id))
+        XCTAssertEqual(retainedTabs.map(\.isPinned), originalWorkspace.composeTabs.map(\.isPinned))
+        XCTAssertEqual(
+            retainedTabs.map(\.activeAgentSessionID),
+            originalWorkspace.composeTabs.map(\.activeAgentSessionID)
+        )
+        XCTAssertEqual(finalWorkspace.composeTabs.last?.id, createdTab.id)
+        XCTAssertEqual(finalWorkspace.composeTabs.last?.activeAgentSessionID, sessionID)
+        XCTAssertEqual(finalWorkspace.activeComposeTabID, originalWorkspace.activeComposeTabID)
+        XCTAssertEqual(finalWorkspace.stashedTabs, originalWorkspace.stashedTabs)
+        XCTAssertEqual(fixture.prompt.activeComposeTabID, originalWorkspace.activeComposeTabID)
+        let savedWorkspace = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+            at: fixture.manager.workspaceFileURL(for: finalWorkspace),
+            scheduleNormalizationWriteback: false
+        )
+        XCTAssertTrue(savedWorkspace.composeTabs.contains(where: {
+            $0.id == createdTab.id && $0.activeAgentSessionID == sessionID
+        }))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testQueuedDurableBackgroundAdmissionRejectsWorkspaceDriftBeforeMutation() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let fixture = makeFixture(initialTabCount: 2, coordinator: coordinator)
+        let expectedWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let originalExpectedTabs = expectedWorkspace.composeTabs
+        let sessionID = UUID()
+        let holder = try await coordinator.acquire(
+            workspaceID: expectedWorkspace.id,
+            admissionID: UUID()
+        )
+        defer { holder.release() }
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Must not appear",
+                sessionID: sessionID,
+                expectedWorkspaceID: expectedWorkspace.id,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await queuedSignal.wait()
+
+        let destinationTab = ComposeTabState(name: "Destination")
+        let destination = WorkspaceModel(
+            name: "Destination",
+            repoPaths: [],
+            ephemeralFlag: true,
+            composeTabs: [destinationTab],
+            activeComposeTabID: destinationTab.id
+        )
+        fixture.manager.workspaces.append(destination)
+        fixture.manager.activeWorkspace = destination
+        fixture.prompt.loadComposeTabsFromWorkspace(destination)
+        holder.release()
+
+        let result = try await admissionTask.value
+        XCTAssertEqual(result, .rejected(
+            .rejected(reason: "workspace_changed"),
+            .workspaceChanged
+        ))
+        XCTAssertEqual(
+            fixture.manager.workspaces.first(where: { $0.id == expectedWorkspace.id })?.composeTabs,
+            originalExpectedTabs
+        )
+        XCTAssertFalse(fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
+            $0.activeAgentSessionID == sessionID
+        }))
+        XCTAssertEqual(fixture.manager.activeWorkspaceID, destination.id)
+        XCTAssertEqual(fixture.prompt.currentComposeTabs, [destinationTab])
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancelledDurableBackgroundAdmissionRollsBackBeforeNextLeaseHolder() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-Cancelled-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let originalTabIDs = originalWorkspace.composeTabs.map(\.id)
+        let originalPins = originalWorkspace.composeTabs.map(\.isPinned)
+        let originalBindings = originalWorkspace.composeTabs.map(\.activeAgentSessionID)
+        let originalActiveTabID = originalWorkspace.activeComposeTabID
+        let originalStashedTabs = originalWorkspace.stashedTabs
+        let sessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Cancelled provisional",
+                sessionID: sessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                guard let workspace = fixture.manager.activeWorkspace else { return false }
+                return workspace.composeTabs.map(\.id) == originalTabIDs
+                    && workspace.composeTabs.map(\.isPinned) == originalPins
+                    && workspace.composeTabs.map(\.activeAgentSessionID) == originalBindings
+                    && workspace.activeComposeTabID == originalActiveTabID
+                    && workspace.stashedTabs == originalStashedTabs
+                    && !fixture.prompt.currentComposeTabs.contains(where: {
+                        $0.activeAgentSessionID == sessionID
+                    })
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must propagate without a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let nextHolderObservedRollback = try await stateObservedByNextHolder.value
+        XCTAssertTrue(nextHolderObservedRollback)
+        let finalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.id), originalTabIDs)
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.isPinned), originalPins)
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.activeAgentSessionID), originalBindings)
+        XCTAssertEqual(finalWorkspace.activeComposeTabID, originalActiveTabID)
+        XCTAssertEqual(finalWorkspace.stashedTabs, originalStashedTabs)
+        XCTAssertFalse(fixture.prompt.currentComposeTabs.contains(where: {
+            $0.activeAgentSessionID == sessionID
+        }))
+        XCTAssertFalse(try FileManager.default.fileExists(
+            atPath: fixture.manager.workspaceFileURL(
+                for: XCTUnwrap(fixture.manager.activeWorkspace)
+            ).path
+        ))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testExplicitTabAdmissionCommitsRuntimeAndDurableBindingAtomically() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-ExplicitCommit-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer { fixture.manager.prepareForWindowClose() }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let tab = try XCTUnwrap(originalWorkspace.composeTabs.last)
+        let originalSessionID = try XCTUnwrap(tab.activeAgentSessionID)
+        XCTAssertTrue(fixture.manager.compareAndSetActiveAgentSessionID(
+            expected: originalSessionID,
+            replacement: nil,
+            forTabID: tab.id,
+            inWorkspaceID: workspaceID
+        ))
+        try fixture.prompt.loadComposeTabsFromWorkspace(
+            XCTUnwrap(fixture.manager.activeWorkspace)
+        )
+        let viewModel = makeAgentModeViewModel(
+            prompt: fixture.prompt,
+            manager: fixture.manager
+        )
+
+        let target = try await viewModel.mcpResolveOrCreateSessionTarget(
+            tabID: tab.id,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: nil
+        )
+
+        let sessionID = try XCTUnwrap(target.sessionID)
+        XCTAssertEqual(target.tabID, tab.id)
+        XCTAssertEqual(fixture.manager.activeAgentSessionID(
+            forTabID: tab.id,
+            inWorkspaceID: workspaceID
+        ), sessionID)
+        XCTAssertEqual(viewModel.session(for: tab.id, createIfNeeded: false)?.activeAgentSessionID, sessionID)
+        let finalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.id), originalWorkspace.composeTabs.map(\.id))
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.isPinned), originalWorkspace.composeTabs.map(\.isPinned))
+        XCTAssertEqual(finalWorkspace.activeComposeTabID, originalWorkspace.activeComposeTabID)
+        XCTAssertEqual(finalWorkspace.stashedTabs, originalWorkspace.stashedTabs)
+        let savedWorkspace = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+            at: fixture.manager.workspaceFileURL(for: finalWorkspace),
+            scheduleNormalizationWriteback: false
+        )
+        XCTAssertEqual(
+            savedWorkspace.composeTabs.first(where: { $0.id == tab.id })?.activeAgentSessionID,
+            sessionID
+        )
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testExplicitTabAdmissionRollsBackWrongWorkspaceDecisionBeforeLeaseRelease() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false
+        )
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let tab = try XCTUnwrap(originalWorkspace.composeTabs.last)
+        let originalSessionID = try XCTUnwrap(tab.activeAgentSessionID)
+        XCTAssertTrue(fixture.manager.compareAndSetActiveAgentSessionID(
+            expected: originalSessionID,
+            replacement: nil,
+            forTabID: tab.id,
+            inWorkspaceID: workspaceID
+        ))
+        try fixture.prompt.loadComposeTabsFromWorkspace(
+            XCTUnwrap(fixture.manager.activeWorkspace)
+        )
+        let viewModel = makeAgentModeViewModel(
+            prompt: fixture.prompt,
+            manager: fixture.manager
+        )
+        fixture.manager.setWorkspacePersistenceOutcomeOverrideForTesting(
+            .notRequired(workspaceID: UUID())
+        )
+        defer { fixture.manager.setWorkspacePersistenceOutcomeOverrideForTesting(nil) }
+
+        do {
+            _ = try await viewModel.mcpResolveOrCreateSessionTarget(
+                tabID: tab.id,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: nil
+            )
+            XCTFail("A persistence outcome for another workspace must reject admission.")
+        } catch {}
+
+        XCTAssertNil(fixture.manager.activeAgentSessionID(
+            forTabID: tab.id,
+            inWorkspaceID: workspaceID
+        ))
+        XCTAssertNil(viewModel.session(for: tab.id, createIfNeeded: false)?.activeAgentSessionID)
+        let finalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.id), originalWorkspace.composeTabs.map(\.id))
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.isPinned), originalWorkspace.composeTabs.map(\.isPinned))
+        XCTAssertEqual(finalWorkspace.activeComposeTabID, originalWorkspace.activeComposeTabID)
+        XCTAssertEqual(finalWorkspace.stashedTabs, originalWorkspace.stashedTabs)
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testQueuedExplicitTabAdmissionRejectsWorkspaceDriftBeforeBinding() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let fixture = makeFixture(initialTabCount: 2, coordinator: coordinator)
+        let expectedWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let tab = try XCTUnwrap(expectedWorkspace.composeTabs.last)
+        let originalSessionID = try XCTUnwrap(tab.activeAgentSessionID)
+        XCTAssertTrue(fixture.manager.compareAndSetActiveAgentSessionID(
+            expected: originalSessionID,
+            replacement: nil,
+            forTabID: tab.id,
+            inWorkspaceID: expectedWorkspace.id
+        ))
+        try fixture.prompt.loadComposeTabsFromWorkspace(
+            XCTUnwrap(fixture.manager.activeWorkspace)
+        )
+        let viewModel = makeAgentModeViewModel(
+            prompt: fixture.prompt,
+            manager: fixture.manager
+        )
+        let holder = try await coordinator.acquire(
+            workspaceID: expectedWorkspace.id,
+            admissionID: UUID()
+        )
+        defer { holder.release() }
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+
+        let admissionTask = Task { @MainActor in
+            do {
+                _ = try await viewModel.mcpResolveOrCreateSessionTarget(
+                    tabID: tab.id,
+                    sessionID: nil,
+                    createIfNeeded: true,
+                    sessionName: nil
+                )
+                return false
+            } catch {
+                return true
+            }
+        }
+        await queuedSignal.wait()
+
+        let destinationTab = ComposeTabState(name: "Destination")
+        let destination = WorkspaceModel(
+            name: "Destination",
+            repoPaths: [],
+            ephemeralFlag: true,
+            composeTabs: [destinationTab],
+            activeComposeTabID: destinationTab.id
+        )
+        fixture.manager.workspaces.append(destination)
+        fixture.manager.activeWorkspace = destination
+        fixture.prompt.loadComposeTabsFromWorkspace(destination)
+        holder.release()
+
+        let admissionWasRejected = await admissionTask.value
+        XCTAssertTrue(admissionWasRejected)
+        XCTAssertNil(fixture.manager.activeAgentSessionID(
+            forTabID: tab.id,
+            inWorkspaceID: expectedWorkspace.id
+        ))
+        XCTAssertNil(viewModel.session(for: tab.id, createIfNeeded: false)?.activeAgentSessionID)
+        XCTAssertEqual(fixture.manager.activeWorkspaceID, destination.id)
+        XCTAssertEqual(fixture.prompt.currentComposeTabs, [destinationTab])
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancelledExplicitTabAdmissionRollsBackBeforeNextLeaseHolder() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-ExplicitCancelled-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let tab = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.last)
+        let originalSessionID = try XCTUnwrap(tab.activeAgentSessionID)
+        XCTAssertTrue(fixture.manager.compareAndSetActiveAgentSessionID(
+            expected: originalSessionID,
+            replacement: nil,
+            forTabID: tab.id,
+            inWorkspaceID: workspaceID
+        ))
+        try fixture.prompt.loadComposeTabsFromWorkspace(
+            XCTUnwrap(fixture.manager.activeWorkspace)
+        )
+        let viewModel = makeAgentModeViewModel(
+            prompt: fixture.prompt,
+            manager: fixture.manager
+        )
+        let session = viewModel.session(for: tab.id)
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+
+        let admissionTask = Task { @MainActor in
+            try await viewModel.mcpResolveOrCreateSessionTarget(
+                tabID: tab.id,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: nil
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                fixture.manager.activeAgentSessionID(
+                    forTabID: tab.id,
+                    inWorkspaceID: workspaceID
+                ) == nil && session.activeAgentSessionID == nil
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return an explicit provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+        let nextHolderObservedRollback = try await stateObservedByNextHolder.value
+
+        XCTAssertTrue(nextHolderObservedRollback)
+        XCTAssertNil(fixture.manager.activeAgentSessionID(
+            forTabID: tab.id,
+            inWorkspaceID: workspaceID
+        ))
+        XCTAssertNil(session.activeAgentSessionID)
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testAlreadyBoundExplicitTabRevalidatesWorkspaceAfterSessionPreparation() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let fixture = makeFixture(initialTabCount: 2, coordinator: coordinator)
+        let expectedWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let tab = try XCTUnwrap(expectedWorkspace.composeTabs.last)
+        let sessionID = try XCTUnwrap(tab.activeAgentSessionID)
+        let viewModel = makeAgentModeViewModel(prompt: fixture.prompt, manager: fixture.manager)
+        let session = viewModel.session(for: tab.id)
+        _ = viewModel.test_installPersistentSessionBinding(sessionID: sessionID, on: session)
+        let preparationFence = TestReleaseFence(name: "explicit tab session preparation")
+        viewModel.test_setAfterExplicitTabSessionReady {
+            await preparationFence.enterAndWaitIgnoringCancellationUntilRelease()
+        }
+        defer {
+            viewModel.test_setAfterExplicitTabSessionReady(nil)
+            preparationFence.release()
+        }
+
+        let admissionTask = Task { @MainActor in
+            try await viewModel.mcpResolveOrCreateSessionTarget(
+                tabID: tab.id,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: nil
+            )
+        }
+        let preparationDidSuspend = await preparationFence.waitUntilEntered()
+        XCTAssertTrue(preparationDidSuspend)
+
+        let sourceIndex = try XCTUnwrap(
+            fixture.manager.workspaces.firstIndex(where: { $0.id == expectedWorkspace.id })
+        )
+        fixture.manager.workspaces[sourceIndex].composeTabs.removeAll { $0.id == tab.id }
+        let destination = WorkspaceModel(
+            name: "Destination",
+            repoPaths: [],
+            ephemeralFlag: true,
+            composeTabs: [tab],
+            activeComposeTabID: tab.id
+        )
+        fixture.manager.workspaces.append(destination)
+        preparationFence.release()
+
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Workspace drift must not publish an already-bound target.")
+        } catch is CancellationError {
+            XCTFail("Workspace drift is not cancellation.")
+        } catch {}
+        XCTAssertEqual(session.activeAgentSessionID, sessionID)
+        XCTAssertEqual(
+            fixture.manager.activeAgentSessionID(forTabID: tab.id, inWorkspaceID: destination.id),
+            sessionID
+        )
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testExplicitBindingRejectionPreservesNewerRuntimeAndWorkspaceIdentity() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-ExplicitIdentityFence-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let tab = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.last)
+        let originalSessionID = try XCTUnwrap(tab.activeAgentSessionID)
+        XCTAssertTrue(fixture.manager.compareAndSetActiveAgentSessionID(
+            expected: originalSessionID,
+            replacement: nil,
+            forTabID: tab.id,
+            inWorkspaceID: workspaceID
+        ))
+        try fixture.prompt.loadComposeTabsFromWorkspace(XCTUnwrap(fixture.manager.activeWorkspace))
+        let viewModel = makeAgentModeViewModel(prompt: fixture.prompt, manager: fixture.manager)
+        let session = viewModel.session(for: tab.id)
+        let replacementSessionID = UUID()
+        let replacementClaim = OneShotAdmissionClaim()
+        let events = AdmissionLifecycleEventRecorder()
+        AgentSessionLifecycleAuthority.setEventObserverForTesting { events.record($0) }
+        defer { AgentSessionLifecycleAuthority.setEventObserverForTesting(nil) }
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            guard await replacementClaim.claim() else { return }
+            await MainActor.run {
+                _ = viewModel.test_installPersistentSessionBinding(
+                    sessionID: replacementSessionID,
+                    on: session,
+                    compareAndSetInWorkspaceID: workspaceID
+                )
+            }
+        }
+
+        do {
+            _ = try await viewModel.mcpResolveOrCreateSessionTarget(
+                tabID: tab.id,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: nil
+            )
+            XCTFail("A replaced provisional identity must reject without returning a target.")
+        } catch is CancellationError {
+            XCTFail("Identity replacement is not cancellation.")
+        } catch {}
+
+        XCTAssertEqual(session.activeAgentSessionID, replacementSessionID)
+        XCTAssertEqual(session.persistentSessionBindingIdentity?.sessionID, replacementSessionID)
+        XCTAssertEqual(
+            fixture.manager.activeAgentSessionID(forTabID: tab.id, inWorkspaceID: workspaceID),
+            replacementSessionID
+        )
+        XCTAssertTrue(events.snapshot().contains(where: {
+            $0.decision == .rejected
+                && $0.reason == AgentSessionLifecycleAuthority.RejectionReason.sessionIdentityChanged.rawValue
+        }))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testBackgroundPersistedStaleBindingPreservesTypedRollbackReason() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-TypedRollback-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let sessionID = UUID()
+        let replacementSessionID = UUID()
+        let replacementClaim = OneShotAdmissionClaim()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            guard await replacementClaim.claim() else { return }
+            await MainActor.run {
+                guard let tabID = fixture.manager.workspaces
+                    .first(where: { $0.id == workspaceID })?
+                    .composeTabs.first(where: { $0.activeAgentSessionID == sessionID })?.id
+                else {
+                    XCTFail("Expected the provisional background binding.")
+                    return
+                }
+                XCTAssertTrue(fixture.manager.compareAndSetActiveAgentSessionID(
+                    expected: sessionID,
+                    replacement: replacementSessionID,
+                    forTabID: tabID,
+                    inWorkspaceID: workspaceID
+                ))
+            }
+        }
+
+        let result = try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+            name: "Typed stale binding",
+            sessionID: sessionID,
+            expectedWorkspaceID: workspaceID,
+            lifecycleAuthority: AgentSessionLifecycleAuthority()
+        )
+
+        guard case let .rejected(persistence, reason) = result else {
+            return XCTFail("A stale persisted binding must reject: \(result)")
+        }
+        guard case let .persisted(persistedWorkspaceID, _) = persistence else {
+            return XCTFail("Expected the stale outcome to have persisted: \(persistence)")
+        }
+        XCTAssertEqual(persistedWorkspaceID, workspaceID)
+        XCTAssertEqual(reason, .sessionIdentityChanged)
+        XCTAssertFalse(fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
+            $0.activeAgentSessionID == sessionID || $0.activeAgentSessionID == replacementSessionID
+        }))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancelledBackgroundAdmissionRestoresForegroundSelectedDuringPersistence() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-ForegroundRollback-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 3,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let originalActiveTabID = try XCTUnwrap(originalWorkspace.activeComposeTabID)
+        let sessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Selected while pending",
+                sessionID: sessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let provisionalTabID = try XCTUnwrap(
+            fixture.manager.activeWorkspace?.composeTabs.first(where: {
+                $0.activeAgentSessionID == sessionID
+            })?.id
+        )
+        await fixture.prompt.switchComposeTab(provisionalTabID)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.activeComposeTabID, provisionalTabID)
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let finalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.id), originalWorkspace.composeTabs.map(\.id))
+        XCTAssertEqual(finalWorkspace.composeTabs.map(\.isPinned), originalWorkspace.composeTabs.map(\.isPinned))
+        XCTAssertEqual(finalWorkspace.stashedTabs, originalWorkspace.stashedTabs)
+        XCTAssertEqual(finalWorkspace.activeComposeTabID, originalActiveTabID)
+        XCTAssertEqual(fixture.prompt.activeComposeTabID, originalActiveTabID)
+        XCTAssertFalse(finalWorkspace.composeTabs.contains(where: { $0.id == provisionalTabID }))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancellationAfterCompletedProvisionalActivationRestoresNonblankLiveContextBeforeLeaseRelease() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-CompletedActivation-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let foregroundTab = try await configureNonblankForegroundContext(
+            fixture: fixture,
+            root: root
+        )
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalTabIDs = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.map(\.id))
+        let originalPins = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.map(\.isPinned))
+        let originalStashedTabs = try XCTUnwrap(fixture.manager.activeWorkspace?.stashedTabs)
+        let provisionalSessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Completed provisional activation",
+                sessionID: provisionalSessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let provisionalTabID = try XCTUnwrap(
+            fixture.manager.activeWorkspace?.composeTabs.first(where: {
+                $0.activeAgentSessionID == provisionalSessionID
+            })?.id
+        )
+
+        await fixture.prompt.switchComposeTab(provisionalTabID)
+        XCTAssertEqual(fixture.prompt.promptText, "")
+        XCTAssertTrue(fixture.manager.fileManager.snapshotSelection().selectedPaths.isEmpty)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.activeComposeTabID, provisionalTabID)
+
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                self.nonblankForegroundContextMatches(
+                    fixture: fixture,
+                    expectedTab: foregroundTab,
+                    rejectedSessionID: provisionalSessionID
+                )
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let nextHolderObservedRestoredContext = try await stateObservedByNextHolder.value
+        XCTAssertTrue(nextHolderObservedRestoredContext)
+        XCTAssertTrue(nonblankForegroundContextMatches(
+            fixture: fixture,
+            expectedTab: foregroundTab,
+            rejectedSessionID: provisionalSessionID
+        ))
+        XCTAssertEqual(fixture.manager.activeWorkspace?.composeTabs.map(\.id), originalTabIDs)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.composeTabs.map(\.isPinned), originalPins)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.stashedTabs, originalStashedTabs)
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancellationWhileProvisionalActivationSuspendedRestoresNonblankLiveContextBeforeLeaseRelease() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-SuspendedActivation-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setComposeTabFastStateDidApplyHandlerForTesting(nil)
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let foregroundTab = try await configureNonblankForegroundContext(
+            fixture: fixture,
+            root: root
+        )
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalTabIDs = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.map(\.id))
+        let originalPins = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.map(\.isPinned))
+        let originalStashedTabs = try XCTUnwrap(fixture.manager.activeWorkspace?.stashedTabs)
+        let provisionalSessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        let activationGate = TestReleaseFence(name: "provisional compose activation")
+        let activationCancellationSignal = BoundedTestSignal(name: "provisional activation cancellation")
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+        fixture.manager.setComposeTabFastStateDidApplyHandlerForTesting { tabID in
+            guard fixture.manager.activeAgentSessionID(
+                forTabID: tabID,
+                inWorkspaceID: workspaceID
+            ) == provisionalSessionID else { return }
+            await withTaskCancellationHandler {
+                await activationGate.enterAndWaitIgnoringCancellationUntilRelease()
+            } onCancel: {
+                activationCancellationSignal.signal()
+            }
+        }
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Suspended provisional activation",
+                sessionID: provisionalSessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let provisionalTabID = try XCTUnwrap(
+            fixture.manager.activeWorkspace?.composeTabs.first(where: {
+                $0.activeAgentSessionID == provisionalSessionID
+            })?.id
+        )
+        let activationTask = Task { @MainActor in
+            await fixture.prompt.switchComposeTab(provisionalTabID)
+        }
+        let activationDidSuspend = await activationGate.waitUntilEntered()
+        XCTAssertTrue(activationDidSuspend)
+        XCTAssertEqual(fixture.prompt.promptText, "")
+        XCTAssertEqual(fixture.manager.activeWorkspace?.activeComposeTabID, provisionalTabID)
+
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                self.nonblankForegroundContextMatches(
+                    fixture: fixture,
+                    expectedTab: foregroundTab,
+                    rejectedSessionID: provisionalSessionID
+                )
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        await activationCancellationSignal.wait()
+        activationGate.release()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+        await activationTask.value
+
+        let nextHolderObservedRestoredContext = try await stateObservedByNextHolder.value
+        XCTAssertTrue(nextHolderObservedRestoredContext)
+        XCTAssertTrue(nonblankForegroundContextMatches(
+            fixture: fixture,
+            expectedTab: foregroundTab,
+            rejectedSessionID: provisionalSessionID
+        ))
+        XCTAssertEqual(fixture.manager.activeWorkspace?.composeTabs.map(\.id), originalTabIDs)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.composeTabs.map(\.isPinned), originalPins)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.stashedTabs, originalStashedTabs)
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancellationWithoutSelectingProvisionalPreservesLatestStoredForegroundEdits() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-LatestStoredNoSwitch-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let originalForeground = try await configureNonblankForegroundContext(
+            fixture: fixture,
+            root: root
+        )
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalTabIDs = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.map(\.id))
+        let originalStashedTabs = try XCTUnwrap(fixture.manager.activeWorkspace?.stashedTabs)
+        let provisionalSessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Never selected provisional",
+                sessionID: provisionalSessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let latestForeground = try await updateForegroundContextDuringAdmission(
+            fixture: fixture,
+            root: root,
+            tabID: originalForeground.id,
+            label: "NoSwitch"
+        )
+        XCTAssertEqual(fixture.manager.activeWorkspace?.activeComposeTabID, originalForeground.id)
+
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                self.nonblankForegroundContextMatches(
+                    fixture: fixture,
+                    expectedTab: latestForeground,
+                    rejectedSessionID: provisionalSessionID
+                )
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let nextHolderObservedLatestState = try await stateObservedByNextHolder.value
+        XCTAssertTrue(nextHolderObservedLatestState)
+        XCTAssertTrue(nonblankForegroundContextMatches(
+            fixture: fixture,
+            expectedTab: latestForeground,
+            rejectedSessionID: provisionalSessionID
+        ))
+        XCTAssertEqual(fixture.manager.activeWorkspace?.composeTabs.map(\.id), originalTabIDs)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.stashedTabs, originalStashedTabs)
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancellationAfterSelectingProvisionalRestoresLatestFlushedForegroundEdits() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-LatestStoredAfterSwitch-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let originalForeground = try await configureNonblankForegroundContext(
+            fixture: fixture,
+            root: root
+        )
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalTabIDs = try XCTUnwrap(fixture.manager.activeWorkspace?.composeTabs.map(\.id))
+        let originalStashedTabs = try XCTUnwrap(fixture.manager.activeWorkspace?.stashedTabs)
+        let provisionalSessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Selected after latest edits",
+                sessionID: provisionalSessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let provisionalTabID = try XCTUnwrap(
+            fixture.manager.activeWorkspace?.composeTabs.first(where: {
+                $0.activeAgentSessionID == provisionalSessionID
+            })?.id
+        )
+        let latestForeground = try await updateForegroundContextDuringAdmission(
+            fixture: fixture,
+            root: root,
+            tabID: originalForeground.id,
+            label: "AfterSwitch"
+        )
+        await fixture.prompt.switchComposeTab(provisionalTabID)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.activeComposeTabID, provisionalTabID)
+        XCTAssertEqual(fixture.prompt.promptText, "")
+
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                self.nonblankForegroundContextMatches(
+                    fixture: fixture,
+                    expectedTab: latestForeground,
+                    rejectedSessionID: provisionalSessionID
+                )
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let nextHolderObservedLatestState = try await stateObservedByNextHolder.value
+        XCTAssertTrue(nextHolderObservedLatestState)
+        XCTAssertTrue(nonblankForegroundContextMatches(
+            fixture: fixture,
+            expectedTab: latestForeground,
+            rejectedSessionID: provisionalSessionID
+        ))
+        XCTAssertEqual(fixture.manager.activeWorkspace?.composeTabs.map(\.id), originalTabIDs)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.stashedTabs, originalStashedTabs)
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancellationAfterClosingPriorForegroundAppliesRemainingOpenFallbackBeforeLeaseRelease() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-ClosedPriorFallback-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let priorForeground = try await configureNonblankForegroundContext(
+            fixture: fixture,
+            root: root
+        )
+        let remainingTabID = try XCTUnwrap(
+            fixture.manager.activeWorkspace?.composeTabs.first(where: { $0.id != priorForeground.id })?.id
+        )
+        await fixture.prompt.switchComposeTab(remainingTabID)
+        let expectedFallback = try await updateForegroundContextDuringAdmission(
+            fixture: fixture,
+            root: root,
+            tabID: remainingTabID,
+            label: "ClosedPriorFallback"
+        )
+        await fixture.prompt.switchComposeTab(priorForeground.id)
+
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalStashedTabs = try XCTUnwrap(fixture.manager.activeWorkspace?.stashedTabs)
+        let provisionalSessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Closed prior fallback",
+                sessionID: provisionalSessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let provisionalTabID = try XCTUnwrap(
+            fixture.manager.activeWorkspace?.composeTabs.first(where: {
+                $0.activeAgentSessionID == provisionalSessionID
+            })?.id
+        )
+        await fixture.prompt.switchComposeTab(provisionalTabID)
+        let closeReport = await fixture.prompt.closeComposeTab(priorForeground.id)
+        XCTAssertEqual(closeReport.removedComposeTabIDs, [priorForeground.id])
+        XCTAssertTrue(closeReport.rejections.isEmpty)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.activeComposeTabID, provisionalTabID)
+
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                self.nonblankForegroundContextMatches(
+                    fixture: fixture,
+                    expectedTab: expectedFallback,
+                    rejectedSessionID: provisionalSessionID
+                )
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let nextHolderObservedFallback = try await stateObservedByNextHolder.value
+        XCTAssertTrue(nextHolderObservedFallback)
+        XCTAssertTrue(nonblankForegroundContextMatches(
+            fixture: fixture,
+            expectedTab: expectedFallback,
+            rejectedSessionID: provisionalSessionID
+        ))
+        XCTAssertEqual(fixture.manager.activeWorkspace?.composeTabs.map(\.id), [remainingTabID])
+        XCTAssertEqual(fixture.manager.activeWorkspace?.stashedTabs, originalStashedTabs)
+        XCTAssertFalse(fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
+            $0.id == priorForeground.id
+        }))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancellationAfterStashingOnlyPriorForegroundAppliesSingleBlankReplacementBeforeLeaseRelease() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-StashedPriorReplacement-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 1,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let priorForeground = try await configureNonblankForegroundContext(
+            fixture: fixture,
+            root: root
+        )
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let provisionalSessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Stashed prior replacement",
+                sessionID: provisionalSessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let provisionalTabID = try XCTUnwrap(
+            fixture.manager.activeWorkspace?.composeTabs.first(where: {
+                $0.activeAgentSessionID == provisionalSessionID
+            })?.id
+        )
+        await fixture.prompt.switchComposeTab(provisionalTabID)
+        let stashReport = await fixture.prompt.stashTab(priorForeground.id)
+        XCTAssertEqual(stashReport.removedComposeTabIDs, [priorForeground.id])
+        XCTAssertTrue(stashReport.rejections.isEmpty)
+        XCTAssertTrue(fixture.manager.activeWorkspace?.stashedTabs.contains(where: {
+            $0.tab.id == priorForeground.id
+        }) == true)
+        XCTAssertEqual(fixture.manager.activeWorkspace?.activeComposeTabID, provisionalTabID)
+
+        let queuedSignal = AdmissionEventSignal(kind: .queued)
+        coordinator.setEventObserverForTesting { queuedSignal.observe($0) }
+        defer { coordinator.setEventObserverForTesting(nil) }
+        let stateObservedByNextHolder = Task { @MainActor in
+            try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            ) {
+                self.blankReplacementContextMatches(
+                    fixture: fixture,
+                    stashedPriorTabID: priorForeground.id,
+                    rejectedSessionID: provisionalSessionID
+                )
+            }
+        }
+        await queuedSignal.wait()
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        let nextHolderObservedReplacement = try await stateObservedByNextHolder.value
+        XCTAssertTrue(nextHolderObservedReplacement)
+        XCTAssertTrue(blankReplacementContextMatches(
+            fixture: fixture,
+            stashedPriorTabID: priorForeground.id,
+            rejectedSessionID: provisionalSessionID
+        ))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancelledBackgroundRollbackBumpsOnlyCapturedWorkspaceVersion() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-TargetVersion-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let expectedWorkspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let sessionID = UUID()
+        let saveGate = AdmissionAsyncGate()
+        fixture.manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { _, _, _ in
+            await saveGate.enterAndWait()
+        }
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Inactive rollback target",
+                sessionID: sessionID,
+                expectedWorkspaceID: expectedWorkspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await saveGate.waitUntilEntered()
+        let expectedVersionAfterAppend = fixture.manager.debugStateVersionForWorkspace(expectedWorkspaceID)
+
+        let destinationTab = ComposeTabState(name: "Destination")
+        let destination = WorkspaceModel(
+            name: "Destination",
+            repoPaths: [],
+            ephemeralFlag: true,
+            composeTabs: [destinationTab],
+            activeComposeTabID: destinationTab.id
+        )
+        fixture.manager.workspaces.append(destination)
+        fixture.manager.activeWorkspace = destination
+        fixture.prompt.loadComposeTabsFromWorkspace(destination)
+        let destinationVersion = fixture.manager.debugStateVersionForWorkspace(destination.id)
+
+        admissionTask.cancel()
+        await saveGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a background target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(
+            fixture.manager.debugStateVersionForWorkspace(expectedWorkspaceID),
+            expectedVersionAfterAppend + 1
+        )
+        XCTAssertEqual(
+            fixture.manager.debugStateVersionForWorkspace(destination.id),
+            destinationVersion
+        )
+        XCTAssertEqual(fixture.manager.activeWorkspaceID, destination.id)
+        XCTAssertEqual(fixture.prompt.currentComposeTabs, [destinationTab])
+        XCTAssertFalse(fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
+            $0.activeAgentSessionID == sessionID
+        }))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testWorkspaceScopedBindingCASBumpsOnlyTargetWorkspaceVersion() throws {
+        let fixture = makeFixture(initialTabCount: 2)
+        let sourceWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let tab = try XCTUnwrap(sourceWorkspace.composeTabs.last)
+        let originalSessionID = try XCTUnwrap(tab.activeAgentSessionID)
+        let destinationTab = ComposeTabState(name: "Destination")
+        let destination = WorkspaceModel(
+            name: "Destination",
+            repoPaths: [],
+            ephemeralFlag: true,
+            composeTabs: [destinationTab],
+            activeComposeTabID: destinationTab.id
+        )
+        fixture.manager.workspaces.append(destination)
+        fixture.manager.activeWorkspace = destination
+        let sourceVersion = fixture.manager.debugStateVersionForWorkspace(sourceWorkspace.id)
+        let destinationVersion = fixture.manager.debugStateVersionForWorkspace(destination.id)
+
+        XCTAssertTrue(fixture.manager.compareAndSetActiveAgentSessionID(
+            expected: originalSessionID,
+            replacement: nil,
+            forTabID: tab.id,
+            inWorkspaceID: sourceWorkspace.id
+        ))
+
+        XCTAssertEqual(
+            fixture.manager.debugStateVersionForWorkspace(sourceWorkspace.id),
+            sourceVersion + 1
+        )
+        XCTAssertEqual(
+            fixture.manager.debugStateVersionForWorkspace(destination.id),
+            destinationVersion
+        )
+    }
+
     func testStaleProjectionCannotReplaceActiveLivePinnedSession() throws {
         let fixture = makeFixture(initialTabCount: 2)
         let tabID = try XCTUnwrap(fixture.prompt.activeComposeTabID)
@@ -915,10 +2377,11 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
         let originalName = fixture.manager.composeTab(with: tabID)?.name
 
         let replacementSessionID = UUID()
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
         _ = viewModel.test_installPersistentSessionBinding(
             sessionID: replacementSessionID,
             on: session,
-            updateWorkspaceMetadata: true
+            compareAndSetInWorkspaceID: workspaceID
         )
 
         XCTAssertThrowsError(try viewModel.renameSession(target: target, to: "Late stale title"))
@@ -994,7 +2457,226 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
         } catch {}
     }
 
-    private func makeFixture(initialTabCount: Int) -> (manager: WorkspaceManagerViewModel, prompt: PromptViewModel) {
+    private func configureNonblankForegroundContext(
+        fixture: (manager: WorkspaceManagerViewModel, prompt: PromptViewModel),
+        root: URL
+    ) async throws -> ComposeTabState {
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        let selectedFile = sources.appendingPathComponent("Selected.swift")
+        try "struct SelectedForegroundContext {}\n".write(
+            to: selectedFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let workspaceIndex = try XCTUnwrap(
+            fixture.manager.workspaces.firstIndex(where: { $0.id == workspaceID })
+        )
+        fixture.manager.workspaces[workspaceIndex].repoPaths = [root.path]
+        try await fixture.manager.fileManager.loadFolder(
+            at: root,
+            for: fixture.manager.workspaces[workspaceIndex],
+            freshStart: true
+        )
+
+        let tabID = try XCTUnwrap(fixture.manager.workspaces[workspaceIndex].activeComposeTabID)
+        let tabIndex = try XCTUnwrap(
+            fixture.manager.workspaces[workspaceIndex].composeTabs.firstIndex(where: { $0.id == tabID })
+        )
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex].promptText = "Restore this foreground prompt"
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex].selection = StoredSelection(
+            selectedPaths: [selectedFile.path],
+            codemapAutoEnabled: false
+        )
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex].expandedFolders = ["", "Sources"]
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex].activeSubView = .context
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex].contextOverrides = .init(
+            useOverridePrompt: true,
+            overridePromptText: "Restore this context override"
+        )
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex].contextBuilder = .init(
+            instructions: "Restore these compose instructions",
+            followUpTypeRaw: "plan"
+        )
+        fixture.prompt.loadComposeTabsFromWorkspace(fixture.manager.workspaces[workspaceIndex])
+        let foregroundTab = fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex]
+        await fixture.manager.applyComposeTabState(foregroundTab)
+        await fixture.manager.fileManager.restoreExpansionState(from: foregroundTab.expandedFolders)
+        let liveForegroundTab = fixture.manager.collectComposeTabSnapshot(
+            name: foregroundTab.name,
+            base: foregroundTab
+        )
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex] = liveForegroundTab
+        fixture.prompt.loadComposeTabsFromWorkspace(fixture.manager.workspaces[workspaceIndex])
+        return liveForegroundTab
+    }
+
+    private func updateForegroundContextDuringAdmission(
+        fixture: (manager: WorkspaceManagerViewModel, prompt: PromptViewModel),
+        root: URL,
+        tabID: UUID,
+        label: String
+    ) async throws -> ComposeTabState {
+        let latestFolder = root
+            .appendingPathComponent("Sources", isDirectory: true)
+            .appendingPathComponent("Latest-\(label)", isDirectory: true)
+        try FileManager.default.createDirectory(at: latestFolder, withIntermediateDirectories: true)
+        let latestFile = latestFolder.appendingPathComponent("Latest.swift")
+        try "struct Latest\(label)ForegroundContext {}\n".write(
+            to: latestFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let workspaceIndex = try XCTUnwrap(
+            fixture.manager.workspaces.firstIndex(where: { $0.id == workspaceID })
+        )
+        let tabIndex = try XCTUnwrap(
+            fixture.manager.workspaces[workspaceIndex].composeTabs.firstIndex(where: { $0.id == tabID })
+        )
+        var storedTab = fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex]
+        storedTab.isPinned.toggle()
+        storedTab.contextBuilder = .init(
+            instructions: "Latest \(label) compose instructions",
+            followUpTypeRaw: "question"
+        )
+        fixture.manager.workspaces[workspaceIndex].composeTabs[tabIndex] = storedTab
+
+        fixture.prompt.promptText = "Latest \(label) foreground prompt"
+        fixture.prompt.setActiveFilesTab(.context, source: .user)
+        await fixture.prompt.applyContextBuilderOverrides(.init(
+            useOverridePrompt: true,
+            overridePromptText: "Latest \(label) context override"
+        ))
+        await fixture.manager.fileManager.applyStoredSelection(.init(
+            selectedPaths: [latestFile.path],
+            codemapAutoEnabled: false
+        ))
+        await fixture.manager.fileManager.restoreExpansionState(from: [
+            root.path,
+            root.appendingPathComponent("Sources", isDirectory: true).path,
+            latestFolder.path
+        ])
+        fixture.manager.publishActiveComposeTabSnapshot(
+            commitToMemory: true,
+            touchModified: true
+        )
+        let latestStoredTab = try XCTUnwrap(
+            fixture.manager.workspaces[workspaceIndex].composeTabs.first(where: { $0.id == tabID })
+        )
+        fixture.prompt.loadComposeTabsFromWorkspace(fixture.manager.workspaces[workspaceIndex])
+        return latestStoredTab
+    }
+
+    private func blankReplacementContextMatches(
+        fixture: (manager: WorkspaceManagerViewModel, prompt: PromptViewModel),
+        stashedPriorTabID: UUID,
+        rejectedSessionID: UUID
+    ) -> Bool {
+        let workspace = fixture.manager.activeWorkspace
+        let replacementTab = workspace?.composeTabs.count == 1 ? workspace?.composeTabs.first : nil
+        let presentationTab = fixture.prompt.currentComposeTabs.count == 1
+            ? fixture.prompt.currentComposeTabs.first
+            : nil
+        let liveSelection = fixture.manager.fileManager.snapshotSelection()
+        let liveExpandedFolders = Set(fixture.manager.fileManager.snapshotExpandedFolderFullPaths())
+        let rejectedIdentityPresent = fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
+            $0.activeAgentSessionID == rejectedSessionID
+        }) || fixture.prompt.currentComposeTabs.contains(where: {
+            $0.activeAgentSessionID == rejectedSessionID
+        })
+        let matches = replacementTab != nil
+            && workspace?.activeComposeTabID == replacementTab?.id
+            && fixture.prompt.activeComposeTabID == replacementTab?.id
+            && fixture.prompt.promptText == replacementTab?.promptText
+            && fixture.prompt.activeFilesTab == .context
+            && fixture.prompt.currentContextBuilderOverridesSnapshot() == replacementTab?.contextOverrides
+            && liveSelection == replacementTab?.selection
+            && liveExpandedFolders == Set(replacementTab?.expandedFolders ?? [])
+            && replacementTab?.activeAgentSessionID == nil
+            && replacementTab?.activeChatSessionID == nil
+            && presentationTab == replacementTab
+            && workspace?.stashedTabs.contains(where: { $0.tab.id == stashedPriorTabID }) == true
+            && fixture.prompt.isSwitchingComposeTab == false
+            && !rejectedIdentityPresent
+        if !matches {
+            XCTFail(
+                "Blank replacement context mismatch: tabs=\(String(describing: workspace?.composeTabs)) "
+                    + "managerActive=\(String(describing: workspace?.activeComposeTabID)) "
+                    + "promptActive=\(String(describing: fixture.prompt.activeComposeTabID)) "
+                    + "prompt=\(fixture.prompt.promptText) selection=\(liveSelection) "
+                    + "expanded=\(liveExpandedFolders) presentation=\(String(describing: presentationTab)) "
+                    + "priorStashed=\(workspace?.stashedTabs.contains(where: { $0.tab.id == stashedPriorTabID }) == true) "
+                    + "rejectedPresent=\(rejectedIdentityPresent)"
+            )
+        }
+        return matches
+    }
+
+    private func nonblankForegroundContextMatches(
+        fixture: (manager: WorkspaceManagerViewModel, prompt: PromptViewModel),
+        expectedTab: ComposeTabState,
+        rejectedSessionID: UUID
+    ) -> Bool {
+        let liveTab = fixture.manager.activeWorkspace?.composeTabs.first(where: { $0.id == expectedTab.id })
+        let presentationTab = fixture.prompt.currentComposeTabs.first(where: { $0.id == expectedTab.id })
+        let liveSelection = fixture.manager.fileManager.snapshotSelection()
+        let liveExpandedFolders = Set(fixture.manager.fileManager.snapshotExpandedFolderFullPaths())
+        let rejectedIdentityPresent = fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
+            $0.activeAgentSessionID == rejectedSessionID
+        }) || fixture.prompt.currentComposeTabs.contains(where: {
+            $0.activeAgentSessionID == rejectedSessionID
+        })
+        let matches = fixture.manager.activeWorkspace?.activeComposeTabID == expectedTab.id
+            && fixture.prompt.activeComposeTabID == expectedTab.id
+            && fixture.prompt.promptText == expectedTab.promptText
+            && fixture.prompt.activeFilesTab == .context
+            && fixture.prompt.currentContextBuilderOverridesSnapshot() == expectedTab.contextOverrides
+            && liveSelection == expectedTab.selection
+            && liveExpandedFolders == Set(expectedTab.expandedFolders)
+            && fixture.prompt.isSwitchingComposeTab == false
+            && liveTab?.isPinned == expectedTab.isPinned
+            && liveTab?.selection == expectedTab.selection
+            && liveTab?.expandedFolders == expectedTab.expandedFolders
+            && liveTab?.contextOverrides == expectedTab.contextOverrides
+            && liveTab?.contextBuilder == expectedTab.contextBuilder
+            && presentationTab?.isPinned == expectedTab.isPinned
+            && presentationTab?.promptText == expectedTab.promptText
+            && presentationTab?.selection == expectedTab.selection
+            && presentationTab?.expandedFolders == expectedTab.expandedFolders
+            && presentationTab?.contextOverrides == expectedTab.contextOverrides
+            && presentationTab?.contextBuilder == expectedTab.contextBuilder
+            && !rejectedIdentityPresent
+        if !matches {
+            XCTFail(
+                "Foreground context mismatch: managerActive=\(String(describing: fixture.manager.activeWorkspace?.activeComposeTabID)) "
+                    + "promptActive=\(String(describing: fixture.prompt.activeComposeTabID)) "
+                    + "prompt=\(fixture.prompt.promptText) filesTab=\(fixture.prompt.activeFilesTab) "
+                    + "selection=\(liveSelection) expectedSelection=\(expectedTab.selection) "
+                    + "expanded=\(liveExpandedFolders) expectedExpanded=\(Set(expectedTab.expandedFolders)) "
+                    + "liveTabPinned=\(String(describing: liveTab?.isPinned)) expectedPinned=\(expectedTab.isPinned) "
+                    + "presentationTab=\(String(describing: presentationTab)) "
+                    + "liveTabSelection=\(String(describing: liveTab?.selection)) "
+                    + "liveTabExpanded=\(String(describing: liveTab?.expandedFolders)) "
+                    + "liveTabOverrides=\(String(describing: liveTab?.contextOverrides)) "
+                    + "expectedOverrides=\(expectedTab.contextOverrides) "
+                    + "liveTabBuilder=\(String(describing: liveTab?.contextBuilder)) "
+                    + "expectedBuilder=\(expectedTab.contextBuilder) "
+                    + "switching=\(fixture.prompt.isSwitchingComposeTab) rejectedPresent=\(rejectedIdentityPresent)"
+            )
+        }
+        return matches
+    }
+
+    private func makeFixture(
+        initialTabCount: Int,
+        coordinator: WorkspaceAgentAdmissionCoordinator = .shared,
+        ephemeralFlag: Bool = true,
+        customStoragePath: URL? = nil
+    ) -> (manager: WorkspaceManagerViewModel, prompt: PromptViewModel) {
         let fileManager = WorkspaceFilesViewModel()
         let keyManager = KeyManager(
             secureService: SecureKeysService(secureStorage: TestSecureStorageBackend())
@@ -1013,6 +2695,7 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
         let manager = WorkspaceManagerViewModel(
             fileManager: fileManager,
             promptViewModel: prompt,
+            workspaceAgentAdmissionCoordinator: coordinator,
             performInitialWorkspaceActivation: false
         )
         let tabs = (0 ..< initialTabCount).map { index in
@@ -1030,7 +2713,8 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
         let workspace = WorkspaceModel(
             name: "Background compose admission",
             repoPaths: [],
-            ephemeralFlag: true,
+            customStoragePath: customStoragePath,
+            ephemeralFlag: ephemeralFlag,
             composeTabs: tabs,
             activeComposeTabID: tabs.last?.id,
             stashedTabs: [stashed]
@@ -1228,6 +2912,97 @@ private actor RemovalPreflightRecorder {
 
     func count(for reason: PromptViewModel.ComposeTabRemovalReason) -> Int {
         reasons.count { $0 == reason }
+    }
+}
+
+private actor OneShotAdmissionClaim {
+    private var claimed = false
+
+    func claim() -> Bool {
+        guard !claimed else { return false }
+        claimed = true
+        return true
+    }
+}
+
+private final class AdmissionLifecycleEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [AgentSessionLifecycleAuthority.Event] = []
+
+    func record(_ event: AgentSessionLifecycleAuthority.Event) {
+        lock.withLock { events.append(event) }
+    }
+
+    func snapshot() -> [AgentSessionLifecycleAuthority.Event] {
+        lock.withLock { events }
+    }
+}
+
+private final class AdmissionEventSignal: @unchecked Sendable {
+    private let kind: WorkspaceAgentAdmissionCoordinator.Event.Kind
+    private let lock = NSLock()
+    private var observed = false
+
+    init(kind: WorkspaceAgentAdmissionCoordinator.Event.Kind) {
+        self.kind = kind
+    }
+
+    func observe(_ event: WorkspaceAgentAdmissionCoordinator.Event) {
+        guard event.kind == kind else { return }
+        lock.withLock { observed = true }
+    }
+
+    func wait() async {
+        do {
+            try await AsyncTestWait.waitUntil(
+                "workspace admission event \(kind.rawValue)",
+                timeout: TestFenceDefaults.enterWait
+            ) {
+                self.lock.withLock { self.observed }
+            }
+        } catch {
+            XCTFail(error.localizedDescription)
+        }
+    }
+}
+
+private final class BoundedTestSignal: @unchecked Sendable {
+    private let name: String
+    private let lock = NSLock()
+    private var signalled = false
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func signal() {
+        lock.withLock { signalled = true }
+    }
+
+    func wait() async {
+        do {
+            try await AsyncTestWait.waitUntil(name, timeout: TestFenceDefaults.enterWait) {
+                self.lock.withLock { self.signalled }
+            }
+        } catch {
+            XCTFail(error.localizedDescription)
+        }
+    }
+}
+
+private final class AdmissionAsyncGate: @unchecked Sendable {
+    private let fence = TestReleaseFence(name: "workspace admission save gate")
+
+    func enterAndWait() async {
+        await fence.enterAndWaitIgnoringCancellationUntilRelease()
+    }
+
+    func waitUntilEntered() async {
+        _ = await fence.waitUntilEntered()
+    }
+
+    func open() async {
+        fence.release()
     }
 }
 

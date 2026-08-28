@@ -157,6 +157,8 @@ class PromptViewModel: ObservableObject {
     @Published private(set) var dirtyTabIDs: Set<UUID> = []
     @Published private(set) var isSwitchingComposeTab: Bool = false
     private var activeTabApplyTask: Task<Void, Never>?
+    private var activeTabApplyTaskTabID: UUID?
+    private var activeTabApplyTaskGeneration: UUID?
     private var isDirtyStateUpdateScheduled = false
 
     // MARK: - Tab Close Listeners
@@ -244,7 +246,7 @@ class PromptViewModel: ObservableObject {
 
     enum DurableBackgroundComposeTabCreationResult: Equatable {
         case created(ComposeTabState, WorkspacePersistenceOutcome)
-        case rejected(WorkspacePersistenceOutcome)
+        case rejected(WorkspacePersistenceOutcome, AgentSessionLifecycleAuthority.RejectionReason)
     }
 
     typealias ComposeTabsWillCloseListener = @Sendable (_ tabIDs: Set<UUID>, _ reason: ComposeTabRemovalReason) async -> Void
@@ -2821,6 +2823,30 @@ class PromptViewModel: ObservableObject {
         return newTab
     }
 
+    private struct ProvisionalAgentSessionTabRollbackCheckpoint {
+        let workspaceID: UUID
+        let provisionalTabID: UUID
+        let preAdmissionForegroundStoredTab: ComposeTabState?
+        let preAdmissionForegroundLiveSnapshot: ComposeTabState?
+    }
+
+    private struct ProvisionalAgentSessionTabRollbackPlan {
+        enum RestorationAction {
+            case preserveCurrentForeground
+            case restoreOpenTab(tabID: UUID)
+            case selectOpenFallback(tabID: UUID)
+            case createBlankReplacement
+        }
+
+        let workspaceID: UUID
+        let provisionalTabID: UUID
+        let provisionalTabWasForeground: Bool
+        let composeTabs: [ComposeTabState]
+        let stashedTabs: [StashedTab]
+        let activeComposeTabID: UUID?
+        let restorationAction: RestorationAction
+    }
+
     /// Transactional primitive used by Agent-session lifecycle admission.
     /// The tab is created already bound to its intended durable session identity and
     /// is not returned to provider-start callers until the workspace authority accepts it.
@@ -2828,70 +2854,286 @@ class PromptViewModel: ObservableObject {
     func createDurableBackgroundAgentSessionTab(
         name: String?,
         sessionID: UUID,
+        expectedWorkspaceID: UUID,
         lifecycleAuthority: AgentSessionLifecycleAuthority
-    ) async -> DurableBackgroundComposeTabCreationResult {
-        guard
-            let manager = workspaceManager,
-            let workspace = manager.activeWorkspace,
-            let index = manager.workspaces.firstIndex(where: { $0.id == workspace.id }),
-            let newTab = makeComposeTab(
+    ) async throws -> DurableBackgroundComposeTabCreationResult {
+        guard let manager = workspaceManager else {
+            return .rejected(
+                .rejected(reason: "workspace_unavailable"),
+                .workspaceChanged
+            )
+        }
+
+        return try await manager.withAgentSessionAdmission(
+            workspaceID: expectedWorkspaceID,
+            admissionID: UUID()
+        ) {
+            guard manager.activeWorkspaceID == expectedWorkspaceID,
+                  let index = manager.workspaces.firstIndex(where: {
+                      $0.id == expectedWorkspaceID
+                  }),
+                  let newTab = makeComposeTab(
+                      for: .blank,
+                      explicitName: name,
+                      workspaceIndex: index,
+                      manager: manager,
+                      blankAgentSessionID: sessionID
+                  )
+            else {
+                return .rejected(
+                    .rejected(reason: "workspace_changed"),
+                    .workspaceChanged
+                )
+            }
+
+            let preAdmissionForegroundStoredTab = manager.workspaces[index].activeComposeTabID.flatMap { activeTabID in
+                manager.workspaces[index].composeTabs.first(where: { $0.id == activeTabID })
+            }
+            let preAdmissionForegroundSnapshot = preAdmissionForegroundStoredTab.map { activeTab in
+                manager.collectComposeTabSnapshot(name: activeTab.name, base: activeTab)
+            }
+            let rollbackCheckpoint = ProvisionalAgentSessionTabRollbackCheckpoint(
+                workspaceID: expectedWorkspaceID,
+                provisionalTabID: newTab.id,
+                preAdmissionForegroundStoredTab: preAdmissionForegroundStoredTab,
+                preAdmissionForegroundLiveSnapshot: preAdmissionForegroundSnapshot
+            )
+
+            flushAndSnapshotSourceTabIfNeeded(
                 for: .blank,
-                explicitName: name,
-                workspaceIndex: index,
-                manager: manager,
-                blankAgentSessionID: sessionID
+                in: manager,
+                workspaceIndex: index
             )
-        else {
-            return .rejected(.rejected(reason: "workspace_unavailable"))
+            manager.workspaces[index].composeTabs.append(newTab)
+            loadComposeTabsFromWorkspace(manager.workspaces[index])
+            manager.markWorkspaceDirty(workspaceID: expectedWorkspaceID)
+
+            do {
+                let persistence = await manager.pollAndSaveStateWithOutcomeAsync(
+                    workspaceID: expectedWorkspaceID,
+                    source: WorkspaceSaveSource("agentSessionLifecycleAdmission")
+                )
+                try Task.checkCancellation()
+                let bindingStillCurrent = manager.workspaces
+                    .first(where: { $0.id == expectedWorkspaceID })?
+                    .composeTabs.contains(where: {
+                        $0.id == newTab.id && $0.activeAgentSessionID == sessionID
+                    }) == true
+                let admissionDecision = lifecycleAuthority.decideAdmission(
+                    persistence: persistence,
+                    targetWorkspaceID: expectedWorkspaceID,
+                    bindingStillCurrent: bindingStillCurrent
+                )
+                switch admissionDecision {
+                case .commit:
+                    return .created(newTab, persistence)
+                case let .rollback(reason):
+                    await rollbackProvisionalAgentSessionTab(
+                        checkpoint: rollbackCheckpoint,
+                        manager: manager
+                    )
+                    return .rejected(persistence, reason)
+                }
+            } catch {
+                await rollbackProvisionalAgentSessionTab(
+                    checkpoint: rollbackCheckpoint,
+                    manager: manager
+                )
+                throw error
+            }
         }
-
-        flushAndSnapshotSourceTabIfNeeded(for: .blank, in: manager, workspaceIndex: index)
-        manager.workspaces[index].composeTabs.append(newTab)
-        loadComposeTabsFromWorkspace(manager.workspaces[index])
-        manager.markWorkspaceDirty()
-
-        let persistence = await manager.pollAndSaveStateWithOutcomeAsync(
-            workspaceID: workspace.id,
-            source: WorkspaceSaveSource("agentSessionLifecycleAdmission")
-        )
-        let bindingStillCurrent = manager.workspaces
-            .first(where: { $0.id == workspace.id })?
-            .composeTabs.contains(where: {
-                $0.id == newTab.id && $0.activeAgentSessionID == sessionID
-            }) == true
-        guard lifecycleAuthority.decideAdmission(
-            persistence: persistence,
-            targetWorkspaceID: workspace.id,
-            bindingStillCurrent: bindingStillCurrent
-        ) == .commit else {
-            rollbackProvisionalAgentSessionTab(
-                newTab.id,
-                workspaceID: workspace.id,
-                manager: manager
-            )
-            return .rejected(persistence)
-        }
-
-        return .created(newTab, persistence)
     }
 
     @MainActor
     private func rollbackProvisionalAgentSessionTab(
-        _ tabID: UUID,
-        workspaceID: UUID,
+        checkpoint: ProvisionalAgentSessionTabRollbackCheckpoint,
         manager: WorkspaceManagerViewModel
-    ) {
-        guard let index = manager.workspaces.firstIndex(where: { $0.id == workspaceID }) else {
-            return
+    ) async {
+        await cancelComposeTabActivationIfNeeded(
+            tabID: checkpoint.provisionalTabID,
+            manager: manager
+        )
+
+        let rollbackApplicationTask = Task { @MainActor [weak self, weak manager] in
+            guard let self, let manager,
+                  let plan = makeProvisionalAgentSessionTabRollbackPlan(
+                      checkpoint: checkpoint,
+                      manager: manager
+                  )
+            else { return }
+
+            let restorationTab = applyStoredProvisionalAgentSessionTabRollbackPlan(
+                plan,
+                manager: manager
+            )
+            await applyLiveProvisionalAgentSessionTabRollbackPlan(
+                plan,
+                restorationTab: restorationTab,
+                manager: manager
+            )
         }
-        manager.workspaces[index].composeTabs.removeAll { $0.id == tabID }
-        manager.workspaces[index].stashedTabs.removeAll { $0.tab.id == tabID }
-        if manager.workspaces[index].activeComposeTabID == tabID {
-            manager.workspaces[index].activeComposeTabID = manager.workspaces[index].composeTabs.first?.id
+        await rollbackApplicationTask.value
+    }
+
+    @MainActor
+    private func makeProvisionalAgentSessionTabRollbackPlan(
+        checkpoint: ProvisionalAgentSessionTabRollbackCheckpoint,
+        manager: WorkspaceManagerViewModel
+    ) -> ProvisionalAgentSessionTabRollbackPlan? {
+        guard let index = manager.workspaces.firstIndex(where: {
+            $0.id == checkpoint.workspaceID
+        }) else { return nil }
+
+        let workspace = manager.workspaces[index]
+        let provisionalTabWasForeground = workspace.activeComposeTabID == checkpoint.provisionalTabID
+        let tabsBeforeRollback = workspace.composeTabs
+        var remainingTabs = workspace.composeTabs.filter { $0.id != checkpoint.provisionalTabID }
+        let remainingStashedTabs = workspace.stashedTabs.filter {
+            $0.tab.id != checkpoint.provisionalTabID
         }
+
+        guard provisionalTabWasForeground else {
+            return ProvisionalAgentSessionTabRollbackPlan(
+                workspaceID: checkpoint.workspaceID,
+                provisionalTabID: checkpoint.provisionalTabID,
+                provisionalTabWasForeground: false,
+                composeTabs: remainingTabs,
+                stashedTabs: remainingStashedTabs,
+                activeComposeTabID: workspace.activeComposeTabID,
+                restorationAction: .preserveCurrentForeground
+            )
+        }
+
+        if let storedBaseline = checkpoint.preAdmissionForegroundStoredTab,
+           let priorForegroundIndex = remainingTabs.firstIndex(where: {
+               $0.id == storedBaseline.id
+           })
+        {
+            let currentStoredTab = remainingTabs[priorForegroundIndex]
+            if currentStoredTab == storedBaseline,
+               let liveFallback = checkpoint.preAdmissionForegroundLiveSnapshot,
+               liveFallback.id == storedBaseline.id
+            {
+                remainingTabs[priorForegroundIndex] = liveFallback
+            }
+            return ProvisionalAgentSessionTabRollbackPlan(
+                workspaceID: checkpoint.workspaceID,
+                provisionalTabID: checkpoint.provisionalTabID,
+                provisionalTabWasForeground: true,
+                composeTabs: remainingTabs,
+                stashedTabs: remainingStashedTabs,
+                activeComposeTabID: storedBaseline.id,
+                restorationAction: .restoreOpenTab(tabID: storedBaseline.id)
+            )
+        }
+
+        if !remainingTabs.isEmpty {
+            let adjacentFallbackID = adjacentTabID(
+                afterClosing: checkpoint.provisionalTabID,
+                tabs: tabsBeforeRollback,
+                closingIDs: [checkpoint.provisionalTabID]
+            )
+            let fallbackID = adjacentFallbackID.flatMap { candidate in
+                remainingTabs.contains(where: { $0.id == candidate }) ? candidate : nil
+            } ?? remainingTabs[0].id
+            return ProvisionalAgentSessionTabRollbackPlan(
+                workspaceID: checkpoint.workspaceID,
+                provisionalTabID: checkpoint.provisionalTabID,
+                provisionalTabWasForeground: true,
+                composeTabs: remainingTabs,
+                stashedTabs: remainingStashedTabs,
+                activeComposeTabID: fallbackID,
+                restorationAction: .selectOpenFallback(tabID: fallbackID)
+            )
+        }
+
+        return ProvisionalAgentSessionTabRollbackPlan(
+            workspaceID: checkpoint.workspaceID,
+            provisionalTabID: checkpoint.provisionalTabID,
+            provisionalTabWasForeground: true,
+            composeTabs: [],
+            stashedTabs: remainingStashedTabs,
+            activeComposeTabID: nil,
+            restorationAction: .createBlankReplacement
+        )
+    }
+
+    @MainActor
+    private func applyStoredProvisionalAgentSessionTabRollbackPlan(
+        _ plan: ProvisionalAgentSessionTabRollbackPlan,
+        manager: WorkspaceManagerViewModel
+    ) -> ComposeTabState? {
+        guard let index = manager.workspaces.firstIndex(where: {
+            $0.id == plan.workspaceID
+        }) else { return nil }
+
+        manager.workspaces[index].composeTabs = plan.composeTabs
+        manager.workspaces[index].stashedTabs = plan.stashedTabs
+        manager.workspaces[index].activeComposeTabID = plan.activeComposeTabID
+
+        let restorationTab: ComposeTabState? = switch plan.restorationAction {
+        case .preserveCurrentForeground:
+            nil
+        case let .restoreOpenTab(tabID), let .selectOpenFallback(tabID):
+            plan.composeTabs.first(where: { $0.id == tabID })
+        case .createBlankReplacement:
+            appendStoredReplacementBlankComposeTabIfNeeded(
+                manager: manager,
+                workspaceIndex: index
+            )
+        }
+
+        dirtyTabIDs.remove(plan.provisionalTabID)
+        manager.markWorkspaceDirty(workspaceID: plan.workspaceID)
+        return restorationTab
+    }
+
+    @MainActor
+    private func applyLiveProvisionalAgentSessionTabRollbackPlan(
+        _ plan: ProvisionalAgentSessionTabRollbackPlan,
+        restorationTab: ComposeTabState?,
+        manager: WorkspaceManagerViewModel
+    ) async {
+        guard manager.activeWorkspaceID == plan.workspaceID,
+              let index = manager.workspaces.firstIndex(where: {
+                  $0.id == plan.workspaceID
+              })
+        else { return }
+
         loadComposeTabsFromWorkspace(manager.workspaces[index])
-        dirtyTabIDs.remove(tabID)
-        manager.markWorkspaceDirty()
+        switch plan.restorationAction {
+        case .preserveCurrentForeground:
+            return
+        case .restoreOpenTab, .selectOpenFallback, .createBlankReplacement:
+            guard let restorationTab,
+                  manager.workspaces[index].activeComposeTabID == restorationTab.id
+            else { return }
+            await withComposeTabSwitching(targetTabID: restorationTab.id) {
+                await withComposeTabActivationSnapshotSuspended(
+                    targetTabID: restorationTab.id,
+                    manager: manager
+                ) {
+                    await manager.applyComposeTabState(restorationTab)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func cancelComposeTabActivationIfNeeded(
+        tabID: UUID,
+        manager: WorkspaceManagerViewModel
+    ) async {
+        var promptApplyTask: Task<Void, Never>?
+        if activeTabApplyTaskTabID == tabID {
+            activeTabApplyTaskGeneration = nil
+            activeTabApplyTaskTabID = nil
+            promptApplyTask = activeTabApplyTask
+            activeTabApplyTask = nil
+        }
+        promptApplyTask?.cancel()
+        await manager.cancelComposeTabStateApplication(forTabID: tabID)
+        await promptApplyTask?.value
     }
 
     /// Switch to a compose tab and wait for the tab state to fully apply.
@@ -2916,6 +3158,7 @@ class PromptViewModel: ObservableObject {
                 guard let target = manager.workspaces[index].composeTabs.first(where: { $0.id == id }) else { return }
 
                 activeTabApplyTask?.cancel()
+                let applyGeneration = UUID()
 
                 let task = Task { [weak self, weak manager] in
                     guard let self, let manager else { return }
@@ -2923,7 +3166,14 @@ class PromptViewModel: ObservableObject {
                 }
 
                 activeTabApplyTask = task
+                activeTabApplyTaskTabID = id
+                activeTabApplyTaskGeneration = applyGeneration
                 await task.value
+                if activeTabApplyTaskGeneration == applyGeneration {
+                    activeTabApplyTask = nil
+                    activeTabApplyTaskTabID = nil
+                    activeTabApplyTaskGeneration = nil
+                }
             }
         }
     }
@@ -3482,27 +3732,44 @@ class PromptViewModel: ObservableObject {
         return nil
     }
 
+    @discardableResult
     @MainActor
-    private func appendReplacementBlankComposeTabIfNeeded(
+    private func appendStoredReplacementBlankComposeTabIfNeeded(
         manager: WorkspaceManagerViewModel,
         workspaceIndex: Int
-    ) async {
-        guard manager.workspaces[workspaceIndex].composeTabs.isEmpty else { return }
+    ) -> ComposeTabState? {
+        guard manager.workspaces[workspaceIndex].composeTabs.isEmpty else { return nil }
         guard let blankTab = makeComposeTab(
             for: .blank,
             explicitName: nil,
             workspaceIndex: workspaceIndex,
             manager: manager
-        ) else { return }
+        ) else { return nil }
         manager.workspaces[workspaceIndex].composeTabs.append(blankTab)
+        manager.workspaces[workspaceIndex].activeComposeTabID = blankTab.id
+        dirtyTabIDs.remove(blankTab.id)
+        return blankTab
+    }
+
+    @discardableResult
+    @MainActor
+    private func appendReplacementBlankComposeTabIfNeeded(
+        manager: WorkspaceManagerViewModel,
+        workspaceIndex: Int,
+        applyLiveContext: Bool = true
+    ) async -> ComposeTabState? {
+        guard let blankTab = appendStoredReplacementBlankComposeTabIfNeeded(
+            manager: manager,
+            workspaceIndex: workspaceIndex
+        ) else { return nil }
+        guard applyLiveContext else { return blankTab }
         await withComposeTabActivationSnapshotSuspended(targetTabID: blankTab.id, manager: manager) {
-            manager.workspaces[workspaceIndex].activeComposeTabID = blankTab.id
             activeComposeTabID = blankTab.id
-            dirtyTabIDs.remove(blankTab.id)
             await withComposeTabSwitching(targetTabID: blankTab.id) {
                 await manager.applyComposeTabState(blankTab)
             }
         }
+        return blankTab
     }
 
     /// Deletes git diff snapshots associated with closing tabs (fire-and-forget to avoid UI blocking).
