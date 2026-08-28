@@ -140,7 +140,7 @@ actor MCPConfigExportService {
         }
 
         if fileManager.fileExists(atPath: configURL.path) {
-            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly])
+            _ = try fileManager.replaceItem(at: configURL, withItemAt: tempURL, backupItemName: nil, options: [.usingNewMetadataOnly], resultingItemURL: nil)
         } else {
             try fileManager.moveItem(at: tempURL, to: configURL)
         }
