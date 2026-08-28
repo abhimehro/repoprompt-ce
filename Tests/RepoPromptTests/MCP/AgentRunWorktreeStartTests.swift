@@ -1644,7 +1644,12 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         source.mcpControlContext = nil
         XCTAssertTrue(source.worktreeBindings.isEmpty)
 
-        let service = makeAgentRunStartService(window: window, sourceTabID: sourceTabID)
+        var providerDispatchCount = 0
+        let service = makeAgentRunStartService(
+            window: window,
+            sourceTabID: sourceTabID,
+            onProviderStart: { providerDispatchCount += 1 }
+        )
         let value = try await service.execute(args: [
             "op": .string("start"),
             "message": .string("inherit empty routed source"),
@@ -1669,6 +1674,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         XCTAssertEqual(child.parentSessionID, parentID)
         XCTAssertTrue(child.worktreeBindings.isEmpty)
         XCTAssertEqual(try viewModel.effectiveWorkspacePath(for: child), root.path)
+        XCTAssertEqual(providerDispatchCount, 1)
 
         let pollValue = try await service.execute(args: [
             "op": .string("poll"),
@@ -3251,7 +3257,8 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             try await coordinator.prepare(
                 request: request,
                 target: target,
-                targetWindow: window
+                targetWindow: window,
+                expectedWorkspaceID: XCTUnwrap(window.workspaceManager.activeWorkspaceID)
             )
         }
         preparation.cancel()
@@ -3451,6 +3458,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
                         request: request,
                         target: target,
                         targetWindow: window,
+                        expectedWorkspaceID: XCTUnwrap(window.workspaceManager.activeWorkspaceID),
                         startupContext: startup
                     )
                 }
@@ -3525,6 +3533,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
                 request: request,
                 target: target,
                 targetWindow: window,
+                expectedWorkspaceID: XCTUnwrap(window.workspaceManager.activeWorkspaceID),
                 startupContext: startupContext
             )
             XCTFail("Injected post-create coordinator failure must be rethrown.")
@@ -3626,6 +3635,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             request: request,
             target: target,
             targetWindow: window,
+            expectedWorkspaceID: XCTUnwrap(window.workspaceManager.activeWorkspaceID),
             startupContext: startupContext
         )
 
@@ -3747,6 +3757,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             request: request,
             target: target,
             targetWindow: window,
+            expectedWorkspaceID: XCTUnwrap(window.workspaceManager.activeWorkspaceID),
             startupContext: startupContext
         )
 
@@ -4108,6 +4119,772 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         XCTAssertEqual(Set(bindings.map(\.worktreeID)).count, 2)
         XCTAssertEqual(Set(bindings.map(\.worktreeRootPath)).count, 2)
         XCTAssertEqual(Set(bindings.compactMap(\.branch)).count, 2)
+    }
+
+    func testAgentRunQueuedStartRejectsWorkspaceDriftBeforeProviderDispatch() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "agent-run-workspace-a")
+        let secondRoot = try makeTemporaryDirectory(named: "agent-run-workspace-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let firstTabCount = firstWorkspace.composeTabs.count
+        var providerDispatchCount = 0
+        let service = makeAgentRunStartService(
+            window: window,
+            sourceTabID: nil,
+            onProviderStart: { providerDispatchCount += 1 }
+        )
+        let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+        let baselineWaiterCount = coordinator.snapshot().waiterCount
+        let lease = try await coordinator.acquire(
+            workspaceID: firstWorkspace.id,
+            admissionID: UUID()
+        )
+        defer { lease.release() }
+
+        let startTask = Task { @MainActor in
+            try await service.execute(args: [
+                "op": .string("start"),
+                "message": .string("stay in the captured workspace"),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+        }
+        try await AsyncTestWait.waitUntil("agent_run start queues for captured workspace", timeout: 5) {
+            coordinator.snapshot().waiterCount == baselineWaiterCount + 1
+        }
+
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Agent Run Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        let switchResult = await window.workspaceManager.switchWorkspace(
+            to: secondWorkspace,
+            saveState: false,
+            reason: "agentRunExpectedWorkspaceTest"
+        )
+        XCTAssertTrue(switchResult.didSwitch)
+        let secondTabCount = try XCTUnwrap(window.workspaceManager.activeWorkspace).composeTabs.count
+        lease.release()
+
+        do {
+            _ = try await startTask.value
+            XCTFail("Expected queued agent_run.start to reject workspace drift")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("workspace binding was not durably accepted"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertEqual(providerDispatchCount, 0)
+        XCTAssertEqual(
+            window.workspaceManager.workspaces.first(where: { $0.id == firstWorkspace.id })?.composeTabs.count,
+            firstTabCount
+        )
+        XCTAssertEqual(window.workspaceManager.activeWorkspace?.composeTabs.count, secondTabCount)
+    }
+
+    func testAgentManageQueuedCreateRejectsWorkspaceDriftBeforeBinding() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "agent-manage-workspace-a")
+        let secondRoot = try makeTemporaryDirectory(named: "agent-manage-workspace-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let firstTabCount = firstWorkspace.composeTabs.count
+        let service = makeAgentManageService(window: window)
+        let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+        let baselineWaiterCount = coordinator.snapshot().waiterCount
+        let lease = try await coordinator.acquire(
+            workspaceID: firstWorkspace.id,
+            admissionID: UUID()
+        )
+        defer { lease.release() }
+
+        let createTask = Task { @MainActor in
+            try await service.execute(args: [
+                "op": .string("create_session"),
+                "session_name": .string("Captured Workspace Session")
+            ])
+        }
+        try await AsyncTestWait.waitUntil("agent_manage create queues for captured workspace", timeout: 5) {
+            coordinator.snapshot().waiterCount == baselineWaiterCount + 1
+        }
+
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Agent Manage Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        let switchResult = await window.workspaceManager.switchWorkspace(
+            to: secondWorkspace,
+            saveState: false,
+            reason: "agentManageExpectedWorkspaceTest"
+        )
+        XCTAssertTrue(switchResult.didSwitch)
+        let secondTabCount = try XCTUnwrap(window.workspaceManager.activeWorkspace).composeTabs.count
+        lease.release()
+
+        do {
+            _ = try await createTask.value
+            XCTFail("Expected queued agent_manage.create_session to reject workspace drift")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("workspace binding was not durably accepted"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertEqual(
+            window.workspaceManager.workspaces.first(where: { $0.id == firstWorkspace.id })?.composeTabs.count,
+            firstTabCount
+        )
+        XCTAssertEqual(window.workspaceManager.activeWorkspace?.composeTabs.count, secondTabCount)
+    }
+
+    func testAgentExploreQueuedBatchRejectsWorkspaceDriftBeforeAnyProviderDispatch() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "agent-explore-workspace-a")
+        let secondRoot = try makeTemporaryDirectory(named: "agent-explore-workspace-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let sourceTabID = try XCTUnwrap(firstWorkspace.activeComposeTabID)
+        let parentID = UUID()
+        let source = window.agentModeViewModel.session(for: sourceTabID)
+        source.testInstallPersistentSessionBinding(sessionID: parentID)
+        source.mcpControlContext = makeMCPControlContext(sessionID: parentID)
+        let firstTabCount = firstWorkspace.composeTabs.count
+        let recorder = ExploreStartRecorder()
+        let service = makeAgentExploreStartService(
+            window: window,
+            sourceTabID: sourceTabID,
+            recorder: recorder
+        )
+        let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+        let baselineWaiterCount = coordinator.snapshot().waiterCount
+        let lease = try await coordinator.acquire(
+            workspaceID: firstWorkspace.id,
+            admissionID: UUID()
+        )
+        defer { lease.release() }
+
+        let startTask = Task { @MainActor in
+            try await service.execute(args: [
+                "op": .string("start"),
+                "messages": .array([.string("probe one"), .string("probe two")]),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+        }
+        try await AsyncTestWait.waitUntil("agent_explore batch queues for captured workspace", timeout: 5) {
+            coordinator.snapshot().waiterCount == baselineWaiterCount + 1
+        }
+
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Agent Explore Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        let switchResult = await window.workspaceManager.switchWorkspace(
+            to: secondWorkspace,
+            saveState: false,
+            reason: "agentExploreExpectedWorkspaceTest"
+        )
+        XCTAssertTrue(switchResult.didSwitch)
+        let secondTabCount = try XCTUnwrap(window.workspaceManager.activeWorkspace).composeTabs.count
+        lease.release()
+
+        do {
+            _ = try await startTask.value
+            XCTFail("Expected queued agent_explore.start to reject workspace drift")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("workspace binding was not durably accepted"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertTrue(recorder.observations.isEmpty)
+        XCTAssertEqual(
+            window.workspaceManager.workspaces.first(where: { $0.id == firstWorkspace.id })?.composeTabs.count,
+            firstTabCount
+        )
+        XCTAssertEqual(window.workspaceManager.activeWorkspace?.composeTabs.count, secondTabCount)
+    }
+
+    func testExpectedWorkspaceRejectsSessionReconstructionAndExplicitTabAfterSwitch() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "reconstruction-workspace-a")
+        let secondRoot = try makeTemporaryDirectory(named: "reconstruction-workspace-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let reconstructedSessionID = UUID()
+        let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+        let baselineWaiterCount = coordinator.snapshot().waiterCount
+        let lease = try await coordinator.acquire(
+            workspaceID: firstWorkspace.id,
+            admissionID: UUID()
+        )
+        defer { lease.release() }
+
+        let reconstructionTask = Task { @MainActor in
+            try await window.agentModeViewModel.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: reconstructedSessionID,
+                createIfNeeded: true,
+                sessionName: nil,
+                expectedWorkspaceID: firstWorkspace.id
+            )
+        }
+        try await AsyncTestWait.waitUntil("session reconstruction queues for captured workspace", timeout: 5) {
+            coordinator.snapshot().waiterCount == baselineWaiterCount + 1
+        }
+
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Reconstruction Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        let switchResult = await window.workspaceManager.switchWorkspace(
+            to: secondWorkspace,
+            saveState: false,
+            reason: "agentSessionReconstructionExpectedWorkspaceTest"
+        )
+        XCTAssertTrue(switchResult.didSwitch)
+        let explicitTabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let explicitSessionBefore = window.agentModeViewModel
+            .session(for: explicitTabID, createIfNeeded: false)?
+            .activeAgentSessionID
+        lease.release()
+
+        do {
+            _ = try await reconstructionTask.value
+            XCTFail("Expected fixed-session reconstruction to reject workspace drift")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("workspace binding was not durably accepted"),
+                error.localizedDescription
+            )
+        }
+
+        do {
+            _ = try await window.agentModeViewModel.mcpResolveOrCreateSessionTarget(
+                tabID: explicitTabID,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: nil,
+                expectedWorkspaceID: firstWorkspace.id
+            )
+            XCTFail("Expected explicit tab outside the captured workspace to reject")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("active workspace changed"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertEqual(
+            window.agentModeViewModel.session(for: explicitTabID, createIfNeeded: false)?.activeAgentSessionID,
+            explicitSessionBefore
+        )
+        XCTAssertNil(
+            try window.agentModeViewModel.authoritativeLiveSession(for: reconstructedSessionID)
+        )
+    }
+
+    func testCrossWorkspaceLiveSessionCannotResumeOutsideCapturedWorkspace() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "cross-live-workspace-a")
+        let secondRoot = try makeTemporaryDirectory(named: "cross-live-workspace-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Cross Live Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        let secondSwitch = await window.workspaceManager.switchWorkspace(
+            to: secondWorkspace,
+            saveState: false,
+            reason: "crossWorkspaceLiveSessionSetup"
+        )
+        XCTAssertTrue(secondSwitch.didSwitch)
+        let secondTabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let foreignSessionID = UUID()
+        var secondTab = try XCTUnwrap(window.workspaceManager.composeTab(with: secondTabID))
+        secondTab.activeAgentSessionID = foreignSessionID
+        window.workspaceManager.updateComposeTab(secondTab, markDirty: false)
+
+        let firstSwitch = await window.workspaceManager.switchWorkspace(
+            to: firstWorkspace,
+            saveState: false,
+            reason: "crossWorkspaceLiveSessionAssertion"
+        )
+        XCTAssertTrue(firstSwitch.didSwitch)
+        let foreignSession = window.agentModeViewModel.session(for: secondTabID)
+        foreignSession.testInstallPersistentSessionBinding(sessionID: foreignSessionID)
+        let originalSelection = foreignSession.selectedAgent
+        let service = makeAgentManageService(window: window)
+
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("resume_session"),
+                "session_id": .string(foreignSessionID.uuidString)
+            ])
+            XCTFail("Expected a live session owned by workspace B to be rejected from workspace A")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("not found in the active workspace"), error.localizedDescription)
+        }
+        XCTAssertEqual(foreignSession.activeAgentSessionID, foreignSessionID)
+        XCTAssertEqual(foreignSession.selectedAgent, originalSelection)
+        XCTAssertNil(foreignSession.mcpControlContext)
+    }
+
+    func testCrossWorkspaceIndexedSessionCannotReactivateInactiveSteer() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "cross-index-workspace-a")
+        let secondRoot = try makeTemporaryDirectory(named: "cross-index-workspace-b")
+        let window = try await makeWindow(root: firstRoot)
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Cross Index Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        let foreignTabID = try XCTUnwrap(secondWorkspace.activeComposeTabID)
+        let foreignSessionID = UUID()
+        let foreignEntry = AgentSessionIndexEntry(
+            id: foreignSessionID,
+            tabID: foreignTabID,
+            name: "Foreign Indexed Session",
+            lastUserMessageAt: nil,
+            savedAt: Date(),
+            lastRunStateRaw: AgentSessionRunState.cancelled.rawValue,
+            itemCount: 0,
+            agentKindRaw: nil,
+            agentModelRaw: nil,
+            agentReasoningEffortRaw: nil,
+            autoEditEnabled: false,
+            parentSessionID: nil,
+            hasUnknownConversationContent: false,
+            isMCPOriginated: true,
+            worktreeBindingSummaries: [],
+            activeWorktreeMergeSummaries: []
+        )
+        let foreignOwner = AgentModeViewModel.SessionIndexOwner(
+            workspaceID: secondWorkspace.id,
+            activationEpoch: 1
+        )
+        window.agentModeViewModel.test_installSessionIndexSnapshot(
+            [foreignSessionID: foreignEntry],
+            owner: foreignOwner,
+            latestOwner: foreignOwner,
+            activeWorkspace: secondWorkspace
+        )
+        var steerDispatchCount = 0
+        var service = makeAgentRunStartService(window: window, sourceTabID: nil)
+        service.testDispatchSteerInstruction = { _, _, _, _ in
+            steerDispatchCount += 1
+            return .startedRun
+        }
+
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("steer"),
+                "session_id": .string(foreignSessionID.uuidString),
+                "message": .string("must remain in workspace B")
+            ])
+            XCTFail("Expected an indexed session owned by workspace B to be rejected from workspace A")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("not found in the active workspace"), error.localizedDescription)
+        }
+        XCTAssertEqual(steerDispatchCount, 0)
+        XCTAssertNil(window.agentModeViewModel.mcpControlledSession(sessionID: foreignSessionID))
+    }
+
+    func testInactiveSteerRejectsWorkspaceDriftAfterControlReactivationBeforeDispatch() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "steer-reactivation-drift-a")
+        let secondRoot = try makeTemporaryDirectory(named: "steer-reactivation-drift-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let target = try await window.agentModeViewModel.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "Inactive Steer Target",
+            expectedWorkspaceID: firstWorkspace.id
+        )
+        let sessionID = try XCTUnwrap(target.sessionID)
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Steer Reactivation Drift Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        var dispatchCount = 0
+        var switchSucceeded = false
+        var service = makeAgentRunStartService(window: window, sourceTabID: nil)
+        service.testBeforeSteerDispatch = {
+            let result = await window.workspaceManager.switchWorkspace(
+                to: secondWorkspace,
+                saveState: false,
+                reason: "inactiveSteerPostReactivationDrift"
+            )
+            switchSucceeded = result.didSwitch
+        }
+        service.testDispatchSteerInstruction = { _, _, _, _ in
+            dispatchCount += 1
+            return .startedRun
+        }
+
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("steer"),
+                "session_id": .string(sessionID.uuidString),
+                "message": .string("reject before dispatch")
+            ])
+            XCTFail("Expected reconstructed steer to reject workspace drift before dispatch")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+        XCTAssertTrue(switchSucceeded)
+        XCTAssertEqual(dispatchCount, 0)
+        XCTAssertNil(window.agentModeViewModel.mcpControlledSession(sessionID: sessionID))
+    }
+
+    func testAgentRunRejectsPostAdmissionWorkspaceDriftBeforeWorktreeOrProvider() async throws {
+        let firstFixture = try makeGitFixture()
+        let secondFixture = try makeGitFixture()
+        let window = try await makeWindow(root: firstFixture.repo)
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Run Post Admission Workspace B",
+            repoPaths: [secondFixture.repo.path],
+            ephemeral: true
+        )
+        var providerDispatchCount = 0
+        var capturedSession: AgentModeViewModel.TabSession?
+        var switchSucceeded = false
+        var service = makeAgentRunStartService(
+            window: window,
+            sourceTabID: nil,
+            onProviderStart: { providerDispatchCount += 1 }
+        )
+        service.testAfterTargetResolution = { target in
+            capturedSession = window.agentModeViewModel.session(for: target.tabID)
+            let result = await window.workspaceManager.switchWorkspace(
+                to: secondWorkspace,
+                saveState: false,
+                reason: "agentRunPostAdmissionWorkspaceDrift"
+            )
+            switchSucceeded = result.didSwitch
+        }
+
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("start"),
+                "message": .string("reject after target admission"),
+                "worktree_create": .bool(true),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            XCTFail("Expected post-admission workspace drift to reject agent_run.start")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+        XCTAssertTrue(switchSucceeded)
+        XCTAssertEqual(providerDispatchCount, 0)
+        XCTAssertTrue(try XCTUnwrap(capturedSession).worktreeBindings.isEmpty)
+        let firstDescriptors = try await VCSService.shared.listGitWorktrees(at: firstFixture.repo)
+        let secondDescriptors = try await VCSService.shared.listGitWorktrees(at: secondFixture.repo)
+        XCTAssertTrue(firstDescriptors.allSatisfy(\.isMain))
+        XCTAssertTrue(secondDescriptors.allSatisfy(\.isMain))
+    }
+
+    func testAgentExploreRejectsDriftBeforeExplicitWorktreeAndBetweenBatchChildren() async throws {
+        let firstFixture = try makeGitFixture()
+        let secondFixture = try makeGitFixture()
+        let firstWindow = try await makeWindow(root: firstFixture.repo)
+        let firstSourceTabID = try XCTUnwrap(firstWindow.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let firstParentID = UUID()
+        let firstSource = firstWindow.agentModeViewModel.session(for: firstSourceTabID)
+        firstSource.testInstallPersistentSessionBinding(sessionID: firstParentID)
+        firstSource.mcpControlContext = makeMCPControlContext(sessionID: firstParentID)
+        let driftWorkspace = firstWindow.workspaceManager.createWorkspace(
+            name: "Explore Explicit Drift Workspace",
+            repoPaths: [secondFixture.repo.path],
+            ephemeral: true
+        )
+        let explicitRecorder = ExploreStartRecorder()
+        var explicitSession: AgentModeViewModel.TabSession?
+        var explicitService = makeAgentExploreStartService(
+            window: firstWindow,
+            sourceTabID: firstSourceTabID,
+            recorder: explicitRecorder
+        )
+        explicitService.testBeforeChildWorktreePreparation = { index, target in
+            guard index == 0 else { return }
+            explicitSession = firstWindow.agentModeViewModel.session(for: target.tabID)
+            _ = await firstWindow.workspaceManager.switchWorkspace(
+                to: driftWorkspace,
+                saveState: false,
+                reason: "agentExploreExplicitWorktreeDrift"
+            )
+        }
+
+        do {
+            _ = try await explicitService.execute(args: [
+                "op": .string("start"),
+                "message": .string("do not derive roots after drift"),
+                "worktree_create": .bool(true),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            XCTFail("Expected Explore workspace drift before worktree preparation to reject")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+        XCTAssertTrue(explicitRecorder.observations.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(explicitSession).worktreeBindings.isEmpty)
+        let firstDescriptors = try await VCSService.shared.listGitWorktrees(at: firstFixture.repo)
+        let secondDescriptors = try await VCSService.shared.listGitWorktrees(at: secondFixture.repo)
+        XCTAssertTrue(firstDescriptors.allSatisfy(\.isMain))
+        XCTAssertTrue(secondDescriptors.allSatisfy(\.isMain))
+
+        let batchRoot = try makeTemporaryDirectory(named: "explore-batch-between-children-a")
+        let batchDriftRoot = try makeTemporaryDirectory(named: "explore-batch-between-children-b")
+        let batchWindow = try await makeWindow(root: batchRoot)
+        let batchSourceTabID = try XCTUnwrap(batchWindow.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let batchParentID = UUID()
+        let batchSource = batchWindow.agentModeViewModel.session(for: batchSourceTabID)
+        batchSource.testInstallPersistentSessionBinding(sessionID: batchParentID)
+        batchSource.mcpControlContext = makeMCPControlContext(sessionID: batchParentID)
+        let batchDriftWorkspace = batchWindow.workspaceManager.createWorkspace(
+            name: "Explore Batch Drift Workspace",
+            repoPaths: [batchDriftRoot.path],
+            ephemeral: true
+        )
+        let batchRecorder = ExploreStartRecorder()
+        var secondChildSession: AgentModeViewModel.TabSession?
+        var batchService = makeAgentExploreStartService(
+            window: batchWindow,
+            sourceTabID: batchSourceTabID,
+            recorder: batchRecorder
+        )
+        batchService.testBeforeChildWorktreePreparation = { index, target in
+            guard index == 1 else { return }
+            secondChildSession = batchWindow.agentModeViewModel.session(for: target.tabID)
+            _ = await batchWindow.workspaceManager.switchWorkspace(
+                to: batchDriftWorkspace,
+                saveState: false,
+                reason: "agentExploreBetweenBatchChildrenDrift"
+            )
+        }
+
+        do {
+            _ = try await batchService.execute(args: [
+                "op": .string("start"),
+                "messages": .array([.string("accepted first"), .string("rejected second")]),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            XCTFail("Expected workspace drift between Explore children to reject the second child")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("failed after starting 1 of 2"), error.localizedDescription)
+        }
+        XCTAssertEqual(batchRecorder.observations.count, 1)
+        XCTAssertEqual(batchRecorder.observations.first?.message, "accepted first")
+        XCTAssertTrue(try XCTUnwrap(secondChildSession).worktreeBindings.isEmpty)
+    }
+
+    func testAgentManageRejectsPostAdmissionDriftBeforeControlMutations() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "manage-post-admission-a")
+        let secondRoot = try makeTemporaryDirectory(named: "manage-post-admission-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let resumableTarget = try await window.agentModeViewModel.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "Resumable",
+            expectedWorkspaceID: firstWorkspace.id
+        )
+        let sessionID = try XCTUnwrap(resumableTarget.sessionID)
+        let resumableSession = window.agentModeViewModel.session(for: resumableTarget.tabID)
+        let originalAgent = resumableSession.selectedAgent
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Manage Post Admission Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        var bindCount = 0
+        var switchSucceeded = false
+        var service = makeAgentManageService(
+            window: window,
+            onBindCurrentRequest: { bindCount += 1 }
+        )
+        service.testAfterTargetResolution = { _ in
+            let result = await window.workspaceManager.switchWorkspace(
+                to: secondWorkspace,
+                saveState: false,
+                reason: "agentManagePostAdmissionWorkspaceDrift"
+            )
+            switchSucceeded = result.didSwitch
+        }
+
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("resume_session"),
+                "session_id": .string(sessionID.uuidString)
+            ])
+            XCTFail("Expected Manage workspace drift after resolution to reject")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+        XCTAssertTrue(switchSucceeded)
+        XCTAssertEqual(bindCount, 0)
+        XCTAssertEqual(resumableSession.selectedAgent, originalAgent)
+        XCTAssertNil(resumableSession.mcpControlContext)
+    }
+
+    func testAgentManageRejectsWorkspaceDriftInsideConfigurationBeforeSelectionCommit() async throws {
+        let firstRoot = try makeTemporaryDirectory(named: "manage-configuration-drift-a")
+        let secondRoot = try makeTemporaryDirectory(named: "manage-configuration-drift-b")
+        let window = try await makeWindow(root: firstRoot)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let target = try await window.agentModeViewModel.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "Configuration Drift Target",
+            expectedWorkspaceID: firstWorkspace.id
+        )
+        let sessionID = try XCTUnwrap(target.sessionID)
+        let session = window.agentModeViewModel.session(for: target.tabID)
+        let originalAgent = session.selectedAgent
+        let originalModel = session.selectedModelRaw
+        let originalEffort = session.selectedReasoningEffortRaw
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Manage Configuration Drift Workspace B",
+            repoPaths: [secondRoot.path],
+            ephemeral: true
+        )
+        var bindCount = 0
+        var switchSucceeded = false
+        window.agentModeViewModel.test_beforeMCPSelectionCommit = {
+            let result = await window.workspaceManager.switchWorkspace(
+                to: secondWorkspace,
+                saveState: false,
+                reason: "agentManageConfigurationCommitDrift"
+            )
+            switchSucceeded = result.didSwitch
+        }
+        defer { window.agentModeViewModel.test_beforeMCPSelectionCommit = nil }
+        let service = makeAgentManageService(
+            window: window,
+            onBindCurrentRequest: { bindCount += 1 }
+        )
+
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("resume_session"),
+                "session_id": .string(sessionID.uuidString),
+                "reasoning_effort": .string("high")
+            ])
+            XCTFail("Expected Manage drift inside configuration to reject before selection commit")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+        XCTAssertTrue(switchSucceeded)
+        XCTAssertEqual(bindCount, 0)
+        let finalSession = try XCTUnwrap(
+            window.agentModeViewModel.session(for: target.tabID, createIfNeeded: false)
+        )
+        XCTAssertEqual(finalSession.selectedAgent, originalAgent)
+        XCTAssertEqual(finalSession.selectedModelRaw, originalModel)
+        XCTAssertEqual(finalSession.selectedReasoningEffortRaw, originalEffort)
+        XCTAssertNil(finalSession.mcpControlContext)
+    }
+
+    func testRunAndExploreDriftBeforeWorktreeBindingRemovesCreatedWorktrees() async throws {
+        let runFixture = try makeGitFixture()
+        let runDriftRoot = try makeTemporaryDirectory(named: "run-worktree-commit-drift-b")
+        let runWindow = try await makeWindow(root: runFixture.repo)
+        let runDriftWorkspace = runWindow.workspaceManager.createWorkspace(
+            name: "Run Worktree Commit Drift Workspace B",
+            repoPaths: [runDriftRoot.path],
+            ephemeral: true
+        )
+        var runCreatedPath: String?
+        var runProviderCount = 0
+        var runService = makeAgentRunStartService(
+            window: runWindow,
+            sourceTabID: nil,
+            onProviderStart: { runProviderCount += 1 }
+        )
+        runService.testBeforeWorktreeBindingCommit = {
+            runCreatedPath = try? await VCSService.shared.listGitWorktrees(at: runFixture.repo)
+                .first(where: { !$0.isMain })?.path
+            _ = await runWindow.workspaceManager.switchWorkspace(
+                to: runDriftWorkspace,
+                saveState: false,
+                reason: "runWorktreePreBindingCommitDrift"
+            )
+        }
+
+        do {
+            _ = try await runService.execute(args: [
+                "op": .string("start"),
+                "message": .string("remove uncommitted run worktree"),
+                "worktree_create": .bool(true),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            XCTFail("Expected Run worktree preparation drift to reject")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+        XCTAssertEqual(runProviderCount, 0)
+        let resolvedRunCreatedPath = try XCTUnwrap(runCreatedPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resolvedRunCreatedPath))
+        let remainingRunWorktrees = try await VCSService.shared.listGitWorktrees(at: runFixture.repo)
+        XCTAssertTrue(remainingRunWorktrees.allSatisfy(\.isMain))
+
+        let exploreFixture = try makeGitFixture()
+        let exploreDriftRoot = try makeTemporaryDirectory(named: "explore-worktree-commit-drift-b")
+        let exploreWindow = try await makeWindow(root: exploreFixture.repo)
+        let exploreSourceTabID = try XCTUnwrap(exploreWindow.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let exploreParentID = UUID()
+        let exploreSource = exploreWindow.agentModeViewModel.session(for: exploreSourceTabID)
+        exploreSource.testInstallPersistentSessionBinding(sessionID: exploreParentID)
+        exploreSource.mcpControlContext = makeMCPControlContext(sessionID: exploreParentID)
+        let exploreDriftWorkspace = exploreWindow.workspaceManager.createWorkspace(
+            name: "Explore Worktree Commit Drift Workspace B",
+            repoPaths: [exploreDriftRoot.path],
+            ephemeral: true
+        )
+        let recorder = ExploreStartRecorder()
+        var exploreCreatedPath: String?
+        var exploreService = makeAgentExploreStartService(
+            window: exploreWindow,
+            sourceTabID: exploreSourceTabID,
+            recorder: recorder
+        )
+        exploreService.testBeforeWorktreeBindingCommit = {
+            exploreCreatedPath = try? await VCSService.shared.listGitWorktrees(at: exploreFixture.repo)
+                .first(where: { !$0.isMain })?.path
+            _ = await exploreWindow.workspaceManager.switchWorkspace(
+                to: exploreDriftWorkspace,
+                saveState: false,
+                reason: "exploreWorktreePreBindingCommitDrift"
+            )
+        }
+
+        do {
+            _ = try await exploreService.execute(args: [
+                "op": .string("start"),
+                "message": .string("remove uncommitted explore worktree"),
+                "worktree_create": .bool(true),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            XCTFail("Expected Explore worktree preparation drift to reject")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+        XCTAssertTrue(recorder.observations.isEmpty)
+        let resolvedExploreCreatedPath = try XCTUnwrap(exploreCreatedPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resolvedExploreCreatedPath))
+        let remainingExploreWorktrees = try await VCSService.shared.listGitWorktrees(at: exploreFixture.repo)
+        XCTAssertTrue(remainingExploreWorktrees.allSatisfy(\.isMain))
     }
 
     func testAgentExploreBatchFailureAndCancellationRetainOnlyStartedChildren() async throws {
@@ -4934,6 +5711,26 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         )
     }
 
+    private func makeAgentManageService(
+        window: WindowState,
+        onBindCurrentRequest: (() -> Void)? = nil
+    ) -> AgentManageMCPToolService {
+        AgentManageMCPToolService(
+            toolName: MCPWindowToolName.agentManage,
+            captureRequestMetadata: {
+                MCPServerViewModel.RequestMetadata(
+                    connectionID: nil,
+                    clientName: "agent-manage-workspace-admission",
+                    windowID: window.windowID
+                )
+            },
+            requireTargetWindow: { window },
+            resolveSpawnSourceTabID: { _ in nil },
+            resolveSpawnParentSessionID: { _, _ in nil },
+            bindCurrentRequestToTab: { _, _ in onBindCurrentRequest?() }
+        )
+    }
+
     private func makeAgentRunStartService(
         window: WindowState,
         sourceTabID: UUID?,
@@ -4941,7 +5738,8 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         oracleLaunchRoute: AgentRunOracleReviewLaunchRoute? = nil,
         oracleLaunchSourceTabID: UUID? = nil,
         oracleSourceWorktreeBindings: [AgentSessionWorktreeBinding]? = nil,
-        oracleCapturedSourceAgentSessionID: UUID? = nil
+        oracleCapturedSourceAgentSessionID: UUID? = nil,
+        onProviderStart: (() -> Void)? = nil
     ) -> AgentRunMCPToolService {
         var service = AgentRunMCPToolService(
             toolName: MCPWindowToolName.agentRun,
@@ -4954,6 +5752,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             resolveSpawnParentSessionID: { _, _ in fallbackParentSessionID },
             withHeartbeat: { _, _, _, _, operation in try await operation() },
             startRun: { target, _, _, agentModeVM, agentRaw, modelRaw, reasoningEffortRaw, taskLabelKind, _, _, _ in
+                onProviderStart?()
                 guard let sessionID = target.sessionID else {
                     throw MCPError.internalError("Test start target did not resolve a session ID.")
                 }
