@@ -203,6 +203,8 @@ struct AgentPaginatedWorkflowsView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .hoverTooltip("Previous page")
+            .accessibilityLabel("Previous page")
 
             HStack(spacing: 6) {
                 ForEach(Array(pages.indices), id: \.self) { index in
@@ -231,6 +233,8 @@ struct AgentPaginatedWorkflowsView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .hoverTooltip("Next page")
+            .accessibilityLabel("Next page")
         }
     }
 
@@ -300,6 +304,8 @@ struct AgentRotatingTipsView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .hoverTooltip("Previous tip")
+                            .accessibilityLabel("Previous tip")
 
                             HStack(spacing: 6) {
                                 ForEach(Array(tips.indices), id: \.self) { index in
@@ -330,6 +336,8 @@ struct AgentRotatingTipsView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .hoverTooltip("Next tip")
+                            .accessibilityLabel("Next tip")
                         }
                     }
                 }
