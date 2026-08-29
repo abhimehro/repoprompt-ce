@@ -16,8 +16,8 @@ Commands:
 - ``generate``: assemble the accumulated appcast plus rollout manifest.
 - ``validate``: prove a reviewed appcast/manifest pair against the declaration,
   policy, version metadata, and enclosure/app-manifest digests.
-- ``validate-live-tip-progression``: prove the candidate advances the authenticated
-  public Tip ladder without skipping or rewriting retained history.
+- ``validate-live-tip-progression``: prove the candidate rolls or advances the
+  authenticated public Tip ladder without skipping or rewriting retained history.
 - ``validate-stable-tip-floor``: keep Stable builds below the retained preparer so
   an unprepared Stable client cannot satisfy the transition hard gate.
 - ``max-build``: greatest Sparkle build in an appcast (monotonicity input).
@@ -818,6 +818,15 @@ def validate_tip_manifest_pair(
 def expected_retained_history(live: dict, live_digest: str, candidate_role: str) -> list[dict]:
     live_role = live["currentRole"]
     live_items = live["appcastItems"]
+    if live_role == candidate_role:
+        allowed_chain = next(chain for chain in ALLOWED_ROLE_CHAINS if chain[0] == live_role)
+        retained_roles = tuple(item["role"] for item in live_items[1:])
+        if retained_roles != allowed_chain[1:]:
+            expected = ", ".join(allowed_chain[1:]) or "no"
+            raise RolloutError(
+                f"live {live_role} must retain exactly {expected} predecessors"
+            )
+        return live_items[1:]
     if live_role == "preparer" and candidate_role == "transition":
         newest = dict(live_items[0])
         newest["rolloutManifestName"] = "identity-rollout.json"
@@ -830,14 +839,6 @@ def expected_retained_history(live: dict, live_digest: str, candidate_role: str)
         newest["rolloutManifestName"] = "identity-rollout.json"
         newest["rolloutManifestSha256"] = live_digest
         return [newest, *live_items[1:]]
-    if live_role == "successor" and candidate_role == "successor":
-        if [item["role"] for item in live_items[1:]] != ["transition", "preparer"]:
-            raise RolloutError(
-                "live successor must retain exactly the transition and preparer predecessors"
-            )
-        return live_items[1:]
-    if live_role == "legacy" and candidate_role == "legacy":
-        return []
     raise RolloutError(
         "candidate Tip rollout role would regress or skip the live rollout state: "
         f"live={live_role} candidate={candidate_role}"

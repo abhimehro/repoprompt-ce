@@ -8,17 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       confirm_identity_rollout_role:
-        description: For preparer/transition/successor, enter the exact checked-in role
-        required: false
+        description: Enter the exact checked-in role (legacy/preparer/transition/successor)
+        required: true
         type: string
 
 concurrency:
-  group: >-
-    ${{
-      (github.event_name == 'workflow_dispatch' && 'main-tip-dispatch-channel') ||
-      (github.event.workflow_run.conclusion == 'success' && 'main-tip-channel') ||
-      format('main-tip-skipped-{0}', github.run_id)
-    }}
+  group: main-tip-channel
   queue: max
 
 permissions:
@@ -38,8 +33,6 @@ jobs:
       build-number: ${{ steps.tip.outputs.build-number }}
       tag: ${{ steps.tip.outputs.tag }}
       tooling-commit: ${{ steps.tip.outputs.tooling-commit }}
-      should-publish: ${{ steps.tip.outputs.should-publish }}
-      skip-reason: ${{ steps.tip.outputs.skip-reason }}
       rollout-role: ${{ steps.tip.outputs.rollout-role }}
       rollout-identity: ${{ steps.tip.outputs.rollout-identity }}
       migration-phase: ${{ steps.tip.outputs.migration-phase }}
@@ -124,17 +117,9 @@ jobs:
             exit 1
           }
 
-          should_publish=true
-          skip_reason=""
-          if [[ "$ROLLOUT_ROLE" != "legacy" ]]; then
-            if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
-              should_publish=false
-              skip_reason="role-requires-dispatch"
-              echo "Identity rollout role $ROLLOUT_ROLE requires an explicit workflow dispatch; skipping automatic publication."
-            elif [[ "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]; then
-              echo "confirm_identity_rollout_role must exactly match checked-in role $ROLLOUT_ROLE" >&2
-              exit 1
-            fi
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]; then
+            echo "confirm_identity_rollout_role must exactly match checked-in role $ROLLOUT_ROLE" >&2
+            exit 1
           fi
 
           stable_appcast="$RUNNER_TEMP/stable-appcast.xml"
@@ -175,53 +160,15 @@ jobs:
             echo "build-number=$build_number"
             echo "tag=$tag"
             echo "tooling-commit=$tooling_commit"
-            echo "should-publish=$should_publish"
-            echo "skip-reason=$skip_reason"
             echo "rollout-role=$ROLLOUT_ROLE"
             echo "rollout-identity=$ROLLOUT_IDENTITY"
             echo "migration-phase=$REPOPROMPT_IDENTITY_MIGRATION_PHASE"
             echo "installation-type=$ROLLOUT_INSTALLATION_TYPE"
           } >> "$GITHUB_OUTPUT"
 
-  automatic-tip-dormant:
-    name: Automatic Tip Publication Dormant (Dispatch Required)
-    needs: setup
-    if: >-
-      github.event_name == 'workflow_run' &&
-      needs.setup.outputs.should-publish != 'true' &&
-      needs.setup.outputs.skip-reason == 'role-requires-dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Report suppressed automatic publication
-        env:
-          ROLLOUT_ROLE: ${{ needs.setup.outputs.rollout-role }}
-          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
-          TIP_TAG: ${{ needs.setup.outputs.tag }}
-        run: |
-          set -euo pipefail
-          commit="${TIP_COMMIT:-unresolved}"
-          tag="${TIP_TAG:-unresolved}"
-          {
-            echo "## Automatic Tip Publication Dormant (Dispatch Required)"
-            echo
-            echo "- Rollout role: $ROLLOUT_ROLE"
-            echo "- Commit: $commit"
-            echo "- Tag: $tag"
-            echo
-            echo "This automatic workflow_run was intentionally suppressed because the nonlegacy rollout role requires an explicit dispatch."
-            echo "Nothing was built, signed, or published."
-            echo
-            echo "To publish this role, dispatch Publish Tip from protected main and enter confirm_identity_rollout_role=$ROLLOUT_ROLE. The candidate commit is selected automatically from main."
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "Automatic Tip publication is intentionally dormant for rollout role $ROLLOUT_ROLE."
-
   credential-preflight:
     name: Preflight Tip Rollout Credentials
     needs: setup
-    if: needs.setup.outputs.should-publish == 'true'
     environment: tip-release
     runs-on: macos-26
     timeout-minutes: 30
@@ -388,7 +335,6 @@ jobs:
     needs:
       - setup
       - credential-preflight
-    if: needs.setup.outputs.should-publish == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     permissions:
