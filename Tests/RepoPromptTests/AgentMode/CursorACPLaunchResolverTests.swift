@@ -80,6 +80,45 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         XCTAssertEqual(launch.arguments, ["--approve-mcps", "acp"])
     }
 
+    func testBareCursorAgentFallsBackWhenLegacyEntrypointDoesNotSupportACP() async throws {
+        let directory = try makeTemporaryDirectory()
+        let legacyProbeMarker = directory.appendingPathComponent("legacy-agent-probed")
+        let currentProbeMarker = directory.appendingPathComponent("current-agent-probed")
+        _ = try makeExecutable(
+            named: "cursor-agent",
+            in: directory,
+            marker: legacyProbeMarker,
+            output: "Usage: cursor-agent [OPTIONS]"
+        )
+        let currentAgent = try makeExecutable(
+            named: "agent",
+            in: directory,
+            marker: currentProbeMarker,
+            output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
+        )
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = directory.path
+        environment["SHELL"] = "/bin/false"
+        let testEnvironment = environment
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in testEnvironment },
+            supplementalPathProvider: { $0 }
+        )
+        let config = CursorAgentConfig(
+            commandName: "cursor-agent",
+            additionalPathHints: [],
+            includeRepoPromptMCPServer: false
+        )
+
+        let support = try await resolver.probeSupport(for: config)
+        let launch = try resolver.resolvedLaunch(for: config)
+
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(launch.command, try canonicalExecutablePath(currentAgent))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyProbeMarker.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentProbeMarker.path))
+    }
+
     func testBareCursorAgentPrefersLegacyEntrypointWhenBothNamesExist() async throws {
         let directory = try makeTemporaryDirectory()
         let cursorAgent = try makeExecutable(named: "cursor-agent", in: directory)
@@ -732,7 +771,10 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         environment["PATH"] = directory.path
         environment["SHELL"] = "/bin/false"
         let capturedEnvironment = environment
-        let resolver = CursorACPLaunchResolver(environmentProvider: { _ in capturedEnvironment })
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in capturedEnvironment },
+            supplementalPathProvider: { $0 }
+        )
         let config = CursorAgentConfig(commandName: "cursor-agent", additionalPathHints: [])
 
         guard case .unsupported = try await resolver.probeSupport(for: config) else {
