@@ -6182,6 +6182,185 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
     }
 
     #if DEBUG
+        func testDisplayAliasExactReadSkipsCanonicalCompactionWhileBareRelativeStillCompactsWorkspaceWide() async throws {
+            let parentA = try makeTemporaryRoot(name: "DisplayAliasCompactionParentA")
+            let parentB = try makeTemporaryRoot(name: "DisplayAliasCompactionParentB")
+            let rootA = parentA.appendingPathComponent("SharedRoot", isDirectory: true)
+            let rootB = parentB.appendingPathComponent("SharedRoot", isDirectory: true)
+            try write("target", to: rootA.appendingPathComponent("Target.swift"))
+            try write("peer", to: rootB.appendingPathComponent("Peer.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let recordA = try await store.loadRoot(path: rootA.path)
+            let recordB = try await store.loadRoot(path: rootB.path)
+            let roots = await store.rootRefs(scope: .visibleWorkspace)
+            let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+            let rootRefA = try XCTUnwrap(roots.first { $0.id == recordA.id })
+            let displayAlias = ClientPathFormatter.nonAbsoluteRootAlias(root: rootRefA, visibleRoots: roots)
+            XCTAssertNotEqual(displayAlias, rootA.lastPathComponent)
+            XCTAssertGreaterThan(displayAlias.split(separator: "/").count, 1)
+            let aliasInput = "\(displayAlias)/Target.swift"
+            guard case let .prefixed(resolvedRoot, _, remainder) = WorkspaceAliasResolver.resolve(
+                userPath: aliasInput,
+                roots: roots,
+                options: RootAliasOptions(requireRemainder: true)
+            ) else {
+                return XCTFail("Expected the formatter-derived display alias to resolve unambiguously")
+            }
+            XCTAssertEqual(resolvedRoot.id, recordA.id)
+            XCTAssertEqual(remainder, "Target.swift")
+
+            let peerSerialPosition = try XCTUnwrap(namespace.rootBindings.firstIndex {
+                $0.lookupRoot.id == recordB.id
+            })
+            let loadedServiceA = await store.fileSystemServiceForTesting(rootID: recordA.id)
+            let loadedServiceB = await store.fileSystemServiceForTesting(rootID: recordB.id)
+            let serviceA = try XCTUnwrap(loadedServiceA)
+            let serviceB = try XCTUnwrap(loadedServiceB)
+            let expectedCompactionRootTokens = Set([
+                serviceA.diagnosticRootToken.uuidString,
+                serviceB.diagnosticRootToken.uuidString
+            ])
+
+            let aliasGate = AsyncGate()
+            let relativeGate = AsyncGate()
+            await store.setExactFileCandidateProbeGateForTesting(
+                purpose: .canonicalCompaction,
+                rootID: recordB.id,
+                serialPosition: peerSerialPosition
+            ) {
+                await aliasGate.markStartedAndWaitForRelease()
+            }
+            addTeardownBlock {
+                await aliasGate.release()
+                await relativeGate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+
+            EditFlowPerf.resetDebugCaptureForTesting()
+            switch EditFlowPerf.beginDebugCapture(label: "display-alias-canonical-compaction", maxSamples: 200) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Display-alias performance capture should start")
+            }
+            let aliasCorrelation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+
+            let aliasCompleted = AsyncSignal()
+            let aliasTask = Task {
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(aliasCorrelation) {
+                    let resolution = try await store.resolveExactExistingWorkspaceFile(
+                        WorkspaceExactFileInput.parse(aliasInput),
+                        namespace: namespace
+                    )
+                    await aliasCompleted.mark()
+                    return resolution
+                }
+            }
+            let aliasObservationArrived = await waitForAsyncCondition {
+                let completed = await aliasCompleted.isMarked()
+                let gateEntered = await aliasGate.startCount() > 0
+                return completed || gateEntered
+            }
+            let aliasDidCompleteBeforePeerEntry = await aliasCompleted.isMarked()
+            let aliasPeerGateEntered = await aliasGate.startCount() > 0
+            await aliasGate.release()
+
+            XCTAssertTrue(aliasObservationArrived)
+            XCTAssertTrue(aliasDidCompleteBeforePeerEntry)
+            XCTAssertFalse(aliasPeerGateEntered)
+            let aliasResolution = try await aliasTask.value
+            guard case let .matched(aliasMatch) = aliasResolution else {
+                return XCTFail("Expected the display-alias target, got \(aliasResolution)")
+            }
+            XCTAssertEqual(aliasMatch.file.rootID, recordA.id)
+            let explicitAlias = try XCTUnwrap(namespace.explicitAlias(clientRootID: recordA.id))
+            XCTAssertEqual(aliasMatch.canonicalPath, "\(explicitAlias)//Target.swift")
+
+            let aliasCompactionProbes = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                $0.eventName == "WorkspaceExactResolution.Checkpoint"
+                    && $0.sanitizedDimensions.contains("purpose=canonicalCompaction")
+                    && $0.sanitizedDimensions.contains("status=bindingProbeBegan")
+            }
+            XCTAssertTrue(aliasCompactionProbes.isEmpty)
+
+            let replayResolution = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse(aliasMatch.canonicalPath),
+                namespace: namespace
+            )
+            guard case let .matched(replayMatch) = replayResolution else {
+                return XCTFail("Expected the explicit replay token to resolve, got \(replayResolution)")
+            }
+            XCTAssertEqual(replayMatch.file.id, aliasMatch.file.id)
+            XCTAssertEqual(replayMatch.file.rootID, aliasMatch.file.rootID)
+            XCTAssertEqual(replayMatch.file.standardizedFullPath, aliasMatch.file.standardizedFullPath)
+            XCTAssertEqual(replayMatch.canonicalPath, aliasMatch.canonicalPath)
+
+            await store.setExactFileCandidateProbeGateForTesting(
+                purpose: .canonicalCompaction,
+                rootID: recordB.id,
+                serialPosition: peerSerialPosition
+            ) {
+                await relativeGate.markStartedAndWaitForRelease()
+            }
+            switch EditFlowPerf.beginDebugCapture(label: "bare-relative-canonical-compaction", maxSamples: 200) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Bare-relative performance capture should start")
+            }
+            let relativeCorrelation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+
+            let relativeCompleted = AsyncSignal()
+            let relativeTask = Task {
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(relativeCorrelation) {
+                    let resolution = try await store.resolveExactExistingWorkspaceFile(
+                        WorkspaceExactFileInput.parse("Target.swift"),
+                        namespace: namespace
+                    )
+                    await relativeCompleted.mark()
+                    return resolution
+                }
+            }
+            let relativeObservationArrived = await waitForAsyncCondition {
+                let completed = await relativeCompleted.isMarked()
+                let gateEntered = await relativeGate.startCount() > 0
+                return completed || gateEntered
+            }
+            let relativeDidCompleteBeforePeerProbe = await relativeCompleted.isMarked()
+            let relativePeerGateEntered = await relativeGate.startCount() > 0
+            await relativeGate.release()
+
+            XCTAssertTrue(relativeObservationArrived)
+            XCTAssertTrue(relativePeerGateEntered)
+            XCTAssertFalse(relativeDidCompleteBeforePeerProbe)
+            let relativeResolution = try await relativeTask.value
+            guard case let .matched(relativeMatch) = relativeResolution else {
+                return XCTFail("Expected the bare-relative target, got \(relativeResolution)")
+            }
+            XCTAssertEqual(relativeMatch.file.id, aliasMatch.file.id)
+            XCTAssertEqual(relativeMatch.canonicalPath, "Target.swift")
+
+            let relativeCompactionProbes = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                $0.eventName == "WorkspaceExactResolution.Checkpoint"
+                    && $0.sanitizedDimensions.contains("purpose=canonicalCompaction")
+                    && $0.sanitizedDimensions.contains("status=bindingProbeBegan")
+            }
+            let observedCompactionRootTokens = Set(relativeCompactionProbes.compactMap { event -> String? in
+                event.sanitizedDimensions.split(separator: " ").lazy
+                    .map(String.init)
+                    .first { $0.hasPrefix("rootToken=") }?
+                    .replacingOccurrences(of: "rootToken=", with: "")
+            })
+            XCTAssertEqual(observedCompactionRootTokens, expectedCompactionRootTokens)
+            XCTAssertEqual(relativeCompactionProbes.count, namespace.rootBindings.count)
+            XCTAssertTrue(relativeCompactionProbes.contains {
+                $0.sanitizedDimensions.contains("rootToken=\(serviceB.diagnosticRootToken.uuidString)")
+                    && $0.sanitizedDimensions.contains("serialPosition=\(peerSerialPosition)")
+            })
+            await store.clearExactFileCandidateProbeGateForTesting()
+        }
+
         func testQualifiedExactReadDoesNotEnterBlockedPeerCompactionWhileBareRelativeStillClassifiesPeer() async throws {
             let rootA = try makeTemporaryRoot(name: "QualifiedBlockedPeerA")
             let rootB = try makeTemporaryRoot(name: "QualifiedBlockedPeerB")

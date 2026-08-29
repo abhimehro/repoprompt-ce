@@ -17051,8 +17051,9 @@ actor WorkspaceFileContextStore {
                 }
                 switch try await materializeSingleExactFile(from: aliasCandidates, relativePath: remainder) {
                 case let .materialized(file):
-                    return try await .matched(exactNamespaceCompactedExistingFileMatch(
+                    return try .matched(exactQualifiedExistingFileMatch(
                         file,
+                        addressedBinding: binding,
                         namespace: namespace
                     ))
                 case .blocked:
