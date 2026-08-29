@@ -31,19 +31,25 @@ The checked-in Tip declaration is the controlled `P → T → S` rehearsal:
 
 All three roles use the same Tip feed and `appcast.xml`; the rollout manifest is the same
 `identity-rollout.json` asset name. No sibling feed or Sparkle key is introduced. Automatic
-`workflow_run` notifications skip every nonlegacy role. During migration, an automatic nonlegacy run
-intentionally fails visibly in a read-only diagnostic rather than appearing successful; nothing is
-built, signed, or published. A complete immutable-release dedupe remains green. This is diagnostic
-truthfulness, not publication. Each nonlegacy role requires an explicit `workflow_dispatch` with
-`confirm_identity_rollout_role` exactly equal to the checked-in role. Tip workflow uses separate
-rolling/superseding lanes: newer runs replace older work only within
-the same lane, so automatic successes cannot evict explicit dispatches; failed-CI notifications
-use unique groups. Different lanes may build concurrently. The `publish` job is separately
-serialized across lanes once it reaches that job, but its job-level `cancel-in-progress: false`
-does not override workflow-level cancellation in the source lane. A duplicate immutable
-`tip-<shortsha>` tag publish may safely fail rather than corrupt the feed. An older run for a
-different commit that publishes late can move the latest pointer backward; this bounded risk is
-especially relevant outside migration-role gating, and the existing next publish recovers it.
+`workflow_run` notifications publish only legacy Tip builds. For P, T, and S they stop successfully
+in a read-only diagnostic before credentials or builds; that outcome is not release authorization.
+
+Each nonlegacy role requires an explicit `workflow_dispatch` from protected `main` with
+`confirm_identity_rollout_role` exactly equal to the checked-in role. There is no operator-supplied
+commit field. GitHub's selected `main` SHA is the candidate, and setup requires that SHA, the workflow
+definition, the release-tooling checkout, and freshly fetched protected `origin/main` to be the same
+commit.
+
+Automatic and manual runs occupy separate concurrency lanes and queue without cancelling in-flight
+release work. Publication is serialized across the lanes. Before any draft mutation and again
+immediately before publication, the publisher rechecks protected `main`, validates the authenticated
+public Tip appcast/manifest, enforces the monotonic `P → T → S` state machine with exact retained
+manifest bytes, and verifies retained enclosure size/SHA-256 from the immutable release assets.
+For T and S, setup and publication also require the greatest Stable build to remain strictly below
+P's retained Tip build; otherwise an unprepared later Stable build could satisfy T's Sparkle floor.
+Draft creation, asset upload, and publication are reconciled by observation after ambiguous network
+outcomes; existing bytes are never overwritten. A completed release is then audited anonymously,
+asset by asset, before it is accepted as the latest Tip release.
 
 ## Release ladder
 
@@ -116,11 +122,13 @@ P was published and independently verified at `tip-2f94412e6ab5`; its retained
 `3c69703fa7582105633b36e8874fe2a28e1832aabb776351e68dbf3367e122db`. The checked-in Tip
 declaration now pins that immutable predecessor and selects T.
 
-The next operator action after this change is merged to protected `main` and exact-head CI succeeds:
-dispatch **Publish Tip** with `commit` set to that exact main SHA and
-`confirm_identity_rollout_role=transition`. Do not rely on the automatic CI notification for T. S
-still requires a later reviewed declaration change containing both T's and P's exact manifest
-digests.
+The workflow capability for T is now explicit and deterministic: after this change reaches protected
+`main`, a reviewed dispatch uses `confirm_identity_rollout_role=transition`, and GitHub selects the
+exact current main SHA without a commit field. That capability is not release authorization. T and S
+remain **NO-GO** until the runtime proof below is complete, including a reviewed recovery story for a
+lost committed P journal and a policy that distinguishes a fresh successor installation from a client
+that skipped the preparer/transition bridge. S also requires a later declaration change containing
+both T's and P's exact manifest digests.
 
 ## Required proof gate
 

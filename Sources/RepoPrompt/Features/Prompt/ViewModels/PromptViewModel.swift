@@ -250,6 +250,7 @@ class PromptViewModel: ObservableObject {
     }
 
     typealias ComposeTabsWillCloseListener = @Sendable (_ tabIDs: Set<UUID>, _ reason: ComposeTabRemovalReason) async -> Void
+    typealias ComposeTabsProjectionRemovalCallback = @MainActor (_ actualRemovedTabIDs: Set<UUID>) -> Void
     typealias ComposeTabsDidRemoveListener = @MainActor @Sendable (
         _ tabIDs: Set<UUID>,
         _ reason: ComposeTabRemovalReason,
@@ -3214,7 +3215,8 @@ class PromptViewModel: ObservableObject {
     func deleteComposeAndStashedTabs(
         composeTabIDs: Set<UUID>,
         archivedTargets: Set<ArchivedTabMutationTarget>,
-        isMutationContextCurrent: (@MainActor () -> Bool)? = nil
+        isMutationContextCurrent: (@MainActor () -> Bool)? = nil,
+        onProjectionRemovalCommitted: ComposeTabsProjectionRemovalCallback? = nil
     ) async -> ComposeTabMutationReport {
         guard !composeTabIDs.isEmpty || !archivedTargets.isEmpty else {
             return ComposeTabMutationReport(noOpReasons: [.close, .deleteStashed])
@@ -3339,14 +3341,16 @@ class PromptViewModel: ObservableObject {
                 withIDs: resolvedComposeTabIDs,
                 expandCascade: false,
                 isMutationContextCurrent: mutationContextIsCurrent,
-                postPreflightValidation: cascadeIsCurrentAfterPreflight
+                postPreflightValidation: cascadeIsCurrentAfterPreflight,
+                onProjectionRemovalCommitted: onProjectionRemovalCommitted
             ))
         }
         if !allArchivedTargets.isEmpty, report.rejections.isEmpty {
             if mutationContextIsCurrent() {
                 await report.merge(deleteResolvedStashedTabs(
                     targets: allArchivedTargets,
-                    isMutationContextCurrent: mutationContextIsCurrent
+                    isMutationContextCurrent: mutationContextIsCurrent,
+                    onProjectionRemovalCommitted: onProjectionRemovalCommitted
                 ))
             } else {
                 report.rejections.append(ComposeTabMutationRejection(
@@ -3363,12 +3367,14 @@ class PromptViewModel: ObservableObject {
     @MainActor
     func stashComposeTabs(
         withIDs ids: Set<UUID>,
-        isMutationContextCurrent: (@MainActor () -> Bool)? = nil
+        isMutationContextCurrent: (@MainActor () -> Bool)? = nil,
+        onProjectionRemovalCommitted: ComposeTabsProjectionRemovalCallback? = nil
     ) async -> ComposeTabMutationReport {
         await removeComposeTabs(
             withIDs: ids,
             reason: .stash,
-            isMutationContextCurrent: isMutationContextCurrent
+            isMutationContextCurrent: isMutationContextCurrent,
+            onProjectionRemovalCommitted: onProjectionRemovalCommitted
         )
     }
 
@@ -3421,7 +3427,8 @@ class PromptViewModel: ObservableObject {
         reason: ComposeTabRemovalReason = .close,
         expandCascade: Bool = true,
         isMutationContextCurrent: (@MainActor () -> Bool)? = nil,
-        postPreflightValidation: (@MainActor () -> Bool)? = nil
+        postPreflightValidation: (@MainActor () -> Bool)? = nil,
+        onProjectionRemovalCommitted: ComposeTabsProjectionRemovalCallback? = nil
     ) async -> ComposeTabMutationReport {
         guard !ids.isEmpty else {
             return ComposeTabMutationReport(noOpReasons: [reason])
@@ -3512,7 +3519,8 @@ class PromptViewModel: ObservableObject {
             if reason == .close, expandCascade, !archivedTargetsToDelete.isEmpty {
                 await report.merge(deleteResolvedStashedTabs(
                     targets: archivedTargetsToDelete,
-                    isMutationContextCurrent: mutationContextIsCurrent
+                    isMutationContextCurrent: mutationContextIsCurrent,
+                    onProjectionRemovalCommitted: onProjectionRemovalCommitted
                 ))
             }
             return report
@@ -3609,7 +3617,8 @@ class PromptViewModel: ObservableObject {
             if reason == .close, expandCascade, !archivedTargetsToDelete.isEmpty {
                 await report.merge(deleteResolvedStashedTabs(
                     targets: archivedTargetsToDelete,
-                    isMutationContextCurrent: mutationContextIsCurrent
+                    isMutationContextCurrent: mutationContextIsCurrent,
+                    onProjectionRemovalCommitted: onProjectionRemovalCommitted
                 ))
             }
             return report
@@ -3624,6 +3633,7 @@ class PromptViewModel: ObservableObject {
         if tabs.isEmpty {
             await appendReplacementBlankComposeTabIfNeeded(manager: manager, workspaceIndex: index)
             loadComposeTabsFromWorkspace(manager.workspaces[index])
+            onProjectionRemovalCommitted?(tabsBeingClosed)
             #if DEBUG
                 for tabID in tabsBeingClosed {
                     AgentModePerfDiagnostics.markSidebarDeleteVisibleRemoved(
@@ -3643,7 +3653,8 @@ class PromptViewModel: ObservableObject {
             if reason == .close, expandCascade, !archivedTargetsToDelete.isEmpty {
                 await report.merge(deleteResolvedStashedTabs(
                     targets: archivedTargetsToDelete,
-                    isMutationContextCurrent: mutationContextIsCurrent
+                    isMutationContextCurrent: mutationContextIsCurrent,
+                    onProjectionRemovalCommitted: onProjectionRemovalCommitted
                 ))
             }
             return report
@@ -3679,6 +3690,7 @@ class PromptViewModel: ObservableObject {
         }
 
         loadComposeTabsFromWorkspace(manager.workspaces[index])
+        onProjectionRemovalCommitted?(tabsBeingClosed)
         #if DEBUG
             for tabID in tabsBeingClosed {
                 AgentModePerfDiagnostics.markSidebarDeleteVisibleRemoved(
@@ -3698,7 +3710,8 @@ class PromptViewModel: ObservableObject {
         if reason == .close, expandCascade, !archivedTargetsToDelete.isEmpty {
             await report.merge(deleteResolvedStashedTabs(
                 targets: archivedTargetsToDelete,
-                isMutationContextCurrent: mutationContextIsCurrent
+                isMutationContextCurrent: mutationContextIsCurrent,
+                onProjectionRemovalCommitted: onProjectionRemovalCommitted
             ))
         }
         return report
@@ -3953,7 +3966,8 @@ class PromptViewModel: ObservableObject {
     @MainActor
     private func deleteResolvedStashedTabs(
         targets: Set<ArchivedTabMutationTarget>,
-        isMutationContextCurrent: (@MainActor () -> Bool)?
+        isMutationContextCurrent: (@MainActor () -> Bool)?,
+        onProjectionRemovalCommitted: ComposeTabsProjectionRemovalCallback? = nil
     ) async -> ComposeTabMutationReport {
         guard !targets.isEmpty else {
             return ComposeTabMutationReport(noOpReasons: [.deleteStashed])
@@ -4044,6 +4058,7 @@ class PromptViewModel: ObservableObject {
         }
         manager.workspaces[index].stashedTabs = freshStashedTabs.filter { !stashedTabIDs.contains($0.id) }
         loadComposeTabsFromWorkspace(manager.workspaces[index])
+        onProjectionRemovalCommitted?(tabIDs)
         manager.markWorkspaceDirty()
         manager.pollAndSaveState()
         report.removedStashedTabIDs.formUnion(stashedTabsToDelete.map(\.id))

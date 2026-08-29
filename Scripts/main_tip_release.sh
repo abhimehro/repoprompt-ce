@@ -42,8 +42,7 @@ TIP_TAG="${TIP_TAG:-tip-$TIP_SHORT_SHA}"
 TIP_UPDATE_REPOSITORY="${TIP_UPDATE_REPOSITORY:-repoprompt/repoprompt-ce-tip-updates}"
 [[ "$TIP_UPDATE_REPOSITORY" == "$ROLLOUT_UPDATE_REPOSITORY" ]] ||
     fail "TIP_UPDATE_REPOSITORY must match the reviewed identity policy"
-TIP_DOWNLOAD_URL_PREFIX="${TIP_DOWNLOAD_URL_PREFIX:-https://github.com/$TIP_UPDATE_REPOSITORY/releases/download/$TIP_TAG/}"
-TIP_GH_TOKEN="${TIP_GH_TOKEN:-${GH_TOKEN:-}}"
+TIP_GH_TOKEN="${TIP_GH_TOKEN:-}"
 
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 APP_BUNDLE="$ROOT_DIR/.build/release/$APP_NAME.app"
@@ -68,6 +67,7 @@ STAGE_ARCHIVE="$DIST_DIR/$ARCHIVE_BASENAME-stage.zip"
 STAGE_ARCHIVE_CHECKSUM="$STAGE_ARCHIVE.sha256"
 RUN_WITHOUT_GITHUB_TOKENS="$CONTROL_PLANE_SCRIPTS_DIR/run_without_github_tokens.sh"
 SIGN_UPDATE="$TRUSTED_ROOT/Vendor/Sparkle/bin/sign_update"
+PUBLISH_TIP_RELEASE="$CONTROL_PLANE_SCRIPTS_DIR/publish_tip_release.sh"
 TMP_DIR=""
 
 require_command() { command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"; }
@@ -196,6 +196,7 @@ stage_tip() {
         BUNDLE_ID="$BUNDLE_ID" \
         SIGNING_TEAM_ID="$SIGNING_TEAM_ID" \
         REPOPROMPT_RELEASE_BUILD_NUMBER_OVERRIDE="$TIP_BUILD_NUMBER" \
+        REPOPROMPT_TIP_ARCHIVE_CONTRACT=tip-rollout-v1 \
         REPOPROMPT_IDENTITY_MIGRATION_PHASE="$REPOPROMPT_IDENTITY_MIGRATION_PHASE" \
         REPOPROMPT_ENABLE_SENTRY=1 \
         RELEASE_ALLOW_ADHOC_SIGNING=1 \
@@ -258,7 +259,8 @@ generate_tip_rollout_appcast() {
         [[ -n "$role" ]] || continue
         position=$((position + 1))
         path="$predecessor_dir/$position-identity-rollout.json"
-        curl --fail --location --retry 3 --silent --show-error \
+        curl --fail --location --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
             "https://github.com/$TIP_UPDATE_REPOSITORY/releases/download/$tag/identity-rollout.json" \
             --output "$path"
         actual_digest="$(shasum -a 256 "$path" | awk '{print $1}')"
@@ -287,6 +289,20 @@ generate_tip_rollout_appcast() {
         --app-artifact-manifest "$FINAL_ARTIFACT_MANIFEST" \
         --appcast-output "$APPCAST" \
         --manifest-output "$ROLLOUT_MANIFEST"
+    python3 "$ROLLOUT_TOOL" validate \
+        "${rollout_generate_args[@]}" \
+        --policy "$APPLE_IDENTITY_POLICY" \
+        --version-env "$ROOT_DIR/version.env" \
+        --release-tag "$TIP_TAG" \
+        --release-commit "$TIP_COMMIT" \
+        --migration-phase "$REPOPROMPT_IDENTITY_MIGRATION_PHASE" \
+        --allowed-roles legacy,preparer,transition,successor \
+        --enclosure "$ENCLOSURE" \
+        --enclosure-basename "$ARCHIVE_BASENAME" \
+        --enclosure-signature "$enclosure_signature" \
+        --app-artifact-manifest "$FINAL_ARTIFACT_MANIFEST" \
+        --appcast "$APPCAST" \
+        --manifest "$ROLLOUT_MANIFEST"
 
     local private_key_file="$TMP_DIR/tip-sparkle-private-key"
     local public_key_file="$TMP_DIR/tip-sparkle-public-key"
@@ -382,7 +398,7 @@ sign_tip() {
             "$CONTROL_PLANE_SCRIPTS_DIR/build_identity_transition_pkg.sh" build \
             --app "$APP_BUNDLE" \
             --output "$TRANSITION_PKG" \
-              --installer-identity "$EXPECTED_INSTALLER_IDENTITY"
+            --installer-identity "$EXPECTED_INSTALLER_IDENTITY"
         checksum_assets+=("$(basename "$TRANSITION_PKG")")
     else
         local distribution_dir="$TMP_DIR/distribution"
@@ -447,26 +463,58 @@ for name in sorted(expected):
         raise SystemExit(f"ERROR: Tip publish asset must be a regular non-symlink file: {path}")
 print(f"OK: Tip publish asset inventory contains exactly {len(expected)} files.")
 PYTHON
+    (cd "$DIST_DIR" && shasum -a 256 -c "$(basename "$CHECKSUMS")")
+    python3 - "$CHECKSUMS" "${expected_basenames[@]}" <<'PYTHON'
+import re
+import sys
+from pathlib import Path
+
+checksum_path = Path(sys.argv[1])
+expected = set(sys.argv[2:]) - {checksum_path.name}
+actual = set()
+for line in checksum_path.read_text(encoding="utf-8").splitlines():
+    match = re.fullmatch(r"([0-9a-f]{64})  ([^/]+)", line)
+    if not match:
+        raise SystemExit(f"ERROR: malformed SHA256SUMS line: {line!r}")
+    name = match.group(2)
+    if name in actual:
+        raise SystemExit(f"ERROR: duplicate SHA256SUMS entry: {name}")
+    actual.add(name)
+if actual != expected:
+    raise SystemExit(
+        "ERROR: SHA256SUMS entry set mismatch: "
+        f"missing={sorted(expected - actual)} extra={sorted(actual - expected)}"
+    )
+PYTHON
 }
 
 publish_tip() {
-    require_command gh
     require_env TIP_GH_TOKEN
+    require_env TIP_SOURCE_REPOSITORY
+    require_env TIP_SOURCE_BRANCH
+    require_file "$PUBLISH_TIP_RELEASE"
     case "$TIP_UPDATE_REPOSITORY" in
         repoprompt/repoprompt-ce|repoprompt/repoprompt-ce-updates)
             fail "TIP_UPDATE_REPOSITORY must not target the source or stable update repository"
             ;;
     esac
     validate_tip_publish_assets
-    GH_TOKEN="$TIP_GH_TOKEN" gh release create "$TIP_TAG" \
-        "${TIP_PUBLISH_ASSETS[@]}" \
-        --repo "$TIP_UPDATE_REPOSITORY" \
-        --target main \
-        --latest \
-        --title "$DISPLAY_NAME Tip $ROLLOUT_ROLE $TIP_SHORT_SHA" \
-        --notes "Tip identity rollout role \`$ROLLOUT_ROLE\` from main commit \`$TIP_COMMIT\` with build number \`$TIP_BUILD_NUMBER\`."
-    printf 'OK: published tip update release %s to %s.\n' "$TIP_TAG" "$TIP_UPDATE_REPOSITORY"
+    TIP_GH_TOKEN="$TIP_GH_TOKEN" \
+    TIP_UPDATE_REPOSITORY="$TIP_UPDATE_REPOSITORY" \
+    TIP_SOURCE_REPOSITORY="$TIP_SOURCE_REPOSITORY" \
+    TIP_SOURCE_BRANCH="$TIP_SOURCE_BRANCH" \
+    TIP_COMMIT="$TIP_COMMIT" \
+    TIP_TAG="$TIP_TAG" \
+    TIP_BUILD_NUMBER="$TIP_BUILD_NUMBER" \
+    TIP_PUBLISH_INSTALLATION_TYPE="$TIP_PUBLISH_INSTALLATION_TYPE" \
+    TIP_RELEASE_TITLE="$DISPLAY_NAME Tip $ROLLOUT_ROLE $TIP_SHORT_SHA" \
+    TIP_RELEASE_NOTES="Tip identity rollout role \`$ROLLOUT_ROLE\` from main commit \`$TIP_COMMIT\` with build number \`$TIP_BUILD_NUMBER\`." \
+    TIP_EXPECTED_ROLLOUT_ROLE="$ROLLOUT_ROLE" \
+    TIP_EXPECTED_SIGNING_IDENTITY="$ROLLOUT_IDENTITY" \
+    TIP_EXPECTED_MIGRATION_PHASE="$REPOPROMPT_IDENTITY_MIGRATION_PHASE" \
+        exec "$PUBLISH_TIP_RELEASE" "${TIP_PUBLISH_ASSETS[@]}"
 }
+
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "$MODE" in

@@ -252,51 +252,56 @@ feeds and no Sparkle-key change. Tip workflows must never write to `repoprompt-c
 use `v*` tags, and must not feed into `Promote Release`. Stable promotion remains the only path that
 updates the stable appcast.
 
-`Publish Tip` can be notified automatically after successful CI on `main` or dispatched manually. The
-automatic `workflow_run` path publishes only the legacy role; it skips every nonlegacy role before
-staging. During migration, an automatic nonlegacy run intentionally fails visibly in a read-only
-terminal diagnostic: nothing is built, signed, or published. A complete immutable-release dedupe
-remains green and records a concise no-op summary. This is diagnostic truthfulness, not publication.
-A nonlegacy role is published only by an explicit dispatch whose
-`confirm_identity_rollout_role` exactly matches the checked-in role. The protected role-aware
-credential preflight runs before the secret-free build, and the environment approval is therefore a
-manual gate before any expensive staging work.
-It uses a separate ephemeral keychain to import and verify each role-required P12
-without changing the runner user's keychain search list or exporting credential state
-to later steps.
-After P is reviewed, advance the declaration with its
-exact `identity-rollout.json` digest before dispatching T; advance it again with T and P digests before
-S. Each published role uses an immutable `tip-<shortsha>` tag and the tip-only repository's latest
-release; do not mark the release as a prerelease because GitHub excludes prereleases from
-`releases/latest`.
+`Publish Tip` can be notified automatically after successful CI on `main` or dispatched manually.
+The automatic `workflow_run` path publishes only the legacy role. For P, T, and S it ends in a
+successful read-only diagnostic before credentials, staging, signing, or publication. A nonlegacy
+role is published only by an explicit dispatch from `main` whose
+`confirm_identity_rollout_role` exactly matches the checked-in role.
+
+There is deliberately no commit input. For a manual dispatch, GitHub's selected `main` ref and
+`github.sha` are the immutable candidate. Setup fetches protected `origin/main` and requires the
+candidate commit, workflow-definition commit, and checked-out release tooling to be that exact live
+commit. A stale browser tab therefore cannot publish an older main commit merely because somebody
+pasted a convincing SHA into a text box. The protected role-aware credential preflight runs before
+the secret-free build and uses an isolated ephemeral keychain without changing the runner user's
+keychain search list.
+
+After P is reviewed, advance `tip-rollout.json` with its exact `identity-rollout.json` digest before
+dispatching T; advance it again with T and P digests before S. Each published role uses an immutable
+`tip-<shortsha>` tag and the tip-only repository's latest release. Do not mark it as a prerelease,
+because GitHub excludes prereleases from `releases/latest`.
 
 Current checkpoint: verified P is `tip-2f94412e6ab5`, with rollout-manifest SHA-256
 `3c69703fa7582105633b36e8874fe2a28e1832aabb776351e68dbf3367e122db`. The reviewed declaration
-pins that predecessor and selects T; T still requires an exact-role manual dispatch after its
-declaration change reaches protected `main` and passes exact-head CI.
+pins that predecessor and selects T. The workflow can build T only through an exact-role dispatch,
+but T and S remain NO-GO until the isolated runtime proof is approved, including lost-journal recovery
+and a fresh-successor-install policy. Workflow capability, environment approval, and role confirmation
+are safety gates; they are not release authorization.
 
-Tip `CFBundleVersion` values sort between adjacent stable builds. The workflow
-reads the currently published stable appcast and combines that stable build with
-the source commit count. For example, commit sequence `795` on stable build `28`
-becomes Tip build `28.7.95`: it is newer than stable `28`, while stable `29`
-still supersedes it. This keeps Stable and Tip in one monotonic Sparkle version
-space without forcing stable releases to adopt repository-sized build numbers.
-The source commit count must remain at or below `9999`; replace this encoding
-before the repository reaches that limit.
+Tip `CFBundleVersion` values sort between adjacent stable builds. The workflow reads the published
+stable appcast and combines that stable build with the source commit count. For example, commit
+sequence `795` on stable build `28` becomes Tip build `28.7.95`: it is newer than stable `28`, while
+stable `29` still supersedes it. The source commit count must remain at or below `9999`; replace this
+encoding before the repository reaches that limit.
 
-The workflow uses separate rolling/superseding GitHub concurrency lanes: successful
-automatic `main` notifications use `main-tip-channel`, and explicit dispatches use
-`main-tip-dispatch-channel`. Newer runs replace older work only within their own lane, so an
-automatic success cannot supersede a dispatch; failed-CI notifications use unique run-specific
-groups. Different lanes may build concurrently. The `publish` job is separately serialized
-across lanes once it reaches that job, but its job-level `cancel-in-progress: false` does not
-override workflow-level cancellation in the source lane. A duplicate immutable
-`tip-<shortsha>` tag publish may safely fail rather than corrupt the feed. An older run for a
-different commit that publishes late can move the Tip latest pointer backward; this bounded risk
-is especially relevant outside migration-role gating, and the existing next publish recovers it.
-Before compiling, it uses the workflow's read-only `github.token` to check for a complete
-release for the immutable `tip-<shortsha>` tag and skips an already-published commit. The protected
-update-repository token remains confined to the publishing job.
+During T and S, that normal Stable supersession must be deliberately paused: setup and the final
+publisher require the greatest Stable build to remain strictly below the retained P build. Advancing
+Stable to the next integer first would make an unprepared Stable client appear new enough to satisfy
+T's `sparkle:minimumUpdateVersion`, bypassing the credential preparer.
+
+Automatic and manual runs use separate concurrency lanes, and neither lane cancels in-flight release
+work. The publication job is serialized across both lanes, so a retry resumes or audits one exact
+draft instead of abandoning a different tag halfway through publication.
+
+Remote mutation is confined to that protected publication job. Immediately before draft creation
+and again immediately before making a draft public, it rechecks live protected `main`, downloads the
+public Tip manifest/appcast, proves that the candidate advances only `P → T → S` (or a later S) with
+exact retained history, and audits every retained enclosure against GitHub's published size and
+SHA-256. Existing drafts are resumed only when their metadata and uploaded bytes exactly match;
+missing assets are added without overwriting anything. After publication, every public asset is
+downloaded anonymously and compared byte-for-byte with the signed local inventory, and the release
+must be the repository's latest. The update-repository token is not available to setup, staging, or
+smoke jobs.
 
 Configure protected GitHub Actions environments named `release` and `tip-release`, with maintainer
 approval and protected-branch restrictions. Before the rehearsal, store this one-time identity
