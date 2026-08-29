@@ -116,6 +116,7 @@ private struct MessageFooterStrip: View {
                 isHoveringCopy = hovering
             }
         }
+        .accessibilityLabel("Copy message")
         .hoverTooltip("Copy message")
     }
 
@@ -138,6 +139,7 @@ private struct MessageFooterStrip: View {
                     isHoveringHandoff = hovering
                 }
             }
+            .accessibilityLabel("Handoff to new chat")
             .hoverTooltip("Handoff to new chat")
             .popover(isPresented: $showHandoffPopover, arrowEdge: .bottom) {
                 AgentHandoffPopover(config: config) {
