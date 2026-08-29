@@ -30,21 +30,23 @@ The checked-in Tip declaration is the controlled `P → T → S` rehearsal:
   items and supplies the normal rollback window.
 
 All three roles use the same Tip feed and `appcast.xml`; the rollout manifest is the same
-`identity-rollout.json` asset name. No sibling feed or Sparkle key is introduced. `Publish Tip` is
-manual-only and has no CI-completion trigger, so ordinary `main` activity cannot allocate release
-runners or produce a successful no-publication workflow.
+`identity-rollout.json` asset name. No sibling feed or Sparkle key is introduced. A successful `CI`
+run for protected `main` automatically continues into the complete `Publish Tip` pipeline for the
+exact passing commit, regardless of the checked-in rollout role. A role changes the artifact and
+identity policy; it never suppresses publication or produces a successful no-publication run.
 
-Every dispatch from protected `main` requires a non-empty `confirm_identity_rollout_role` input
+Manual dispatch is a recovery path. Every dispatch from protected `main` requires a non-empty
+`confirm_identity_rollout_role` input
 exactly equal to the checked-in role, preventing an empty confirmation from starting a release job.
 There is no operator-supplied commit field. GitHub's selected `main` SHA is the candidate, and setup
 requires that SHA, the workflow definition, the release-tooling checkout, and freshly fetched
 protected `origin/main` to be the same commit.
 
-Manual runs queue without cancelling in-flight release work, and publication is serialized. Before
-any draft mutation and again immediately before publication, the publisher rechecks protected
-`main`, validates the authenticated public Tip appcast/manifest, enforces the monotonic `P → T → S`
-state machine with exact retained manifest bytes, and verifies retained enclosure size/SHA-256 from
-immutable release assets.
+Automatic and manual runs use one queue without cancelling in-flight release work, and publication
+is serialized. Before any draft mutation and again immediately before publication, the publisher
+rechecks protected `main`, validates the authenticated public Tip appcast/manifest, enforces the
+monotonic `P → T → S` state machine with exact retained manifest bytes, and verifies retained
+enclosure size/SHA-256 from immutable release assets.
 For T and S, setup and publication also require the greatest Stable build to remain strictly below
 P's retained Tip build; otherwise an unprepared later Stable build could satisfy T's Sparkle floor.
 Draft creation, asset upload, and publication are reconciled by observation after ambiguous network
@@ -110,25 +112,25 @@ role separately requires the successor application P12/password only to create a
 successor anchor. After every P12 import, the signing job verifies that the policy-derived identity is
 present and usable in the ephemeral keychain before any `codesign` or `productbuild` call.
 
-## Manual gates and next operator action
+## Rollout gates and next operator action
 
-The manual gates are ordered: approve and dispatch P first, inspect its signed/notarized ZIP and
-retained `identity-rollout.json`, then update the declaration with P's exact manifest digest before
-dispatching T. After T is verified, update the declaration with both exact predecessor digests before
-dispatching S. Publish every role only through the reviewed manual dispatch.
+The checked-in declaration is the rollout authorization boundary. Review and merge P first, inspect
+its automatically published signed/notarized ZIP and retained `identity-rollout.json`, then update the
+declaration with P's exact manifest digest before merging T. After T is verified, update the
+declaration with both exact predecessor digests before merging S. Successful protected-main CI
+automatically publishes each reviewed role; no second dispatch approval is required.
 
 P was published and independently verified at `tip-2f94412e6ab5`; its retained
 `identity-rollout.json` SHA-256 is
 `3c69703fa7582105633b36e8874fe2a28e1832aabb776351e68dbf3367e122db`. The checked-in Tip
 declaration now pins that immutable predecessor and selects T.
 
-The workflow capability for T is now explicit and deterministic: after this change reaches protected
-`main`, a reviewed dispatch uses `confirm_identity_rollout_role=transition`, and GitHub selects the
-exact current main SHA without a commit field. That capability is not release authorization. T and S
-remain **NO-GO** until the runtime proof below is complete, including a reviewed recovery story for a
-lost committed P journal and a policy that distinguishes a fresh successor installation from a client
-that skipped the preparer/transition bridge. S also requires a later declaration change containing
-both T's and P's exact manifest digests.
+The workflow capability for T is explicit and deterministic: after a reviewed transition declaration
+reaches protected `main` and CI passes, GitHub selects and publishes that exact commit automatically.
+The declaration change must not merge until the runtime proof below is complete, including a reviewed
+recovery story for a lost committed P journal and a policy that distinguishes a fresh successor
+installation from a client that skipped the preparer/transition bridge. S also requires a later
+declaration change containing both T's and P's exact manifest digests.
 
 ## Required proof gate
 

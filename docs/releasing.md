@@ -252,11 +252,11 @@ feeds and no Sparkle-key change. Tip workflows must never write to `repoprompt-c
 use `v*` tags, and must not feed into `Promote Release`. Stable promotion remains the only path that
 updates the stable appcast.
 
-`Publish Tip` is manual-only. It is never triggered by a successful CI run, so ordinary `main`
-activity cannot allocate release runners or produce a successful no-publication workflow. Every
-dispatch from `main` requires a non-empty `confirm_identity_rollout_role` input that exactly matches
-the checked-in role; this applies to every role so the dispatch UI cannot start an ambiguously
-authorized release.
+`Publish Tip` runs automatically after successful CI on protected `main`. Every checked-in rollout
+role follows the complete build, sign, notarize, smoke, and publish path; a role changes the artifact
+and identity policy but never suppresses the release or produces a successful no-publication run.
+Manual dispatch remains a recovery path and requires a non-empty `confirm_identity_rollout_role`
+input that exactly matches the checked-in role.
 
 There is deliberately no commit input. For a manual dispatch, GitHub's selected `main` ref and
 `github.sha` are the immutable candidate. Setup fetches protected `origin/main` and requires the
@@ -273,10 +273,10 @@ because GitHub excludes prereleases from `releases/latest`.
 
 Current checkpoint: verified P is `tip-2f94412e6ab5`, with rollout-manifest SHA-256
 `3c69703fa7582105633b36e8874fe2a28e1832aabb776351e68dbf3367e122db`. The reviewed declaration
-pins that predecessor and selects T. The workflow can build T only through an exact-role dispatch,
-but T and S remain NO-GO until the isolated runtime proof is approved, including lost-journal recovery
-and a fresh-successor-install policy. Workflow capability, environment approval, and role confirmation
-are safety gates; they are not release authorization.
+pins that predecessor and selects T. Protected-main review of the rollout declaration is the release
+authorization boundary: after CI passes, Tip publication is automatic. Do not merge a T or S
+declaration until the isolated runtime proof is approved, including lost-journal recovery and a
+fresh-successor-install policy.
 
 Tip `CFBundleVersion` values sort between adjacent stable builds. The workflow reads the published
 stable appcast and combines that stable build with the source commit count. For example, commit
