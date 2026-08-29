@@ -1,3 +1,4 @@
+import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
 import XCTest
@@ -5,6 +6,716 @@ import XCTest
 #if DEBUG
     @MainActor
     final class ConcurrentSameWorkspaceAgentRunAdmissionTests: XCTestCase {
+        func testSixOverlappingAgentRunStartsPersistUniqueIdentitiesAndDispatchProvidersExactlyOnce() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            addTeardownBlock { @MainActor in
+                await fixture.cleanup()
+            }
+            let workspaceID = fixture.workspaceID
+            let initialWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+            let initialTabs = initialWorkspace.composeTabs
+            let initialTabIDs = Set(initialTabs.map(\.id))
+            let initialActiveTabID = initialWorkspace.activeComposeTabID
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let coordinatorBaseline = coordinator.snapshot()
+            let saveGate = AdmissionSaveGate()
+            let providerRecorder = AdmissionProviderRecorder(expectedCount: 6)
+            fixture.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting {
+                savedWorkspaceID,
+                _,
+                _ in
+                guard savedWorkspaceID == workspaceID,
+                      coordinator.activeCount(for: workspaceID) > 0
+                else { return }
+                await saveGate.enterFirstAndWait()
+            }
+            defer {
+                fixture.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            }
+
+            let service = makeAgentRunStartService(
+                window: fixture.window,
+                recorder: providerRecorder,
+                validateBeforeProviderDispatch: { pair in
+                    let canonicalSnapshot = await fixture.runtime.workspaceStore
+                        .canonicalWorkspaceSnapshot(workspaceID)
+                    let canonical = try XCTUnwrap(canonicalSnapshot)
+                    let canonicalWorkspace = try JSONDecoder().decode(
+                        WorkspaceModel.self,
+                        from: canonical.document.documentBytes
+                    )
+                    guard canonicalWorkspace.composeTabs.containsIdentity(pair) else {
+                        throw AdmissionTestError.fixtureSetup(
+                            "provider reached dispatch before canonical identity \(pair)"
+                        )
+                    }
+                    let savedWorkspace = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                        at: fixture.workspaceFileURL,
+                        scheduleNormalizationWriteback: false
+                    )
+                    guard savedWorkspace.composeTabs.containsIdentity(pair) else {
+                        throw AdmissionTestError.fixtureSetup(
+                            "provider reached dispatch before disk identity \(pair)"
+                        )
+                    }
+                }
+            )
+            let tasks = (0 ..< 6).map { index in
+                Task { @MainActor in
+                    try await service.execute(args: [
+                        "op": .string("start"),
+                        "message": .string("overlapping durable admission \(index)"),
+                        "detach": .bool(true),
+                        "timeout": .int(0)
+                    ])
+                }
+            }
+
+            do {
+                try await waitUntil("first durable admission save to reach the gate") {
+                    await saveGate.hasEntered()
+                }
+                do {
+                    try await waitUntil("five same-workspace starts to queue") {
+                        coordinator.snapshot().activeAdmissionCount == coordinatorBaseline.activeAdmissionCount + 1
+                            && coordinator.waiterCount(for: workspaceID) == 5
+                    }
+                } catch {
+                    throw AdmissionTestError.fixtureSetup(
+                        "coordinator did not reach six-way overlap: baseline=\(coordinatorBaseline) current=\(coordinator.snapshot()) workspaceWaiters=\(coordinator.waiterCount(for: workspaceID))"
+                    )
+                }
+                let heldWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+                XCTAssertEqual(
+                    Set(heldWorkspace.composeTabs.map(\.id)).subtracting(initialTabIDs).count,
+                    1,
+                    "Queued siblings must not append provisional tabs before acquiring the workspace admission."
+                )
+                let providerCountWhileSaveBlocked = await providerRecorder.count()
+                XCTAssertEqual(
+                    providerCountWhileSaveBlocked,
+                    0,
+                    "No provider may start before the first durable save gate opens."
+                )
+
+                await saveGate.open()
+                try await waitUntil("all six providers to overlap") {
+                    await providerRecorder.count() == 6
+                }
+
+                let observations = await providerRecorder.observations()
+                let acceptedPairs = observations.map { AdmissionIdentityPair(tabID: $0.tabID, sessionID: $0.sessionID) }
+                XCTAssertEqual(observations.count, 6)
+                XCTAssertEqual(Set(acceptedPairs).count, 6)
+                XCTAssertEqual(Set(observations.compactMap(\.lifecycleIdentity)).count, 6)
+                XCTAssertTrue(observations.allSatisfy { $0.lifecycleIdentity?.workspaceID == workspaceID })
+
+                let projectedWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+                XCTAssertEqual(projectedWorkspace.activeComposeTabID, initialActiveTabID)
+                assertExactAdmissionState(
+                    in: projectedWorkspace.composeTabs,
+                    initialTabs: initialTabs,
+                    acceptedPairs: acceptedPairs
+                )
+                assertExactAdmissionState(
+                    in: fixture.window.promptManager.currentComposeTabs,
+                    initialTabs: initialTabs,
+                    acceptedPairs: acceptedPairs
+                )
+                for observation in observations {
+                    let live = try XCTUnwrap(
+                        try fixture.window.agentModeViewModel.authoritativeLiveSession(for: observation.sessionID)
+                    )
+                    XCTAssertEqual(live.tabID, observation.tabID)
+                    XCTAssertEqual(live.activeAgentSessionID, observation.sessionID)
+                }
+
+                let canonicalSnapshot = await fixture.runtime.workspaceStore
+                    .canonicalWorkspaceSnapshot(workspaceID)
+                let canonical = try XCTUnwrap(canonicalSnapshot)
+                XCTAssertEqual(canonical.health, .writable)
+                let canonicalWorkspace = try JSONDecoder().decode(
+                    WorkspaceModel.self,
+                    from: canonical.document.documentBytes
+                )
+                assertExactAdmissionState(
+                    in: canonicalWorkspace.composeTabs,
+                    initialTabs: initialTabs,
+                    acceptedPairs: acceptedPairs
+                )
+                let savedWorkspace = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                    at: fixture.workspaceFileURL,
+                    scheduleNormalizationWriteback: false
+                )
+                assertExactAdmissionState(
+                    in: savedWorkspace.composeTabs,
+                    initialTabs: initialTabs,
+                    acceptedPairs: acceptedPairs
+                )
+
+                await providerRecorder.releaseAll()
+                var values: [Value] = []
+                for task in tasks {
+                    try await values.append(task.value)
+                }
+                let responsePairs = try values.map { value -> AdmissionIdentityPair in
+                    let object = try XCTUnwrap(value.objectValue)
+                    let session = try XCTUnwrap(object["session"]?.objectValue)
+                    return try AdmissionIdentityPair(
+                        tabID: XCTUnwrap(session["context_id"]?.stringValue.flatMap(UUID.init(uuidString:))),
+                        sessionID: XCTUnwrap(object["session_id"]?.stringValue.flatMap(UUID.init(uuidString:)))
+                    )
+                }
+                XCTAssertEqual(Set(responsePairs), Set(acceptedPairs))
+                let providerAttemptCounts = await providerRecorder.attemptCounts()
+                XCTAssertEqual(providerAttemptCounts, Dictionary(
+                    uniqueKeysWithValues: acceptedPairs.map { ($0, 1) }
+                ))
+
+                await fixture.closeWindowAndRuntime()
+                try await fixture.withFreshRuntime(generation: 2) { restarted in
+                    let restartedCatalog = await restarted.workspaceStore.snapshot()
+                    let restartedSnapshot = await restarted.workspaceStore
+                        .canonicalWorkspaceSnapshot(workspaceID)
+                    let restartedWorkspace = try XCTUnwrap(restartedSnapshot)
+                    XCTAssertEqual(restartedCatalog.health, .writable)
+                    XCTAssertEqual(restartedWorkspace.health, .writable)
+                    let restartedModel = try JSONDecoder().decode(
+                        WorkspaceModel.self,
+                        from: restartedWorkspace.document.documentBytes
+                    )
+                    assertExactAdmissionState(
+                        in: restartedModel.composeTabs,
+                        initialTabs: initialTabs,
+                        acceptedPairs: acceptedPairs
+                    )
+                }
+                XCTAssertEqual(coordinator.snapshot(), coordinatorBaseline)
+            } catch {
+                await saveGate.open()
+                await providerRecorder.releaseAll()
+                tasks.forEach { $0.cancel() }
+                var taskErrors: [String] = []
+                for task in tasks {
+                    do {
+                        _ = try await task.value
+                    } catch {
+                        taskErrors.append(String(describing: error))
+                    }
+                }
+                throw AdmissionTestError.fixtureSetup(
+                    "\(error); taskErrors=\(taskErrors)"
+                )
+            }
+        }
+
+        func testAgentAdmissionsForDistinctDurableWorkspacesOverlap() async throws {
+            let fixture = try await DistinctDurableAdmissionFixture.make()
+            addTeardownBlock { @MainActor in
+                await fixture.cleanup()
+            }
+            let first = fixture.first
+            let second = fixture.second
+            let initialTabsByWorkspace = try Dictionary(uniqueKeysWithValues: [first, second].map { context in
+                try (
+                    context.workspaceID,
+                    XCTUnwrap(context.window.workspaceManager.activeWorkspace).composeTabs
+                )
+            })
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let baseline = coordinator.snapshot()
+            let firstGate = AdmissionSaveGate()
+            let secondGate = AdmissionSaveGate()
+            let providerRecorder = AdmissionProviderRecorder(expectedCount: 2)
+            first.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting {
+                workspaceID,
+                _,
+                _ in
+                guard workspaceID == first.workspaceID,
+                      coordinator.activeCount(for: workspaceID) > 0
+                else { return }
+                await firstGate.enterFirstAndWait()
+            }
+            second.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting {
+                workspaceID,
+                _,
+                _ in
+                guard workspaceID == second.workspaceID,
+                      coordinator.activeCount(for: workspaceID) > 0
+                else { return }
+                await secondGate.enterFirstAndWait()
+            }
+            defer {
+                first.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+                second.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+            }
+            let firstService = makeAgentRunStartService(
+                window: first.window,
+                recorder: providerRecorder
+            )
+            let secondService = makeAgentRunStartService(
+                window: second.window,
+                recorder: providerRecorder
+            )
+            let firstTask = Task { @MainActor in
+                try await firstService.execute(args: [
+                    "op": .string("start"),
+                    "message": .string("distinct workspace A"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            let secondTask = Task { @MainActor in
+                try await secondService.execute(args: [
+                    "op": .string("start"),
+                    "message": .string("distinct workspace B"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+
+            do {
+                try await waitUntil("workspace A admission save to block") {
+                    await firstGate.hasEntered()
+                }
+                try await waitUntil("workspace B admission save to overlap workspace A") {
+                    await secondGate.hasEntered()
+                }
+                XCTAssertEqual(
+                    coordinator.snapshot(),
+                    .init(
+                        activeAdmissionCount: baseline.activeAdmissionCount + 2,
+                        waiterCount: baseline.waiterCount,
+                        trackedWorkspaceCount: baseline.trackedWorkspaceCount + 2
+                    )
+                )
+
+                await firstGate.open()
+                await secondGate.open()
+                try await waitUntil("both distinct-workspace providers to overlap") {
+                    await providerRecorder.count() == 2
+                }
+                let observations = await providerRecorder.observations()
+                XCTAssertEqual(
+                    Set(observations.compactMap { $0.lifecycleIdentity?.workspaceID }),
+                    Set([first.workspaceID, second.workspaceID])
+                )
+                let observationsByWorkspace = Dictionary(
+                    uniqueKeysWithValues: observations.compactMap { observation in
+                        observation.lifecycleIdentity.map { ($0.workspaceID, observation) }
+                    }
+                )
+                for context in [first, second] {
+                    let observation = try XCTUnwrap(observationsByWorkspace[context.workspaceID])
+                    let pair = AdmissionIdentityPair(
+                        tabID: observation.tabID,
+                        sessionID: observation.sessionID
+                    )
+                    let initialTabs = try XCTUnwrap(initialTabsByWorkspace[context.workspaceID])
+                    let projected = try XCTUnwrap(context.window.workspaceManager.activeWorkspace)
+                    assertExactAdmissionState(
+                        in: projected.composeTabs,
+                        initialTabs: initialTabs,
+                        acceptedPairs: [pair]
+                    )
+                    assertExactAdmissionState(
+                        in: context.window.promptManager.currentComposeTabs,
+                        initialTabs: initialTabs,
+                        acceptedPairs: [pair]
+                    )
+                    let canonicalSnapshot = await context.runtime.workspaceStore
+                        .canonicalWorkspaceSnapshot(context.workspaceID)
+                    let canonical = try XCTUnwrap(canonicalSnapshot)
+                    let canonicalWorkspace = try JSONDecoder().decode(
+                        WorkspaceModel.self,
+                        from: canonical.document.documentBytes
+                    )
+                    assertExactAdmissionState(
+                        in: canonicalWorkspace.composeTabs,
+                        initialTabs: initialTabs,
+                        acceptedPairs: [pair]
+                    )
+                    let saved = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                        at: context.workspaceFileURL,
+                        scheduleNormalizationWriteback: false
+                    )
+                    assertExactAdmissionState(
+                        in: saved.composeTabs,
+                        initialTabs: initialTabs,
+                        acceptedPairs: [pair]
+                    )
+                }
+
+                await providerRecorder.releaseAll()
+                let firstValue = try await firstTask.value
+                let secondValue = try await secondTask.value
+                let responseIDs = Set([firstValue, secondValue].compactMap {
+                    $0.objectValue?["session_id"]?.stringValue.flatMap(UUID.init(uuidString:))
+                })
+                XCTAssertEqual(responseIDs, Set(observations.map(\.sessionID)))
+                XCTAssertEqual(coordinator.snapshot(), baseline)
+
+                await fixture.closeWindowsAndRuntime()
+                for context in [first, second] {
+                    try await fixture.withFreshRuntime(for: context, generation: 2) { restarted in
+                        let observation = try XCTUnwrap(observationsByWorkspace[context.workspaceID])
+                        let pair = AdmissionIdentityPair(
+                            tabID: observation.tabID,
+                            sessionID: observation.sessionID
+                        )
+                        let initialTabs = try XCTUnwrap(initialTabsByWorkspace[context.workspaceID])
+                        let restartedSnapshot = await restarted.workspaceStore
+                            .canonicalWorkspaceSnapshot(context.workspaceID)
+                        let restartedWorkspace = try XCTUnwrap(restartedSnapshot)
+                        let restartedModel = try JSONDecoder().decode(
+                            WorkspaceModel.self,
+                            from: restartedWorkspace.document.documentBytes
+                        )
+                        assertExactAdmissionState(
+                            in: restartedModel.composeTabs,
+                            initialTabs: initialTabs,
+                            acceptedPairs: [pair]
+                        )
+                    }
+                }
+            } catch {
+                await firstGate.open()
+                await secondGate.open()
+                await providerRecorder.releaseAll()
+                firstTask.cancel()
+                secondTask.cancel()
+                var taskErrors: [String] = []
+                for task in [firstTask, secondTask] {
+                    do {
+                        _ = try await task.value
+                    } catch {
+                        taskErrors.append(String(describing: error))
+                    }
+                }
+                throw AdmissionTestError.fixtureSetup(
+                    "\(error); taskErrors=\(taskErrors)"
+                )
+            }
+        }
+
+        func testTypedAdmissionRejectionLeavesNoIdentityAcrossRestartAndDispatchesNoProvider() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            addTeardownBlock { @MainActor in
+                await fixture.cleanup()
+            }
+            let workspaceID = fixture.workspaceID
+            let initialWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+            let initialTabs = initialWorkspace.composeTabs
+            let initialTabIDs = Set(initialTabs.map(\.id))
+            let provisionalIdentity = ProvisionalAdmissionIdentityRecorder()
+            let beforeSaveToken = fixture.window.workspaceManager.addBeforeSaveListener { workspace in
+                guard workspace.id == workspaceID,
+                      let tab = workspace.composeTabs.first(where: {
+                          !initialTabIDs.contains($0.id) && $0.activeAgentSessionID != nil
+                      }), let sessionID = tab.activeAgentSessionID
+                else { return }
+                provisionalIdentity.record(.init(tabID: tab.id, sessionID: sessionID))
+            }
+            let providerRecorder = AdmissionProviderRecorder(
+                expectedCount: 1,
+                blockProviders: false
+            )
+            let lifecycleEvents = AdmissionLifecycleEventRecorder()
+            AgentSessionLifecycleAuthority.setEventObserverForTesting { lifecycleEvents.record($0) }
+            fixture.window.workspaceManager.setWorkspacePersistenceOutcomeOverrideForTesting(
+                .rejected(
+                    reason: "authority_revision_conflict",
+                    category: .authorityRevisionConflict
+                )
+            )
+            defer {
+                fixture.window.workspaceManager.removeBeforeSaveListener(beforeSaveToken)
+                fixture.window.workspaceManager.setWorkspacePersistenceOutcomeOverrideForTesting(nil)
+                AgentSessionLifecycleAuthority.setEventObserverForTesting(nil)
+            }
+            let service = makeAgentRunStartService(
+                window: fixture.window,
+                recorder: providerRecorder
+            )
+
+            do {
+                _ = try await service.execute(args: [
+                    "op": .string("start"),
+                    "message": .string("reject this durable admission"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+                XCTFail("A typed authority conflict must reject before provider dispatch.")
+            } catch {
+                XCTAssertTrue(
+                    error.localizedDescription.contains("workspace binding was not durably accepted"),
+                    error.localizedDescription
+                )
+            }
+
+            let rejectionEvent = try XCTUnwrap(lifecycleEvents.snapshot().last { event in
+                event.caller == .agentRunStart
+                    && event.decision == .rejected
+                    && event.reason == AgentSessionLifecycleAuthority.RejectionReason
+                    .workspacePersistenceRejected.rawValue
+            })
+            XCTAssertEqual(
+                rejectionEvent.workspaceSaveResult,
+                WorkspacePersistenceFailureCategory.authorityRevisionConflict.rawValue
+            )
+            XCTAssertEqual(
+                WorkspacePersistenceFailureCategory.classify(reason: rejectionEvent.workspaceSaveResult),
+                .authorityRevisionConflict
+            )
+
+            let rejectedPair = try XCTUnwrap(provisionalIdentity.value())
+            let providerCount = await providerRecorder.count()
+            XCTAssertEqual(providerCount, 0)
+            let projectedWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+            assertExactAdmissionState(
+                in: projectedWorkspace.composeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            XCTAssertFalse(projectedWorkspace.composeTabs.containsIdentity(rejectedPair))
+            assertExactAdmissionState(
+                in: fixture.window.promptManager.currentComposeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            XCTAssertFalse(fixture.window.promptManager.currentComposeTabs.containsIdentity(rejectedPair))
+            XCTAssertNil(
+                try fixture.window.agentModeViewModel.authoritativeLiveSession(
+                    for: rejectedPair.sessionID
+                )
+            )
+
+            let canonicalSnapshot = await fixture.runtime.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+            let canonical = try XCTUnwrap(canonicalSnapshot)
+            let canonicalWorkspace = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: canonical.document.documentBytes
+            )
+            XCTAssertEqual(canonical.health, .writable)
+            assertExactAdmissionState(
+                in: canonicalWorkspace.composeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            XCTAssertFalse(canonicalWorkspace.composeTabs.containsIdentity(rejectedPair))
+            let savedWorkspace = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceFileURL,
+                scheduleNormalizationWriteback: false
+            )
+            assertExactAdmissionState(
+                in: savedWorkspace.composeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            XCTAssertFalse(savedWorkspace.composeTabs.containsIdentity(rejectedPair))
+
+            fixture.window.workspaceManager.removeBeforeSaveListener(beforeSaveToken)
+            fixture.window.workspaceManager.setWorkspacePersistenceOutcomeOverrideForTesting(nil)
+            await fixture.closeWindowAndRuntime()
+            try await fixture.withFreshRuntime(generation: 2) { restarted in
+                let restartedSnapshot = await restarted.workspaceStore
+                    .canonicalWorkspaceSnapshot(workspaceID)
+                let restartedWorkspace = try XCTUnwrap(restartedSnapshot)
+                XCTAssertEqual(restartedWorkspace.health, .writable)
+                let restartedModel = try JSONDecoder().decode(
+                    WorkspaceModel.self,
+                    from: restartedWorkspace.document.documentBytes
+                )
+                assertExactAdmissionState(
+                    in: restartedModel.composeTabs,
+                    initialTabs: initialTabs,
+                    acceptedPairs: []
+                )
+                XCTAssertFalse(restartedModel.composeTabs.containsIdentity(rejectedPair))
+            }
+        }
+
+        func testQueuedAgentRunCancellationMutatesNoDurableStateAndDispatchesNoProvider() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            addTeardownBlock { @MainActor in
+                await fixture.cleanup()
+            }
+            let workspaceID = fixture.workspaceID
+            let initialWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+            let initialTabs = initialWorkspace.composeTabs
+            let providerRecorder = AdmissionProviderRecorder(
+                expectedCount: 1,
+                blockProviders: false
+            )
+            let service = makeAgentRunStartService(
+                window: fixture.window,
+                recorder: providerRecorder
+            )
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let baseline = coordinator.snapshot()
+            let holder = try await coordinator.acquire(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            )
+            defer { holder.release() }
+            let startTask = Task { @MainActor in
+                try await service.execute(args: [
+                    "op": .string("start"),
+                    "message": .string("cancel while queued"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            do {
+                try await waitUntil("agent_run.start to queue behind the workspace holder") {
+                    coordinator.waiterCount(for: workspaceID) == 1
+                }
+            } catch {
+                let queuePhaseError = error
+                startTask.cancel()
+                holder.release()
+                do {
+                    _ = try await startTask.value
+                } catch {}
+                throw queuePhaseError
+            }
+            startTask.cancel()
+            do {
+                _ = try await startTask.value
+                XCTFail("A queued cancelled start must throw CancellationError.")
+            } catch is CancellationError {}
+            holder.release()
+
+            let providerCount = await providerRecorder.count()
+            XCTAssertEqual(providerCount, 0)
+            XCTAssertEqual(coordinator.snapshot(), baseline)
+            let projectedWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+            assertExactAdmissionState(
+                in: projectedWorkspace.composeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            assertExactAdmissionState(
+                in: fixture.window.promptManager.currentComposeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            let canonicalSnapshot = await fixture.runtime.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+            let canonical = try XCTUnwrap(canonicalSnapshot)
+            let canonicalWorkspace = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: canonical.document.documentBytes
+            )
+            assertExactAdmissionState(
+                in: canonicalWorkspace.composeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            let savedWorkspace = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceFileURL,
+                scheduleNormalizationWriteback: false
+            )
+            assertExactAdmissionState(
+                in: savedWorkspace.composeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+
+            await fixture.closeWindowAndRuntime()
+            try await fixture.withFreshRuntime(generation: 2) { restarted in
+                let restartedSnapshot = await restarted.workspaceStore
+                    .canonicalWorkspaceSnapshot(workspaceID)
+                let restartedWorkspace = try XCTUnwrap(restartedSnapshot)
+                let restartedModel = try JSONDecoder().decode(
+                    WorkspaceModel.self,
+                    from: restartedWorkspace.document.documentBytes
+                )
+                assertExactAdmissionState(
+                    in: restartedModel.composeTabs,
+                    initialTabs: initialTabs,
+                    acceptedPairs: []
+                )
+            }
+        }
+
+        func testUnexpectedQueuePhaseFailureCancelsAndJoinsAgentRunStartBeforeRethrowingOriginalError() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            addTeardownBlock { @MainActor in
+                await fixture.cleanup()
+            }
+            let workspaceID = fixture.workspaceID
+            let initialWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+            let initialTabs = initialWorkspace.composeTabs
+            let providerRecorder = AdmissionProviderRecorder(
+                expectedCount: 1,
+                blockProviders: false
+            )
+            let service = makeAgentRunStartService(
+                window: fixture.window,
+                recorder: providerRecorder
+            )
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let baseline = coordinator.snapshot()
+            let holder = try await coordinator.acquire(
+                workspaceID: workspaceID,
+                admissionID: UUID()
+            )
+            defer { holder.release() }
+            let terminationProbe = AdmissionStartTaskTerminationProbe()
+            let startTask = Task { @MainActor in
+                do {
+                    let value = try await service.execute(args: [
+                        "op": .string("start"),
+                        "message": .string("unexpected queue-phase failure"),
+                        "detach": .bool(true),
+                        "timeout": .int(0)
+                    ])
+                    await terminationProbe.recordTermination()
+                    return value
+                } catch {
+                    await terminationProbe.recordTermination()
+                    throw error
+                }
+            }
+            let sentinelID = UUID()
+
+            do {
+                do {
+                    try await waitUntil("agent_run.start to queue before an unexpected queue-phase failure") {
+                        coordinator.waiterCount(for: workspaceID) == 1
+                    }
+                    throw AdmissionTestError.queuePhaseSentinel(sentinelID)
+                } catch {
+                    let queuePhaseError = error
+                    startTask.cancel()
+                    holder.release()
+                    do {
+                        _ = try await startTask.value
+                    } catch {}
+                    throw queuePhaseError
+                }
+            } catch let AdmissionTestError.queuePhaseSentinel(observedID) {
+                XCTAssertEqual(observedID, sentinelID)
+            }
+
+            let terminationCount = await terminationProbe.terminationCount()
+            XCTAssertEqual(terminationCount, 1)
+            let providerCount = await providerRecorder.count()
+            XCTAssertEqual(providerCount, 0)
+            XCTAssertEqual(coordinator.snapshot(), baseline)
+            let projectedWorkspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+            assertExactAdmissionState(
+                in: projectedWorkspace.composeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+            assertExactAdmissionState(
+                in: fixture.window.promptManager.currentComposeTabs,
+                initialTabs: initialTabs,
+                acceptedPairs: []
+            )
+        }
+
         func testSameWorkspaceAdmissionsAcquireInFIFOOrderAndTeardownEmpty() async throws {
             let coordinator = WorkspaceAgentAdmissionCoordinator()
             let workspaceID = UUID()
@@ -367,6 +1078,136 @@ import XCTest
             }
         }
 
+        private func makeAgentRunStartService(
+            window: WindowState,
+            recorder: AdmissionProviderRecorder,
+            validateBeforeProviderDispatch: ((AdmissionIdentityPair) async throws -> Void)? = nil
+        ) -> AgentRunMCPToolService {
+            var service = AgentRunMCPToolService(
+                toolName: MCPWindowToolName.agentRun,
+                captureRequestMetadata: {
+                    MCPServerViewModel.RequestMetadata(
+                        connectionID: nil,
+                        clientName: "same-workspace-admission-test",
+                        windowID: window.windowID
+                    )
+                },
+                requireTargetWindow: { window },
+                resolveRequestedTabID: { _ in nil },
+                resolveSpawnParentSourceTabID: { _ in nil },
+                resolveSpawnParentSessionID: { _, _ in nil },
+                withHeartbeat: { _, _, _, _, operation in try await operation() },
+                startRun: { target, _, _, agentModeVM, agentRaw, modelRaw, reasoningEffortRaw, _, _, _, _ in
+                    let sessionID = try XCTUnwrap(target.sessionID)
+                    let pair = AdmissionIdentityPair(tabID: target.tabID, sessionID: sessionID)
+                    try await validateBeforeProviderDispatch?(pair)
+                    try await recorder.recordAndWait(
+                        .init(
+                            tabID: target.tabID,
+                            sessionID: sessionID,
+                            lifecycleIdentity: target.lifecycleIdentity
+                        )
+                    )
+                    let session = agentModeVM.session(for: target.tabID)
+                    return AgentExternalMCPRunStarter.StartOutcome(
+                        snapshot: AgentRunMCPSnapshot(
+                            sessionID: sessionID,
+                            tabID: target.tabID,
+                            sessionName: "Concurrent admission",
+                            agentRaw: agentRaw,
+                            agentDisplayName: agentRaw.flatMap { AgentProviderKind(rawValue: $0)?.displayName },
+                            modelRaw: modelRaw,
+                            reasoningEffortRaw: reasoningEffortRaw,
+                            status: .running,
+                            statusText: "Provider admitted",
+                            latestAssistantPreview: nil,
+                            interaction: nil,
+                            transcriptItemCount: 0,
+                            updatedAt: Date(),
+                            parentSessionID: session.parentSessionID,
+                            failureReason: nil,
+                            worktreeBindings: [],
+                            activeWorktreeMerges: []
+                        ),
+                        delivery: .startedRun
+                    )
+                }
+            )
+            service.resolveOracleReviewLaunchSource = { _, targetWindow in
+                let workspace = try XCTUnwrap(targetWindow.workspaceManager.activeWorkspace)
+                let sourceTabID = try XCTUnwrap(workspace.activeComposeTabID)
+                let selectionRevision = targetWindow.workspaceManager.selectionRevisionForMCP(
+                    workspaceID: workspace.id,
+                    tabID: sourceTabID
+                )
+                let snapshot = AgentRunOracleReviewLaunchSnapshot(
+                    route: .explicitWindowActiveCompose,
+                    windowID: targetWindow.windowID,
+                    workspaceID: workspace.id,
+                    tabID: sourceTabID,
+                    selectionRevision: selectionRevision,
+                    promptText: "",
+                    selection: StoredSelection(),
+                    sourceAgentSessionID: nil,
+                    routedRunID: nil
+                )
+                return ResolvedAgentRunOracleReviewLaunchSource(
+                    snapshot: snapshot,
+                    source: .unavailable(.init(
+                        delegationID: UUID(),
+                        sourceTabID: sourceTabID,
+                        workspaceID: workspace.id,
+                        sourceAgentSessionID: nil,
+                        sourceAgentRunID: nil,
+                        reason: .sourceCaptureFailed("Synthetic durable admission fixture")
+                    ))
+                )
+            }
+            return service
+        }
+
+        private func assertExactAdmissionState(
+            in tabs: [ComposeTabState],
+            initialTabs: [ComposeTabState],
+            acceptedPairs: [AdmissionIdentityPair],
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            let expectedTabIDs = Set(initialTabs.map(\.id))
+                .union(acceptedPairs.map(\.tabID))
+            XCTAssertEqual(tabs.count, expectedTabIDs.count, file: file, line: line)
+            XCTAssertEqual(Set(tabs.map(\.id)), expectedTabIDs, file: file, line: line)
+
+            let initialPairs = initialTabs.compactMap { tab in
+                tab.activeAgentSessionID.map {
+                    AdmissionIdentityPair(tabID: tab.id, sessionID: $0)
+                }
+            }
+            let expectedPairs = Set(initialPairs + acceptedPairs)
+            let actualPairs = tabs.compactMap { tab in
+                tab.activeAgentSessionID.map {
+                    AdmissionIdentityPair(tabID: tab.id, sessionID: $0)
+                }
+            }
+            XCTAssertEqual(actualPairs.count, expectedPairs.count, file: file, line: line)
+            XCTAssertEqual(Set(actualPairs), expectedPairs, file: file, line: line)
+        }
+
+        private func waitUntil(
+            _ description: String,
+            timeout: Duration = .seconds(10),
+            condition: () async -> Bool
+        ) async throws {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: timeout)
+            while await !condition() {
+                guard clock.now < deadline else {
+                    throw AdmissionTestError.timedOut(description)
+                }
+                await Task.yield()
+            }
+        }
+
         private func makePersistentWorkspaceFixture(
             root: URL
         ) -> (manager: WorkspaceManagerViewModel, workspace: WorkspaceModel) {
@@ -446,9 +1287,537 @@ import XCTest
         }
     }
 
+    @MainActor
+    private struct DurableAdmissionWindow {
+        let window: WindowState
+        let runtime: MCPDomainRuntime
+        let authorityRoot: URL
+        let workspaceID: UUID
+        let workspaceFileURL: URL
+    }
+
+    @MainActor
+    private final class DistinctDurableAdmissionFixture {
+        let first: DurableAdmissionWindow
+        let second: DurableAdmissionWindow
+        private let storageOverride: AdmissionWorkspaceStorageOverride
+        private var isClosed = false
+        private var isCleanedUp = false
+
+        private init(
+            first: DurableAdmissionWindow,
+            second: DurableAdmissionWindow,
+            storageOverride: AdmissionWorkspaceStorageOverride
+        ) {
+            self.first = first
+            self.second = second
+            self.storageOverride = storageOverride
+        }
+
+        static func make() async throws -> DistinctDurableAdmissionFixture {
+            let container = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "ConcurrentSameWorkspaceAgentRunAdmissionTests-Distinct-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            let authorityRoot = container.appendingPathComponent("state", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: authorityRoot, withIntermediateDirectories: true)
+            } catch {
+                try? FileManager.default.removeItem(at: container)
+                throw error
+            }
+            let storageOverride = AdmissionWorkspaceStorageOverride(authorityRoot: authorityRoot)
+            let firstAuthorityRoot = authorityRoot.appendingPathComponent("authority-A", isDirectory: true)
+            let secondAuthorityRoot = authorityRoot.appendingPathComponent("authority-B", isDirectory: true)
+            let firstRuntime = makeRuntime(authorityRoot: firstAuthorityRoot, label: "A")
+            let secondRuntime = makeRuntime(authorityRoot: secondAuthorityRoot, label: "B")
+            do {
+                try await firstRuntime.start()
+                try await secondRuntime.start()
+            } catch {
+                _ = await secondRuntime.shutdown()
+                _ = await firstRuntime.shutdown()
+                storageOverride.restore()
+                throw error
+            }
+            let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+            GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+            let firstWindow = WindowState(domainRuntime: firstRuntime)
+            let secondWindow = WindowState(domainRuntime: secondRuntime)
+            WindowStatesManager.shared.registerWindowState(firstWindow)
+            WindowStatesManager.shared.registerWindowState(secondWindow)
+            GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+
+            do {
+                await firstWindow.workspaceManager.awaitInitialized()
+                await secondWindow.workspaceManager.awaitInitialized()
+                let first = try await makeDurableWindow(
+                    firstWindow,
+                    runtime: firstRuntime,
+                    authorityRoot: firstAuthorityRoot,
+                    label: "A"
+                )
+                let second = try await makeDurableWindow(
+                    secondWindow,
+                    runtime: secondRuntime,
+                    authorityRoot: secondAuthorityRoot,
+                    label: "B"
+                )
+                return DistinctDurableAdmissionFixture(
+                    first: first,
+                    second: second,
+                    storageOverride: storageOverride
+                )
+            } catch {
+                await close(firstWindow)
+                await close(secondWindow)
+                _ = await secondRuntime.shutdown()
+                _ = await firstRuntime.shutdown()
+                storageOverride.restore()
+                throw error
+            }
+        }
+
+        func withFreshRuntime<T>(
+            for context: DurableAdmissionWindow,
+            generation: UInt64,
+            operation: (MCPDomainRuntime) async throws -> T
+        ) async throws -> T {
+            let restarted = MCPDomainRuntime(
+                configuration: .init(
+                    mode: .app,
+                    profileIdentifier: "distinct-workspace-admission",
+                    storageDirectory: context.authorityRoot,
+                    eventDirectory: context.authorityRoot.appendingPathComponent("events-restart", isDirectory: true),
+                    temporaryDirectory: context.authorityRoot.appendingPathComponent("tmp-restart", isDirectory: true),
+                    externalReloadInterval: nil
+                ),
+                runtimeID: UUID(),
+                lifecycleGeneration: generation
+            )
+            do {
+                try await restarted.start()
+                let result = try await operation(restarted)
+                _ = await restarted.shutdown()
+                return result
+            } catch {
+                _ = await restarted.shutdown()
+                throw error
+            }
+        }
+
+        func closeWindowsAndRuntime() async {
+            guard !isClosed else { return }
+            isClosed = true
+            await Self.close(second.window)
+            await Self.close(first.window)
+            _ = await second.runtime.shutdown()
+            _ = await first.runtime.shutdown()
+        }
+
+        func cleanup() async {
+            guard !isCleanedUp else { return }
+            isCleanedUp = true
+            await closeWindowsAndRuntime()
+            storageOverride.restore()
+        }
+
+        private static func makeRuntime(authorityRoot: URL, label: String) -> MCPDomainRuntime {
+            MCPDomainRuntime(configuration: .init(
+                mode: .app,
+                profileIdentifier: "distinct-workspace-admission",
+                storageDirectory: authorityRoot,
+                eventDirectory: authorityRoot.appendingPathComponent("events-\(label)", isDirectory: true),
+                temporaryDirectory: authorityRoot.appendingPathComponent("tmp-\(label)", isDirectory: true),
+                externalReloadInterval: nil
+            ))
+        }
+
+        private static func makeDurableWindow(
+            _ window: WindowState,
+            runtime: MCPDomainRuntime,
+            authorityRoot: URL,
+            label: String
+        ) async throws -> DurableAdmissionWindow {
+            let originalTab = ComposeTabState(name: "Distinct durable foreground \(label)")
+            let workspace = WorkspaceModel(
+                name: "Distinct durable admission \(label) \(UUID().uuidString.prefix(8))",
+                repoPaths: [],
+                composeTabs: [originalTab],
+                activeComposeTabID: originalTab.id
+            )
+            window.workspaceManager.workspaces.append(workspace)
+            let workspaceFileURL = try await window.workspaceManager.saveWorkspaceToFileAsync(
+                workspace,
+                source: .directUnknown
+            )
+            await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.flush(url: workspaceFileURL)
+            let storedWorkspace = try XCTUnwrap(
+                window.workspaceManager.workspaces.first { $0.id == workspace.id }
+            )
+            let switchResult = await window.workspaceManager.switchWorkspace(
+                to: storedWorkspace,
+                saveState: false,
+                reason: "distinctWorkspaceAdmissionAcceptance"
+            )
+            guard switchResult.didSwitch else {
+                throw AdmissionTestError.fixtureSetup(
+                    switchResult.message ?? "distinct durable workspace did not become active"
+                )
+            }
+            let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+            window.promptManager.loadComposeTabsFromWorkspace(activeWorkspace, syncPromptText: true)
+            _ = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: workspaceFileURL,
+                scheduleNormalizationWriteback: false
+            )
+            return DurableAdmissionWindow(
+                window: window,
+                runtime: runtime,
+                authorityRoot: authorityRoot,
+                workspaceID: workspace.id,
+                workspaceFileURL: workspaceFileURL
+            )
+        }
+
+        private static func close(_ window: WindowState) async {
+            window.beginClose()
+            await window.tearDown()
+            WindowStatesManager.shared.unregisterWindowState(window)
+        }
+    }
+
+    @MainActor
+    private final class DurableAgentAdmissionFixture {
+        let authorityRoot: URL
+        let storageOverride: AdmissionWorkspaceStorageOverride
+        let runtime: MCPDomainRuntime
+        let window: WindowState
+        let workspaceID: UUID
+        let workspaceFileURL: URL
+        private var isClosed = false
+        private var isCleanedUp = false
+
+        private init(
+            authorityRoot: URL,
+            storageOverride: AdmissionWorkspaceStorageOverride,
+            runtime: MCPDomainRuntime,
+            window: WindowState,
+            workspaceID: UUID,
+            workspaceFileURL: URL
+        ) {
+            self.authorityRoot = authorityRoot
+            self.storageOverride = storageOverride
+            self.runtime = runtime
+            self.window = window
+            self.workspaceID = workspaceID
+            self.workspaceFileURL = workspaceFileURL
+        }
+
+        static func make() async throws -> DurableAgentAdmissionFixture {
+            let container = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "ConcurrentSameWorkspaceAgentRunAdmissionTests-Durable-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            let authorityRoot = container.appendingPathComponent("state", isDirectory: true)
+            try FileManager.default.createDirectory(at: authorityRoot, withIntermediateDirectories: true)
+            let storageOverride = AdmissionWorkspaceStorageOverride(authorityRoot: authorityRoot)
+            let runtime = MCPDomainRuntime(configuration: .init(
+                mode: .app,
+                profileIdentifier: "same-workspace-admission",
+                storageDirectory: authorityRoot,
+                eventDirectory: authorityRoot.appendingPathComponent("events", isDirectory: true),
+                temporaryDirectory: authorityRoot.appendingPathComponent("tmp", isDirectory: true),
+                externalReloadInterval: nil
+            ))
+            do {
+                try await runtime.start()
+            } catch {
+                storageOverride.restore()
+                throw error
+            }
+
+            let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+            GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+            let window = WindowState(domainRuntime: runtime)
+            WindowStatesManager.shared.registerWindowState(window)
+            GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+            do {
+                await window.workspaceManager.awaitInitialized()
+                let originalTab = ComposeTabState(name: "Durable foreground")
+                let workspace = WorkspaceModel(
+                    name: "Concurrent durable admission \(UUID().uuidString.prefix(8))",
+                    repoPaths: [],
+                    composeTabs: [originalTab],
+                    activeComposeTabID: originalTab.id
+                )
+                window.workspaceManager.workspaces.append(workspace)
+                let workspaceFileURL = try await window.workspaceManager.saveWorkspaceToFileAsync(
+                    workspace,
+                    source: .directUnknown
+                )
+                await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.flush(url: workspaceFileURL)
+                let storedWorkspace = try XCTUnwrap(
+                    window.workspaceManager.workspaces.first { $0.id == workspace.id }
+                )
+                let switchResult = await window.workspaceManager.switchWorkspace(
+                    to: storedWorkspace,
+                    saveState: false,
+                    reason: "sameWorkspaceAdmissionAcceptance"
+                )
+                guard switchResult.didSwitch else {
+                    throw AdmissionTestError.fixtureSetup(
+                        switchResult.message ?? "durable workspace did not become active"
+                    )
+                }
+                let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+                window.promptManager.loadComposeTabsFromWorkspace(activeWorkspace, syncPromptText: true)
+                let canonicalSnapshot = await runtime.workspaceStore.canonicalWorkspaceSnapshot(workspace.id)
+                let canonical = try XCTUnwrap(canonicalSnapshot)
+                guard canonical.health == .writable else {
+                    throw AdmissionTestError.fixtureSetup("canonical workspace was not writable")
+                }
+                return DurableAgentAdmissionFixture(
+                    authorityRoot: authorityRoot,
+                    storageOverride: storageOverride,
+                    runtime: runtime,
+                    window: window,
+                    workspaceID: workspace.id,
+                    workspaceFileURL: workspaceFileURL
+                )
+            } catch {
+                window.beginClose()
+                await window.tearDown()
+                WindowStatesManager.shared.unregisterWindowState(window)
+                _ = await runtime.shutdown()
+                storageOverride.restore()
+                throw error
+            }
+        }
+
+        func makeFreshRuntime(generation: UInt64) -> MCPDomainRuntime {
+            MCPDomainRuntime(
+                configuration: .init(
+                    mode: .app,
+                    profileIdentifier: "same-workspace-admission",
+                    storageDirectory: authorityRoot,
+                    eventDirectory: authorityRoot.appendingPathComponent("events-restart", isDirectory: true),
+                    temporaryDirectory: authorityRoot.appendingPathComponent("tmp-restart", isDirectory: true),
+                    externalReloadInterval: nil
+                ),
+                runtimeID: UUID(),
+                lifecycleGeneration: generation
+            )
+        }
+
+        func withFreshRuntime<T>(
+            generation: UInt64,
+            operation: (MCPDomainRuntime) async throws -> T
+        ) async throws -> T {
+            let restarted = makeFreshRuntime(generation: generation)
+            do {
+                try await restarted.start()
+                let result = try await operation(restarted)
+                _ = await restarted.shutdown()
+                return result
+            } catch {
+                _ = await restarted.shutdown()
+                throw error
+            }
+        }
+
+        func closeWindowAndRuntime() async {
+            guard !isClosed else { return }
+            isClosed = true
+            window.beginClose()
+            await window.tearDown()
+            WindowStatesManager.shared.unregisterWindowState(window)
+            _ = await runtime.shutdown()
+        }
+
+        func cleanup() async {
+            guard !isCleanedUp else { return }
+            isCleanedUp = true
+            await closeWindowAndRuntime()
+            storageOverride.restore()
+        }
+    }
+
+    private final class AdmissionWorkspaceStorageOverride {
+        private let defaults: UserDefaults
+        private let priorStoragePath: String?
+        private let cleanupRoot: URL
+        private var isRestored = false
+
+        init(authorityRoot: URL, defaults: UserDefaults = .standard) {
+            self.defaults = defaults
+            priorStoragePath = defaults.string(forKey: "GlobalCustomStorageURL")
+            cleanupRoot = authorityRoot.deletingLastPathComponent()
+            defaults.set(
+                authorityRoot.appendingPathComponent("Workspaces", isDirectory: true).path,
+                forKey: "GlobalCustomStorageURL"
+            )
+        }
+
+        func restore() {
+            guard !isRestored else { return }
+            isRestored = true
+            if let priorStoragePath {
+                defaults.set(priorStoragePath, forKey: "GlobalCustomStorageURL")
+            } else {
+                defaults.removeObject(forKey: "GlobalCustomStorageURL")
+            }
+            try? FileManager.default.removeItem(at: cleanupRoot)
+        }
+
+        deinit {
+            restore()
+        }
+    }
+
+    private struct AdmissionIdentityPair: Hashable {
+        let tabID: UUID
+        let sessionID: UUID
+    }
+
+    private extension [ComposeTabState] {
+        func containsIdentity(_ pair: AdmissionIdentityPair) -> Bool {
+            contains { tab in
+                tab.id == pair.tabID && tab.activeAgentSessionID == pair.sessionID
+            }
+        }
+    }
+
+    private final class AdmissionLifecycleEventRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events: [AgentSessionLifecycleAuthority.Event] = []
+
+        func record(_ event: AgentSessionLifecycleAuthority.Event) {
+            lock.withLock { events.append(event) }
+        }
+
+        func snapshot() -> [AgentSessionLifecycleAuthority.Event] {
+            lock.withLock { events }
+        }
+    }
+
+    private final class ProvisionalAdmissionIdentityRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var captured: AdmissionIdentityPair?
+
+        func record(_ pair: AdmissionIdentityPair) {
+            lock.withLock {
+                if captured == nil {
+                    captured = pair
+                }
+            }
+        }
+
+        func value() -> AdmissionIdentityPair? {
+            lock.withLock { captured }
+        }
+    }
+
+    private actor AdmissionProviderRecorder {
+        struct Observation {
+            let tabID: UUID
+            let sessionID: UUID
+            let lifecycleIdentity: AgentSessionLifecycleAuthority.Identity?
+        }
+
+        private let expectedCount: Int
+        private let blockProviders: Bool
+        private var values: [Observation] = []
+        private var counts: [AdmissionIdentityPair: Int] = [:]
+        private var isReleased = false
+        private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+        init(expectedCount: Int, blockProviders: Bool = true) {
+            self.expectedCount = expectedCount
+            self.blockProviders = blockProviders
+        }
+
+        func recordAndWait(_ observation: Observation) async throws {
+            let pair = AdmissionIdentityPair(tabID: observation.tabID, sessionID: observation.sessionID)
+            counts[pair, default: 0] += 1
+            guard counts[pair] == 1 else {
+                throw AdmissionTestError.duplicateProviderDispatch(pair)
+            }
+            guard values.count < expectedCount else {
+                throw AdmissionTestError.excessProviderDispatch(expectedCount)
+            }
+            values.append(observation)
+            guard blockProviders, !isReleased else { return }
+            await withCheckedContinuation { releaseWaiters.append($0) }
+        }
+
+        func count() -> Int {
+            values.count
+        }
+
+        func observations() -> [Observation] {
+            values
+        }
+
+        func attemptCounts() -> [AdmissionIdentityPair: Int] {
+            counts
+        }
+
+        func releaseAll() {
+            isReleased = true
+            let waiters = releaseWaiters
+            releaseWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    private actor AdmissionSaveGate {
+        private var didEnter = false
+        private var isOpen = false
+        private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+        private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+        func enterFirstAndWait() async {
+            guard !didEnter else { return }
+            didEnter = true
+            let waiters = entryWaiters
+            entryWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            guard !isOpen else { return }
+            await withCheckedContinuation { releaseWaiters.append($0) }
+        }
+
+        func hasEntered() -> Bool {
+            didEnter
+        }
+
+        func open() {
+            isOpen = true
+            let waiters = releaseWaiters
+            releaseWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
     private enum AdmissionTestError: Error {
         case expected
+        case queuePhaseSentinel(UUID)
         case timedOut(String)
+        case fixtureSetup(String)
+        case duplicateProviderDispatch(AdmissionIdentityPair)
+        case excessProviderDispatch(Int)
+    }
+
+    private actor AdmissionStartTaskTerminationProbe {
+        private var count = 0
+
+        func recordTermination() {
+            count += 1
+        }
+
+        func terminationCount() -> Int {
+            count
+        }
     }
 
     private actor AdmissionOrderRecorder {
