@@ -112,21 +112,26 @@ HISTORICALLY_METHOD_ISOLATED_SUITES: frozenset[str] = frozenset(
     }
 )
 
+# These markers must describe the suite itself, immediately before the XCTest
+# suffix. A word appearing in the middle of a deterministic suite name (for
+# example, CodexIntegrationConfigurationTests) is not enough to quarantine it.
 INTEGRATION_CLASS_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
-        re.compile(r"(?:Integration|EndToEnd)"),
+        re.compile(r"(?:Integration|EndToEnd)(?:Tests|TestCase)$"),
         "assembled integration/end-to-end fixture",
     ),
     (
-        re.compile(r"(?:Benchmark|Performance)"),
+        re.compile(r"(?:Benchmark|Performance)(?:Tests|TestCase)$"),
         "measurement workload; diagnostics are not pull-request contracts",
     ),
     (
-        re.compile(r"(?:Instrumentation|DebugHarness|Diagnostics)"),
+        re.compile(
+            r"(?:Instrumentation|DebugHarness|Diagnostics)(?:Tests|TestCase)$"
+        ),
         "runtime instrumentation or diagnostics harness",
     ),
     (
-        re.compile(r"(?:SmokeHarness|LiveSmoke|LiveHarness)"),
+        re.compile(r"(?:SmokeHarness|LiveSmoke|LiveHarness)(?:Tests|TestCase)$"),
         "assembled live/smoke harness",
     ),
 )
@@ -145,6 +150,40 @@ TEST_TYPE_RE = re.compile(
     r"(?:final\s+)?(?:class|struct|actor)\s+"
     r"([A-Za-z_][A-Za-z0-9_]*(?:Tests|TestCase))\b"
 )
+TEST_EXTENSION_RE = re.compile(
+    r"\bextension\s+([A-Za-z_][A-Za-z0-9_]*(?:Tests|TestCase))\b"
+)
+
+# Timer-bearing files without a declared XCTest suite are violations unless
+# they are one of these exact support files. Keep this list path-based and give
+# every exception a concrete role; directory membership or a Support suffix is
+# never sufficient authority.
+EXPLICIT_TEST_SUPPORT_REASONS: Mapping[str, str] = {
+    "Tests/RepoPromptTests/Helpers/AgentRunSessionStoreTestSupport.swift": (
+        "shared agent-run session-store readiness helper"
+    ),
+    "Tests/RepoPromptTests/Helpers/AsyncTestCondition.swift": (
+        "shared asynchronous condition wait primitive"
+    ),
+    "Tests/RepoPromptTests/Helpers/CodemapSeamTestSupport.swift": (
+        "shared codemap seam and readiness fixtures"
+    ),
+    "Tests/RepoPromptTests/Helpers/CodexHookReviewTestSupport.swift": (
+        "shared Codex hook review completion helper"
+    ),
+    "Tests/RepoPromptTests/Helpers/GitWorktreeTestSupport.swift": (
+        "shared host Git worktree cleanup helper"
+    ),
+    "Tests/RepoPromptTests/Helpers/TestHangHardenedFences.swift": (
+        "shared bounded coordination fences for integration fixtures"
+    ),
+    "Tests/RepoPromptTests/MCP/Control/MCPSharedServerTestLease.swift": (
+        "process-wide MCP shared-server lease arbitration helper"
+    ),
+    "Tests/RepoPromptTests/Persistence/DurableArtifacts/DurableArtifactTestSupport.swift": (
+        "filesystem timestamp stabilization helper for durable-artifact fixtures"
+    ),
+}
 
 # These primitives make the clock part of the assertion. They are useful in an
 # integration/soak lane, but they do not get veto power over unrelated PRs.
@@ -152,7 +191,7 @@ SOURCE_INTEGRATION_PRIMITIVES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Task.sleep", re.compile(r"\bTask\.sleep\s*\(")),
     ("Thread.sleep", re.compile(r"\bThread\.sleep\s*\(")),
     ("usleep", re.compile(r"\busleep\s*\(")),
-    ("DispatchQueue.asyncAfter", re.compile(r"\.asyncAfter\s*\(")),
+    ("asyncAfter", re.compile(r"\.asyncAfter\s*\(")),
     ("AsyncTestWait", re.compile(r"\bAsyncTestWait\.")),
 )
 
@@ -162,18 +201,25 @@ def suite_class_name(suite: str) -> str:
 
 
 def test_suites_in_source(source: str, path: Path) -> tuple[str, ...]:
+    del path  # Suite identity comes from declarations, never filename folklore.
     class_names = set(TEST_TYPE_RE.findall(source))
-    stem_is_test_type = path.stem.endswith(("Tests", "TestCase"))
-    stem_has_extension = re.search(
-        rf"\bextension\s+{re.escape(path.stem)}\b",
-        source,
-    ) is not None
-    if stem_is_test_type and (not class_names or stem_has_extension):
-        class_names.add(path.stem)
+    class_names.update(TEST_EXTENSION_RE.findall(source))
+    class_names.discard("XCTestCase")
     return tuple(
         f"RepoPromptTests.{class_name}"
         for class_name in sorted(class_names)
     )
+
+
+def explicit_test_support_reason(
+    path: Path,
+    repository_root: Path,
+) -> str | None:
+    try:
+        relative_path = path.relative_to(repository_root).as_posix()
+    except ValueError:
+        return None
+    return EXPLICIT_TEST_SUPPORT_REASONS.get(relative_path)
 
 
 def matching_lines(source: str, pattern: re.Pattern[str]) -> tuple[int, ...]:
@@ -188,31 +234,22 @@ def scan_source_test_policy(repository_root: Path) -> SourceTestPolicy:
     if not test_root.is_dir():
         raise FileNotFoundError(f"missing test root: {test_root}")
 
-    reasons: dict[str, str] = {}
     occurrences: list[SourceWaitOccurrence] = []
     unmapped: list[SourceWaitOccurrence] = []
+    occurrences_by_suite: dict[str, list[SourceWaitOccurrence]] = {}
 
     for path in sorted(test_root.rglob("*.swift")):
         source = path.read_text(encoding="utf-8")
-        symbols: list[str] = []
-        file_occurrences: list[tuple[str, int]] = []
+        file_occurrences: set[tuple[str, int]] = set()
         for symbol, pattern in SOURCE_INTEGRATION_PRIMITIVES:
-            lines = matching_lines(source, pattern)
-            if lines:
-                symbols.append(symbol)
-                file_occurrences.extend((symbol, line) for line in lines)
+            file_occurrences.update(
+                (symbol, line)
+                for line in matching_lines(source, pattern)
+            )
         if not file_occurrences:
             continue
 
         suites = test_suites_in_source(source, path)
-        relative_path = path.relative_to(repository_root)
-        reason = (
-            f"source uses wall-clock/polling primitive(s) "
-            f"{', '.join(sorted(set(symbols)))} in {relative_path}"
-        )
-        for suite in suites:
-            reasons[suite] = reason
-
         for symbol, line in sorted(file_occurrences, key=lambda item: (item[1], item[0])):
             occurrence = SourceWaitOccurrence(
                 path=path,
@@ -222,10 +259,26 @@ def scan_source_test_policy(repository_root: Path) -> SourceTestPolicy:
             )
             occurrences.append(occurrence)
             if not suites:
-                unmapped.append(occcurrence)
+                unmapped.append(occurrence)
+            for suite in suites:
+                occurrences_by_suite.setdefault(suite, []).append(occurrence)
+
+    reasons: dict[str, str] = {}
+    for suite, suite_occurrences in sorted(occurrences_by_suite.items()):
+        symbols = sorted({occurrence.symbol for occurrence in suite_occurrences})
+        paths = sorted(
+            {
+                occurrence.path.relative_to(repository_root).as_posix()
+                for occurrence in suite_occurrences
+            }
+        )
+        reasons[suite] = (
+            "source uses wall-clock/polling primitive(s) "
+            f"{', '.join(symbols)} in {', '.join(paths)}"
+        )
 
     return SourceTestPolicy(
-        integration_reasons=dict(sorted(reasons.items())),
+        integration_reasons=reasons,
         wait_occurrences=tuple(occurrences),
         unmapped_wait_occurrences=tuple(unmapped),
     )
@@ -244,6 +297,8 @@ def classify_suite(
     suite: str,
     source_integration_reasons: Mapping[str, str] | None = None,
 ) -> TestPolicyDecision:
+    # Precedence is deliberate: reviewed exact evidence, historical isolation
+    # evidence, current source primitives, narrow semantic naming, then contract.
     exact_reason = EXACT_INTEGRATION_REASONS.get(suite)
     if exact_reason is not None:
         return TestPolicyDecision(INTEGRATION_TIER, exact_reason)
@@ -304,7 +359,7 @@ def partition_suites(
         ),
         suites_for_tier(
             suite_list,
-            INTEGRATION_TIE,
+            INTEGRATION_TIER,
             source_integration_reasons,
         ),
     )

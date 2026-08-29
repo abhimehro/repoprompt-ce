@@ -44,6 +44,28 @@ final class ContextBuilderRunStateContractTests: XCTestCase {
         )
     }
 
+    func testRouteSettlementCoordinatorRejectsEventsAfterSettlement() {
+        let coordinator = ContextBuilderRouteSettlementCoordinator(
+            maxBufferedTextCharacters: 100,
+            maxBufferedEventCount: 10
+        )
+        coordinator.appendWhilePending(
+            AIStreamResult(type: "content", text: "before")
+        )
+
+        XCTAssertTrue(coordinator.settle(.routed))
+        XCTAssertFalse(coordinator.isPending)
+        XCTAssertTrue(coordinator.isRouted)
+
+        coordinator.appendWhilePending(
+            AIStreamResult(type: "content", text: "after")
+        )
+        XCTAssertEqual(
+            coordinator.drainBufferedEvents().events.map(\.text),
+            ["before"]
+        )
+    }
+
     func testRouteSettlementCoordinatorBoundsBufferedPayloadsAndEvents() {
         let payloadBounded = ContextBuilderRouteSettlementCoordinator(
             maxBufferedTextCharacters: 28,

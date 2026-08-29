@@ -278,6 +278,8 @@ def isolated_suite_environment(
             "HOME": str(home),
             "CFFIXED_USER_HOME": str(home),
             "TMPDIR": str(temporary),
+            "TMP": str(temporary),
+            "TEMP": str(temporary),
             "XDG_CONFIG_HOME": str(config),
             "XDG_CACHE_HOME": str(cache),
             "XDG_DATA_HOME": str(data),

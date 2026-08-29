@@ -11,6 +11,7 @@ from ci_test_policy import (
     INTEGRATION_TIER,
     SourceWaitOccurrence,
     classify_suite,
+    explicit_test_support_reason,
     scan_source_test_policy,
 )
 
@@ -26,22 +27,6 @@ class HygieneViolation:
             f"{relative_path}:{self.occurrence.line}: {self.message} "
             f"({self.occurrence.symbol})"
         )
-
-
-def is_test_support_file(path: Path, repository_root: Path) -> bool:
-    relative_path = path.relative_to(repository_root)
-    if relative_path.parts[:3] == ("Tests", "RepoPromptTests", "Helpers"):
-        return True
-    return path.stem.endswith(
-        (
-            "Condition",
-            "Fence",
-            "Fences",
-            "Lease",
-            "Runner",
-            "Support",
-        )
-    )
 
 
 def check_repository(repository_root: Path) -> tuple[HygieneViolation, ...]:
@@ -68,10 +53,10 @@ def check_repository(repository_root: Path) -> tuple[HygieneViolation, ...]:
                 )
             continue
 
-        if not is_test_support_file(occurrence.path, repository_root):
+        if explicit_test_support_reason(occurrence.path, repository_root) is None:
             violations.append(
                 HygieneViolation(
-                    occurrence=occcurrence,
+                    occurrence=occurrence,
                     message=(
                         "wall-clock/polling primitive is in an unmapped test source; "
                         "name the suite type or move the primitive to explicit test support"
@@ -104,7 +89,9 @@ def main(argv: list[str]) -> int:
     support_file_count = len(
         {
             occurrence.path
-            for occcurrence in source_policy.unmapped_wait_occurrences
+            for occurrence in source_policy.unmapped_wait_occurrences
+            if explicit_test_support_reason(occurrence.path, repository_root)
+            is not None
         }
     )
     print(
