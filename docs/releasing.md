@@ -267,9 +267,9 @@ the secret-free build and uses an isolated ephemeral keychain without changing t
 keychain search list.
 
 After P is reviewed, advance `tip-rollout.json` with its exact `identity-rollout.json` digest before
-dispatching T; advance it again with T and P digests before S. Each published role uses an immutable
-`tip-<shortsha>` tag and the tip-only repository's latest release. Do not mark it as a prerelease,
-because GitHub excludes prereleases from `releases/latest`.
+merging T; advance it again with T and P digests before merging S. Each published role uses an
+immutable `tip-<shortsha>` tag and the tip-only repository's latest release. Do not mark it as a
+prerelease, because GitHub excludes prereleases from `releases/latest`.
 
 Current checkpoint: verified P is `tip-2f94412e6ab5`, with rollout-manifest SHA-256
 `3c69703fa7582105633b36e8874fe2a28e1832aabb776351e68dbf3367e122db`. The reviewed declaration
@@ -289,15 +289,17 @@ publisher require the greatest Stable build to remain strictly below the retaine
 Stable to the next integer first would make an unprepared Stable client appear new enough to satisfy
 T's `sparkle:minimumUpdateVersion`, bypassing the credential preparer.
 
-Automatic and manual runs use separate concurrency lanes, and neither lane cancels in-flight release
-work. The publication job is serialized across both lanes, so a retry resumes or audits one exact
-draft instead of abandoning a different tag halfway through publication.
+Automatic and manual runs use one concurrency lane and do not cancel in-flight release work, so a
+retry resumes or audits one exact draft instead of abandoning a different tag halfway through
+publication.
 
 Remote mutation is confined to that protected publication job. Immediately before draft creation
 and again immediately before making a draft public, it rechecks live protected `main`, downloads the
-public Tip manifest/appcast, proves that the candidate advances only `P → T → S` (or a later S) with
-exact retained history, and audits every retained enclosure against GitHub's published size and
-SHA-256. Existing drafts are resumed only when their metadata and uploaded bytes exactly match;
+public Tip manifest/appcast, proves that the candidate either rolls the current role or advances one
+step through `P → T → S` with exact retained history, and audits every retained enclosure against
+GitHub's published size and SHA-256. Rolling P retains no predecessor, rolling T retains the exact
+authenticated P, and rolling S retains the exact authenticated T and P. Existing drafts are resumed
+only when their metadata and uploaded bytes exactly match;
 missing assets are added without overwriting anything. After publication, every public asset is
 downloaded anonymously and compared byte-for-byte with the signed local inventory, and the release
 must be the repository's latest. The update-repository token is not available to setup, staging, or

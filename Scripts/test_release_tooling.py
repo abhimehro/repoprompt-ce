@@ -4923,6 +4923,77 @@ class IdentityTransitionReleaseToolingTests(unittest.TestCase):
         self.assertEqual(successor["result"].returncode, 0, successor["result"].stderr)
         return temp_dir, preparer, transition, successor
 
+    def make_tip_release(
+        self,
+        directory: Path,
+        role: str,
+        build: str,
+        retained: tuple[dict, ...] = (),
+        release_tag: str | None = None,
+    ) -> dict:
+        predecessor_entries = []
+        predecessor_manifests = []
+        for release in retained:
+            manifest = json.loads(release["manifest"].read_text(encoding="utf-8"))
+            predecessor_entries.append(
+                {
+                    "role": manifest["currentRole"],
+                    "tag": manifest["sourceTag"],
+                    "rolloutManifestSha256": hashlib.sha256(
+                        release["manifest"].read_bytes()
+                    ).hexdigest(),
+                }
+            )
+            predecessor_manifests.append(release["manifest"])
+        tag = release_tag or f"tip-{role}-{build.replace('.', '-')}"
+        release = self.make_release(
+            directory,
+            role,
+            "1.2.0",
+            build,
+            predecessors=predecessor_entries,
+            predecessor_manifests=predecessor_manifests,
+            channel="tip",
+            release_tag=tag,
+            enclosure_basename=f"RepoPrompt-{tag}-{build}",
+        )
+        self.assertEqual(release["result"].returncode, 0, release["result"].stderr)
+        return release
+
+    def make_tip_pts_ladder(self) -> tuple[Path, dict, dict, dict]:
+        temp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp_dir, True)
+        preparer = self.make_tip_release(
+            temp_dir, "preparer", "100.1.1", release_tag="tip-preparer"
+        )
+        transition = self.make_tip_release(
+            temp_dir, "transition", "100.1.2", (preparer,), release_tag="tip-transition"
+        )
+        successor = self.make_tip_release(
+            temp_dir,
+            "successor",
+            "100.1.3",
+            (transition, preparer),
+            release_tag="tip-successor",
+        )
+        return temp_dir, preparer, transition, successor
+
+    def validate_tip_progression(
+        self, candidate: dict, live: dict | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        arguments = [
+            "validate-live-tip-progression",
+            "--policy", str(self.POLICY),
+            "--candidate-manifest", str(candidate["manifest"]),
+            "--candidate-appcast", str(candidate["appcast"]),
+        ]
+        if live is not None:
+            arguments += [
+                "--live-manifest", str(live["manifest"]),
+                "--live-appcast", str(live["appcast"]),
+            ]
+        return self.rollout(*arguments)
+
     def validate_arguments(self, release: dict, allowed_roles: str | None = None) -> list[str]:
         arguments = list(release["arguments"])
         arguments[0] = "validate"
@@ -5199,66 +5270,7 @@ class IdentityTransitionReleaseToolingTests(unittest.TestCase):
         self.assertEqual(rows[0][7], "RepoPrompt-1.5.0-150-stable-rollout.json")
 
     def test_tip_pts_ladder_reuses_one_feed_and_accumulates_top_level_items(self) -> None:
-        temp_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, temp_dir, True)
-
-        preparer = self.make_release(
-            temp_dir,
-            "preparer",
-            "1.2.0",
-            "100.1.1",
-            channel="tip",
-            release_tag="tip-preparer",
-            enclosure_basename="RepoPrompt-tip-preparer-100.1.1",
-        )
-        self.assertEqual(preparer["result"].returncode, 0, preparer["result"].stderr)
-        transition = self.make_release(
-            temp_dir,
-            "transition",
-            "1.2.0",
-            "100.1.2",
-            predecessors=[
-                {
-                    "role": "preparer",
-                    "tag": "tip-preparer",
-                    "rolloutManifestSha256": hashlib.sha256(
-                        preparer["manifest"].read_bytes()
-                    ).hexdigest(),
-                }
-            ],
-            predecessor_manifests=[preparer["manifest"]],
-            channel="tip",
-            release_tag="tip-transition",
-            enclosure_basename="RepoPrompt-tip-transition-100.1.2",
-        )
-        self.assertEqual(transition["result"].returncode, 0, transition["result"].stderr)
-        successor = self.make_release(
-            temp_dir,
-            "successor",
-            "1.2.0",
-            "100.1.3",
-            predecessors=[
-                {
-                    "role": "transition",
-                    "tag": "tip-transition",
-                    "rolloutManifestSha256": hashlib.sha256(
-                        transition["manifest"].read_bytes()
-                    ).hexdigest(),
-                },
-                {
-                    "role": "preparer",
-                    "tag": "tip-preparer",
-                    "rolloutManifestSha256": hashlib.sha256(
-                        preparer["manifest"].read_bytes()
-                    ).hexdigest(),
-                },
-            ],
-            predecessor_manifests=[transition["manifest"], preparer["manifest"]],
-            channel="tip",
-            release_tag="tip-successor",
-            enclosure_basename="RepoPrompt-tip-successor-100.1.3",
-        )
-        self.assertEqual(successor["result"].returncode, 0, successor["result"].stderr)
+        temp_dir, preparer, transition, successor = self.make_tip_pts_ladder()
 
         appcast = successor["appcast"].read_text(encoding="utf-8")
         self.assertEqual(appcast.count("<item>"), 3)
@@ -5334,29 +5346,15 @@ class IdentityTransitionReleaseToolingTests(unittest.TestCase):
         self.assertNotEqual(crossed_floor.returncode, 0)
         self.assertIn("Stable=101 preparer=100.1.1", crossed_floor.stderr)
 
-        def progression(candidate: dict, live: dict | None = None) -> subprocess.CompletedProcess[str]:
-            arguments = [
-                "validate-live-tip-progression",
-                "--policy", str(self.POLICY),
-                "--candidate-manifest", str(candidate["manifest"]),
-                "--candidate-appcast", str(candidate["appcast"]),
-            ]
-            if live is not None:
-                arguments += [
-                    "--live-manifest", str(live["manifest"]),
-                    "--live-appcast", str(live["appcast"]),
-                ]
-            return self.rollout(*arguments)
-
-        first = progression(preparer)
+        first = self.validate_tip_progression(preparer)
         self.assertEqual(first.returncode, 0, first.stderr)
-        p_to_t = progression(transition, preparer)
+        p_to_t = self.validate_tip_progression(transition, preparer)
         self.assertEqual(p_to_t.returncode, 0, p_to_t.stderr)
-        t_to_s = progression(successor, transition)
+        t_to_s = self.validate_tip_progression(successor, transition)
         self.assertEqual(t_to_s.returncode, 0, t_to_s.stderr)
-        idempotent = progression(successor, successor)
+        idempotent = self.validate_tip_progression(successor, successor)
         self.assertEqual(idempotent.returncode, 0, idempotent.stderr)
-        skipped = progression(successor, preparer)
+        skipped = self.validate_tip_progression(successor, preparer)
         self.assertNotEqual(skipped.returncode, 0)
         self.assertIn("regress or skip", skipped.stderr)
 
@@ -5366,10 +5364,83 @@ class IdentityTransitionReleaseToolingTests(unittest.TestCase):
         successor["manifest"].write_text(
             json.dumps(changed, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        changed_history = progression(successor, transition)
+        changed_history = self.validate_tip_progression(successor, transition)
         self.assertNotEqual(changed_history.returncode, 0)
         self.assertIn("retained items do not exactly match", changed_history.stderr)
         successor["manifest"].write_text(successor_manifest_text, encoding="utf-8")
+
+    def test_live_tip_progression_allows_rolling_roles_and_phase_advances(self) -> None:
+        temp_dir, preparer, transition, successor = self.make_tip_pts_ladder()
+        legacy = self.make_tip_release(temp_dir, "legacy", "99.1.1")
+        next_legacy = self.make_tip_release(temp_dir, "legacy", "99.1.2")
+        next_preparer = self.make_tip_release(temp_dir, "preparer", "100.1.4")
+        next_transition = self.make_tip_release(
+            temp_dir, "transition", "100.1.4", (preparer,)
+        )
+        next_successor = self.make_tip_release(
+            temp_dir, "successor", "100.1.4", (transition, preparer)
+        )
+
+        for label, live, candidate in (
+            ("legacy to legacy", legacy, next_legacy),
+            ("preparer to preparer", preparer, next_preparer),
+            ("preparer to transition", preparer, transition),
+            ("transition to transition", transition, next_transition),
+            ("transition to successor", transition, successor),
+            ("successor to successor", successor, next_successor),
+        ):
+            with self.subTest(label):
+                result = self.validate_tip_progression(candidate, live)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("with exact retained history", result.stdout)
+
+    def test_live_tip_progression_rejects_changed_history_regression_and_phase_skip(self) -> None:
+        temp_dir, preparer, transition, successor = self.make_tip_pts_ladder()
+        next_preparer = self.make_tip_release(temp_dir, "preparer", "100.1.4")
+
+        altered_root = temp_dir / "altered-history"
+        altered_preparer = self.make_tip_release(
+            altered_root,
+            "preparer",
+            "100.1.1",
+            release_tag="tip-preparer",
+        )
+        altered_preparer["enclosure"].write_text(
+            "altered authenticated preparer enclosure\n", encoding="utf-8"
+        )
+        regenerated = self.rollout(*altered_preparer["arguments"])
+        self.assertEqual(regenerated.returncode, 0, regenerated.stderr)
+        changed_transition = self.make_tip_release(
+            altered_root,
+            "transition",
+            "100.1.5",
+            (altered_preparer,),
+        )
+
+        live_preparer_item = json.loads(transition["manifest"].read_text(encoding="utf-8"))[
+            "appcastItems"
+        ][1]
+        changed_preparer_item = json.loads(
+            changed_transition["manifest"].read_text(encoding="utf-8")
+        )["appcastItems"][1]
+        self.assertEqual(changed_preparer_item["role"], live_preparer_item["role"])
+        self.assertEqual(changed_preparer_item["tag"], live_preparer_item["tag"])
+        self.assertEqual(changed_preparer_item["buildNumber"], live_preparer_item["buildNumber"])
+        self.assertNotEqual(
+            changed_preparer_item["enclosureSha256"], live_preparer_item["enclosureSha256"]
+        )
+
+        changed_history = self.validate_tip_progression(changed_transition, transition)
+        self.assertNotEqual(changed_history.returncode, 0)
+        self.assertIn("retained items do not exactly match", changed_history.stderr)
+
+        regression = self.validate_tip_progression(next_preparer, transition)
+        self.assertNotEqual(regression.returncode, 0)
+        self.assertIn("regress or skip", regression.stderr)
+
+        skipped = self.validate_tip_progression(successor, preparer)
+        self.assertNotEqual(skipped.returncode, 0)
+        self.assertIn("regress or skip", skipped.stderr)
 
     def test_rollout_tampering_and_invalid_ladders_fail_closed(self) -> None:
         temp_dir, preparer, transition, successor = self.make_pts_ladder()

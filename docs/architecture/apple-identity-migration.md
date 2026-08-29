@@ -45,8 +45,8 @@ protected `origin/main` to be the same commit.
 Automatic and manual runs use one queue without cancelling in-flight release work, and publication
 is serialized. Before any draft mutation and again immediately before publication, the publisher
 rechecks protected `main`, validates the authenticated public Tip appcast/manifest, enforces the
-monotonic `P → T → S` state machine with exact retained manifest bytes, and verifies retained
-enclosure size/SHA-256 from immutable release assets.
+monotonic `P → T → S` state machine while allowing newer same-role builds with exact retained
+manifest bytes, and verifies retained enclosure size/SHA-256 from immutable release assets.
 For T and S, setup and publication also require the greatest Stable build to remain strictly below
 P's retained Tip build; otherwise an unprepared later Stable build could satisfy T's Sparkle floor.
 Draft creation, asset upload, and publication are reconciled by observation after ambiguous network
