@@ -31,7 +31,10 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         environment["PATH"] = directory.path
         environment["SHELL"] = "/bin/false"
         let testEnvironment = environment
-        let resolver = CursorACPLaunchResolver(environmentProvider: { _ in testEnvironment })
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in testEnvironment },
+            supplementalPathProvider: { $0 }
+        )
         let config = CursorAgentConfig(
             commandName: "cursor-agent",
             additionalPathHints: [],
@@ -46,6 +49,125 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         XCTAssertEqual(support, .supported)
         XCTAssertEqual(launch.command, try canonicalExecutablePath(executable))
         XCTAssertEqual(probedPath, launch.command)
+    }
+
+    func testBareCursorAgentFallsBackToVerifiedAgentEntrypoint() async throws {
+        let directory = try makeTemporaryDirectory()
+        let executable = try makeExecutable(
+            named: "agent",
+            in: directory,
+            output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
+        )
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = directory.path
+        environment["SHELL"] = "/bin/false"
+        let testEnvironment = environment
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in testEnvironment },
+            supplementalPathProvider: { $0 }
+        )
+        let config = CursorAgentConfig(
+            commandName: "cursor-agent",
+            additionalPathHints: [],
+            includeRepoPromptMCPServer: false
+        )
+
+        let support = try await resolver.probeSupport(for: config)
+        let launch = try resolver.resolvedLaunch(for: config)
+
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(launch.command, try canonicalExecutablePath(executable))
+        XCTAssertEqual(launch.arguments, ["--approve-mcps", "acp"])
+    }
+
+    func testBareCursorAgentPrefersLegacyEntrypointWhenBothNamesExist() async throws {
+        let directory = try makeTemporaryDirectory()
+        let cursorAgent = try makeExecutable(named: "cursor-agent", in: directory)
+        let genericAgentMarker = directory.appendingPathComponent("generic-agent-probed")
+        _ = try makeExecutable(
+            named: "agent",
+            in: directory,
+            marker: genericAgentMarker,
+            output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
+        )
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = directory.path
+        environment["SHELL"] = "/bin/false"
+        let testEnvironment = environment
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in testEnvironment },
+            supplementalPathProvider: { $0 }
+        )
+        let config = CursorAgentConfig(
+            commandName: "cursor-agent",
+            additionalPathHints: [],
+            includeRepoPromptMCPServer: false
+        )
+
+        let support = try await resolver.probeSupport(for: config)
+        let launch = try resolver.resolvedLaunch(for: config)
+
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(launch.command, try canonicalExecutablePath(cursorAgent))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: genericAgentMarker.path))
+    }
+
+    func testBareCursorAgentRejectsGenericAgentWithoutCursorIdentityProof() async throws {
+        let directory = try makeTemporaryDirectory()
+        _ = try makeExecutable(
+            named: "agent",
+            in: directory,
+            output: "Grok Build TUI\nUsage: agent [OPTIONS]\nstreaming-json native ACP session updates"
+        )
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = directory.path
+        environment["SHELL"] = "/bin/false"
+        let testEnvironment = environment
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in testEnvironment },
+            supplementalPathProvider: { $0 }
+        )
+        let config = CursorAgentConfig(
+            commandName: "cursor-agent",
+            additionalPathHints: [],
+            includeRepoPromptMCPServer: false
+        )
+
+        let support = try await resolver.probeSupport(for: config)
+
+        guard case .unsupported = support else {
+            return XCTFail("Expected a generic agent executable without Cursor identity proof to be unsupported")
+        }
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config)) { error in
+            guard case CursorACPLaunchResolutionError.environmentDiscoveryRequired = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testExplicitAgentRequiresSuccessfulCursorACPProbeBeforeLaunch() async throws {
+        let directory = try makeTemporaryDirectory()
+        let executable = try makeExecutable(
+            named: "agent",
+            in: directory,
+            output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
+        )
+        let resolver = CursorACPLaunchResolver()
+        let config = CursorAgentConfig(
+            commandName: executable.path,
+            additionalPathHints: [],
+            includeRepoPromptMCPServer: false
+        )
+
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config)) { error in
+            guard case CursorACPLaunchResolutionError.environmentDiscoveryRequired = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+
+        let support = try await resolver.probeSupport(for: config)
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(try resolver.resolvedLaunch(for: config).command, try canonicalExecutablePath(executable))
     }
 
     func testLaunchConfigurationLeasesCursorApprovalForModernSessionMCPInjection() async throws {
