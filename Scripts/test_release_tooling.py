@@ -266,7 +266,7 @@ APP_SIGN_ARGS=(){app_signing_body}
             signer.index('sign_path "$APP_BUNDLE" --entitlements "$app_entitlements"'),
         )
 
-    def test_release_workflows_gate_stable_preparer_and_require_explicit_tip_dispatch_confirmation(self) -> None:
+    def test_release_workflows_gate_stable_preparer_and_require_manual_tip_dispatch_confirmation(self) -> None:
         workflows = SCRIPT_DIR.parent / ".github" / "workflows"
         release_workflow = (workflows / "release.yml").read_text(encoding="utf-8")
         tip_workflow = (workflows / "main-tip.yml").read_text(encoding="utf-8")
@@ -287,7 +287,10 @@ APP_SIGN_ARGS=(){app_signing_body}
         for literal in ("com.repoprompt.ce", "69N6K965SF"):
             self.assertNotIn(literal, release_workflow)
 
+        trigger = tip_workflow.split("\non:\n", 1)[1].split("\nconcurrency:", 1)[0]
         dispatch = tip_workflow.split("  workflow_dispatch:", 1)[1].split("\n\nconcurrency:", 1)[0]
+        self.assertIn("  workflow_dispatch:", trigger)
+        self.assertNotIn("workflow_run:", trigger)
         self.assertNotIn("      commit:", dispatch)
         self.assertIn("confirm_identity_rollout_role:", dispatch)
         confirmation = dispatch.split("      confirm_identity_rollout_role:", 1)[1]
@@ -298,11 +301,11 @@ APP_SIGN_ARGS=(){app_signing_body}
         self.assertIn('[[ "$DISPATCH_REF" == "refs/heads/main" ]]', tip_workflow)
         self.assertIn('[[ "$commit" == "$live_main" ]]', tip_workflow)
         self.assertIn('[[ "$tooling_commit" == "$commit" ]]', tip_workflow)
-        self.assertIn('[[ "$EVENT_NAME" == "workflow_dispatch" && "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]', tip_workflow)
-        self.assertIn('[[ "$ROLLOUT_ROLE" != "legacy" && "$EVENT_NAME" != "workflow_dispatch" ]]', tip_workflow)
-        self.assertIn("Automatic Tip Publication Dormant (Manual Review Required)", tip_workflow)
-        self.assertIn("This diagnostic does not authorize a release", tip_workflow)
-        self.assertNotIn("To publish this role", tip_workflow)
+        self.assertIn('[[ "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]', tip_workflow)
+        self.assertNotIn("github.event.workflow_run", tip_workflow)
+        self.assertNotIn("automatic-tip-dormant", tip_workflow)
+        self.assertNotIn("should-publish", tip_workflow)
+        self.assertNotIn("skip-reason", tip_workflow)
         self.assertIn("if: needs.setup.outputs.rollout-role == 'preparer'", tip_workflow)
         self.assertIn("EXPECTED_MIGRATION_ANCHOR_SIGN_IDENTITY", tip_workflow)
         self.assertIn('--identifier "$EXPECTED_MIGRATION_ANCHOR_BUNDLE_ID"', tip_workflow)
@@ -3256,8 +3259,9 @@ values.write_text("\\n".join(remaining), encoding="utf-8")
 
         self.assertIn("name: Publish Tip", workflow)
         concurrency = workflow.split("concurrency:", 1)[1].split("\npermissions:", 1)[0]
-        self.assertIn("main-tip-dispatch-channel", concurrency)
-        self.assertIn("main-tip-channel", concurrency)
+        self.assertIn("group: main-tip-dispatch-channel", concurrency)
+        self.assertNotIn("main-tip-channel", concurrency)
+        self.assertNotIn("github.event", concurrency)
         self.assertIn("queue: max", concurrency)
         self.assertNotIn("cancel-in-progress:", concurrency)
         self.assertIn("concurrency:\n      group: main-tip-publish\n      queue: max", workflow)
@@ -3424,12 +3428,13 @@ values.write_text("\\n".join(remaining), encoding="utf-8")
 
     def test_main_tip_setup_uses_github_dispatch_sha_and_defers_remote_mutation(self) -> None:
         workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-tip.yml").read_text(encoding="utf-8")
-        setup = workflow.split("\n  setup:", 1)[1].split("\n  automatic-tip-dormant:", 1)[0]
+        setup = workflow.split("\n  setup:", 1)[1].split("\n  credential-preflight:", 1)[0]
         before_publish, publish = workflow.split("\n  publish:", 1)
 
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("DISPATCH_COMMIT: ${{ github.sha }}", setup)
-        self.assertIn("WORKFLOW_RUN_COMMIT: ${{ github.event.workflow_run.head_sha }}", setup)
+        self.assertNotIn("WORKFLOW_RUN_COMMIT", setup)
+        self.assertNotIn("github.event.workflow_run", workflow)
         self.assertIn("git fetch --no-tags origin main", setup)
         self.assertIn('[[ "$commit" == "$live_main" ]]', setup)
         self.assertNotIn("TIP_GH_TOKEN", setup)
@@ -3437,23 +3442,19 @@ values.write_text("\\n".join(remaining), encoding="utf-8")
         self.assertNotIn("lookup_public_tip_release", workflow)
         self.assertIn("TIP_GH_TOKEN: ${{ secrets.TIP_UPDATE_REPOSITORY_TOKEN }}", publish)
 
-    def test_tip_no_release_diagnostic_contract_is_truthful_and_read_only(self) -> None:
+    def test_tip_workflow_is_manual_only_without_dormant_release_route(self) -> None:
         workflow = (SCRIPT_DIR.parent / ".github" / "workflows" / "main-tip.yml").read_text(encoding="utf-8")
-        setup = workflow.split("\n  setup:", 1)[1].split("\n  automatic-tip-dormant:", 1)[0]
-        diagnostic = workflow.split("\n  automatic-tip-dormant:", 1)[1].split(
-            "\n  credential-preflight:", 1
-        )[0]
+        trigger = workflow.split("\non:\n", 1)[1].split("\nconcurrency:", 1)[0]
+        credential_preflight = workflow.split("\n  credential-preflight:", 1)[1].split("\n  stage:", 1)[0]
+        stage = workflow.split("\n  stage:", 1)[1].split("\n  sign:", 1)[0]
 
-        self.assertIn('skip_reason="role-requires-dispatch"', setup)
-        self.assertIn("name: Automatic Tip Publication Dormant (Dispatch Required)", diagnostic)
-        self.assertIn("runs-on: ubuntu-latest", diagnostic)
-        self.assertIn("contents: read", diagnostic)
-        self.assertIn("Nothing was built, signed, or published.", diagnostic)
-        self.assertIn("dispatch Publish Tip from protected main", diagnostic)
-        self.assertIn("candidate commit is selected automatically from main", diagnostic)
-        self.assertNotIn("::error::", diagnostic)
-        self.assertNotIn("exit 1", diagnostic)
-        self.assertNotIn("environment: tip-release", diagnostic)
+        self.assertIn("  workflow_dispatch:", trigger)
+        self.assertNotIn("workflow_run:", trigger)
+        self.assertNotIn("automatic-tip-dormant:", workflow)
+        self.assertNotIn("should-publish", workflow)
+        self.assertNotIn("skip-reason", workflow)
+        self.assertNotIn("if:", credential_preflight)
+        self.assertNotIn("if:", stage)
 
     def test_tip_publication_helper_is_resume_safe_and_byte_exact(self) -> None:
         helper = SCRIPT_DIR / "publish_tip_release.sh"
@@ -5497,7 +5498,8 @@ class IdentityTransitionReleaseToolingTests(unittest.TestCase):
         self.assertIn("stable_rollout.py packaging-context", tip_workflow)
         self.assertIn("confirm_identity_rollout_role", tip_workflow)
         self.assertIn("required: true", tip_workflow)
-        self.assertIn('[[ "$EVENT_NAME" == "workflow_dispatch" && "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]', tip_workflow)
+        self.assertIn('[[ "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]', tip_workflow)
+        self.assertNotIn("workflow_run", tip_workflow)
         self.assertNotIn("release-rollout.json", tip_workflow)
 
         release_script = (SCRIPT_DIR / "release.sh").read_text(encoding="utf-8")

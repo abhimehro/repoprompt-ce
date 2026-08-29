@@ -30,22 +30,21 @@ The checked-in Tip declaration is the controlled `P → T → S` rehearsal:
   items and supplies the normal rollback window.
 
 All three roles use the same Tip feed and `appcast.xml`; the rollout manifest is the same
-`identity-rollout.json` asset name. No sibling feed or Sparkle key is introduced. Automatic
-`workflow_run` notifications publish only legacy Tip builds. For P, T, and S they stop successfully
-in a read-only diagnostic before credentials or builds; that outcome is not release authorization.
+`identity-rollout.json` asset name. No sibling feed or Sparkle key is introduced. `Publish Tip` is
+manual-only and has no CI-completion trigger, so ordinary `main` activity cannot allocate release
+runners or produce a successful no-publication workflow.
 
-Each nonlegacy role requires an explicit `workflow_dispatch` from protected `main`. Every manual
-dispatch, including legacy, requires a non-empty `confirm_identity_rollout_role` input exactly equal
-to the checked-in role, preventing an empty confirmation from starting a release job. There is no
-operator-supplied commit field. GitHub's selected `main` SHA is the candidate, and setup requires that
-SHA, the workflow definition, the release-tooling checkout, and freshly fetched protected
-`origin/main` to be the same commit.
+Every dispatch from protected `main` requires a non-empty `confirm_identity_rollout_role` input
+exactly equal to the checked-in role, preventing an empty confirmation from starting a release job.
+There is no operator-supplied commit field. GitHub's selected `main` SHA is the candidate, and setup
+requires that SHA, the workflow definition, the release-tooling checkout, and freshly fetched
+protected `origin/main` to be the same commit.
 
-Automatic and manual runs occupy separate concurrency lanes and queue without cancelling in-flight
-release work. Publication is serialized across the lanes. Before any draft mutation and again
-immediately before publication, the publisher rechecks protected `main`, validates the authenticated
-public Tip appcast/manifest, enforces the monotonic `P → T → S` state machine with exact retained
-manifest bytes, and verifies retained enclosure size/SHA-256 from the immutable release assets.
+Manual runs queue without cancelling in-flight release work, and publication is serialized. Before
+any draft mutation and again immediately before publication, the publisher rechecks protected
+`main`, validates the authenticated public Tip appcast/manifest, enforces the monotonic `P → T → S`
+state machine with exact retained manifest bytes, and verifies retained enclosure size/SHA-256 from
+immutable release assets.
 For T and S, setup and publication also require the greatest Stable build to remain strictly below
 P's retained Tip build; otherwise an unprepared later Stable build could satisfy T's Sparkle floor.
 Draft creation, asset upload, and publication are reconciled by observation after ambiguous network
@@ -116,7 +115,7 @@ present and usable in the ephemeral keychain before any `codesign` or `productbu
 The manual gates are ordered: approve and dispatch P first, inspect its signed/notarized ZIP and
 retained `identity-rollout.json`, then update the declaration with P's exact manifest digest before
 dispatching T. After T is verified, update the declaration with both exact predecessor digests before
-dispatching S. Never publish a nonlegacy role from an automatic `workflow_run` notification.
+dispatching S. Publish every role only through the reviewed manual dispatch.
 
 P was published and independently verified at `tip-2f94412e6ab5`; its retained
 `identity-rollout.json` SHA-256 is
