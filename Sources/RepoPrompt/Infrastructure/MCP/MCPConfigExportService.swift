@@ -135,7 +135,8 @@ actor MCPConfigExportService {
 
         let tempURL = configDirectoryURL.appendingPathComponent(UUID().uuidString)
         guard let data = configJSON.data(using: .utf8),
-              fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+              fileManager.createFile(atPath: tempURL.path, contents: data, attributes: [.posixPermissions: 0o600])
+        else {
             throw CocoaError(.fileWriteUnknown)
         }
         defer { try? fileManager.removeItem(at: tempURL) }
