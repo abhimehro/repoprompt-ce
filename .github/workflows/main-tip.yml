@@ -315,9 +315,9 @@ jobs:
           if [[ "$ROLLOUT_ROLE" == "transition" ]]; then
             printf '%s' "$SUCCESSOR_INSTALLER_P12_BASE64" | base64 --decode > "$INSTALLER_CERTIFICATE_PATH" || fail "successor installer P12 write failed"
             security import "$INSTALLER_CERTIFICATE_PATH" -k "$PREFLIGHT_KEYCHAIN_PATH" -P "$SUCCESSOR_INSTALLER_P12_PASSWORD" \
-              -T /usr/bin/productbuild -T /usr/bin/security \
+              -T /usr/bin/productbuild -T /usr/bin/productsign -T /usr/bin/security \
               >/dev/null || fail "successor installer P12 import failed"
-            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: \
+            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,productsign: \
               -s -k "$CI_KEYCHAIN_PASSWORD" "$PREFLIGHT_KEYCHAIN_PATH" \
               >/dev/null || fail "successor installer key partition setup failed"
             security find-identity -v -p basic "$PREFLIGHT_KEYCHAIN_PATH" |
@@ -485,8 +485,8 @@ jobs:
             installer_certificate="$RUNNER_TEMP/repoprompt-tip-installer.p12"
             printf '%s' "$SUCCESSOR_INSTALLER_P12_BASE64" | base64 --decode > "$installer_certificate"
             security import "$installer_certificate" -k "$KEYCHAIN_PATH" \
-              -P "$SUCCESSOR_INSTALLER_P12_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/security
-            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: \
+              -P "$SUCCESSOR_INSTALLER_P12_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/productsign -T /usr/bin/security
+            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,productsign: \
               -s -k "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
             verify_identity basic "$EXPECTED_INSTALLER_IDENTITY" installer
             rm -f "$installer_certificate"
