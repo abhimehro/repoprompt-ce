@@ -5220,11 +5220,15 @@ class IdentityTransitionReleaseToolingTests(unittest.TestCase):
         notary_step = workflow.split("      - name: Prepare provisioning profile and notarization key", 1)[1].split(
             "      - name: Install Sentry CLI", 1
         )[0]
+        cleanup_step = workflow.split("      - name: Remove ephemeral keychain", 1)[1].split(
+            "      - name: Validate signed Tip asset inventory", 1
+        )[0]
 
         self.assertIn('verify_identity codesigning "$EXPECTED_SIGN_IDENTITY" application', import_step)
         self.assertIn('verify_identity basic "$EXPECTED_INSTALLER_IDENTITY" installer', import_step)
         self.assertIn("-T /usr/bin/productsign", import_step)
         self.assertIn("productbuild:,productsign:", import_step)
+        self.assertIn('rm -f "$RUNNER_TEMP/repoprompt-tip-installer.p12"', cleanup_step)
         self.assertIn('printf \'SIGN_IDENTITY=%s\\n\' "$EXPECTED_SIGN_IDENTITY"', import_step)
         self.assertIn('grep -F "\\"$EXPECTED_MIGRATION_ANCHOR_SIGN_IDENTITY\\""', anchor_step)
         self.assertIn('codesign --force --sign "$EXPECTED_MIGRATION_ANCHOR_SIGN_IDENTITY"', anchor_step)
