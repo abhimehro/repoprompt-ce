@@ -61,20 +61,35 @@ final class CodexGlobalInstructionsProjectionTests: XCTestCase {
     }
 
     func testPrepareRejectsUnmanifestedDestinationWithoutMutatingEitherFile() throws {
-        for existingData in [Data("foreign".utf8), Data("source".utf8)] {
+        let cases = [
+            (name: "foreign-content", data: Data("foreign".utf8)),
+            (name: "matching-content-without-ownership", data: Data("source".utf8))
+        ]
+
+        for testCase in cases {
             try resetManagedHome()
             try write(Data("source".utf8), to: ordinary("AGENTS.override.md"))
             try write(Data("fallback".utf8), to: ordinary("AGENTS.md"))
-            try write(existingData, to: managed("AGENTS.override.md"))
+            try write(testCase.data, to: managed("AGENTS.override.md"))
 
-            XCTAssertThrowsError(try project()) { error in
+            XCTAssertThrowsError(try project(), "case=\(testCase.name)") { error in
                 guard case CodexGlobalInstructionsProjection.Failure.unownedDestination = error else {
-                    return XCTFail("Expected unowned destination failure, got \(error)")
+                    return XCTFail("Expected unowned destination failure for \(testCase.name), got \(error)")
                 }
             }
-            XCTAssertEqual(try Data(contentsOf: managed("AGENTS.override.md")), existingData)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: managed("AGENTS.md").path))
-            XCTAssertFalse(FileManager.default.fileExists(atPath: manifestURL.path))
+            XCTAssertEqual(
+                try Data(contentsOf: managed("AGENTS.override.md")),
+                testCase.data,
+                "case=\(testCase.name)"
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: managed("AGENTS.md").path),
+                "case=\(testCase.name)"
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: manifestURL.path),
+                "case=\(testCase.name)"
+            )
         }
     }
 
@@ -148,18 +163,24 @@ final class CodexGlobalInstructionsProjectionTests: XCTestCase {
         try write(Data("source".utf8), to: ordinary("AGENTS.md"))
         let unicodeDigits = String(repeating: "١", count: 64)
         let invalidManifests = [
-            Data("not json".utf8),
-            Data(#"{"schemaVersion":2,"projectedFileHashes":{}}"#.utf8),
-            Data(#"{"schemaVersion":1,"projectedFileHashes":{"OTHER.md":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#.utf8),
-            Data(#"{"schemaVersion":1,"projectedFileHashes":{"AGENTS.md":"invalid"}}"#.utf8),
-            Data("{\"schemaVersion\":1,\"projectedFileHashes\":{\"AGENTS.md\":\"\(unicodeDigits)\"}}".utf8)
+            (name: "malformed-json", data: Data("not json".utf8)),
+            (name: "unsupported-schema", data: Data(#"{"schemaVersion":2,"projectedFileHashes":{}}"#.utf8)),
+            (name: "unknown-file", data: Data(#"{"schemaVersion":1,"projectedFileHashes":{"OTHER.md":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#.utf8)),
+            (name: "invalid-hash", data: Data(#"{"schemaVersion":1,"projectedFileHashes":{"AGENTS.md":"invalid"}}"#.utf8)),
+            (
+                name: "non-ascii-hex-digits",
+                data: Data("{\"schemaVersion\":1,\"projectedFileHashes\":{\"AGENTS.md\":\"\(unicodeDigits)\"}}".utf8)
+            )
         ]
 
-        for manifest in invalidManifests {
+        for testCase in invalidManifests {
             try resetManagedHome()
-            try write(manifest, to: manifestURL)
-            XCTAssertThrowsError(try project())
-            XCTAssertFalse(FileManager.default.fileExists(atPath: managed("AGENTS.md").path))
+            try write(testCase.data, to: manifestURL)
+            XCTAssertThrowsError(try project(), "case=\(testCase.name)")
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: managed("AGENTS.md").path),
+                "case=\(testCase.name)"
+            )
         }
 
         try resetManagedHome()

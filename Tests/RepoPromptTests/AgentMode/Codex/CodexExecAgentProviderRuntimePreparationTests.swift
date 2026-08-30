@@ -26,6 +26,8 @@ final class CodexExecAgentProviderRuntimePreparationTests: XCTestCase {
         } catch let AIProviderError.invalidConfiguration(detail) {
             XCTAssertTrue(detail.contains("unable to prepare its isolated Codex state"))
             XCTAssertTrue(detail.contains("projection conflict"))
+        } catch {
+            XCTFail("Expected invalidConfiguration, got \(error)")
         }
 
         XCTAssertEqual(recorder.callCount, 1)
