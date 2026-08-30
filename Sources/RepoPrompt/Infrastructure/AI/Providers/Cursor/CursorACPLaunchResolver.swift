@@ -77,7 +77,8 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
     typealias ProbeRunner = @Sendable (
         _ launch: CursorACPResolvedLaunch,
         _ config: CursorAgentConfig,
-        _ timeout: TimeInterval
+        _ timeout: TimeInterval,
+        _ timeoutCleanupPolicy: ProcessTermination.TimeoutCleanupPolicy
     ) async throws -> CLIProcessRunner.Result
     typealias NowProvider = @Sendable () -> TimeInterval
 
@@ -95,11 +96,12 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         supplementalPathProvider: @escaping SupplementalPathProvider = {
             CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults($0)
         },
-        probeRunner: @escaping ProbeRunner = { launch, config, timeout in
+        probeRunner: @escaping ProbeRunner = { launch, config, timeout, timeoutCleanupPolicy in
             try await CursorACPLaunchResolver.runProbe(
                 launch: launch,
                 config: config,
-                timeout: timeout
+                timeout: timeout,
+                timeoutCleanupPolicy: timeoutCleanupPolicy
             )
         },
         nowProvider: @escaping NowProvider = { ProcessInfo.processInfo.systemUptime },
@@ -132,11 +134,12 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         supplementalPathProvider: @escaping SupplementalPathProvider = {
             CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults($0)
         },
-        probeRunner: @escaping ProbeRunner = { launch, config, timeout in
+        probeRunner: @escaping ProbeRunner = { launch, config, timeout, timeoutCleanupPolicy in
             try await CursorACPLaunchResolver.runProbe(
                 launch: launch,
                 config: config,
-                timeout: timeout
+                timeout: timeout,
+                timeoutCleanupPolicy: timeoutCleanupPolicy
             )
         },
         nowProvider: @escaping NowProvider = { ProcessInfo.processInfo.systemUptime },
@@ -191,16 +194,22 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             let launches = try await resolveLaunchesForProbe(for: config)
             var failures: [String] = []
             let deadline = nowProvider() + aggregateProbeTimeout
+            let timeoutCleanupPolicy = ProcessTermination.currentTimeoutCleanupPolicy()
             for launch in launches {
                 try Task.checkCancellation()
-                let remainingTimeout = deadline - nowProvider()
-                guard remainingTimeout > 0 else {
+                let remainingExecutionTimeout = deadline - nowProvider() - timeoutCleanupPolicy.maximumDuration
+                guard remainingExecutionTimeout > 0 else {
                     failures.append("Cursor Agent CLI ACP preflight exceeded its aggregate timeout.")
                     break
                 }
                 let result: CLIProcessRunner.Result
                 do {
-                    result = try await probeRunner(launch, config, remainingTimeout)
+                    result = try await probeRunner(
+                        launch,
+                        config,
+                        remainingExecutionTimeout,
+                        timeoutCleanupPolicy
+                    )
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -512,7 +521,8 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
     private static func runProbe(
         launch: CursorACPResolvedLaunch,
         config: CursorAgentConfig,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        timeoutCleanupPolicy: ProcessTermination.TimeoutCleanupPolicy
     ) async throws -> CLIProcessRunner.Result {
         let processConfig = CLIProcessConfiguration(
             command: launch.command,
@@ -526,6 +536,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             stdin: nil,
             outputMode: .none,
             timeout: timeout,
+            timeoutCleanupPolicy: timeoutCleanupPolicy,
             additionalRemovedKeys: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             cancelChildOnTaskCancellation: true
         )

@@ -199,7 +199,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         let resolver = CursorACPLaunchResolver(
             environmentProvider: { _ in environment },
             supplementalPathProvider: { $0 },
-            probeRunner: { _, _, _ in
+            probeRunner: { _, _, _, _ in
                 CLIProcessRunner.Result(
                     stdout: Data("Cursor Agent ACP support".utf8),
                     stderr: Data(),
@@ -222,7 +222,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         }
     }
 
-    func testCapabilityProbeUsesAggregateDeadlineAndStopsWhenExhausted() async throws {
+    func testCapabilityProbeReservesTimeoutCleanupWithinAggregateDeadline() async throws {
         let rootDirectory = try makeTemporaryDirectory()
         let legacyDirectory = rootDirectory.appendingPathComponent("legacy", isDirectory: true)
         let currentDirectory = rootDirectory.appendingPathComponent("current", isDirectory: true)
@@ -248,8 +248,11 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         let resolver = CursorACPLaunchResolver(
             environmentProvider: { _ in environment },
             supplementalPathProvider: { $0 },
-            probeRunner: { _, _, timeout in
-                timeline.record(timeout: timeout)
+            probeRunner: { _, _, timeout, timeoutCleanupPolicy in
+                timeline.record(
+                    timeout: timeout,
+                    cleanupAllowance: timeoutCleanupPolicy.maximumDuration
+                )
                 return CLIProcessRunner.Result(
                     stdout: Data(),
                     stderr: Data(),
@@ -268,7 +271,8 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         guard case .unsupported = support else {
             return XCTFail("Expected aggregate deadline exhaustion to be unsupported")
         }
-        XCTAssertEqual(timeline.recordedTimeouts(), [9])
+        XCTAssertEqual(timeline.recordedTimeouts(), [6])
+        XCTAssertEqual(timeline.recordedCleanupAllowances(), [3])
     }
 
     func testBareCursorAgentDoesNotFallBackWhenCursorAgentLacksACP() async throws {
@@ -1286,6 +1290,7 @@ private final class CursorProbeTimeline: @unchecked Sendable {
     private let lock = NSLock()
     private var nowValues: [TimeInterval]
     private var timeouts: [TimeInterval] = []
+    private var cleanupAllowances: [TimeInterval] = []
 
     init(nowValues: [TimeInterval]) {
         self.nowValues = nowValues
@@ -1297,9 +1302,10 @@ private final class CursorProbeTimeline: @unchecked Sendable {
         return nowValues.removeFirst()
     }
 
-    func record(timeout: TimeInterval) {
+    func record(timeout: TimeInterval, cleanupAllowance: TimeInterval) {
         lock.lock()
         timeouts.append(timeout)
+        cleanupAllowances.append(cleanupAllowance)
         lock.unlock()
     }
 
@@ -1307,6 +1313,12 @@ private final class CursorProbeTimeline: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return timeouts
+    }
+
+    func recordedCleanupAllowances() -> [TimeInterval] {
+        lock.lock()
+        defer { lock.unlock() }
+        return cleanupAllowances
     }
 }
 
