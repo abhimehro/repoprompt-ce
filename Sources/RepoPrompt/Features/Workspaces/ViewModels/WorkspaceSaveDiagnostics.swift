@@ -41,6 +41,7 @@ struct WorkspaceSaveSource: Equatable, Hashable, ExpressibleByStringLiteral, Cus
     static let clearActiveAgentSessionIDReferences = WorkspaceSaveSource("clearActiveAgentSessionIDReferences")
     static let duplicateCleanupPreSwitch = WorkspaceSaveSource("duplicateCleanupPreSwitch")
     static let duplicateCleanupCanonicalMerge = WorkspaceSaveSource("duplicateCleanupCanonicalMerge")
+    static let duplicateCleanupRetireDuplicate = WorkspaceSaveSource("duplicateCleanupRetireDuplicate")
     static let createDefaultWorkspace = WorkspaceSaveSource("createDefaultWorkspace")
     static let normalizationWriteback = WorkspaceSaveSource("normalizationWriteback")
     static let refreshWorkspace = WorkspaceSaveSource("refreshWorkspace")

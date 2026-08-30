@@ -2608,6 +2608,7 @@ final class WindowRoutingService: Service {
                             manager.applyWorkspaceHiddenStateInMemory(
                                 workspaceID: updatedWorkspace.id,
                                 hidden: updatedWorkspace.isHiddenInMenus,
+                                consolidatedIntoWorkspaceID: updatedWorkspace.consolidatedIntoWorkspaceID,
                                 dateModified: updatedWorkspace.dateModified
                             )
                         }

@@ -937,9 +937,14 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     #if DEBUG
         private var workspacePersistenceOutcomeOverrideForTesting: WorkspacePersistenceOutcome?
+        private var duplicateCleanupBackupDirectoryOverrideForTesting: URL?
 
         func setWorkspacePersistenceOutcomeOverrideForTesting(_ outcome: WorkspacePersistenceOutcome?) {
             workspacePersistenceOutcomeOverrideForTesting = outcome
+        }
+
+        func setDuplicateCleanupBackupDirectoryForTesting(_ directoryURL: URL?) {
+            duplicateCleanupBackupDirectoryOverrideForTesting = directoryURL
         }
     #endif
 
@@ -6381,7 +6386,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 groupsDetected: 0,
                 groupsConsolidated: 0,
                 reassignedWindowIDs: [],
-                deletedWorkspaceIDs: [],
+                retiredWorkspaceIDs: [],
                 skipped: [],
                 backupURL: nil
             )
@@ -6389,7 +6394,15 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         let backupURL: URL
         do {
-            backupURL = try Self.writeDuplicateCleanupBackup(for: initialPlans)
+            #if DEBUG
+                let backupDirectoryURL = duplicateCleanupBackupDirectoryOverrideForTesting
+            #else
+                let backupDirectoryURL: URL? = nil
+            #endif
+            backupURL = try Self.writeDuplicateCleanupBackup(
+                for: initialPlans,
+                directoryURL: backupDirectoryURL
+            )
         } catch {
             let skipped = initialPlans.flatMap { plan in
                 plan.duplicates.map { duplicate in
@@ -6405,14 +6418,14 @@ class WorkspaceManagerViewModel: ObservableObject {
                 groupsDetected: groupsDetected,
                 groupsConsolidated: 0,
                 reassignedWindowIDs: [],
-                deletedWorkspaceIDs: [],
+                retiredWorkspaceIDs: [],
                 skipped: skipped,
                 backupURL: nil
             )
         }
 
         var reassignedWindowIDs: Set<Int> = []
-        var deletedWorkspaceIDs: Set<UUID> = []
+        var retiredWorkspaceIDs: Set<UUID> = []
         var skipped: [WorkspaceDuplicateCleanupSkippedItem] = []
         var protectedWorkspaceIDs: Set<UUID> = []
 
@@ -6459,17 +6472,46 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
         }
 
-        let diskSnapshot = await loadWorkspaceSnapshotFromDisk()
-        if !diskSnapshot.isEmpty {
-            let localProjection = Self.preservingLocalEphemeralWorkspaces(
-                in: diskSnapshot,
-                currentWorkspaces: workspaces
-            )
-            let lifecycleProjection = agentSessionProjectionReconciler?(
-                localProjection,
-                workspaces
-            )
-            workspaces = lifecycleProjection?.workspaces ?? localProjection
+        if domainWorkspaceAuthorityClient != nil {
+            do {
+                let projection = try await loadDuplicateCleanupAuthorityProjection()
+                applyDuplicateCleanupAuthorityProjection(projection)
+            } catch {
+                reportDomainProjectionFailure(error)
+                for plan in initialPlans {
+                    for duplicate in plan.duplicates {
+                        skipped.append(
+                            WorkspaceDuplicateCleanupSkippedItem(
+                                workspaceID: duplicate.id,
+                                workspaceName: duplicate.name,
+                                windowID: nil,
+                                reason: "authority_snapshot_unavailable: \(error.localizedDescription)"
+                            )
+                        )
+                    }
+                }
+                return WorkspaceDuplicateCleanupResult(
+                    groupsDetected: groupsDetected,
+                    groupsConsolidated: 0,
+                    reassignedWindowIDs: reassignedWindowIDs.sorted(),
+                    retiredWorkspaceIDs: [],
+                    skipped: Self.deduplicatedSkippedItems(skipped),
+                    backupURL: backupURL
+                )
+            }
+        } else {
+            let diskSnapshot = await loadWorkspaceSnapshotFromDisk()
+            if !diskSnapshot.isEmpty {
+                let localProjection = Self.preservingLocalEphemeralWorkspaces(
+                    in: diskSnapshot,
+                    currentWorkspaces: workspaces
+                )
+                let lifecycleProjection = agentSessionProjectionReconciler?(
+                    localProjection,
+                    workspaces
+                )
+                workspaces = lifecycleProjection?.workspaces ?? localProjection
+            }
         }
 
         let activeWorkspaceIDs = Set(windowStates.allWindows.compactMap { $0.workspaceManager.activeWorkspace?.id })
@@ -6478,9 +6520,33 @@ class WorkspaceManagerViewModel: ObservableObject {
             workspaces: workspaces,
             windowSnapshots: postSwitchWindowSnapshots
         )
+        let postSwitchPlansByRoot = Dictionary(
+            uniqueKeysWithValues: postSwitchPlans.map {
+                (WorkspaceRootSetKey(paths: $0.normalizedRepoPaths), $0)
+            }
+        )
+        let stablePostSwitchPlans = initialPlans.compactMap { initialPlan -> WorkspaceDuplicateGroupPlan? in
+            let key = WorkspaceRootSetKey(paths: initialPlan.normalizedRepoPaths)
+            guard let postSwitchPlan = postSwitchPlansByRoot[key],
+                  Set(postSwitchPlan.workspaces.map(\.id)) == Set(initialPlan.workspaces.map(\.id))
+            else {
+                for duplicate in initialPlan.duplicates {
+                    skipped.append(
+                        WorkspaceDuplicateCleanupSkippedItem(
+                            workspaceID: duplicate.id,
+                            workspaceName: duplicate.name,
+                            windowID: nil,
+                            reason: "group_changed"
+                        )
+                    )
+                }
+                return nil
+            }
+            return postSwitchPlan
+        }
 
         var groupsConsolidated = 0
-        for plan in postSwitchPlans {
+        for plan in stablePostSwitchPlans {
             guard let canonicalIndex = workspaceIndex(for: plan.canonical.id) else {
                 for duplicate in plan.duplicates {
                     skipped.append(
@@ -6536,15 +6602,34 @@ class WorkspaceManagerViewModel: ObservableObject {
                 canonical: workspaces[canonicalIndex],
                 duplicates: commitDuplicates
             )
+            let canonicalBeforeMerge = workspaces[canonicalIndex]
+            // `saveWorkspaceToFileAsync` suppresses the originating window's authority echo using
+            // this manager's current model. Publish the exact outbound value before the await so the
+            // bridge cannot cache the old model under the new authoritative digest.
+            workspaces[canonicalIndex] = merged
 
             do {
-                await WorkspaceDiskWriter.shared.flush(url: workspaceFileURL(for: workspaces[canonicalIndex]))
+                await WorkspaceDiskWriter.shared.flush(url: workspaceFileURL(for: canonicalBeforeMerge))
                 for duplicate in commitDuplicates {
                     await WorkspaceDiskWriter.shared.flush(url: workspaceFileURL(for: duplicate))
+                }
+                guard workspace(withID: merged.id) == merged else {
+                    throw NSError(
+                        domain: "WorkspaceDuplicateCleanup",
+                        code: 6,
+                        userInfo: [NSLocalizedDescriptionKey: "Canonical workspace changed before merge commit."]
+                    )
                 }
                 let mergedURL = try await saveWorkspaceToFileAsync(merged, preserveDiskRepoPathsIfUnchangedSinceBaseline: false, source: .duplicateCleanupCanonicalMerge)
                 await WorkspaceDiskWriter.shared.flush(url: mergedURL)
             } catch {
+                if domainWorkspaceAuthorityClient != nil {
+                    await reconcileDuplicateCleanupAuthorityAfterFailedSave()
+                } else if let rollbackIndex = workspaceIndex(for: canonicalBeforeMerge.id),
+                          workspaces[rollbackIndex] == merged
+                {
+                    workspaces[rollbackIndex] = canonicalBeforeMerge
+                }
                 for duplicate in commitDuplicates {
                     skipped.append(
                         WorkspaceDuplicateCleanupSkippedItem(
@@ -6558,7 +6643,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 continue
             }
 
-            guard let commitCanonicalIndex = workspaceIndex(for: plan.canonical.id) else {
+            guard workspaceIndex(for: plan.canonical.id) != nil else {
                 for duplicate in commitDuplicates {
                     skipped.append(
                         WorkspaceDuplicateCleanupSkippedItem(
@@ -6571,15 +6656,35 @@ class WorkspaceManagerViewModel: ObservableObject {
                 }
                 continue
             }
-            workspaces[commitCanonicalIndex] = merged
-            let committedDuplicateIDs = Set(commitDuplicates.map(\.id))
-            workspaces.removeAll { committedDuplicateIDs.contains($0.id) }
-
+            var retiredInGroup: Set<UUID> = []
             for duplicate in commitDuplicates {
-                await preserveDuplicateWorkspaceStorage(duplicate)
-                deletedWorkspaceIDs.insert(duplicate.id)
+                if domainWorkspaceAuthorityClient != nil {
+                    do {
+                        try await persistDuplicateWorkspaceRetirement(
+                            duplicate,
+                            into: merged.id
+                        )
+                    } catch {
+                        skipped.append(
+                            WorkspaceDuplicateCleanupSkippedItem(
+                                workspaceID: duplicate.id,
+                                workspaceName: duplicate.name,
+                                windowID: nil,
+                                reason: "persist_failed: \(error.localizedDescription)"
+                            )
+                        )
+                        continue
+                    }
+                } else {
+                    await preserveDuplicateWorkspaceStorage(duplicate)
+                }
+                retiredInGroup.insert(duplicate.id)
             }
-            groupsConsolidated += 1
+            workspaces.removeAll { retiredInGroup.contains($0.id) }
+            retiredWorkspaceIDs.formUnion(retiredInGroup)
+            if !retiredInGroup.isEmpty {
+                groupsConsolidated += 1
+            }
 
             for duplicate in plan.duplicates where decision.skippedWorkspaceIDs.contains(duplicate.id) {
                 skipped.append(
@@ -6610,10 +6715,93 @@ class WorkspaceManagerViewModel: ObservableObject {
             groupsDetected: groupsDetected,
             groupsConsolidated: groupsConsolidated,
             reassignedWindowIDs: reassignedWindowIDs.sorted(),
-            deletedWorkspaceIDs: deletedWorkspaceIDs.sorted { $0.uuidString < $1.uuidString },
+            retiredWorkspaceIDs: retiredWorkspaceIDs.sorted { $0.uuidString < $1.uuidString },
             skipped: Self.deduplicatedSkippedItems(skipped),
             backupURL: backupURL
         )
+    }
+
+    /// Reloads the cleanup planner from the same owner that will persist its decisions.
+    /// The legacy index is intentionally not updated in authority mode and may omit live records.
+    private func loadDuplicateCleanupAuthorityProjection() async throws -> (
+        workspaces: [WorkspaceModel],
+        snapshot: DomainWorkspaceCatalogSnapshot
+    ) {
+        guard let domainWorkspaceAuthorityClient else {
+            throw NSError(
+                domain: "WorkspaceDuplicateCleanup",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Runtime workspace authority is unavailable."]
+            )
+        }
+        let snapshot = await domainWorkspaceAuthorityClient.snapshot()
+        guard snapshot.isBootstrapped, !snapshot.workspaces.isEmpty else {
+            throw NSError(
+                domain: "WorkspaceDuplicateCleanup",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Runtime workspace catalog is not ready."]
+            )
+        }
+        let workspaces = try snapshot.workspaces.map {
+            try Self.decodeDomainWorkspaceProjection(
+                documentBytes: $0.document.documentBytes,
+                fileURL: $0.document.fileURL
+            )
+        }
+        return (workspaces, snapshot)
+    }
+
+    private func applyDuplicateCleanupAuthorityProjection(
+        _ projection: (workspaces: [WorkspaceModel], snapshot: DomainWorkspaceCatalogSnapshot)
+    ) {
+        applyDomainWorkspaceProjection(
+            projection.workspaces,
+            fileURLsByWorkspaceID: Dictionary(uniqueKeysWithValues: projection.snapshot.workspaces.map {
+                ($0.document.workspaceID, $0.document.fileURL)
+            }),
+            revisionsByWorkspaceID: Dictionary(uniqueKeysWithValues: projection.snapshot.workspaces.map {
+                ($0.document.workspaceID, $0.revisions)
+            }),
+            digestsByWorkspaceID: Dictionary(uniqueKeysWithValues: projection.snapshot.workspaces.map {
+                ($0.document.workspaceID, $0.document.contentDigest)
+            }),
+            healthByWorkspaceID: Dictionary(uniqueKeysWithValues: projection.snapshot.workspaces.map {
+                ($0.document.workspaceID, $0.health)
+            }),
+            catalogRevision: projection.snapshot.catalogRevision,
+            preferredActiveWorkspaceID: activeWorkspaceID,
+            publicationSequence: projection.snapshot.publicationSequence
+        )
+    }
+
+    /// A domain save can commit its working document before the saved-document phase fails. The
+    /// outcome is therefore uncertain: rolling back locally can teach the presentation bridge a
+    /// false model for the authoritative digest. Re-project the complete catalog instead. An empty
+    /// bootstrapped catalog is valid here and authoritatively removes any local records.
+    private func reconcileDuplicateCleanupAuthorityAfterFailedSave() async {
+        guard let domainWorkspaceAuthorityClient else { return }
+        let snapshot = await domainWorkspaceAuthorityClient.snapshot()
+        guard snapshot.isBootstrapped else {
+            reportDomainProjectionFailure(NSError(
+                domain: "WorkspaceDuplicateCleanup",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "Runtime workspace catalog is not ready after a failed cleanup save."]
+            ))
+            return
+        }
+        do {
+            let projectedWorkspaces = try snapshot.workspaces.map {
+                try Self.decodeDomainWorkspaceProjection(
+                    documentBytes: $0.document.documentBytes,
+                    fileURL: $0.document.fileURL
+                )
+            }
+            applyDuplicateCleanupAuthorityProjection((projectedWorkspaces, snapshot))
+        } catch {
+            // Keep the attempted prepublication until the bridge can provide a valid projection;
+            // restoring a guessed fallback is what poisons its self-echo cache.
+            reportDomainProjectionFailure(error)
+        }
     }
 
     private static func duplicateWindowSnapshots(from windowStates: WindowStatesManager) -> [WorkspaceDuplicateWindowSnapshot] {
@@ -6634,7 +6822,10 @@ class WorkspaceManagerViewModel: ObservableObject {
     ) -> [WorkspaceDuplicateGroupPlan] {
         let eligible = workspaces.filter { workspace in
             let key = WorkspaceRootSetKey(paths: workspace.repoPaths)
-            return !workspace.isSystemWorkspace && !workspace.isEphemeral && !key.isEmpty
+            return !workspace.isSystemWorkspace
+                && !workspace.isEphemeral
+                && workspace.consolidatedIntoWorkspaceID == nil
+                && !key.isEmpty
         }
         let grouped = Dictionary(grouping: eligible) { workspace in
             WorkspaceRootSetKey(paths: workspace.repoPaths)
@@ -6812,7 +7003,10 @@ class WorkspaceManagerViewModel: ObservableObject {
         return merged
     }
 
-    private nonisolated static func writeDuplicateCleanupBackup(for plans: [WorkspaceDuplicateGroupPlan]) throws -> URL {
+    private nonisolated static func writeDuplicateCleanupBackup(
+        for plans: [WorkspaceDuplicateGroupPlan],
+        directoryURL: URL? = nil
+    ) throws -> URL {
         let backup = WorkspaceDuplicateCleanupBackup(
             createdAt: Date(),
             groups: plans.map { plan in
@@ -6823,7 +7017,13 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
         )
 
-        let directory = try duplicateCleanupBackupDirectoryURL()
+        let directory: URL
+        if let directoryURL {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            directory = directoryURL
+        } else {
+            directory = try duplicateCleanupBackupDirectoryURL()
+        }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -6856,6 +7056,60 @@ class WorkspaceManagerViewModel: ObservableObject {
         // the backing workspace directory/file in place. Sidecar data such as Chats/
         // is not merged yet, so deleting the folder here would be destructive.
         await WorkspaceDiskWriter.shared.flush(url: workspaceFileURL(for: workspace))
+    }
+
+    /// Retires one duplicate through the authoritative document path without deleting its storage.
+    /// The caller removes the local projection only after this awaited save succeeds.
+    func persistDuplicateWorkspaceRetirement(
+        _ duplicate: WorkspaceModel,
+        into canonicalWorkspaceID: UUID
+    ) async throws {
+        guard let duplicateIndex = workspaceIndex(for: duplicate.id) else {
+            throw NSError(
+                domain: "WorkspaceDuplicateCleanup",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Duplicate workspace disappeared before retirement."]
+            )
+        }
+        let duplicateBeforeRetirement = workspaces[duplicateIndex]
+        guard duplicateBeforeRetirement == duplicate,
+              duplicateBeforeRetirement.consolidatedIntoWorkspaceID == nil,
+              !duplicateBeforeRetirement.isSystemWorkspace,
+              !duplicateBeforeRetirement.isEphemeral,
+              let canonical = workspace(withID: canonicalWorkspaceID),
+              WorkspaceRootSetKey(paths: duplicateBeforeRetirement.repoPaths)
+              == WorkspaceRootSetKey(paths: canonical.repoPaths)
+        else {
+            throw NSError(
+                domain: "WorkspaceDuplicateCleanup",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Duplicate workspace changed before retirement."]
+            )
+        }
+        var retired = duplicateBeforeRetirement
+        retired.isHiddenInMenus = true
+        retired.consolidatedIntoWorkspaceID = canonicalWorkspaceID
+        retired.dateModified = Date()
+        // Keep the local projection identical to the outbound document while the authority call is
+        // awaited; the presentation bridge uses it to suppress the exact self-echo.
+        workspaces[duplicateIndex] = retired
+        do {
+            let retiredURL = try await saveWorkspaceToFileAsync(
+                retired,
+                preserveDiskRepoPathsIfUnchangedSinceBaseline: false,
+                source: .duplicateCleanupRetireDuplicate
+            )
+            await WorkspaceDiskWriter.shared.flush(url: retiredURL)
+        } catch {
+            if domainWorkspaceAuthorityClient != nil {
+                await reconcileDuplicateCleanupAuthorityAfterFailedSave()
+            } else if let rollbackIndex = workspaceIndex(for: duplicate.id),
+                      workspaces[rollbackIndex] == retired
+            {
+                workspaces[rollbackIndex] = duplicateBeforeRetirement
+            }
+            throw error
+        }
     }
 
     nonisolated static func test_duplicateWorkspaceGroups(
@@ -7248,6 +7502,9 @@ class WorkspaceManagerViewModel: ObservableObject {
     func setWorkspaceHidden(_ workspace: WorkspaceModel, hidden: Bool) {
         guard let index = workspaces.firstIndex(where: { $0.id == workspace.id }) else { return }
         workspaces[index].isHiddenInMenus = hidden
+        if !hidden {
+            workspaces[index].consolidatedIntoWorkspaceID = nil
+        }
         workspaces[index].dateModified = Date()
 
         let workspaceID = workspace.id
@@ -7265,9 +7522,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                 }
             }
             workspaceToSave.isHiddenInMenus = hidden
+            if !hidden {
+                workspaceToSave.consolidatedIntoWorkspaceID = nil
+            }
             workspaceToSave.dateModified = max(workspaceToSave.dateModified, intentDateModified)
             if let currentIndex = workspaces.firstIndex(where: { $0.id == workspaceID }) {
                 workspaces[currentIndex].isHiddenInMenus = workspaceToSave.isHiddenInMenus
+                workspaces[currentIndex].consolidatedIntoWorkspaceID = workspaceToSave.consolidatedIntoWorkspaceID
                 workspaces[currentIndex].dateModified = workspaceToSave.dateModified
             }
             do {
@@ -7293,10 +7554,14 @@ class WorkspaceManagerViewModel: ObservableObject {
     func setWorkspaceHiddenFromSnapshot(_ workspace: WorkspaceModel, hidden: Bool) async throws -> WorkspaceModel {
         var updated = workspace
         updated.isHiddenInMenus = hidden
+        if !hidden {
+            updated.consolidatedIntoWorkspaceID = nil
+        }
         updated.dateModified = Date()
 
         if let index = workspaces.firstIndex(where: { $0.id == updated.id }) {
             workspaces[index].isHiddenInMenus = hidden
+            workspaces[index].consolidatedIntoWorkspaceID = updated.consolidatedIntoWorkspaceID
             workspaces[index].dateModified = updated.dateModified
         } else {
             workspaces.append(updated)
@@ -7317,9 +7582,15 @@ class WorkspaceManagerViewModel: ObservableObject {
         return updated
     }
 
-    func applyWorkspaceHiddenStateInMemory(workspaceID: UUID, hidden: Bool, dateModified: Date) {
+    func applyWorkspaceHiddenStateInMemory(
+        workspaceID: UUID,
+        hidden: Bool,
+        consolidatedIntoWorkspaceID: UUID?,
+        dateModified: Date
+    ) {
         guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
         workspaces[index].isHiddenInMenus = hidden
+        workspaces[index].consolidatedIntoWorkspaceID = consolidatedIntoWorkspaceID
         workspaces[index].dateModified = dateModified
     }
 
@@ -8841,25 +9112,68 @@ class WorkspaceManagerViewModel: ObservableObject {
             await pending.value
         }
 
+        // The pending same-window commit above is an intentional serialization point: if it landed,
+        // its revision is the baseline this explicit save supersedes. A cross-window projection can
+        // also land during that await without bumping the local dirty version, so retry from its
+        // projected model before pinning the baseline. No suspension separates this comparison from
+        // the pin.
+        let current = self.workspace(withID: workspace.id)
+        let requiresExactCleanupAttempt = source == .duplicateCleanupCanonicalMerge
+            || source == .duplicateCleanupRetireDuplicate
+        let staleCleanupAttemptError = NSError(
+            domain: "WorkspaceDuplicateCleanup",
+            code: 8,
+            userInfo: [NSLocalizedDescriptionKey: "Workspace changed before the exact cleanup save could begin."]
+        )
+        if requiresExactCleanupAttempt {
+            guard let current,
+                  current == workspace,
+                  domainWorkspaceRevisionsByID[workspace.id]?.workingRevision != nil,
+                  domainWorkspaceDigestsByID[workspace.id] != nil
+            else {
+                throw staleCleanupAttemptError
+            }
+        } else if let current, current != workspace {
+            guard remainingRetryCount > 0 else { throw CancellationError() }
+            return try await persistWorkspaceThroughDomainAuthority(
+                current,
+                targetURL: targetURL,
+                preserveDiskRepoPathsIfUnchangedSinceBaseline: preserveDiskRepoPathsIfUnchangedSinceBaseline,
+                source: source,
+                remainingRetryCount: remainingRetryCount - 1
+            )
+        }
+        // Every later suspension is fenced by this exact authority precondition. Reading the maps
+        // only at command submission would let a stale payload borrow a concurrent winner's newer
+        // revision and overwrite it.
+        let expectedWorkspaceRevision = domainWorkspaceRevisionsByID[
+            workspace.id
+        ]?.workingRevision
+        let expectedContentDigest = domainWorkspaceDigestsByID[workspace.id]
+
         let capturedStateVersion = stateVersionByWorkspaceID[workspace.id, default: 0]
         let lastSyncedRepoPaths = lastSyncedRepoPathsByWorkspaceID[workspace.id]
         #if DEBUG
             workspaceSaveAttemptCountByWorkspaceIDForTesting[workspace.id, default: 0] += 1
         #endif
 
-        let mergeResult = await Task.detached(priority: .utility) {
-            let diskWorkspace: WorkspaceModel? = if FileManager.default.fileExists(atPath: targetURL.path) {
-                try? Self.loadWorkspaceFromFile(at: targetURL, scheduleNormalizationWriteback: false)
-            } else {
-                nil
-            }
-            return Self.workspaceForSavePreservingDiskRepoPaths(
-                current: workspace,
-                diskWorkspace: diskWorkspace,
-                lastSyncedRepoPaths: lastSyncedRepoPaths,
-                modificationDate: workspace.dateModified
-            )
-        }.value
+        let mergeResult: (workspace: WorkspaceModel, preservedDiskRepoPaths: Bool) = if preserveDiskRepoPathsIfUnchangedSinceBaseline {
+            await Task.detached(priority: .utility) {
+                let diskWorkspace: WorkspaceModel? = if FileManager.default.fileExists(atPath: targetURL.path) {
+                    try? Self.loadWorkspaceFromFile(at: targetURL, scheduleNormalizationWriteback: false)
+                } else {
+                    nil
+                }
+                return Self.workspaceForSavePreservingDiskRepoPaths(
+                    current: workspace,
+                    diskWorkspace: diskWorkspace,
+                    lastSyncedRepoPaths: lastSyncedRepoPaths,
+                    modificationDate: workspace.dateModified
+                )
+            }.value
+        } else {
+            (workspace, false)
+        }
         let workspaceToSave = mergeResult.workspace
         guard self.workspace(withID: workspaceToSave.id)?.isEphemeral != true else {
             throw WorkspaceDirectWriteError.ephemeralWorkspace
@@ -8875,6 +9189,11 @@ class WorkspaceManagerViewModel: ObservableObject {
         try Task.checkCancellation()
         guard self.workspace(withID: workspace.id)?.isEphemeral != true else {
             throw WorkspaceDirectWriteError.ephemeralWorkspace
+        }
+        if requiresExactCleanupAttempt {
+            guard let current = self.workspace(withID: workspace.id), current == workspace else {
+                throw staleCleanupAttemptError
+            }
         }
         let latestStateVersion = stateVersionByWorkspaceID[workspace.id, default: 0]
         if latestStateVersion != capturedStateVersion,
@@ -8900,26 +9219,38 @@ class WorkspaceManagerViewModel: ObservableObject {
             )
         }
 
-        let snapshot = await domainWorkspaceAuthorityClient.snapshot()
-        let exists = snapshot.workspaces.contains {
-            $0.document.workspaceID == workspaceToSave.id
-        }
-        let outcome: DomainCommandOutcome = if exists {
-            try await domainWorkspaceAuthorityClient.save(
+        let outcome: DomainCommandOutcome
+        if requiresExactCleanupAttempt {
+            // Exact cleanup attempts established presence and pinned CAS above. Avoid the ordinary
+            // create-or-save discovery suspension: a local edit could land during it, and a
+            // concurrent deletion must conflict rather than recreate the retired record.
+            outcome = try await domainWorkspaceAuthorityClient.save(
                 workspaceToSave,
                 fileURL: targetURL,
-                expectedWorkspaceRevision: domainWorkspaceRevisionsByID[
-                    workspaceToSave.id
-                ]?.workingRevision,
-                expectedContentDigest: domainWorkspaceDigestsByID[workspaceToSave.id],
+                expectedWorkspaceRevision: expectedWorkspaceRevision,
+                expectedContentDigest: expectedContentDigest,
                 operationIDs: .init()
             )
         } else {
-            try await domainWorkspaceAuthorityClient.create(
-                workspaceToSave,
-                fileURL: targetURL,
-                operationID: UUID()
-            )
+            let snapshot = await domainWorkspaceAuthorityClient.snapshot()
+            let exists = snapshot.workspaces.contains {
+                $0.document.workspaceID == workspaceToSave.id
+            }
+            outcome = if exists {
+                try await domainWorkspaceAuthorityClient.save(
+                    workspaceToSave,
+                    fileURL: targetURL,
+                    expectedWorkspaceRevision: expectedWorkspaceRevision,
+                    expectedContentDigest: expectedContentDigest,
+                    operationIDs: .init()
+                )
+            } else {
+                try await domainWorkspaceAuthorityClient.create(
+                    workspaceToSave,
+                    fileURL: targetURL,
+                    operationID: UUID()
+                )
+            }
         }
         applyDomainAuthorityOutcome(outcome, workspaceID: workspaceToSave.id)
         guard Self.isSuccessfulDomainOutcome(outcome) else {
