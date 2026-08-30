@@ -886,6 +886,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minHeight: buttonMinHeight)
                 .hoverTooltip("Install /rp-investigate and /rp-build slash skills")
+                .accessibilityLabel("Install /rp-investigate and /rp-build slash skills")
 
                 // Copy JSON (minimal)
                 Button(action: {
@@ -897,6 +898,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minWidth: buttonMinHeight, minHeight: buttonMinHeight)
                 .hoverTooltip("Copy MCP JSON configuration")
+                .accessibilityLabel("Copy MCP JSON configuration")
             }
 
             Text("If the integration doesn't show up right away, restart the client app after installing the server.")

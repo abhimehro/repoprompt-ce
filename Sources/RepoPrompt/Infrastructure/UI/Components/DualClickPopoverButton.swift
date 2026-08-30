@@ -72,6 +72,7 @@ struct DualActionButton<Content: View>: View {
             // .applyKeyboardShortcut(popoverShortcut)
             .frame(width: 24)
             .hoverTooltip("\(label) Settings")
+            .accessibilityLabel("\(label) Settings")
         }
         .frame(width: 136, height: 32)
         .background(backgroundForState)
