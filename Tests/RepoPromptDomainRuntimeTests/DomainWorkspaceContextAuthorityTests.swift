@@ -588,6 +588,68 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.workspaceFile), changed.documentBytes)
     }
 
+    func testRevisionFencedSaveOnlyRecoveryPreservesNewerWorkingDocumentAndReconstructsFromDisk() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let runtime = fixture.runtime()
+        try await runtime.start()
+
+        let recoveryDocument = try fixture.document(prompt: "recovery removal")
+        let recoveryWorking = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(recoveryDocument)
+        ))
+        XCTAssertEqual(recoveryWorking.disposition, .applied)
+        XCTAssertEqual(recoveryWorking.after?.dirtyRevision, 1)
+
+        let successorDocument = try fixture.document(prompt: "newer caller")
+        let successorWorking = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: recoveryWorking.after?.workingRevision,
+            origin: .standalone,
+            command: .replaceWorkingDocument(successorDocument)
+        ))
+        XCTAssertEqual(successorWorking.disposition, .applied)
+        XCTAssertEqual(successorWorking.after?.dirtyRevision, 2)
+
+        let staleSave = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: recoveryWorking.after?.workingRevision,
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: fixture.workspaceID)
+        ))
+        XCTAssertEqual(staleSave.disposition, .conflict)
+        XCTAssertEqual(staleSave.errorCode, .stateConflict)
+        let afterConflictValue = await runtime.workspaceStore.canonicalWorkspaceSnapshot(fixture.workspaceID)
+        let afterConflict = try XCTUnwrap(afterConflictValue)
+        XCTAssertEqual(afterConflict.document.documentBytes, successorDocument.documentBytes)
+        XCTAssertEqual(afterConflict.revisions.dirtyRevision, 2)
+
+        let exactSave = await runtime.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: successorWorking.after?.workingRevision,
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: fixture.workspaceID)
+        ))
+        XCTAssertEqual(exactSave.disposition, .applied)
+        XCTAssertEqual(exactSave.after, .init(
+            workingRevision: 2,
+            savedRevision: 2,
+            dirtyRevision: nil
+        ))
+        XCTAssertEqual(try Data(contentsOf: fixture.workspaceFile), successorDocument.documentBytes)
+        _ = await runtime.shutdown()
+
+        let restarted = fixture.runtime(generation: 2)
+        try await restarted.start()
+        let reconstructedValue = await restarted.workspaceStore.canonicalWorkspaceSnapshot(fixture.workspaceID)
+        let reconstructed = try XCTUnwrap(reconstructedValue)
+        XCTAssertEqual(reconstructed.document.documentBytes, successorDocument.documentBytes)
+        XCTAssertEqual(reconstructed.revisions.dirtyRevision, nil)
+    }
+
     func testOperationDeduplicationCollisionAndWriterCASAreDeterministic() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }

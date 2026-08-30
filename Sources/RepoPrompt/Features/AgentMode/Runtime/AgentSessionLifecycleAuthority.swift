@@ -7,6 +7,14 @@ import OSLog
 /// Callers may own presentation, persistence, provider, or MCP mechanics, but none of
 /// those layers may independently retarget a live Agent operation. They consume the
 /// immutable identities and typed decisions produced here.
+struct AgentProvisionalAdmissionIdentity: Equatable, Hashable {
+    let recoveryID: UUID
+    let workspaceID: UUID
+    let tabID: UUID
+    let sessionID: UUID
+    let replacementTabID: UUID
+}
+
 @MainActor
 final class AgentSessionLifecycleAuthority {
     struct Identity: Equatable, Hashable {

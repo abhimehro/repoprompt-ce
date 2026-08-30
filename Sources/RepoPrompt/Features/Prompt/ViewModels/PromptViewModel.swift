@@ -138,6 +138,13 @@ class PromptViewModel: ObservableObject {
         let stashedTabs: [StashedTab]
     }
 
+    struct ProvisionalAgentAdmissionProjectionRemoval {
+        fileprivate let composeTabs: [ComposeTabState]
+        fileprivate let activeComposeTabID: UUID?
+        fileprivate let dirtyTabIDs: Set<UUID>
+        fileprivate let sidebarWorkspaceSnapshot: SidebarWorkspaceSnapshot?
+    }
+
     @Published private(set) var currentComposeTabs: [ComposeTabState] = []
     @Published private(set) var sidebarWorkspaceSnapshot: SidebarWorkspaceSnapshot?
     @Published private(set) var activeComposeTabID: UUID? {
@@ -2610,6 +2617,117 @@ class PromptViewModel: ObservableObject {
             promptText = activeTab.promptText
         }
     }
+
+    @MainActor
+    func prepareProvisionalAgentAdmissionProjectionRemoval(
+        _ identity: AgentProvisionalAdmissionIdentity
+    ) -> ProvisionalAgentAdmissionProjectionRemoval? {
+        guard let current = Self.provisionalAgentAdmissionTabsRemoval(
+            composeTabs: currentComposeTabs,
+            stashedTabs: currentStashedTabs,
+            activeComposeTabID: activeComposeTabID,
+            identity: identity
+        ) else { return nil }
+
+        var recoveredSidebar = sidebarWorkspaceSnapshot
+        if let snapshot = sidebarWorkspaceSnapshot,
+           snapshot.workspaceID == identity.workspaceID
+        {
+            guard let sidebar = Self.provisionalAgentAdmissionTabsRemoval(
+                composeTabs: snapshot.composeTabs,
+                stashedTabs: snapshot.stashedTabs,
+                activeComposeTabID: nil,
+                identity: identity
+            ) else { return nil }
+            recoveredSidebar = SidebarWorkspaceSnapshot(
+                workspaceID: snapshot.workspaceID,
+                composeTabs: sidebar.composeTabs,
+                stashedTabs: snapshot.stashedTabs
+            )
+        }
+
+        return ProvisionalAgentAdmissionProjectionRemoval(
+            composeTabs: current.composeTabs,
+            activeComposeTabID: current.activeComposeTabID,
+            dirtyTabIDs: dirtyTabIDs.subtracting([identity.tabID]),
+            sidebarWorkspaceSnapshot: recoveredSidebar
+        )
+    }
+
+    @MainActor
+    func applyProvisionalAgentAdmissionProjectionRemoval(
+        _ removal: ProvisionalAgentAdmissionProjectionRemoval
+    ) {
+        currentComposeTabs = removal.composeTabs
+        activeComposeTabID = removal.activeComposeTabID
+        dirtyTabIDs = removal.dirtyTabIDs
+        sidebarWorkspaceSnapshot = removal.sidebarWorkspaceSnapshot
+    }
+
+    private struct ProvisionalAgentAdmissionTabsRemoval {
+        let composeTabs: [ComposeTabState]
+        let activeComposeTabID: UUID?
+    }
+
+    private static func provisionalAgentAdmissionTabsRemoval(
+        composeTabs: [ComposeTabState],
+        stashedTabs: [StashedTab],
+        activeComposeTabID: UUID?,
+        identity: AgentProvisionalAdmissionIdentity
+    ) -> ProvisionalAgentAdmissionTabsRemoval? {
+        let matchingIndices = composeTabs.indices.filter {
+            composeTabs[$0].id == identity.tabID
+        }
+        guard matchingIndices.count <= 1,
+              !stashedTabs.contains(where: {
+                  $0.tab.id == identity.tabID || $0.tab.activeAgentSessionID == identity.sessionID
+              })
+        else { return nil }
+
+        guard let tabIndex = matchingIndices.first else {
+            guard !composeTabs.contains(where: {
+                $0.activeAgentSessionID == identity.sessionID
+            }) else { return nil }
+            return ProvisionalAgentAdmissionTabsRemoval(
+                composeTabs: composeTabs,
+                activeComposeTabID: activeComposeTabID
+            )
+        }
+        guard composeTabs[tabIndex].activeAgentSessionID == identity.sessionID,
+              !composeTabs.enumerated().contains(where: { index, tab in
+                  index != tabIndex && tab.activeAgentSessionID == identity.sessionID
+              })
+        else { return nil }
+
+        var recoveredTabs = composeTabs
+        let removedWasActive = activeComposeTabID == identity.tabID
+        recoveredTabs.remove(at: tabIndex)
+        let insertedReplacement = recoveredTabs.isEmpty
+        if insertedReplacement {
+            recoveredTabs = [ComposeTabState(id: identity.replacementTabID)]
+        }
+        let recoveredActiveTabID = if removedWasActive || insertedReplacement {
+            recoveredTabs[min(tabIndex, recoveredTabs.count - 1)].id
+        } else {
+            activeComposeTabID
+        }
+        return ProvisionalAgentAdmissionTabsRemoval(
+            composeTabs: recoveredTabs,
+            activeComposeTabID: recoveredActiveTabID
+        )
+    }
+
+    #if DEBUG
+        @MainActor
+        func setCurrentComposeTabsForAgentAdmissionRecoveryTesting(
+            _ composeTabs: [ComposeTabState],
+            activeComposeTabID: UUID?
+        ) {
+            currentComposeTabs = composeTabs
+            self.activeComposeTabID = activeComposeTabID
+            currentStashedTabs = []
+        }
+    #endif
 
     @MainActor
     private func snapshotActiveComposeTabIfNeeded(
