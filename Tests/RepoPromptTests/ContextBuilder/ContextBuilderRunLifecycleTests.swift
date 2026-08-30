@@ -341,7 +341,7 @@ final class ContextBuilderRunLifecycleTests: XCTestCase {
         let result = await window.mcpServer.commitContextBuilderTabContext(
             connectionID: connectionID,
             expectedRunID: runID,
-            isStillCurrent: { true },
+            isStillCurrent: { @MainActor in true },
             promptFallback: "Discovery response"
         )
         let committed = try XCTUnwrap(result.committedTab)
