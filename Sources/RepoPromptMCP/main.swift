@@ -2553,8 +2553,8 @@ private func parseToolTimeoutSeconds(_ raw: String) -> Double? {
 }
 
 /// Parses command line arguments to determine CLI mode
-func parseCLIMode() -> CLIMode {
-    let args = CommandLine.arguments.dropFirst() // Skip executable name
+func parseCLIMode(arguments: [String] = CommandLine.arguments) -> CLIMode {
+    let args = arguments.dropFirst() // Skip executable name
     var hasNonBackendUserArgs = false
     if args.first == "policy" {
         return .policyAdministration(Array(args.dropFirst()))
@@ -2797,12 +2797,14 @@ func parseCLIMode() -> CLIMode {
         case "--tab", "-t":
             i = args.index(after: i)
             if i < args.endIndex {
+                interactiveOptions.tabID = args[i]
                 execOptions.tabID = args[i]
             }
 
         case "--context-id":
             i = args.index(after: i)
             if i < args.endIndex {
+                interactiveOptions.contextID = args[i]
                 execOptions.contextID = args[i]
             }
 
