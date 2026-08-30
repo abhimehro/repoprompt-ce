@@ -51,11 +51,13 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         XCTAssertEqual(probedPath, launch.command)
     }
 
-    func testBareCursorAgentFallsBackToVerifiedAgentEntrypoint() async throws {
+    func testBareCursorAgentDoesNotExecuteGenericAgentEntrypoint() async throws {
         let directory = try makeTemporaryDirectory()
-        let executable = try makeExecutable(
+        let probeMarker = directory.appendingPathComponent("generic-agent-probed")
+        _ = try makeExecutable(
             named: "agent",
             in: directory,
+            marker: probeMarker,
             output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
         )
         var environment = ProcessInfo.processInfo.environment
@@ -73,14 +75,19 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         )
 
         let support = try await resolver.probeSupport(for: config)
-        let launch = try resolver.resolvedLaunch(for: config)
 
-        XCTAssertEqual(support, .supported)
-        XCTAssertEqual(launch.command, try canonicalExecutablePath(executable))
-        XCTAssertEqual(launch.arguments, ["--approve-mcps", "acp"])
+        guard case .unsupported = support else {
+            return XCTFail("Expected default cursor-agent configuration to ignore a generic agent executable")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: probeMarker.path))
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config)) { error in
+            guard case CursorACPLaunchResolutionError.environmentDiscoveryRequired = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
     }
 
-    func testBareCursorAgentFallsBackWhenLegacyEntrypointDoesNotSupportACP() async throws {
+    func testBareCursorAgentDoesNotFallBackWhenCursorAgentLacksACP() async throws {
         let directory = try makeTemporaryDirectory()
         let legacyProbeMarker = directory.appendingPathComponent("legacy-agent-probed")
         let currentProbeMarker = directory.appendingPathComponent("current-agent-probed")
@@ -90,7 +97,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
             marker: legacyProbeMarker,
             output: "Usage: cursor-agent [OPTIONS]"
         )
-        let currentAgent = try makeExecutable(
+        _ = try makeExecutable(
             named: "agent",
             in: directory,
             marker: currentProbeMarker,
@@ -111,12 +118,12 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         )
 
         let support = try await resolver.probeSupport(for: config)
-        let launch = try resolver.resolvedLaunch(for: config)
 
-        XCTAssertEqual(support, .supported)
-        XCTAssertEqual(launch.command, try canonicalExecutablePath(currentAgent))
+        guard case .unsupported = support else {
+            return XCTFail("Expected cursor-agent without ACP support to remain unsupported")
+        }
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacyProbeMarker.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: currentProbeMarker.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: currentProbeMarker.path))
     }
 
     func testBareCursorAgentPrefersLegacyEntrypointWhenBothNamesExist() async throws {
@@ -151,7 +158,41 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: genericAgentMarker.path))
     }
 
-    func testBareCursorAgentRejectsGenericAgentWithoutCursorIdentityProof() async throws {
+    func testCapabilityProbePropagatesEnvironmentWithoutCursorCredentials() async throws {
+        let directory = try makeTemporaryDirectory()
+        let environmentRecord = directory.appendingPathComponent("probe-environment")
+        _ = try makeExecutable(
+            named: "cursor-agent",
+            in: directory,
+            environmentRecord: environmentRecord
+        )
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = directory.path
+        environment["SHELL"] = "/bin/false"
+        environment["RPCE_PROBE_SENTINEL"] = "present"
+        environment["CURSOR_API_KEY"] = "fake-api-key"
+        environment["CURSOR_AUTH_TOKEN"] = "fake-auth-token"
+        let testEnvironment = environment
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in testEnvironment },
+            supplementalPathProvider: { $0 }
+        )
+        let config = CursorAgentConfig(
+            commandName: "cursor-agent",
+            additionalPathHints: [],
+            includeRepoPromptMCPServer: false
+        )
+
+        let support = try await resolver.probeSupport(for: config)
+
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(
+            try String(contentsOf: environmentRecord, encoding: .utf8),
+            "present|unset|unset"
+        )
+    }
+
+    func testExplicitBareAgentRejectsGenericAgentWithoutCursorIdentityProof() async throws {
         let directory = try makeTemporaryDirectory()
         _ = try makeExecutable(
             named: "agent",
@@ -167,7 +208,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
             supplementalPathProvider: { $0 }
         )
         let config = CursorAgentConfig(
-            commandName: "cursor-agent",
+            commandName: "agent",
             additionalPathHints: [],
             includeRepoPromptMCPServer: false
         )
@@ -207,6 +248,31 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         let support = try await resolver.probeSupport(for: config)
         XCTAssertEqual(support, .supported)
         XCTAssertEqual(try resolver.resolvedLaunch(for: config).command, try canonicalExecutablePath(executable))
+    }
+
+    func testExplicitBareAgentWorksWithStrictCursorACPProof() async throws {
+        let directory = try makeTemporaryDirectory()
+        let executable = try makeExecutable(
+            named: "agent",
+            in: directory,
+            output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
+        )
+        let environment = [
+            "PATH": directory.path,
+            "SHELL": "/bin/false"
+        ]
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in environment },
+            supplementalPathProvider: { $0 }
+        )
+        let config = CursorAgentConfig(commandName: "agent", additionalPathHints: [])
+
+        let support = try await resolver.probeSupport(for: config)
+        let launch = try resolver.resolvedLaunch(for: config)
+
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(launch.command, try canonicalExecutablePath(executable))
+        XCTAssertEqual(launch.arguments, ["--approve-mcps", "acp"])
     }
 
     func testLaunchConfigurationLeasesCursorApprovalForModernSessionMCPInjection() async throws {
@@ -620,17 +686,43 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         XCTAssertEqual(launch.command, try canonicalExecutablePath(trusted))
     }
 
-    func testSymlinkIsCanonicalizedAndCanonicalWrapperBasenameIsAllowed() throws {
+    func testSymlinkIsCanonicalizedAndCanonicalWrapperBasenameIsAllowedAfterStrictProbe() async throws {
         let directory = try makeTemporaryDirectory()
-        let target = try makeExecutable(named: "cursor-agent-wrapper", in: directory)
+        let target = try makeExecutable(
+            named: "cursor-agent-wrapper",
+            in: directory,
+            output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
+        )
         let link = directory.appendingPathComponent("cursor-agent")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        let resolver = CursorACPLaunchResolver()
+        let config = CursorAgentConfig(commandName: link.path, additionalPathHints: [])
 
-        let launch = try CursorACPLaunchResolver().resolvedLaunch(
-            for: CursorAgentConfig(commandName: link.path, additionalPathHints: [])
-        )
+        let support = try await resolver.probeSupport(for: config)
+        let launch = try resolver.resolvedLaunch(for: config)
 
+        XCTAssertEqual(support, .supported)
         XCTAssertEqual(launch.command, try canonicalExecutablePath(target))
+    }
+
+    func testCursorAgentSymlinkToGenericAgentCannotDowngradeCursorProof() async throws {
+        let directory = try makeTemporaryDirectory()
+        let target = try makeExecutable(named: "agent", in: directory, output: "ACP support")
+        let link = directory.appendingPathComponent("cursor-agent")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        let resolver = CursorACPLaunchResolver()
+        let config = CursorAgentConfig(commandName: link.path, additionalPathHints: [])
+
+        let support = try await resolver.probeSupport(for: config)
+
+        guard case .unsupported = support else {
+            return XCTFail("Expected a generic canonical target to require strict Cursor ACP proof")
+        }
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config)) { error in
+            guard case CursorACPLaunchResolutionError.environmentDiscoveryRequired = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
     }
 
     func testSymlinkWhoseCanonicalBasenameIsCursorIsRejected() throws {
@@ -953,6 +1045,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         named name: String,
         in directory: URL,
         marker: URL? = nil,
+        environmentRecord: URL? = nil,
         output: String = "Cursor Agent ACP support",
         exitStatus: Int32 = 0,
         sleepSeconds: Int? = nil
@@ -961,6 +1054,11 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         var lines = ["#!/bin/sh"]
         if let marker {
             lines.append("printf '%s' \"$0\" > '\(marker.path)'")
+        }
+        if let environmentRecord {
+            lines.append(
+                "printf '%s|%s|%s' \"${RPCE_PROBE_SENTINEL-unset}\" \"${CURSOR_API_KEY-unset}\" \"${CURSOR_AUTH_TOKEN-unset}\" > '\(environmentRecord.path)'"
+            )
         }
         if let sleepSeconds {
             lines.append("exec /bin/sleep \(sleepSeconds)")

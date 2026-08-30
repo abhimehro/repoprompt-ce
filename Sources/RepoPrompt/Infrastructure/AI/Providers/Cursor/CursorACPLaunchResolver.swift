@@ -125,6 +125,9 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         }
 
         let launch = try resolveExplicitLaunch(for: config)
+        if launch.candidate == .agentACP {
+            throw CursorACPLaunchResolutionError.environmentDiscoveryRequired(configuredCommand)
+        }
         cache(launch, key: key)
         return launch
     }
@@ -147,6 +150,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                 try Task.checkCancellation()
                 let processConfig = CLIProcessConfiguration(
                     command: launch.command,
+                    environment: launch.environment,
                     additionalPaths: [],
                     enableDebugLogging: config.enableDebugLogging,
                     shellLookupMode: .fallbackOnly
@@ -158,6 +162,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                         stdin: nil,
                         outputMode: .none,
                         timeout: 10,
+                        additionalRemovedKeys: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
                         cancelChildOnTaskCancellation: true
                     )
                 } catch is CancellationError {
@@ -289,9 +294,8 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         preserveValidationError: Bool = false
     ) throws -> CursorACPResolvedLaunch {
         let entryBasename = (entryPath as NSString).lastPathComponent.lowercased()
-        let candidate = CursorACPLaunchCandidate.allCases.first { $0.command.lowercased() == entryBasename }
         guard entryPath.hasPrefix("/"),
-              let candidate
+              CursorACPLaunchCandidate.allCases.contains(where: { $0.command.lowercased() == entryBasename })
         else {
             throw CursorACPLaunchResolutionError.exactPathNotFound(configuredCommand)
         }
@@ -310,6 +314,10 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         if (identity.canonicalPath as NSString).lastPathComponent.caseInsensitiveCompare("cursor") == .orderedSame {
             throw CursorACPLaunchResolutionError.unsafeCanonicalBasename(identity.canonicalPath)
         }
+        let canonicalBasename = (identity.canonicalPath as NSString).lastPathComponent
+        let candidate: CursorACPLaunchCandidate = canonicalBasename.caseInsensitiveCompare(
+            CursorACPLaunchCandidate.cursorAgentACP.command
+        ) == .orderedSame ? .cursorAgentACP : .agentACP
 
         return CursorACPResolvedLaunch(
             candidate: candidate,
@@ -353,7 +361,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         let configuredBasename = (configuredCommand as NSString).lastPathComponent.lowercased()
         let launchCandidates: [CursorACPLaunchCandidate] = configuredBasename == CursorACPLaunchCandidate.agentACP.command
             ? [.agentACP]
-            : [.cursorAgentACP, .agentACP]
+            : [.cursorAgentACP]
         for launchCandidate in launchCandidates {
             append(
                 CommandPathResolver.resolve(
