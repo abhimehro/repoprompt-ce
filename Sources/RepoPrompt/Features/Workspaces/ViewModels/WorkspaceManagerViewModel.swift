@@ -6598,11 +6598,55 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
             guard !commitDuplicates.isEmpty else { continue }
 
-            let merged = Self.mergedCanonicalWorkspace(
-                canonical: workspaces[canonicalIndex],
-                duplicates: commitDuplicates
-            )
             let canonicalBeforeMerge = workspaces[canonicalIndex]
+            let canonicalDirectory = workspaceFileURL(for: canonicalBeforeMerge)
+                .deletingLastPathComponent()
+            var sidecarReadyDuplicates: [WorkspaceModel] = []
+            for duplicate in commitDuplicates {
+                let duplicateDirectory = workspaceFileURL(for: duplicate)
+                    .deletingLastPathComponent()
+                do {
+                    try await AgentSessionDataService.shared.rehomeWorkspaceSessions(
+                        from: duplicateDirectory,
+                        to: canonicalDirectory,
+                        canonicalWorkspaceID: canonicalBeforeMerge.id
+                    )
+                    try await ChatDataService.rehomeWorkspaceSessions(
+                        from: duplicateDirectory,
+                        to: canonicalDirectory,
+                        canonicalWorkspaceID: canonicalBeforeMerge.id
+                    )
+                    sidecarReadyDuplicates.append(duplicate)
+                } catch {
+                    skipped.append(
+                        WorkspaceDuplicateCleanupSkippedItem(
+                            workspaceID: duplicate.id,
+                            workspaceName: duplicate.name,
+                            windowID: nil,
+                            reason: "sidecar_migration_failed: \(error.localizedDescription)"
+                        )
+                    )
+                }
+            }
+            guard !sidecarReadyDuplicates.isEmpty else { continue }
+            guard workspace(withID: canonicalBeforeMerge.id) == canonicalBeforeMerge else {
+                for duplicate in sidecarReadyDuplicates {
+                    skipped.append(
+                        WorkspaceDuplicateCleanupSkippedItem(
+                            workspaceID: duplicate.id,
+                            workspaceName: duplicate.name,
+                            windowID: nil,
+                            reason: "canonical_changed"
+                        )
+                    )
+                }
+                continue
+            }
+
+            let merged = Self.mergedCanonicalWorkspace(
+                canonical: canonicalBeforeMerge,
+                duplicates: sidecarReadyDuplicates
+            )
             // `saveWorkspaceToFileAsync` suppresses the originating window's authority echo using
             // this manager's current model. Publish the exact outbound value before the await so the
             // bridge cannot cache the old model under the new authoritative digest.
@@ -6610,7 +6654,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
             do {
                 await WorkspaceDiskWriter.shared.flush(url: workspaceFileURL(for: canonicalBeforeMerge))
-                for duplicate in commitDuplicates {
+                for duplicate in sidecarReadyDuplicates {
                     await WorkspaceDiskWriter.shared.flush(url: workspaceFileURL(for: duplicate))
                 }
                 guard workspace(withID: merged.id) == merged else {
@@ -6630,7 +6674,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 {
                     workspaces[rollbackIndex] = canonicalBeforeMerge
                 }
-                for duplicate in commitDuplicates {
+                for duplicate in sidecarReadyDuplicates {
                     skipped.append(
                         WorkspaceDuplicateCleanupSkippedItem(
                             workspaceID: duplicate.id,
@@ -6644,7 +6688,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
 
             guard workspaceIndex(for: plan.canonical.id) != nil else {
-                for duplicate in commitDuplicates {
+                for duplicate in sidecarReadyDuplicates {
                     skipped.append(
                         WorkspaceDuplicateCleanupSkippedItem(
                             workspaceID: duplicate.id,
@@ -6657,7 +6701,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 continue
             }
             var retiredInGroup: Set<UUID> = []
-            for duplicate in commitDuplicates {
+            for duplicate in sidecarReadyDuplicates {
                 if domainWorkspaceAuthorityClient != nil {
                     do {
                         try await persistDuplicateWorkspaceRetirement(
@@ -7055,8 +7099,8 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     private func preserveDuplicateWorkspaceStorage(_ workspace: WorkspaceModel) async {
         // Phase 2 removes duplicate records from the index, but intentionally keeps
-        // the backing workspace directory/file in place. Sidecar data such as Chats/
-        // is not merged yet, so deleting the folder here would be destructive.
+        // the backing workspace directory/file in place. Rehomed session sidecars are copies;
+        // retaining the originals keeps retirement recoverable without a destructive move.
         await WorkspaceDiskWriter.shared.flush(url: workspaceFileURL(for: workspace))
     }
 

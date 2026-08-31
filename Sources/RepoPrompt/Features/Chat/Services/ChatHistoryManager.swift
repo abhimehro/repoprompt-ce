@@ -82,6 +82,52 @@ actor ChatDataService {
 
     private static let fileSaveQueue = DispatchQueue(label: "com.repoprompt.chatDataServiceFileSaveQueue")
 
+    /// Copies a retired workspace's Oracle chats into canonical storage without changing the
+    /// source. This deliberately enumerates the directory directly: `listChatSessions` enforces the
+    /// user's history limit and may delete old files, which must never happen during consolidation.
+    nonisolated static func rehomeWorkspaceSessions(
+        from sourceWorkspaceDirectory: URL,
+        to destinationWorkspaceDirectory: URL,
+        canonicalWorkspaceID: UUID
+    ) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            fileSaveQueue.async {
+                do {
+                    let sourceFolder = sourceWorkspaceDirectory
+                        .appendingPathComponent("Chats", isDirectory: true)
+                    let destinationFolder = destinationWorkspaceDirectory
+                        .appendingPathComponent("Chats", isDirectory: true)
+                    let sourceFiles = try WorkspaceSessionSidecarMigration.sessionFileURLs(
+                        in: sourceFolder,
+                        prefix: "ChatSession-"
+                    )
+                    guard !sourceFiles.isEmpty else {
+                        continuation.resume(returning: ())
+                        return
+                    }
+                    let prepared = try WorkspaceSessionSidecarMigration.prepareCopies(
+                        from: sourceFolder,
+                        to: destinationFolder,
+                        filenamePrefix: "ChatSession-",
+                        canonicalWorkspaceID: canonicalWorkspaceID
+                    )
+                    if !prepared.isEmpty {
+                        try FileManager.default.createDirectory(
+                            at: destinationFolder,
+                            withIntermediateDirectories: true
+                        )
+                        for copy in prepared {
+                            try WorkspaceSessionSidecarMigration.write(copy)
+                        }
+                    }
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Lightweight decode helpers
 
     private struct ChatSessionHeader: Decodable {

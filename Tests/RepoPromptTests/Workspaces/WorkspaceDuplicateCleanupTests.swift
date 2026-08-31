@@ -38,6 +38,9 @@ import XCTest
 
         func testAuthoritativeRetirementSurvivesReloadPreservesSidecarsAndUnhideRestoresDetection() async throws {
             let mergedPromptID = UUID()
+            let duplicateTabID = UUID()
+            let duplicateAgentSessionID = UUID()
+            let duplicateChatSessionID = UUID()
             let canonical = WorkspaceModel(
                 id: UUID(),
                 dateModified: Date(timeIntervalSince1970: 200),
@@ -52,7 +55,16 @@ import XCTest
                 repoPaths: canonical.repoPaths,
                 lastUsed: Date(timeIntervalSince1970: 100),
                 selectedMetaPromptIDs: [mergedPromptID],
-                isHiddenInMenus: true
+                isHiddenInMenus: true,
+                composeTabs: [
+                    ComposeTabState(
+                        id: duplicateTabID,
+                        name: "Recovered history",
+                        activeChatSessionID: duplicateChatSessionID,
+                        activeAgentSessionID: duplicateAgentSessionID
+                    )
+                ],
+                activeComposeTabID: duplicateTabID
             )
             try writeWorkspace(canonical)
             try writeWorkspace(duplicate)
@@ -60,9 +72,35 @@ import XCTest
 
             let duplicateDirectory = workspaceFileURL(for: duplicate).deletingLastPathComponent()
             let chatsDirectory = duplicateDirectory.appendingPathComponent("Chats", isDirectory: true)
-            let sidecarURL = chatsDirectory.appendingPathComponent("preserved-chat.json")
+            let agentSessionsDirectory = duplicateDirectory.appendingPathComponent("AgentSessions", isDirectory: true)
+            let chatSidecarURL = chatsDirectory.appendingPathComponent(
+                "ChatSession-\(duplicateChatSessionID.uuidString).json"
+            )
+            let agentSidecarURL = agentSessionsDirectory.appendingPathComponent(
+                "AgentSession-\(duplicateAgentSessionID.uuidString).json"
+            )
             try FileManager.default.createDirectory(at: chatsDirectory, withIntermediateDirectories: true)
-            try Data("preserve me".utf8).write(to: sidecarURL)
+            try FileManager.default.createDirectory(at: agentSessionsDirectory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(ChatSession(
+                id: duplicateChatSessionID,
+                workspaceID: duplicate.id,
+                composeTabID: duplicateTabID,
+                name: "Recovered Oracle history",
+                messages: [
+                    StoredMessage(
+                        isUser: false,
+                        rawText: "Recovered transcript content",
+                        sequenceIndex: 0
+                    )
+                ]
+            )).write(to: chatSidecarURL, options: .atomic)
+            try JSONEncoder().encode(AgentSession(
+                id: duplicateAgentSessionID,
+                workspaceID: duplicate.id,
+                composeTabID: duplicateTabID,
+                name: "Recovered Agent history",
+                itemCount: 7
+            )).write(to: agentSidecarURL, options: .atomic)
 
             let runtime = MCPDomainRuntime(configuration: .init(
                 mode: .app,
@@ -182,6 +220,34 @@ import XCTest
                 in: runtime
             )
             XCTAssertTrue(authoritativeCanonical.selectedMetaPromptIDs.contains(mergedPromptID))
+            let mergedTab = try XCTUnwrap(authoritativeCanonical.composeTabs.first {
+                $0.id == duplicateTabID
+            })
+            XCTAssertEqual(mergedTab.activeAgentSessionID, duplicateAgentSessionID)
+            XCTAssertEqual(mergedTab.activeChatSessionID, duplicateChatSessionID)
+
+            let canonicalDirectory = workspaceFileURL(for: canonical).deletingLastPathComponent()
+            let canonicalChatSidecarURL = canonicalDirectory
+                .appendingPathComponent("Chats", isDirectory: true)
+                .appendingPathComponent(chatSidecarURL.lastPathComponent)
+            let canonicalAgentSidecarURL = canonicalDirectory
+                .appendingPathComponent("AgentSessions", isDirectory: true)
+                .appendingPathComponent(agentSidecarURL.lastPathComponent)
+            let migratedChat = try JSONDecoder().decode(
+                ChatSession.self,
+                from: Data(contentsOf: canonicalChatSidecarURL)
+            )
+            let migratedAgent = try JSONDecoder().decode(
+                AgentSession.self,
+                from: Data(contentsOf: canonicalAgentSidecarURL)
+            )
+            XCTAssertEqual(migratedChat.workspaceID, canonical.id)
+            XCTAssertEqual(migratedChat.composeTabID, duplicateTabID)
+            XCTAssertEqual(migratedChat.messages.map(\.rawText), ["Recovered transcript content"])
+            XCTAssertEqual(migratedAgent.workspaceID, canonical.id)
+            XCTAssertEqual(migratedAgent.composeTabID, duplicateTabID)
+            XCTAssertEqual(migratedAgent.name, "Recovered Agent history")
+            XCTAssertEqual(migratedAgent.effectiveItemCount, 7)
 
             let authoritativeRetired = try await authoritativeWorkspace(
                 duplicate.id,
@@ -189,7 +255,8 @@ import XCTest
             )
             XCTAssertTrue(authoritativeRetired.isHiddenInMenus)
             XCTAssertEqual(authoritativeRetired.consolidatedIntoWorkspaceID, canonical.id)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: sidecarURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: chatSidecarURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: agentSidecarURL.path))
 
             let retiredProjectionSequence = await (runtime.workspaceStore.snapshot()).publicationSequence
             let projectedRetirement = await presentationBridge.waitUntilProjected(through: retiredProjectionSequence)
@@ -245,7 +312,8 @@ import XCTest
             XCTAssertFalse(authoritativeRestored.isHiddenInMenus)
             XCTAssertNil(authoritativeRestored.consolidatedIntoWorkspaceID)
             XCTAssertEqual(manager.duplicateWorkspaceGroups().count, 1)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: sidecarURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: chatSidecarURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: agentSidecarURL.path))
         }
 
         func testConcurrentAuthorityUpdateWinsInsteadOfBeingOverwrittenByCleanup() async throws {

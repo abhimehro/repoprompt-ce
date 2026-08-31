@@ -954,6 +954,63 @@ actor AgentSessionDataService {
         return index.entries.sortedForAgentSessionMetadataIndex()
     }
 
+    /// Copies a retired workspace's sessions into canonical storage without changing the source.
+    /// Every collision is preflighted before the first write, and the metadata index is rebuilt from
+    /// the destination files rather than copied from either workspace.
+    func rehomeWorkspaceSessions(
+        from sourceWorkspaceDirectory: URL,
+        to destinationWorkspaceDirectory: URL,
+        canonicalWorkspaceID: UUID
+    ) async throws {
+        let sourceFolder = sourceWorkspaceDirectory
+            .appendingPathComponent("AgentSessions", isDirectory: true)
+        let destinationFolder = destinationWorkspaceDirectory
+            .appendingPathComponent("AgentSessions", isDirectory: true)
+        let sourceFiles = try WorkspaceSessionSidecarMigration.sessionFileURLs(
+            in: sourceFolder,
+            prefix: "AgentSession-"
+        )
+        guard !sourceFiles.isEmpty else { return }
+
+        for sourceURL in sourceFiles {
+            await diskWriter.waitUntilIdle(for: sourceURL.standardizedFileURL)
+            let destinationURL = destinationFolder
+                .appendingPathComponent(sourceURL.lastPathComponent)
+                .standardizedFileURL
+            await diskWriter.waitUntilIdle(for: destinationURL)
+        }
+        let prepared = try WorkspaceSessionSidecarMigration.prepareCopies(
+            from: sourceFolder,
+            to: destinationFolder,
+            filenamePrefix: "AgentSession-",
+            canonicalWorkspaceID: canonicalWorkspaceID
+        )
+
+        try FileManager.default.createDirectory(
+            at: destinationFolder,
+            withIntermediateDirectories: true
+        )
+        for copy in prepared {
+            let destinationURL = copy.destinationURL.standardizedFileURL
+            guard !deletedSessionFileURLs.contains(destinationURL) else {
+                let rawID = destinationURL.deletingPathExtension().lastPathComponent
+                    .replacingOccurrences(of: "AgentSession-", with: "")
+                guard let sessionID = UUID(uuidString: rawID) else {
+                    throw WorkspaceSessionSidecarMigrationError.invalidSessionFile(destinationURL)
+                }
+                throw AgentSessionDataError.sessionDeleted(sessionID)
+            }
+            try await diskWriter.enqueueAndWait(data: copy.data, url: destinationURL)
+            if let modificationDate = copy.modificationDate {
+                try FileManager.default.setAttributes(
+                    [.modificationDate: modificationDate],
+                    ofItemAtPath: destinationURL.path
+                )
+            }
+        }
+        _ = try await reconcileMetadataIndex(folder: destinationFolder)
+    }
+
     // MARK: - Public API
 
     /// Save an AgentSession for a given workspace, returning the file URL on success.
