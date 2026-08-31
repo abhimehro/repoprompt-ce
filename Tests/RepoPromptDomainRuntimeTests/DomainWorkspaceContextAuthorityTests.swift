@@ -693,16 +693,17 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         ))
         XCTAssertEqual(collision.errorCode, .operationIDCollision)
 
-        let staleDocument = try fixture.document(prompt: "stale runtime intent replayed")
+        let staleDocument = try fixture.document(prompt: "stale runtime intent rejected")
         let staleWriter = await second.workspaceStore.execute(.init(
             operationID: UUID(),
             expectedWorkspaceRevision: 0,
             origin: .standalone,
             command: .replaceWorkingDocument(staleDocument)
         ))
-        XCTAssertEqual(staleWriter.disposition, .applied)
-        XCTAssertEqual(staleWriter.after?.workingRevision, 2)
-        XCTAssertEqual(staleWriter.workspace?.document.documentBytes, staleDocument.documentBytes)
+        XCTAssertEqual(staleWriter.disposition, .conflict)
+        XCTAssertEqual(staleWriter.errorCode, .stateConflict)
+        XCTAssertEqual(staleWriter.after?.workingRevision, 1)
+        XCTAssertEqual(staleWriter.workspace?.document.documentBytes, changed.documentBytes)
 
         let firstCreatedID = UUID()
         let secondCreatedID = UUID()
@@ -879,9 +880,16 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(firstRevisions.savedRevision, 0)
         XCTAssertEqual(firstRevisions.dirtyRevision, 1)
 
-        let secondAdoption = await second.workspaceStore.execute(.init(
+        let staleAdoption = await second.workspaceStore.execute(.init(
             operationID: UUID(),
             expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(local)
+        ))
+        XCTAssertEqual(staleAdoption.disposition, .conflict)
+        let secondAdoption = await second.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: staleAdoption.after?.workingRevision,
             origin: .standalone,
             command: .replaceWorkingDocument(local)
         ))
@@ -966,11 +974,20 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
             origin: .standalone,
             command: .replaceWorkingDocument(secondDocument)
         )
+        let revalidatedSecondEnvelope = DomainWorkspaceCommandEnvelope(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 1,
+            origin: .standalone,
+            command: .replaceWorkingDocument(secondDocument)
+        )
         let secondStore = second.workspaceStore
         let workspaceID = fixture.workspaceID
         await first.workspaceStore.testSetBeforeExternalReconciliation { detectedWorkspaceID in
             guard detectedWorkspaceID == workspaceID else { return }
-            let secondWrite = await secondStore.execute(secondEnvelope)
+            let staleSecondWrite = await secondStore.execute(secondEnvelope)
+            XCTAssertEqual(staleSecondWrite.disposition, .conflict)
+            XCTAssertEqual(staleSecondWrite.after?.workingRevision, 1)
+            let secondWrite = await secondStore.execute(revalidatedSecondEnvelope)
             XCTAssertEqual(secondWrite.disposition, .applied)
             XCTAssertEqual(secondWrite.after?.workingRevision, 2)
         }
@@ -994,7 +1011,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         XCTAssertEqual(recovered.health, .writable)
         XCTAssertEqual(recovered.revisions.workingRevision, 3)
         XCTAssertEqual(recovered.document.documentBytes, firstDocument.documentBytes)
-        let replayedSecondWrite = await restarted.workspaceStore.execute(secondEnvelope)
+        let replayedSecondWrite = await restarted.workspaceStore.execute(revalidatedSecondEnvelope)
         XCTAssertEqual(replayedSecondWrite.disposition, .deduplicated)
         XCTAssertEqual(
             replayedSecondWrite.workspace?.document.documentBytes,
@@ -1002,7 +1019,7 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         )
     }
 
-    func testSaveReplaysCapturedLocalDocumentAfterJournalRevisionRace() async throws {
+    func testReplaceConflictNeverReplaysCapturedDocumentOverNewerRuntimeRevision() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
         let first = fixture.runtime(runtimeID: UUID())
@@ -1010,47 +1027,105 @@ final class DomainWorkspaceContextAuthorityTests: XCTestCase {
         try await first.start()
         try await second.start()
 
-        let local = try fixture.document(prompt: "local working state saved after revision race")
-        let localWrite = await first.workspaceStore.execute(.init(
+        let captured = try fixture.document(prompt: "captured replacement must lose")
+        let newer = try fixture.document(prompt: "newer replacement must survive")
+        let secondStore = second.workspaceStore
+        let workspaceID = fixture.workspaceID
+        await first.workspaceStore.testSetBeforeWorkingPersistence { interceptedWorkspaceID in
+            XCTAssertEqual(interceptedWorkspaceID, workspaceID)
+            let competing = await secondStore.execute(.init(
+                operationID: UUID(),
+                expectedWorkspaceRevision: 0,
+                origin: .standalone,
+                command: .replaceWorkingDocument(newer)
+            ))
+            XCTAssertEqual(competing.disposition, .applied)
+            XCTAssertEqual(competing.after?.workingRevision, 1)
+        }
+
+        let conflicted = await first.workspaceStore.execute(.init(
             operationID: UUID(),
             expectedWorkspaceRevision: 0,
             origin: .standalone,
-            command: .replaceWorkingDocument(local)
+            command: .replaceWorkingDocument(captured)
         ))
-        XCTAssertEqual(localWrite.disposition, .applied)
-        XCTAssertEqual(localWrite.after?.workingRevision, 1)
+        await first.workspaceStore.testSetBeforeWorkingPersistence(nil)
 
-        let competing = try fixture.document(prompt: "competing runtime journal state")
-        let competingWrite = await second.workspaceStore.execute(.init(
-            operationID: UUID(),
-            expectedWorkspaceRevision: 0,
-            origin: .standalone,
-            command: .replaceWorkingDocument(competing)
-        ))
-        XCTAssertEqual(competingWrite.disposition, .applied)
-        XCTAssertEqual(competingWrite.after?.workingRevision, 2)
-
-        let saved = await first.workspaceStore.execute(.init(
-            operationID: UUID(),
-            expectedWorkspaceRevision: localWrite.after?.workingRevision,
-            origin: .standalone,
-            command: .saveWorkspaceDocument(workspaceID: fixture.workspaceID)
-        ))
-        XCTAssertEqual(saved.disposition, .applied)
-        XCTAssertEqual(saved.after?.workingRevision, 3)
-        XCTAssertEqual(saved.after?.savedRevision, 3)
-        XCTAssertNil(saved.after?.dirtyRevision)
-        XCTAssertEqual(saved.workspace?.document.documentBytes, local.documentBytes)
-        XCTAssertEqual(try Data(contentsOf: fixture.workspaceFile), local.documentBytes)
+        XCTAssertEqual(conflicted.disposition, .conflict)
+        XCTAssertEqual(conflicted.errorCode, .stateConflict)
+        XCTAssertEqual(conflicted.workspace?.document.documentBytes, newer.documentBytes)
+        XCTAssertEqual(conflicted.after?.workingRevision, 1)
+        let canonical = await first.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+        XCTAssertEqual(canonical?.document.documentBytes, newer.documentBytes)
+        XCTAssertEqual(canonical?.revisions.dirtyRevision, 1)
 
         _ = await first.shutdown()
         _ = await second.shutdown()
         let restarted = fixture.runtime(runtimeID: UUID(), generation: 2)
         try await restarted.start()
-        let recovered = await restarted.workspaceStore.snapshot().workspaces.first
-        XCTAssertEqual(recovered?.health, .writable)
-        XCTAssertNil(recovered?.revisions.dirtyRevision)
-        XCTAssertEqual(recovered?.document.documentBytes, local.documentBytes)
+        let recovered = await restarted.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+        XCTAssertEqual(recovered?.document.documentBytes, newer.documentBytes)
+        XCTAssertEqual(recovered?.revisions.dirtyRevision, 1)
+    }
+
+    func testSaveConflictNeverReplaysCapturedDocumentOverNewerRuntimeRevision() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+        let first = fixture.runtime(runtimeID: UUID())
+        try await first.start()
+
+        let captured = try fixture.document(prompt: "captured save must lose")
+        let capturedWrite = await first.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: 0,
+            origin: .standalone,
+            command: .replaceWorkingDocument(captured)
+        ))
+        XCTAssertEqual(capturedWrite.disposition, .applied)
+        XCTAssertEqual(capturedWrite.after?.workingRevision, 1)
+
+        let second = fixture.runtime(runtimeID: UUID())
+        try await second.start()
+        let newer = try fixture.document(prompt: "newer working document must survive save race")
+        let secondStore = second.workspaceStore
+        let workspaceID = fixture.workspaceID
+        await first.workspaceStore.testSetBeforeSavedPersistence { interceptedWorkspaceID in
+            XCTAssertEqual(interceptedWorkspaceID, workspaceID)
+            let competing = await secondStore.execute(.init(
+                operationID: UUID(),
+                expectedWorkspaceRevision: 1,
+                origin: .standalone,
+                command: .replaceWorkingDocument(newer)
+            ))
+            XCTAssertEqual(competing.disposition, .applied)
+            XCTAssertEqual(competing.after?.workingRevision, 2)
+        }
+
+        let conflicted = await first.workspaceStore.execute(.init(
+            operationID: UUID(),
+            expectedWorkspaceRevision: capturedWrite.after?.workingRevision,
+            origin: .standalone,
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
+        ))
+        await first.workspaceStore.testSetBeforeSavedPersistence(nil)
+
+        XCTAssertEqual(conflicted.disposition, .conflict)
+        XCTAssertEqual(conflicted.errorCode, .stateConflict)
+        XCTAssertEqual(conflicted.workspace?.document.documentBytes, newer.documentBytes)
+        XCTAssertEqual(conflicted.after?.workingRevision, 2)
+        XCTAssertEqual(conflicted.after?.dirtyRevision, 2)
+        let canonical = await first.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+        XCTAssertEqual(canonical?.document.documentBytes, newer.documentBytes)
+        XCTAssertEqual(canonical?.revisions.dirtyRevision, 2)
+        XCTAssertNotEqual(try Data(contentsOf: fixture.workspaceFile), captured.documentBytes)
+
+        _ = await first.shutdown()
+        _ = await second.shutdown()
+        let restarted = fixture.runtime(runtimeID: UUID(), generation: 2)
+        try await restarted.start()
+        let recovered = await restarted.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+        XCTAssertEqual(recovered?.document.documentBytes, newer.documentBytes)
+        XCTAssertEqual(recovered?.revisions.dirtyRevision, 2)
     }
 
     func testDomainDecodeIgnoresMalformedAndComposedDuplicateStashedIdentityClaims() throws {

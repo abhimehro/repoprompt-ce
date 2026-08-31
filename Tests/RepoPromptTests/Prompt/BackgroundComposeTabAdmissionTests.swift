@@ -1583,13 +1583,17 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
             lifecycleAuthority: AgentSessionLifecycleAuthority()
         )
 
-        guard case let .created(createdTab, persistence) = result else {
+        guard case let .created(createdTab, receipt, recoveryClaim) = result else {
             return XCTFail("Expected the background admission to commit: \(result)")
         }
-        guard case let .persisted(persistedWorkspaceID, _) = persistence else {
-            return XCTFail("Expected durable persistence: \(persistence)")
+        guard case let .persisted(persistedWorkspaceID, _) = receipt.outcome else {
+            return XCTFail("Expected durable persistence: \(receipt.outcome)")
         }
         XCTAssertEqual(persistedWorkspaceID, workspaceID)
+        guard case .saved = receipt.commitEvidence else {
+            return XCTFail("Expected saved commit evidence: \(receipt.commitEvidence)")
+        }
+        XCTAssertEqual(recoveryClaim.state, .provisional)
         let finalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
         XCTAssertEqual(finalWorkspace.composeTabs.count, originalWorkspace.composeTabs.count + 1)
         let retainedTabs = Array(finalWorkspace.composeTabs.dropLast())
@@ -1658,7 +1662,10 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
 
         let result = try await admissionTask.value
         XCTAssertEqual(result, .rejected(
-            .rejected(reason: "workspace_changed"),
+            AgentAdmissionPersistenceReceipt(
+                outcome: .rejected(reason: "workspace_changed"),
+                commitEvidence: .none
+            ),
             .workspaceChanged
         ))
         XCTAssertEqual(
@@ -1763,6 +1770,112 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
                 for: XCTUnwrap(fixture.manager.activeWorkspace)
             ).path
         ))
+        XCTAssertEqual(coordinator.snapshot(), .init(
+            activeAdmissionCount: 0,
+            waiterCount: 0,
+            trackedWorkspaceCount: 0
+        ))
+    }
+
+    func testCancellationAfterSavedAdmissionRecoversBeforeReturningWithoutStaleRepublish() async throws {
+        let coordinator = WorkspaceAgentAdmissionCoordinator()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "BackgroundComposeTabAdmissionTests-PostSaveCancellation-\(UUID().uuidString)"
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture(
+            initialTabCount: 2,
+            coordinator: coordinator,
+            ephemeralFlag: false,
+            customStoragePath: root
+        )
+        defer {
+            fixture.prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting(nil)
+            fixture.prompt.setAgentAdmissionRecoveryCompletedHandlerForTesting(nil)
+            fixture.manager.prepareForWindowClose()
+        }
+        let workspaceID = try XCTUnwrap(fixture.manager.activeWorkspaceID)
+        let originalWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let originalTabIDs = originalWorkspace.composeTabs.map(\.id)
+        let originalBindings = originalWorkspace.composeTabs.map(\.activeAgentSessionID)
+        let sessionID = UUID()
+        let receiptGate = AdmissionAsyncGate()
+        var recoveryOutcome: AgentAdmissionRecoveryOutcome?
+        fixture.prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting { identity, receipt in
+            XCTAssertEqual(identity.workspaceID, workspaceID)
+            XCTAssertEqual(identity.sessionID, sessionID)
+            guard case .saved = receipt.commitEvidence else {
+                XCTFail("Cancellation gate requires saved evidence: \(receipt.commitEvidence)")
+                return
+            }
+            await receiptGate.enterAndWait()
+        }
+        fixture.prompt.setAgentAdmissionRecoveryCompletedHandlerForTesting { identity, outcome in
+            XCTAssertEqual(identity.workspaceID, workspaceID)
+            recoveryOutcome = outcome
+        }
+
+        let admissionTask = Task { @MainActor in
+            try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                name: "Saved then cancelled",
+                sessionID: sessionID,
+                expectedWorkspaceID: workspaceID,
+                lifecycleAuthority: AgentSessionLifecycleAuthority()
+            )
+        }
+        await receiptGate.waitUntilEntered()
+        let workspaceAtCommit = try XCTUnwrap(fixture.manager.activeWorkspace)
+        let versionAtCommit = fixture.manager.debugStateVersionForWorkspace(workspaceID)
+        let savedAtCommit = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+            at: fixture.manager.workspaceFileURL(for: workspaceAtCommit),
+            scheduleNormalizationWriteback: false
+        )
+        XCTAssertTrue(savedAtCommit.composeTabs.contains {
+            $0.activeAgentSessionID == sessionID
+        })
+
+        admissionTask.cancel()
+        await receiptGate.open()
+        do {
+            _ = try await admissionTask.value
+            XCTFail("Cancellation must not return a provider-facing target.")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        switch recoveryOutcome {
+        case .recovered, .alreadyRecovered:
+            break
+        default:
+            XCTFail("Saved cancellation must settle exact recovery: \(String(describing: recoveryOutcome))")
+        }
+        let recoveredWorkspace = try XCTUnwrap(fixture.manager.activeWorkspace)
+        XCTAssertEqual(recoveredWorkspace.composeTabs.map(\.id), originalTabIDs)
+        XCTAssertEqual(recoveredWorkspace.composeTabs.map(\.activeAgentSessionID), originalBindings)
+        XCTAssertEqual(
+            fixture.manager.debugStateVersionForWorkspace(workspaceID),
+            versionAtCommit,
+            "The idempotent local rollback must not dirty recovered state."
+        )
+        XCTAssertFalse(fixture.prompt.currentComposeTabs.contains {
+            $0.activeAgentSessionID == sessionID
+        })
+        let savedAfterRecovery = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+            at: fixture.manager.workspaceFileURL(for: recoveredWorkspace),
+            scheduleNormalizationWriteback: false
+        )
+        XCTAssertEqual(savedAfterRecovery.composeTabs.map(\.id), originalTabIDs)
+        XCTAssertEqual(savedAfterRecovery.composeTabs.map(\.activeAgentSessionID), originalBindings)
+        let postRecoveryPersistence = await fixture.manager.pollAndSaveStateWithOutcomeAsync(
+            workspaceID: workspaceID
+        )
+        XCTAssertEqual(
+            postRecoveryPersistence,
+            .notRequired(workspaceID: workspaceID),
+            "Recovery must leave no dirty stale projection for a later save to republish."
+        )
         XCTAssertEqual(coordinator.snapshot(), .init(
             activeAdmissionCount: 0,
             waiterCount: 0,
@@ -2234,16 +2347,19 @@ final class BackgroundComposeTabAdmissionTests: XCTestCase {
             lifecycleAuthority: AgentSessionLifecycleAuthority()
         )
 
-        guard case let .rejected(persistence, reason) = result else {
+        guard case let .rejected(receipt, reason) = result else {
             return XCTFail("A stale persisted binding must reject: \(result)")
         }
-        guard case let .persisted(persistedWorkspaceID, _) = persistence else {
-            return XCTFail("Expected the stale outcome to have persisted: \(persistence)")
+        guard case let .persisted(persistedWorkspaceID, _) = receipt.outcome else {
+            return XCTFail("Expected the stale outcome to have persisted: \(receipt.outcome)")
         }
         XCTAssertEqual(persistedWorkspaceID, workspaceID)
         XCTAssertEqual(reason, .sessionIdentityChanged)
         XCTAssertFalse(fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
-            $0.activeAgentSessionID == sessionID || $0.activeAgentSessionID == replacementSessionID
+            $0.activeAgentSessionID == sessionID
+        }))
+        XCTAssertTrue(fixture.manager.workspaces.flatMap(\.composeTabs).contains(where: {
+            $0.activeAgentSessionID == replacementSessionID
         }))
         XCTAssertEqual(coordinator.snapshot(), .init(
             activeAdmissionCount: 0,

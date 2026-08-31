@@ -51,6 +51,12 @@ class PromptViewModel: ObservableObject {
 
     #if DEBUG
         private var automaticReviewGitDiffProviderOverrideForTesting: ((AutomaticReviewGitDiffRequest) async -> AutomaticReviewGitDiffResult)?
+        private var agentAdmissionPersistenceReceiptHandlerForTesting:
+            (@MainActor (AgentProvisionalAdmissionIdentity, AgentAdmissionPersistenceReceipt) async -> Void)?
+        private var agentAdmissionRecoveryCompletedHandlerForTesting:
+            (@MainActor (AgentProvisionalAdmissionIdentity, AgentAdmissionRecoveryOutcome) async -> Void)?
+        private var agentAdmissionRecoveryRetryHandlerForTesting:
+            (@MainActor (Int, AgentAdmissionRecoveryOutcome) async -> Void)?
 
         func setAutomaticReviewGitDiffProviderOverrideForTesting(
             _ override: ((AutomaticReviewGitDiffRequest) async -> AutomaticReviewGitDiffResult)?
@@ -60,6 +66,24 @@ class PromptViewModel: ObservableObject {
 
         func testSetDirtyTabIDs(_ tabIDs: Set<UUID>) {
             dirtyTabIDs = tabIDs
+        }
+
+        func setAgentAdmissionPersistenceReceiptHandlerForTesting(
+            _ handler: (@MainActor (AgentProvisionalAdmissionIdentity, AgentAdmissionPersistenceReceipt) async -> Void)?
+        ) {
+            agentAdmissionPersistenceReceiptHandlerForTesting = handler
+        }
+
+        func setAgentAdmissionRecoveryCompletedHandlerForTesting(
+            _ handler: (@MainActor (AgentProvisionalAdmissionIdentity, AgentAdmissionRecoveryOutcome) async -> Void)?
+        ) {
+            agentAdmissionRecoveryCompletedHandlerForTesting = handler
+        }
+
+        func setAgentAdmissionRecoveryRetryHandlerForTesting(
+            _ handler: (@MainActor (Int, AgentAdmissionRecoveryOutcome) async -> Void)?
+        ) {
+            agentAdmissionRecoveryRetryHandlerForTesting = handler
         }
     #endif
 
@@ -252,8 +276,15 @@ class PromptViewModel: ObservableObject {
     }
 
     enum DurableBackgroundComposeTabCreationResult: Equatable {
-        case created(ComposeTabState, WorkspacePersistenceOutcome)
-        case rejected(WorkspacePersistenceOutcome, AgentSessionLifecycleAuthority.RejectionReason)
+        case created(
+            ComposeTabState,
+            AgentAdmissionPersistenceReceipt,
+            AgentProvisionalAdmissionClaim
+        )
+        case rejected(
+            AgentAdmissionPersistenceReceipt,
+            AgentSessionLifecycleAuthority.RejectionReason
+        )
     }
 
     typealias ComposeTabsWillCloseListener = @Sendable (_ tabIDs: Set<UUID>, _ reason: ComposeTabRemovalReason) async -> Void
@@ -2943,8 +2974,7 @@ class PromptViewModel: ObservableObject {
     }
 
     private struct ProvisionalAgentSessionTabRollbackCheckpoint {
-        let workspaceID: UUID
-        let provisionalTabID: UUID
+        let identity: AgentProvisionalAdmissionIdentity
         let preAdmissionForegroundStoredTab: ComposeTabState?
         let preAdmissionForegroundLiveSnapshot: ComposeTabState?
     }
@@ -2959,6 +2989,7 @@ class PromptViewModel: ObservableObject {
 
         let workspaceID: UUID
         let provisionalTabID: UUID
+        let replacementTabID: UUID
         let provisionalTabWasForeground: Bool
         let composeTabs: [ComposeTabState]
         let stashedTabs: [StashedTab]
@@ -2978,7 +3009,10 @@ class PromptViewModel: ObservableObject {
     ) async throws -> DurableBackgroundComposeTabCreationResult {
         guard let manager = workspaceManager else {
             return .rejected(
-                .rejected(reason: "workspace_unavailable"),
+                AgentAdmissionPersistenceReceipt(
+                    outcome: .rejected(reason: "workspace_unavailable"),
+                    commitEvidence: .none
+                ),
                 .workspaceChanged
             )
         }
@@ -3000,10 +3034,22 @@ class PromptViewModel: ObservableObject {
                   )
             else {
                 return .rejected(
-                    .rejected(reason: "workspace_changed"),
+                    AgentAdmissionPersistenceReceipt(
+                        outcome: .rejected(reason: "workspace_changed"),
+                        commitEvidence: .none
+                    ),
                     .workspaceChanged
                 )
             }
+
+            let provisionalIdentity = AgentProvisionalAdmissionIdentity(
+                recoveryID: UUID(),
+                workspaceID: expectedWorkspaceID,
+                tabID: newTab.id,
+                sessionID: sessionID,
+                replacementTabID: UUID()
+            )
+            let recoveryClaim = AgentProvisionalAdmissionClaim(identity: provisionalIdentity)
 
             let preAdmissionForegroundStoredTab = manager.workspaces[index].activeComposeTabID.flatMap { activeTabID in
                 manager.workspaces[index].composeTabs.first(where: { $0.id == activeTabID })
@@ -3012,8 +3058,7 @@ class PromptViewModel: ObservableObject {
                 manager.collectComposeTabSnapshot(name: activeTab.name, base: activeTab)
             }
             let rollbackCheckpoint = ProvisionalAgentSessionTabRollbackCheckpoint(
-                workspaceID: expectedWorkspaceID,
-                provisionalTabID: newTab.id,
+                identity: provisionalIdentity,
                 preAdmissionForegroundStoredTab: preAdmissionForegroundStoredTab,
                 preAdmissionForegroundLiveSnapshot: preAdmissionForegroundSnapshot
             )
@@ -3027,40 +3072,146 @@ class PromptViewModel: ObservableObject {
             loadComposeTabsFromWorkspace(manager.workspaces[index])
             manager.markWorkspaceDirty(workspaceID: expectedWorkspaceID)
 
-            do {
-                let persistence = await manager.pollAndSaveStateWithOutcomeAsync(
-                    workspaceID: expectedWorkspaceID,
-                    source: WorkspaceSaveSource("agentSessionLifecycleAdmission")
-                )
-                try Task.checkCancellation()
-                let bindingStillCurrent = manager.workspaces
-                    .first(where: { $0.id == expectedWorkspaceID })?
-                    .composeTabs.contains(where: {
-                        $0.id == newTab.id && $0.activeAgentSessionID == sessionID
-                    }) == true
-                let admissionDecision = lifecycleAuthority.decideAdmission(
-                    persistence: persistence,
-                    targetWorkspaceID: expectedWorkspaceID,
-                    bindingStillCurrent: bindingStillCurrent
-                )
-                switch admissionDecision {
-                case .commit:
-                    return .created(newTab, persistence)
-                case let .rollback(reason):
-                    await rollbackProvisionalAgentSessionTab(
-                        checkpoint: rollbackCheckpoint,
-                        manager: manager
-                    )
-                    return .rejected(persistence, reason)
-                }
-            } catch {
+            let receipt = await manager.persistAgentAdmission(provisionalIdentity)
+            await notifyAgentAdmissionPersistenceReceiptForTesting(
+                provisionalIdentity,
+                receipt: receipt
+            )
+            let isCancelled = Task.isCancelled
+            let bindingStillCurrent = manager.workspaces
+                .first(where: { $0.id == expectedWorkspaceID })?
+                .composeTabs.contains(where: {
+                    $0.id == newTab.id && $0.activeAgentSessionID == sessionID
+                }) == true
+            let admissionDecision = lifecycleAuthority.decideDurableAdmission(
+                receipt: receipt,
+                targetWorkspaceID: expectedWorkspaceID,
+                bindingStillCurrent: bindingStillCurrent,
+                isCancelled: isCancelled
+            )
+            switch admissionDecision {
+            case .commit:
+                return .created(newTab, receipt, recoveryClaim)
+            case let .localRollback(reason):
                 await rollbackProvisionalAgentSessionTab(
                     checkpoint: rollbackCheckpoint,
                     manager: manager
                 )
-                throw error
+                recoveryClaim.markComplete()
+                if isCancelled {
+                    throw CancellationError()
+                }
+                return .rejected(receipt, reason)
+            case let .recoverWorkspace(reason):
+                guard recoveryClaim.beginWorkspaceRecovery() else {
+                    await rollbackProvisionalAgentSessionTab(
+                        checkpoint: rollbackCheckpoint,
+                        manager: manager
+                    )
+                    if isCancelled {
+                        throw CancellationError()
+                    }
+                    return .rejected(receipt, reason)
+                }
+                let recoveryOutcome = await settleProvisionalAgentAdmissionRecovery(
+                    provisionalIdentity,
+                    manager: manager
+                )
+                switch recoveryOutcome {
+                case .recovered, .alreadyRecovered, .localOnly:
+                    recoveryClaim.markWorkspaceRecovered()
+                    recoveryClaim.markComplete()
+                case .ownershipChanged, .failed:
+                    recoveryClaim.markComplete()
+                case .retryablePartial:
+                    break
+                }
+                await notifyAgentAdmissionRecoveryCompletedForTesting(
+                    provisionalIdentity,
+                    outcome: recoveryOutcome
+                )
+                await rollbackProvisionalAgentSessionTab(
+                    checkpoint: rollbackCheckpoint,
+                    manager: manager
+                )
+                if isCancelled {
+                    throw CancellationError()
+                }
+                return .rejected(receipt, reason)
             }
         }
+    }
+
+    @MainActor
+    private func notifyAgentAdmissionPersistenceReceiptForTesting(
+        _ identity: AgentProvisionalAdmissionIdentity,
+        receipt: AgentAdmissionPersistenceReceipt
+    ) async {
+        #if DEBUG
+            await agentAdmissionPersistenceReceiptHandlerForTesting?(identity, receipt)
+        #endif
+    }
+
+    @MainActor
+    private func notifyAgentAdmissionRecoveryCompletedForTesting(
+        _ identity: AgentProvisionalAdmissionIdentity,
+        outcome: AgentAdmissionRecoveryOutcome
+    ) async {
+        #if DEBUG
+            await agentAdmissionRecoveryCompletedHandlerForTesting?(identity, outcome)
+        #endif
+    }
+
+    @MainActor
+    private func settleProvisionalAgentAdmissionRecovery(
+        _ identity: AgentProvisionalAdmissionIdentity,
+        manager: WorkspaceManagerViewModel
+    ) async -> AgentAdmissionRecoveryOutcome {
+        // Recovery crossed the durable commit boundary, so caller cancellation must not
+        // end settlement. Each manager entry remains bounded and revalidates the exact
+        // recovery-owned revision and digest before it retries a canonical command.
+        let settlementTask = Task { @MainActor in
+            var retryAttempt = 0
+            while true {
+                let outcome = await manager.recoverProvisionalAgentAdmission(identity)
+                switch outcome {
+                case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged:
+                    return outcome
+                case .retryablePartial:
+                    await waitForProvisionalAgentAdmissionRecoveryRetry(
+                        attempt: retryAttempt,
+                        outcome: outcome
+                    )
+                case let .failed(category):
+                    guard category.isRetryableAgentAdmissionRecoveryFailure else {
+                        manager.finishProvisionalAgentAdmissionRecovery(identity)
+                        return outcome
+                    }
+                    await waitForProvisionalAgentAdmissionRecoveryRetry(
+                        attempt: retryAttempt,
+                        outcome: outcome
+                    )
+                }
+                retryAttempt &+= 1
+            }
+        }
+        return await settlementTask.value
+    }
+
+    @MainActor
+    private func waitForProvisionalAgentAdmissionRecoveryRetry(
+        attempt: Int,
+        outcome: AgentAdmissionRecoveryOutcome
+    ) async {
+        #if DEBUG
+            if let agentAdmissionRecoveryRetryHandlerForTesting {
+                await agentAdmissionRecoveryRetryHandlerForTesting(attempt, outcome)
+                return
+            }
+        #endif
+        let exponent = min(attempt, 4)
+        let delayMilliseconds = min(2000, 100 * (1 << exponent))
+        try? await Task.sleep(for: .milliseconds(delayMilliseconds))
     }
 
     @MainActor
@@ -3069,7 +3220,7 @@ class PromptViewModel: ObservableObject {
         manager: WorkspaceManagerViewModel
     ) async {
         await cancelComposeTabActivationIfNeeded(
-            tabID: checkpoint.provisionalTabID,
+            tabID: checkpoint.identity.tabID,
             manager: manager
         )
 
@@ -3100,21 +3251,38 @@ class PromptViewModel: ObservableObject {
         manager: WorkspaceManagerViewModel
     ) -> ProvisionalAgentSessionTabRollbackPlan? {
         guard let index = manager.workspaces.firstIndex(where: {
-            $0.id == checkpoint.workspaceID
+            $0.id == checkpoint.identity.workspaceID
         }) else { return nil }
 
         let workspace = manager.workspaces[index]
-        let provisionalTabWasForeground = workspace.activeComposeTabID == checkpoint.provisionalTabID
+        let matchingTabIndices = workspace.composeTabs.indices.filter {
+            workspace.composeTabs[$0].id == checkpoint.identity.tabID
+        }
+        guard matchingTabIndices.count == 1,
+              let provisionalTabIndex = matchingTabIndices.first,
+              workspace.composeTabs[provisionalTabIndex].activeAgentSessionID == checkpoint.identity.sessionID,
+              !workspace.composeTabs.enumerated().contains(where: { index, tab in
+                  index != provisionalTabIndex
+                      && tab.activeAgentSessionID == checkpoint.identity.sessionID
+              }),
+              !workspace.stashedTabs.contains(where: {
+                  $0.tab.id == checkpoint.identity.tabID
+                      || $0.tab.activeAgentSessionID == checkpoint.identity.sessionID
+              })
+        else { return nil }
+
+        let provisionalTabWasForeground = workspace.activeComposeTabID == checkpoint.identity.tabID
         let tabsBeforeRollback = workspace.composeTabs
-        var remainingTabs = workspace.composeTabs.filter { $0.id != checkpoint.provisionalTabID }
+        var remainingTabs = workspace.composeTabs.filter { $0.id != checkpoint.identity.tabID }
         let remainingStashedTabs = workspace.stashedTabs.filter {
-            $0.tab.id != checkpoint.provisionalTabID
+            $0.tab.id != checkpoint.identity.tabID
         }
 
         guard provisionalTabWasForeground else {
             return ProvisionalAgentSessionTabRollbackPlan(
-                workspaceID: checkpoint.workspaceID,
-                provisionalTabID: checkpoint.provisionalTabID,
+                workspaceID: checkpoint.identity.workspaceID,
+                provisionalTabID: checkpoint.identity.tabID,
+                replacementTabID: checkpoint.identity.replacementTabID,
                 provisionalTabWasForeground: false,
                 composeTabs: remainingTabs,
                 stashedTabs: remainingStashedTabs,
@@ -3136,8 +3304,9 @@ class PromptViewModel: ObservableObject {
                 remainingTabs[priorForegroundIndex] = liveFallback
             }
             return ProvisionalAgentSessionTabRollbackPlan(
-                workspaceID: checkpoint.workspaceID,
-                provisionalTabID: checkpoint.provisionalTabID,
+                workspaceID: checkpoint.identity.workspaceID,
+                provisionalTabID: checkpoint.identity.tabID,
+                replacementTabID: checkpoint.identity.replacementTabID,
                 provisionalTabWasForeground: true,
                 composeTabs: remainingTabs,
                 stashedTabs: remainingStashedTabs,
@@ -3148,16 +3317,17 @@ class PromptViewModel: ObservableObject {
 
         if !remainingTabs.isEmpty {
             let adjacentFallbackID = adjacentTabID(
-                afterClosing: checkpoint.provisionalTabID,
+                afterClosing: checkpoint.identity.tabID,
                 tabs: tabsBeforeRollback,
-                closingIDs: [checkpoint.provisionalTabID]
+                closingIDs: [checkpoint.identity.tabID]
             )
             let fallbackID = adjacentFallbackID.flatMap { candidate in
                 remainingTabs.contains(where: { $0.id == candidate }) ? candidate : nil
             } ?? remainingTabs[0].id
             return ProvisionalAgentSessionTabRollbackPlan(
-                workspaceID: checkpoint.workspaceID,
-                provisionalTabID: checkpoint.provisionalTabID,
+                workspaceID: checkpoint.identity.workspaceID,
+                provisionalTabID: checkpoint.identity.tabID,
+                replacementTabID: checkpoint.identity.replacementTabID,
                 provisionalTabWasForeground: true,
                 composeTabs: remainingTabs,
                 stashedTabs: remainingStashedTabs,
@@ -3167,8 +3337,9 @@ class PromptViewModel: ObservableObject {
         }
 
         return ProvisionalAgentSessionTabRollbackPlan(
-            workspaceID: checkpoint.workspaceID,
-            provisionalTabID: checkpoint.provisionalTabID,
+            workspaceID: checkpoint.identity.workspaceID,
+            provisionalTabID: checkpoint.identity.tabID,
+            replacementTabID: checkpoint.identity.replacementTabID,
             provisionalTabWasForeground: true,
             composeTabs: [],
             stashedTabs: remainingStashedTabs,
@@ -3190,16 +3361,17 @@ class PromptViewModel: ObservableObject {
         manager.workspaces[index].stashedTabs = plan.stashedTabs
         manager.workspaces[index].activeComposeTabID = plan.activeComposeTabID
 
-        let restorationTab: ComposeTabState? = switch plan.restorationAction {
+        let restorationTab: ComposeTabState?
+        switch plan.restorationAction {
         case .preserveCurrentForeground:
-            nil
+            restorationTab = nil
         case let .restoreOpenTab(tabID), let .selectOpenFallback(tabID):
-            plan.composeTabs.first(where: { $0.id == tabID })
+            restorationTab = plan.composeTabs.first(where: { $0.id == tabID })
         case .createBlankReplacement:
-            appendStoredReplacementBlankComposeTabIfNeeded(
-                manager: manager,
-                workspaceIndex: index
-            )
+            let replacement = ComposeTabState(id: plan.replacementTabID)
+            manager.workspaces[index].composeTabs = [replacement]
+            manager.workspaces[index].activeComposeTabID = replacement.id
+            restorationTab = replacement
         }
 
         dirtyTabIDs.remove(plan.provisionalTabID)

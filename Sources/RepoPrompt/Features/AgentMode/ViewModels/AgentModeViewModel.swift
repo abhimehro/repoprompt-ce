@@ -7322,12 +7322,13 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             let parentWasLocallyRepresentedAtAdmissionStart = effectiveParentSessionID.map {
                 sessionTreeNodes()[$0] != nil
             } ?? false
-            let createdTabID = try await mcpCreateBackgroundSessionTab(
+            let creation = try await mcpCreateBackgroundSessionTab(
                 name: sessionName,
                 sessionID: sessionID,
                 parentSessionID: effectiveParentSessionID,
                 expectedWorkspaceID: expectedWorkspaceID
             )
+            let createdTabID = creation.tabID
             defer { provisionalParentSessionIDBySessionID.removeValue(forKey: sessionID) }
             #if DEBUG
                 await test_afterDurableChildTabCreation?()
@@ -7408,12 +7409,13 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         let parentWasLocallyRepresentedAtAdmissionStart = parentSessionID.map {
             sessionTreeNodes()[$0] != nil
         } ?? false
-        let createdTabID = try await mcpCreateBackgroundSessionTab(
+        let creation = try await mcpCreateBackgroundSessionTab(
             name: sessionName,
             sessionID: intendedSessionID,
             parentSessionID: parentSessionID,
             expectedWorkspaceID: expectedWorkspaceID
         )
+        let createdTabID = creation.tabID
         defer { provisionalParentSessionIDBySessionID.removeValue(forKey: intendedSessionID) }
         #if DEBUG
             await test_afterDurableChildTabCreation?()
@@ -7552,12 +7554,17 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
     }
 
+    private struct BackgroundSessionTabCreation {
+        let tabID: UUID
+        let recoveryClaim: AgentProvisionalAdmissionClaim
+    }
+
     private func mcpCreateBackgroundSessionTab(
         name: String?,
         sessionID: UUID,
         parentSessionID: UUID?,
         expectedWorkspaceID: UUID?
-    ) async throws -> UUID {
+    ) async throws -> BackgroundSessionTabCreation {
         guard let promptManager else {
             throw MCPError.internalError("Prompt manager unavailable.")
         }
@@ -7580,7 +7587,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         name: String?,
         sessionID: UUID,
         expectedWorkspaceID: UUID?
-    ) async throws -> UUID {
+    ) async throws -> BackgroundSessionTabCreation {
         guard let promptManager else {
             throw MCPError.internalError("Prompt manager unavailable.")
         }
@@ -7610,8 +7617,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             expectedWorkspaceID: expectedWorkspaceID,
             lifecycleAuthority: sessionLifecycleAuthority
         ) {
-        case let .created(createdTab, persistence):
-            let identity = persistence.workspaceID.map {
+        case let .created(createdTab, receipt, recoveryClaim):
+            let identity = receipt.outcome.workspaceID.map {
                 AgentSessionLifecycleAuthority.Identity(
                     workspaceID: $0,
                     tabID: createdTab.id,
@@ -7632,11 +7639,14 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 isLive: false,
                 isActive: false,
                 isProtected: true,
-                workspaceSaveResult: persistence.diagnosticCategory,
+                workspaceSaveResult: receipt.outcome.diagnosticCategory,
                 reason: "binding_persisted_before_provider"
             ))
-            return createdTab.id
-        case let .rejected(persistence, reason):
+            return BackgroundSessionTabCreation(
+                tabID: createdTab.id,
+                recoveryClaim: recoveryClaim
+            )
+        case let .rejected(receipt, reason):
             sessionLifecycleAuthority.record(.init(
                 caller: .agentRunStart,
                 intent: .createOrContinue,
@@ -7649,7 +7659,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 isLive: false,
                 isActive: false,
                 isProtected: false,
-                workspaceSaveResult: persistence.diagnosticCategory,
+                workspaceSaveResult: receipt.outcome.diagnosticCategory,
                 reason: reason.rawValue
             ))
             throw MCPError.internalError(
