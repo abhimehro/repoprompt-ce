@@ -221,9 +221,13 @@ import XCTest
                 dateModified: Date()
             )
             manager.reloadWorkspacesFromDisk()
-            try await AsyncTestWait.waitUntil("retired workspace authority projection") {
-                manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID == canonical.id
+            let reloadDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID != canonical.id,
+                  ContinuousClock.now < reloadDeadline
+            {
+                try await Task.sleep(for: .milliseconds(10))
             }
+            XCTAssertEqual(manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID, canonical.id)
             XCTAssertTrue(manager.duplicateWorkspaceGroups().isEmpty)
 
             let projectedRetired = try XCTUnwrap(manager.workspace(withID: duplicate.id))
