@@ -7028,11 +7028,13 @@ class WorkspaceManagerViewModel: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let fileURL = directory.appendingPathComponent("workspace-dedup-\(formatter.string(from: backup.createdAt)).json")
+        let fileURL = directory.appendingPathComponent(
+            "workspace-dedup-\(formatter.string(from: backup.createdAt))-\(UUID().uuidString).json"
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(backup).write(to: fileURL, options: .atomic)
+        try encoder.encode(backup).write(to: fileURL, options: .withoutOverwriting)
         return fileURL
     }
 
@@ -9224,7 +9226,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             // Exact cleanup attempts established presence and pinned CAS above. Avoid the ordinary
             // create-or-save discovery suspension: a local edit could land during it, and a
             // concurrent deletion must conflict rather than recreate the retired record.
-            outcome = try await domainWorkspaceAuthorityClient.save(
+            guard let expectedWorkspaceRevision,
+                  let expectedContentDigest
+            else {
+                throw staleCleanupAttemptError
+            }
+            outcome = try await domainWorkspaceAuthorityClient.saveFailClosed(
                 workspaceToSave,
                 fileURL: targetURL,
                 expectedWorkspaceRevision: expectedWorkspaceRevision,

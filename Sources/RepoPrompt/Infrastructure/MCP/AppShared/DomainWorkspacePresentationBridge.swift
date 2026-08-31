@@ -102,6 +102,39 @@ struct DomainWorkspaceAuthorityClient {
         ))
     }
 
+    /// Saves one exact captured document without replaying or rebasing it after any durable or
+    /// external conflict. Used by operations whose preflight authority must remain their authority.
+    func saveFailClosed(
+        _ workspace: WorkspaceModel,
+        fileURL: URL,
+        expectedWorkspaceRevision: UInt64,
+        expectedContentDigest: String,
+        operationIDs: DomainWorkspaceSaveOperationIDs = .init()
+    ) async throws -> DomainCommandOutcome {
+        let document = try document(for: workspace, fileURL: fileURL)
+        var saveRevision = expectedWorkspaceRevision
+        if document.contentDigest != expectedContentDigest {
+            let working = await executeStable(.init(
+                operationID: operationIDs.working,
+                expectedWorkspaceRevision: expectedWorkspaceRevision,
+                conflictRecoveryPolicy: .failClosed,
+                origin: .appPresentation(windowID: windowID),
+                command: .replaceWorkingDocument(document)
+            ))
+            guard working.isSuccessfulDomainMutation else { return working }
+            saveRevision = working.after?.workingRevision
+                ?? working.workspace?.revisions.workingRevision
+                ?? saveRevision
+        }
+        return await executeStable(.init(
+            operationID: operationIDs.saved,
+            expectedWorkspaceRevision: saveRevision,
+            conflictRecoveryPolicy: .failClosed,
+            origin: .appPresentation(windowID: windowID),
+            command: .saveWorkspaceDocument(workspaceID: workspace.id)
+        ))
+    }
+
     func delete(
         workspaceID: UUID,
         expectedCatalogRevision: UInt64?,
@@ -122,7 +155,7 @@ struct DomainWorkspaceAuthorityClient {
         return await store.snapshot()
     }
 
-    private func document(for workspace: WorkspaceModel, fileURL: URL) throws -> DomainWorkspaceDocument {
+    fileprivate func document(for workspace: WorkspaceModel, fileURL: URL) throws -> DomainWorkspaceDocument {
         let bytes = try JSONEncoder().encode(workspace)
         return try DomainWorkspaceDocument.decode(documentBytes: bytes, fileURL: fileURL)
     }
@@ -198,6 +231,10 @@ final class DomainWorkspacePresentationBridge {
             } while clock.now < deadline
             return lastPublicationSequence >= publicationSequence
         }
+
+        func suppressSelfEchoForTesting(_ event: DomainWorkspaceEvent) async -> Bool {
+            await suppressSelfEcho(for: event)
+        }
     #endif
 
     func start() {
@@ -265,11 +302,33 @@ final class DomainWorkspacePresentationBridge {
               let workspaceID = event.workspaceID,
               projectedModels[workspaceID] != nil
         else { return false }
-        guard let workspace = await client.store.workspaceSnapshot(workspaceID),
+        guard let workspace = await client.canonicalWorkspaceSnapshot(workspaceID),
               workspace.health.acceptsMutations,
               let model = workspaceManager?.workspace(withID: workspaceID)
         else { return false }
-        projectedModels[workspaceID] = model
+        let cachedModel: WorkspaceModel
+        if let modelDocument = try? client.document(
+            for: model,
+            fileURL: workspace.document.fileURL
+        ), modelDocument.contentDigest == workspace.document.contentDigest {
+            cachedModel = model
+        } else {
+            // A same-window commit can be accepted just before a newer local edit is captured.
+            // Keep the bridge's cache canonical, but do not project that older accepted model over
+            // the newer local one. Advancing the baseline below lets the newer edit commit from the
+            // accepted revision; explicit failed-save reconciliation remains responsible for
+            // authoritative replacement when a two-phase cleanup save does not complete.
+            do {
+                cachedModel = try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
+                    documentBytes: workspace.document.documentBytes,
+                    fileURL: workspace.document.fileURL
+                )
+            } catch {
+                workspaceManager?.reportDomainProjectionFailure(error)
+                return false
+            }
+        }
+        projectedModels[workspaceID] = cachedModel
         projectedDigests[workspaceID] = workspace.document.contentDigest
         projectedHealth[workspaceID] = workspace.health
         workspaceManager?.applyDomainAuthorityBaseline(

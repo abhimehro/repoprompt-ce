@@ -1,5 +1,5 @@
 @testable import RepoPromptApp
-import RepoPromptDomainRuntime
+@testable import RepoPromptDomainRuntime
 import XCTest
 
 #if DEBUG
@@ -113,6 +113,48 @@ import XCTest
             let projectedInitial = await presentationBridge.waitUntilProjected(through: initialProjectionSequence)
             XCTAssertTrue(projectedInitial)
 
+            let canonicalIndex = try XCTUnwrap(manager.workspaces.firstIndex { $0.id == canonical.id })
+            let projectedCanonical = manager.workspaces[canonicalIndex]
+            var mismatchedCanonical = projectedCanonical
+            mismatchedCanonical.currentPromptText = "Uncommitted cleanup attempt"
+            manager.workspaces[canonicalIndex] = mismatchedCanonical
+            let authoritySnapshot = await authorityClient.snapshot()
+            let canonicalBeforeLocalSave = try XCTUnwrap(authoritySnapshot.workspaces.first {
+                $0.document.workspaceID == canonical.id
+            })
+            let suppressedOlderEcho = await presentationBridge.suppressSelfEchoForTesting(DomainWorkspaceEvent(
+                runtimeID: runtime.identity.runtimeID,
+                sequence: authoritySnapshot.publicationSequence,
+                catalogRevision: authoritySnapshot.catalogRevision,
+                kind: .workingStateCommitted,
+                workspaceID: canonical.id,
+                contextID: nil,
+                operationID: UUID(),
+                origin: .appPresentation(windowID: -781),
+                revisions: nil,
+                timestamp: Date(),
+                diagnostic: nil
+            ))
+            XCTAssertTrue(suppressedOlderEcho)
+            XCTAssertEqual(
+                manager.workspace(withID: canonical.id)?.currentPromptText,
+                mismatchedCanonical.currentPromptText,
+                "An older accepted self-echo must not overwrite a newer local edit."
+            )
+            let baselineAfterOlderEcho = manager.debugDomainAuthorityBaseline(for: canonical.id)
+            XCTAssertEqual(baselineAfterOlderEcho.revisions, canonicalBeforeLocalSave.revisions)
+            XCTAssertEqual(baselineAfterOlderEcho.digest, canonicalBeforeLocalSave.document.contentDigest)
+            _ = try await manager.saveWorkspaceToFileAsync(
+                mismatchedCanonical,
+                preserveDiskRepoPathsIfUnchangedSinceBaseline: false
+            )
+            let canonicalAfterLocalSave = try await authoritativeWorkspace(canonical.id, in: runtime)
+            XCTAssertEqual(
+                canonicalAfterLocalSave.currentPromptText,
+                mismatchedCanonical.currentPromptText,
+                "The preserved local edit must save from the advanced authority baseline."
+            )
+
             // Runtime and the manager bootstrapped both records; now make the retired legacy index
             // stale. Cleanup must re-plan from DomainRuntime rather than making it authoritative.
             try writeLegacyIndex([canonical])
@@ -223,7 +265,7 @@ import XCTest
             try writeWorkspace(duplicate)
             try writeLegacyIndex([canonical, duplicate])
 
-            let runtime = MCPDomainRuntime(configuration: .init(
+            let configuration = DomainRuntimeConfiguration(
                 mode: .app,
                 profileIdentifier: "workspace-duplicate-concurrent-save-\(UUID().uuidString)",
                 storageDirectory: storageRoot.appendingPathComponent("runtime-state", isDirectory: true),
@@ -231,12 +273,20 @@ import XCTest
                 eventDirectory: storageRoot.appendingPathComponent("events", isDirectory: true),
                 temporaryDirectory: storageRoot.appendingPathComponent("tmp", isDirectory: true),
                 externalReloadInterval: nil
-            ))
+            )
+            let runtime = MCPDomainRuntime(configuration: configuration, runtimeID: UUID())
+            let competingRuntime = MCPDomainRuntime(configuration: configuration, runtimeID: UUID())
             try await runtime.start()
-            defer { Task { _ = await runtime.shutdown() } }
+            try await competingRuntime.start()
+            defer {
+                Task {
+                    _ = await runtime.shutdown()
+                    _ = await competingRuntime.shutdown()
+                }
+            }
 
             let managerClient = DomainWorkspaceAuthorityClient(store: runtime.workspaceStore, windowID: -782)
-            let externalClient = DomainWorkspaceAuthorityClient(store: runtime.workspaceStore, windowID: -783)
+            let externalClient = DomainWorkspaceAuthorityClient(store: competingRuntime.workspaceStore, windowID: -783)
             let manager = makeManager(windowID: -782, domainWorkspaceAuthorityClient: managerClient)
             manager.setDuplicateCleanupBackupDirectoryForTesting(
                 storageRoot.appendingPathComponent("cleanup-backups", isDirectory: true)
@@ -282,11 +332,6 @@ import XCTest
                             || outcome.disposition == .unchanged
                             || outcome.disposition == .deduplicated
                     )
-                    let after = await externalClient.snapshot()
-                    let projectedExternalWinner = await presentationBridge.waitUntilProjected(
-                        through: after.publicationSequence
-                    )
-                    XCTAssertTrue(projectedExternalWinner)
                 } catch {
                     XCTFail("Failed to install concurrent authority winner: \(error)")
                 }
