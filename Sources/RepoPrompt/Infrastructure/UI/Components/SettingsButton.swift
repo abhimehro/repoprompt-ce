@@ -27,6 +27,7 @@ struct SettingsButton<Content: View>: View {
             .background(isHovered ? Color.primary.opacity(0.1) : Color.clear)
         }
         .buttonStyle(PlainButtonStyle())
+        .accessibilityLabel("Settings")
         .onHover { hovering in
             isHovered = hovering
         }

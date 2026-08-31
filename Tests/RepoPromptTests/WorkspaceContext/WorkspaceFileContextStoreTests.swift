@@ -6064,7 +6064,8 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let recordFromStore = try XCTUnwrap(createdFile, caseLabel)
             XCTAssertEqual(recordFromStore.standardizedRelativePath, "Created.swift", caseLabel)
             let createdContent = try await store.readContent(rootID: record.id, relativePath: "Created.swift")
-            XCTAssertEqual(createdContent, SwiftFixtureSource.emptyStruct("Created"), caseLabel)
+            let expectedContent = SwiftFixtureSource.emptyStruct("Created")
+            XCTAssertEqual(createdContent, expectedContent, caseLabel)
             let createdLookup = await store.lookupPath("Created.swift", rootScope: .visibleWorkspace)?.file
             XCTAssertNotNil(createdLookup, caseLabel)
             let lookupFiles = await store.lookupFiles(atPaths: ["Created.swift"], rootScope: .visibleWorkspace)
