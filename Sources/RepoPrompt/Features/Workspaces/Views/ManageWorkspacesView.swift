@@ -433,9 +433,25 @@ struct ManageWorkspacesView: View {
             return "Successfully consolidated \(result.groupsConsolidated) duplicate workspace \(result.groupsConsolidated == 1 ? "group" : "groups").\(backupNote)"
         }
 
+        let reasons = result.skipped.map(\.reason)
+        var guidance: [String] = []
+        if reasons.contains(where: { $0.hasPrefix("sidecar_preflight_failed") }) {
+            guidance.append("some session copies failed preflight before either history store was changed")
+        }
+        if reasons.contains(where: { $0.hasPrefix("sidecar_migration_failed") }) {
+            guidance.append("some session copies did not finish; their sources were preserved")
+        }
+        if reasons.contains(where: { $0.hasPrefix("persist_incomplete_working_committed") }) {
+            guidance.append("some workspace changes reached durable working state but did not finish saving")
+        } else if reasons.contains(where: { $0.hasPrefix("persist_failed") }) {
+            guidance.append("some workspace changes could not be persisted")
+        }
+        if guidance.isEmpty, !result.skipped.isEmpty {
+            guidance.append("some items remain active, protected, changed, or otherwise unresolved")
+        }
         let skippedNote = result.skipped.isEmpty
             ? ""
-            : " \(result.skipped.count) \(result.skipped.count == 1 ? "item was" : "items were") skipped due to active sessions or failed switches \u{2014} try again after those sessions finish."
+            : " \(result.skipped.count) \(result.skipped.count == 1 ? "item was" : "items were") skipped: \(guidance.joined(separator: "; ")). Review the remaining entries and retry."
 
         return "Consolidated \(result.groupsConsolidated) of \(result.groupsDetected) duplicate \(result.groupsDetected == 1 ? "group" : "groups").\(skippedNote)\(backupNote)"
     }
@@ -475,8 +491,14 @@ struct ManageWorkspacesView: View {
 
     private var existingWorkspacesSection: some View {
         let userWorkspaces = workspaceManager.workspaces.filter { !$0.isSystemWorkspace }
-        let ordinaryWorkspaces = userWorkspaces.filter { $0.consolidatedIntoWorkspaceID == nil }
-        let consolidatedWorkspaces = userWorkspaces.filter { $0.consolidatedIntoWorkspaceID != nil }
+        let ordinaryWorkspaces = userWorkspaces.filter {
+            $0.consolidatedIntoWorkspaceID == nil
+                && !workspaceManager.pendingConsolidatedRestoreIDs.contains($0.id)
+        }
+        let consolidatedWorkspaces = userWorkspaces.filter {
+            $0.consolidatedIntoWorkspaceID != nil
+                || workspaceManager.pendingConsolidatedRestoreIDs.contains($0.id)
+        }
         let ordinaryFilteredWorkspaces = filterWorkspaces(ordinaryWorkspaces)
         let filteredConsolidatedWorkspaces = filterWorkspaces(consolidatedWorkspaces)
         let filteredWorkspaceCount = ordinaryFilteredWorkspaces.count + filteredConsolidatedWorkspaces.count
@@ -923,7 +945,15 @@ struct ManageWorkspacesView: View {
     }
 
     private func toggleHiddenState(for ws: WorkspaceModel) {
-        workspaceManager.setWorkspaceHidden(ws, hidden: !ws.isHiddenInMenus)
+        if ws.consolidatedIntoWorkspaceID != nil
+            || workspaceManager.pendingConsolidatedRestoreIDs.contains(ws.id)
+        {
+            Task {
+                _ = try? await workspaceManager.setWorkspaceHiddenFromSnapshot(ws, hidden: false)
+            }
+        } else {
+            workspaceManager.setWorkspaceHidden(ws, hidden: !ws.isHiddenInMenus)
+        }
     }
 
     // MARK: - Create New Workspace

@@ -954,14 +954,13 @@ actor AgentSessionDataService {
         return index.entries.sortedForAgentSessionMetadataIndex()
     }
 
-    /// Copies a retired workspace's sessions into canonical storage without changing the source.
-    /// Every collision is preflighted before the first write, and the metadata index is rebuilt from
-    /// the destination files rather than copied from either workspace.
-    func rehomeWorkspaceSessions(
+    /// Prepares a retired workspace's session copies without changing either storage tree.
+    /// The coordinator prepares Chat sidecars too before allowing either family to write.
+    func prepareWorkspaceSessionRehome(
         from sourceWorkspaceDirectory: URL,
         to destinationWorkspaceDirectory: URL,
         canonicalWorkspaceID: UUID
-    ) async throws {
+    ) async throws -> WorkspaceSessionSidecarPreparedBatch? {
         let sourceFolder = sourceWorkspaceDirectory
             .appendingPathComponent("AgentSessions", isDirectory: true)
         let destinationFolder = destinationWorkspaceDirectory
@@ -970,7 +969,7 @@ actor AgentSessionDataService {
             in: sourceFolder,
             prefix: "AgentSession-"
         )
-        guard !sourceFiles.isEmpty else { return }
+        guard !sourceFiles.isEmpty else { return nil }
 
         for sourceURL in sourceFiles {
             await diskWriter.waitUntilIdle(for: sourceURL.standardizedFileURL)
@@ -986,11 +985,22 @@ actor AgentSessionDataService {
             canonicalWorkspaceID: canonicalWorkspaceID
         )
 
+        return WorkspaceSessionSidecarPreparedBatch(
+            destinationFolder: destinationFolder,
+            copies: prepared
+        )
+    }
+
+    /// Commits one already-preflighted Agent batch. Source files remain untouched, and the metadata
+    /// index is rebuilt only after every prepared destination write succeeds.
+    func commitWorkspaceSessionRehome(
+        _ batch: WorkspaceSessionSidecarPreparedBatch
+    ) async throws {
         try FileManager.default.createDirectory(
-            at: destinationFolder,
+            at: batch.destinationFolder,
             withIntermediateDirectories: true
         )
-        for copy in prepared {
+        for copy in batch.copies {
             let destinationURL = copy.destinationURL.standardizedFileURL
             guard !deletedSessionFileURLs.contains(destinationURL) else {
                 let rawID = destinationURL.deletingPathExtension().lastPathComponent
@@ -1008,7 +1018,7 @@ actor AgentSessionDataService {
                 )
             }
         }
-        _ = try await reconcileMetadataIndex(folder: destinationFolder)
+        _ = try await reconcileMetadataIndex(folder: batch.destinationFolder)
     }
 
     // MARK: - Public API
@@ -1560,20 +1570,20 @@ actor AgentSessionDataService {
 
     /// Return the main folder for the workspace (with custom or default path).
     private func workspaceFolderURL(for workspace: WorkspaceModel) throws -> URL {
-        if let customURL = workspace.customStoragePath {
-            return customURL
-        } else {
-            let root = MCPFilesystemConstants.identity.applicationSupportRootURL()
-                .appendingPathComponent("Workspaces", isDirectory: true)
-            if !FileManager.default.fileExists(atPath: root.path) {
-                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            }
-            let folderName = WorkspaceDirectoryName.directoryName(name: workspace.name, id: workspace.id)
-            let workspaceDir = root.appendingPathComponent(folderName)
-            if !FileManager.default.fileExists(atPath: workspaceDir.path) {
-                try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
-            }
-            return workspaceDir
+        let root = WorkspaceStoragePaths.configuredRoot()
+        if !FileManager.default.fileExists(atPath: root.path) {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         }
+        let workspaceDir = try WorkspaceStorageDirectoryResolver.shared.resolveDirectory(
+            workspaceID: workspace.id,
+            workspaceName: workspace.name,
+            customStoragePath: workspace.customStoragePath,
+            catalogFileURL: nil,
+            baseRoot: root
+        )
+        if !FileManager.default.fileExists(atPath: workspaceDir.path) {
+            try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
+        }
+        return workspaceDir
     }
 }

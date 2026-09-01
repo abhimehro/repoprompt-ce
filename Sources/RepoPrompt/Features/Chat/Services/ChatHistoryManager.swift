@@ -82,14 +82,14 @@ actor ChatDataService {
 
     private static let fileSaveQueue = DispatchQueue(label: "com.repoprompt.chatDataServiceFileSaveQueue")
 
-    /// Copies a retired workspace's Oracle chats into canonical storage without changing the
-    /// source. This deliberately enumerates the directory directly: `listChatSessions` enforces the
-    /// user's history limit and may delete old files, which must never happen during consolidation.
-    nonisolated static func rehomeWorkspaceSessions(
+    /// Prepares a retired workspace's Oracle chat copies without changing either storage tree.
+    /// This deliberately enumerates the directory directly: `listChatSessions` enforces the user's
+    /// history limit and may delete old files, which must never happen during consolidation.
+    nonisolated static func prepareWorkspaceSessionRehome(
         from sourceWorkspaceDirectory: URL,
         to destinationWorkspaceDirectory: URL,
         canonicalWorkspaceID: UUID
-    ) async throws {
+    ) async throws -> WorkspaceSessionSidecarPreparedBatch? {
         try await withCheckedThrowingContinuation { continuation in
             fileSaveQueue.async {
                 do {
@@ -102,7 +102,7 @@ actor ChatDataService {
                         prefix: "ChatSession-"
                     )
                     guard !sourceFiles.isEmpty else {
-                        continuation.resume(returning: ())
+                        continuation.resume(returning: nil)
                         return
                     }
                     let prepared = try WorkspaceSessionSidecarMigration.prepareCopies(
@@ -111,14 +111,30 @@ actor ChatDataService {
                         filenamePrefix: "ChatSession-",
                         canonicalWorkspaceID: canonicalWorkspaceID
                     )
-                    if !prepared.isEmpty {
-                        try FileManager.default.createDirectory(
-                            at: destinationFolder,
-                            withIntermediateDirectories: true
-                        )
-                        for copy in prepared {
-                            try WorkspaceSessionSidecarMigration.write(copy)
-                        }
+                    continuation.resume(returning: WorkspaceSessionSidecarPreparedBatch(
+                        destinationFolder: destinationFolder,
+                        copies: prepared
+                    ))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Commits one already-preflighted Chat batch on the existing serialized file queue.
+    nonisolated static func commitWorkspaceSessionRehome(
+        _ batch: WorkspaceSessionSidecarPreparedBatch
+    ) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            fileSaveQueue.async {
+                do {
+                    try FileManager.default.createDirectory(
+                        at: batch.destinationFolder,
+                        withIntermediateDirectories: true
+                    )
+                    for copy in batch.copies {
+                        try WorkspaceSessionSidecarMigration.write(copy)
                     }
                     continuation.resume(returning: ())
                 } catch {
@@ -497,22 +513,20 @@ actor ChatDataService {
 
     /// Return the main folder for the workspace (with custom or default path).
     private func workspaceFolderURL(for workspace: WorkspaceModel) throws -> URL {
-        if let customURL = workspace.customStoragePath {
-            return customURL
-        } else {
-            let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let root = supportDir
-                .appendingPathComponent("RepoPrompt CE", isDirectory: true)
-                .appendingPathComponent("Workspaces", isDirectory: true)
-            if !FileManager.default.fileExists(atPath: root.path) {
-                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            }
-            let folderName = "Workspace-\(workspace.name)-\(workspace.id.uuidString)"
-            let workspaceDir = root.appendingPathComponent(folderName)
-            if !FileManager.default.fileExists(atPath: workspaceDir.path) {
-                try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
-            }
-            return workspaceDir
+        let root = WorkspaceStoragePaths.configuredRoot()
+        if !FileManager.default.fileExists(atPath: root.path) {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         }
+        let workspaceDir = try WorkspaceStorageDirectoryResolver.shared.resolveDirectory(
+            workspaceID: workspace.id,
+            workspaceName: workspace.name,
+            customStoragePath: workspace.customStoragePath,
+            catalogFileURL: nil,
+            baseRoot: root
+        )
+        if !FileManager.default.fileExists(atPath: workspaceDir.path) {
+            try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
+        }
+        return workspaceDir
     }
 }

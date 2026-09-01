@@ -6,6 +6,11 @@ struct WorkspaceSessionSidecarPreparedCopy {
     let modificationDate: Date?
 }
 
+struct WorkspaceSessionSidecarPreparedBatch {
+    let destinationFolder: URL
+    let copies: [WorkspaceSessionSidecarPreparedCopy]
+}
+
 enum WorkspaceSessionSidecarMigrationError: LocalizedError {
     case invalidSessionFile(URL)
     case sessionIdentityMismatch(URL)

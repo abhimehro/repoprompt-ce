@@ -11,6 +11,19 @@ struct DomainWorkspaceSaveOperationIDs {
     }
 }
 
+struct DomainWorkspaceFailClosedSaveOutcome {
+    let working: DomainCommandOutcome?
+    let saved: DomainCommandOutcome?
+
+    var finalOutcome: DomainCommandOutcome? {
+        saved ?? working
+    }
+
+    var workingCommitted: Bool {
+        working?.isSuccessfulDomainMutation == true
+    }
+}
+
 /// Revisioned app-process client for the runtime-owned workspace/context authority.
 /// It is the only production persistence dependency injected into a workspace manager.
 struct DomainWorkspaceAuthorityClient {
@@ -110,9 +123,10 @@ struct DomainWorkspaceAuthorityClient {
         expectedWorkspaceRevision: UInt64,
         expectedContentDigest: String,
         operationIDs: DomainWorkspaceSaveOperationIDs = .init()
-    ) async throws -> DomainCommandOutcome {
+    ) async throws -> DomainWorkspaceFailClosedSaveOutcome {
         let document = try document(for: workspace, fileURL: fileURL)
         var saveRevision = expectedWorkspaceRevision
+        var workingOutcome: DomainCommandOutcome?
         if document.contentDigest != expectedContentDigest {
             let working = await executeStable(.init(
                 operationID: operationIDs.working,
@@ -121,18 +135,28 @@ struct DomainWorkspaceAuthorityClient {
                 origin: .appPresentation(windowID: windowID),
                 command: .replaceWorkingDocument(document)
             ))
-            guard working.isSuccessfulDomainMutation else { return working }
+            workingOutcome = working
+            guard working.isSuccessfulDomainMutation else {
+                return DomainWorkspaceFailClosedSaveOutcome(
+                    working: working,
+                    saved: nil
+                )
+            }
             saveRevision = working.after?.workingRevision
                 ?? working.workspace?.revisions.workingRevision
                 ?? saveRevision
         }
-        return await executeStable(.init(
+        let saved = await executeStable(.init(
             operationID: operationIDs.saved,
             expectedWorkspaceRevision: saveRevision,
             conflictRecoveryPolicy: .failClosed,
             origin: .appPresentation(windowID: windowID),
             command: .saveWorkspaceDocument(workspaceID: workspace.id)
         ))
+        return DomainWorkspaceFailClosedSaveOutcome(
+            working: workingOutcome,
+            saved: saved
+        )
     }
 
     func delete(

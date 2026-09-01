@@ -298,12 +298,32 @@ import XCTest
             XCTAssertTrue(manager.duplicateWorkspaceGroups().isEmpty)
 
             let projectedRetired = try XCTUnwrap(manager.workspace(withID: duplicate.id))
-            let restored = try await manager.setWorkspaceHiddenFromSnapshot(
-                projectedRetired,
-                hidden: false
-            )
+            let restoreGate = WorkspaceDuplicateCleanupSuspensionGate()
+            manager.setWorkspaceSavePreparationDidFinishHandlerForTesting { workspaceID, _, _ in
+                guard workspaceID == duplicate.id else { return }
+                await restoreGate.wait()
+            }
+            let restoreTask = Task { @MainActor in
+                try await manager.setWorkspaceHiddenFromSnapshot(
+                    projectedRetired,
+                    hidden: false
+                )
+            }
+            let pendingDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !manager.pendingConsolidatedRestoreIDs.contains(duplicate.id),
+                  ContinuousClock.now < pendingDeadline
+            {
+                await Task.yield()
+            }
+            XCTAssertTrue(manager.pendingConsolidatedRestoreIDs.contains(duplicate.id))
+            let blockedSwitch = await manager.requestWorkspaceSwitch(to: projectedRetired)
+            XCTAssertFalse(blockedSwitch.didSwitch)
+            await restoreGate.open()
+            let restored = try await restoreTask.value
+            manager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
             XCTAssertFalse(restored.isHiddenInMenus)
             XCTAssertNil(restored.consolidatedIntoWorkspaceID)
+            XCTAssertFalse(manager.pendingConsolidatedRestoreIDs.contains(duplicate.id))
 
             let authoritativeRestored = try await authoritativeWorkspace(
                 duplicate.id,
@@ -464,6 +484,184 @@ import XCTest
             XCTAssertNil(legacyCompatible.consolidatedIntoWorkspaceID)
         }
 
+        func testRenameSafeStorageResolutionUsesStableWorkspaceIdentity() async throws {
+            let workspace = WorkspaceModel(
+                id: UUID(),
+                name: "Before rename",
+                repoPaths: ["/tmp/rename-safe-storage"]
+            )
+            let workspaceID = workspace.id
+            let legacyDirectory = workspaceFileURL(for: workspace).deletingLastPathComponent()
+            try writeWorkspace(workspace)
+            try writeLegacyIndex([workspace])
+
+            let resolver = WorkspaceStorageDirectoryResolver()
+            XCTAssertEqual(
+                try resolver.resolveDirectory(
+                    workspaceID: workspaceID,
+                    workspaceName: "After rename",
+                    customStoragePath: nil,
+                    catalogFileURL: nil,
+                    baseRoot: storageRoot
+                ),
+                legacyDirectory.standardizedFileURL
+            )
+
+            var renamed = workspace
+            renamed.name = "After rename"
+            let manager = makeManager(windowID: -785)
+            let savedURL = try await manager.saveWorkspaceToFileAsync(
+                renamed,
+                baseRoot: storageRoot
+            )
+            await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.flush(url: savedURL)
+            XCTAssertEqual(savedURL.deletingLastPathComponent(), legacyDirectory.standardizedFileURL)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: workspaceFileURL(for: renamed).path))
+
+            let catalogDirectory = storageRoot.appendingPathComponent("Catalog-owned", isDirectory: true)
+            XCTAssertEqual(
+                try WorkspaceStorageDirectoryResolver().resolveDirectory(
+                    workspaceID: workspaceID,
+                    workspaceName: "After rename",
+                    customStoragePath: nil,
+                    catalogFileURL: catalogDirectory.appendingPathComponent("workspace.json"),
+                    baseRoot: storageRoot
+                ),
+                catalogDirectory.standardizedFileURL
+            )
+
+            let secondDirectory = storageRoot.appendingPathComponent(
+                DomainWorkspaceStoragePath.directoryName(name: "Other old name", id: workspaceID),
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(at: secondDirectory, withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: secondDirectory.appendingPathComponent("workspace.json"))
+            XCTAssertThrowsError(try WorkspaceStorageDirectoryResolver().resolveDirectory(
+                workspaceID: workspaceID,
+                workspaceName: "After rename",
+                customStoragePath: nil,
+                catalogFileURL: nil,
+                baseRoot: storageRoot
+            )) { error in
+                guard case WorkspaceStorageDirectoryResolutionError.ambiguousDirectories = error else {
+                    return XCTFail("Expected an ambiguity error, got \(error)")
+                }
+            }
+        }
+
+        func testBothSidecarFamiliesPreflightBeforeEitherWrites() async throws {
+            let sourceDirectory = storageRoot.appendingPathComponent("sidecar-source", isDirectory: true)
+            let destinationDirectory = storageRoot.appendingPathComponent("sidecar-destination", isDirectory: true)
+            let sourceAgentDirectory = sourceDirectory.appendingPathComponent("AgentSessions", isDirectory: true)
+            let sourceChatDirectory = sourceDirectory.appendingPathComponent("Chats", isDirectory: true)
+            try FileManager.default.createDirectory(at: sourceAgentDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: sourceChatDirectory, withIntermediateDirectories: true)
+
+            let sessionID = UUID()
+            let agentFilename = "AgentSession-\(sessionID.uuidString).json"
+            try JSONEncoder().encode(AgentSession(
+                id: sessionID,
+                workspaceID: UUID(),
+                name: "Prepared only"
+            )).write(to: sourceAgentDirectory.appendingPathComponent(agentFilename), options: .atomic)
+            try Data("not-json".utf8).write(
+                to: sourceChatDirectory.appendingPathComponent("ChatSession-\(UUID().uuidString).json"),
+                options: .atomic
+            )
+
+            let agentBatch = try await AgentSessionDataService.shared.prepareWorkspaceSessionRehome(
+                from: sourceDirectory,
+                to: destinationDirectory,
+                canonicalWorkspaceID: UUID()
+            )
+            XCTAssertNotNil(agentBatch)
+            do {
+                _ = try await ChatDataService.prepareWorkspaceSessionRehome(
+                    from: sourceDirectory,
+                    to: destinationDirectory,
+                    canonicalWorkspaceID: UUID()
+                )
+                XCTFail("Expected the malformed Chat sidecar to fail preflight")
+            } catch {
+                XCTAssertFalse(error.localizedDescription.isEmpty)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: destinationDirectory
+                    .appendingPathComponent("AgentSessions", isDirectory: true)
+                    .appendingPathComponent(agentFilename).path
+            ))
+        }
+
+        func testFailClosedSaveReportsAWorkingOnlyCommit() async throws {
+            let workspace = WorkspaceModel(
+                id: UUID(),
+                name: "Phase-aware save",
+                repoPaths: ["/tmp/phase-aware-save"]
+            )
+            try writeWorkspace(workspace)
+            try writeLegacyIndex([workspace])
+
+            let runtime = MCPDomainRuntime(configuration: .init(
+                mode: .app,
+                profileIdentifier: "workspace-phase-aware-save-\(UUID().uuidString)",
+                storageDirectory: storageRoot.appendingPathComponent("phase-runtime", isDirectory: true),
+                workspaceStorageDirectory: storageRoot,
+                eventDirectory: storageRoot.appendingPathComponent("phase-events", isDirectory: true),
+                temporaryDirectory: storageRoot.appendingPathComponent("phase-tmp", isDirectory: true),
+                externalReloadInterval: nil
+            ))
+            try await runtime.start()
+            defer { Task { _ = await runtime.shutdown() } }
+
+            let client = DomainWorkspaceAuthorityClient(store: runtime.workspaceStore, windowID: -784)
+            let initialSnapshot = await client.snapshot()
+            let initial = try XCTUnwrap(initialSnapshot.workspaces.first {
+                $0.document.workspaceID == workspace.id
+            })
+            let reservedSavedOperationID = UUID()
+            let reservation = try await client.replaceWorking(
+                workspace,
+                fileURL: initial.document.fileURL,
+                expectedWorkspaceRevision: initial.revisions.workingRevision,
+                operationID: reservedSavedOperationID
+            )
+            XCTAssertTrue(
+                reservation.disposition == .applied
+                    || reservation.disposition == .unchanged
+                    || reservation.disposition == .deduplicated
+            )
+
+            var updated = workspace
+            updated.currentPromptText = "Durable working update"
+            let outcome = try await client.saveFailClosed(
+                updated,
+                fileURL: initial.document.fileURL,
+                expectedWorkspaceRevision: reservation.after?.workingRevision
+                    ?? reservation.workspace?.revisions.workingRevision
+                    ?? initial.revisions.workingRevision,
+                expectedContentDigest: reservation.resultingDigest
+                    ?? reservation.workspace?.document.contentDigest
+                    ?? initial.document.contentDigest,
+                operationIDs: DomainWorkspaceSaveOperationIDs(
+                    working: UUID(),
+                    saved: reservedSavedOperationID
+                )
+            )
+
+            XCTAssertTrue(outcome.workingCommitted)
+            XCTAssertEqual(outcome.saved?.errorCode, .operationIDCollision)
+            let afterSnapshot = await client.snapshot()
+            let after = try XCTUnwrap(afterSnapshot.workspaces.first {
+                $0.document.workspaceID == workspace.id
+            })
+            XCTAssertNotNil(after.revisions.dirtyRevision)
+            let authoritative = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: after.document.documentBytes
+            )
+            XCTAssertEqual(authoritative.currentPromptText, updated.currentPromptText)
+        }
+
         private func authoritativeWorkspace(
             _ workspaceID: UUID,
             in runtime: MCPDomainRuntime
@@ -514,7 +712,7 @@ import XCTest
 
         private func makeManager(
             windowID: Int,
-            domainWorkspaceAuthorityClient: DomainWorkspaceAuthorityClient
+            domainWorkspaceAuthorityClient: DomainWorkspaceAuthorityClient? = nil
         ) -> WorkspaceManagerViewModel {
             let keyManager = KeyManager(
                 secureService: SecureKeysService(secureStorage: TestSecureStorageBackend())
@@ -541,6 +739,25 @@ import XCTest
             )
             managers.append(manager)
             return manager
+        }
+    }
+
+    private actor WorkspaceDuplicateCleanupSuspensionGate {
+        private var isOpen = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func wait() async {
+            guard !isOpen else { return }
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+
+        func open() {
+            isOpen = true
+            let pending = waiters
+            waiters.removeAll()
+            pending.forEach { $0.resume() }
         }
     }
 #endif
