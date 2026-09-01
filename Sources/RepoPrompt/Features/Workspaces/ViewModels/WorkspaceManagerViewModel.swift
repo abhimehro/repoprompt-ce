@@ -1854,15 +1854,21 @@ class WorkspaceManagerViewModel: ObservableObject {
         DomainWorkspaceStoragePath.directoryName(name: workspace.name, id: workspace.id)
     }
 
+    private func resolvedWorkspaceDirectoryForMutation(
+        for workspace: WorkspaceModel
+    ) throws -> URL {
+        try WorkspaceStorageDirectoryResolver.shared.resolveDirectory(
+            workspaceID: workspace.id,
+            workspaceName: workspace.name,
+            customStoragePath: workspace.customStoragePath,
+            catalogFileURL: domainWorkspaceFileURLsByID[workspace.id],
+            baseRoot: currentBaseRoot
+        )
+    }
+
     func workspaceDirectory(for workspace: WorkspaceModel) -> URL {
         do {
-            return try WorkspaceStorageDirectoryResolver.shared.resolveDirectory(
-                workspaceID: workspace.id,
-                workspaceName: workspace.name,
-                customStoragePath: workspace.customStoragePath,
-                catalogFileURL: domainWorkspaceFileURLsByID[workspace.id],
-                baseRoot: currentBaseRoot
-            )
+            return try resolvedWorkspaceDirectoryForMutation(for: workspace)
         } catch {
             Self.logger.error(
                 "Failed to resolve workspace directory for \(workspace.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)"
@@ -1909,13 +1915,13 @@ class WorkspaceManagerViewModel: ObservableObject {
             .appendingPathComponent("workspace.json", isDirectory: false)
     }
 
-    func gitDataDirectory(for workspace: WorkspaceModel) -> URL {
-        workspaceDirectory(for: workspace)
+    func gitDataDirectory(for workspace: WorkspaceModel) throws -> URL {
+        try resolvedWorkspaceDirectoryForMutation(for: workspace)
             .appendingPathComponent("_git_data", isDirectory: true)
     }
 
-    func gitDataTabDirectory(for workspace: WorkspaceModel, tabID: UUID) -> URL {
-        gitDataDirectory(for: workspace)
+    func gitDataTabDirectory(for workspace: WorkspaceModel, tabID: UUID) throws -> URL {
+        try gitDataDirectory(for: workspace)
             .appendingPathComponent(tabID.uuidString, isDirectory: true)
     }
 
@@ -6634,15 +6640,28 @@ class WorkspaceManagerViewModel: ObservableObject {
             guard !commitDuplicates.isEmpty else { continue }
 
             let canonicalBeforeMerge = workspaces[canonicalIndex]
-            let canonicalDirectory = workspaceFileURL(for: canonicalBeforeMerge)
-                .deletingLastPathComponent()
+            let canonicalDirectory: URL
+            do {
+                canonicalDirectory = try resolvedWorkspaceDirectoryForMutation(for: canonicalBeforeMerge)
+            } catch {
+                for duplicate in commitDuplicates {
+                    skipped.append(
+                        WorkspaceDuplicateCleanupSkippedItem(
+                            workspaceID: duplicate.id,
+                            workspaceName: duplicate.name,
+                            windowID: nil,
+                            reason: "sidecar_preflight_failed: \(error.localizedDescription)"
+                        )
+                    )
+                }
+                continue
+            }
             var sidecarReadyDuplicates: [WorkspaceModel] = []
             for duplicate in commitDuplicates {
-                let duplicateDirectory = workspaceFileURL(for: duplicate)
-                    .deletingLastPathComponent()
                 let agentBatch: WorkspaceSessionSidecarPreparedBatch?
                 let chatBatch: WorkspaceSessionSidecarPreparedBatch?
                 do {
+                    let duplicateDirectory = try resolvedWorkspaceDirectoryForMutation(for: duplicate)
                     agentBatch = try await AgentSessionDataService.shared.prepareWorkspaceSessionRehome(
                         from: duplicateDirectory,
                         to: canonicalDirectory,
@@ -7345,8 +7364,16 @@ class WorkspaceManagerViewModel: ObservableObject {
                     result.skippedReasonsByWorkspaceID[workspaceID] = blockReason
                     continue
                 }
+                let workspaceDirectory: URL
+                do {
+                    workspaceDirectory = try resolvedWorkspaceDirectoryForMutation(for: localWorkspace)
+                } catch {
+                    result.failedReasonsByWorkspaceID[workspaceID] = error.localizedDescription
+                    continue
+                }
                 await finalizeWorkspaceDeletion(
                     localWorkspace,
+                    workspaceDirectory: workspaceDirectory,
                     saveLegacyIndex: false,
                     cleanupLocalArtifacts: true
                 )
@@ -7477,8 +7504,12 @@ class WorkspaceManagerViewModel: ObservableObject {
                 guard Self.localEphemeralDeletionBlockReason(workspace) == nil else {
                     return false
                 }
+                guard let workspaceDirectory = try? resolvedWorkspaceDirectoryForMutation(for: workspace) else {
+                    return false
+                }
                 await finalizeWorkspaceDeletion(
                     workspace,
+                    workspaceDirectory: workspaceDirectory,
                     saveLegacyIndex: false,
                     cleanupLocalArtifacts: true
                 )
@@ -7499,19 +7530,30 @@ class WorkspaceManagerViewModel: ObservableObject {
                 reportDomainAuthorityIssue(outcome, operation: "delete_workspace")
                 return false
             }
-            await finalizeWorkspaceDeletion(workspace, saveLegacyIndex: false)
+            await finalizeWorkspaceDeletion(
+                workspace,
+                workspaceDirectory: authoritative.document.fileURL.deletingLastPathComponent(),
+                saveLegacyIndex: false
+            )
             return true
         }
-        await finalizeWorkspaceDeletion(workspace, saveLegacyIndex: true)
+        guard let workspaceDirectory = try? resolvedWorkspaceDirectoryForMutation(for: workspace) else {
+            return false
+        }
+        await finalizeWorkspaceDeletion(
+            workspace,
+            workspaceDirectory: workspaceDirectory,
+            saveLegacyIndex: true
+        )
         return true
     }
 
     private func finalizeWorkspaceDeletion(
         _ workspace: WorkspaceModel,
+        workspaceDirectory: URL,
         saveLegacyIndex: Bool,
         cleanupLocalArtifacts: Bool = false
     ) async {
-        let workspaceDir = workspaceDirectory(for: workspace)
         workspaces.removeAll { $0.id == workspace.id }
         invalidateDomainReadRegistration(for: workspace.id)
         domainWorkspaceRevisionsByID.removeValue(forKey: workspace.id)
@@ -7526,11 +7568,11 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         if saveLegacyIndex || cleanupLocalArtifacts {
             await Task.detached(priority: .utility) {
-                await GitDiffDataMaintenance.shared.deleteAllGitData(workspaceDirectory: workspaceDir)
+                await GitDiffDataMaintenance.shared.deleteAllGitData(workspaceDirectory: workspaceDirectory)
                 if workspace.customStoragePath == nil,
-                   FileManager.default.fileExists(atPath: workspaceDir.path)
+                   FileManager.default.fileExists(atPath: workspaceDirectory.path)
                 {
-                    try? FileManager.default.removeItem(at: workspaceDir)
+                    try? FileManager.default.removeItem(at: workspaceDirectory)
                 }
             }.value
         }

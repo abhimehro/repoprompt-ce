@@ -23,9 +23,9 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
     static let shared = WorkspaceStorageDirectoryResolver()
 
     private enum Provenance {
-        case custom(path: String)
+        case custom
         case catalog
-        case discovered(rootPath: String)
+        case discovered
     }
 
     private struct MemoEntry {
@@ -47,7 +47,7 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
         if let customStoragePath {
             let directory = customStoragePath.standardizedFileURL
             store(
-                MemoEntry(directory: directory, provenance: .custom(path: directory.path)),
+                MemoEntry(directory: directory, provenance: .custom),
                 workspaceID: workspaceID
             )
             return directory
@@ -60,7 +60,7 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
         }
 
         let standardizedRoot = baseRoot.standardizedFileURL
-        if let memoized = compatibleMemo(workspaceID: workspaceID, baseRoot: standardizedRoot) {
+        if let memoized = compatibleMemo(workspaceID: workspaceID) {
             return memoized
         }
 
@@ -68,17 +68,6 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
             DomainWorkspaceStoragePath.directoryName(name: workspaceName, id: workspaceID),
             isDirectory: true
         )
-        if try containsWorkspaceDocument(derived, workspaceID: workspaceID, root: standardizedRoot) {
-            store(
-                MemoEntry(
-                    directory: derived.standardizedFileURL,
-                    provenance: .discovered(rootPath: standardizedRoot.path)
-                ),
-                workspaceID: workspaceID
-            )
-            return derived.standardizedFileURL
-        }
-
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: standardizedRoot.path, isDirectory: &isDirectory) else {
@@ -141,7 +130,7 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
             store(
                 MemoEntry(
                     directory: match,
-                    provenance: .discovered(rootPath: standardizedRoot.path)
+                    provenance: .discovered
                 ),
                 workspaceID: workspaceID
             )
@@ -188,18 +177,16 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
         }
     #endif
 
-    private func compatibleMemo(workspaceID: UUID, baseRoot: URL) -> URL? {
+    private func compatibleMemo(workspaceID: UUID) -> URL? {
         lock.lock()
         defer { lock.unlock() }
         guard let entry = memoByWorkspaceID[workspaceID] else { return nil }
         switch entry.provenance {
         case .catalog:
             return entry.directory
-        case let .discovered(rootPath):
-            return rootPath == baseRoot.path ? entry.directory : nil
-        case .custom:
-            // The current model no longer supplies a custom path, so a prior custom memo must not
-            // outlive that explicit setting.
+        case .custom, .discovered:
+            // Custom paths are supplied explicitly on every call. Discovered paths must be scanned
+            // again so a newly-created same-UUID sibling cannot hide behind a stale memo.
             return nil
         }
     }

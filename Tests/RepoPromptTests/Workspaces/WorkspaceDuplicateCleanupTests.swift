@@ -530,10 +530,7 @@ import XCTest
                 catalogDirectory.standardizedFileURL
             )
 
-            let secondDirectory = storageRoot.appendingPathComponent(
-                DomainWorkspaceStoragePath.directoryName(name: "Other old name", id: workspaceID),
-                isDirectory: true
-            )
+            let secondDirectory = workspaceFileURL(for: renamed).deletingLastPathComponent()
             try FileManager.default.createDirectory(at: secondDirectory, withIntermediateDirectories: true)
             try Data("{}".utf8).write(to: secondDirectory.appendingPathComponent("workspace.json"))
             XCTAssertThrowsError(try WorkspaceStorageDirectoryResolver().resolveDirectory(
@@ -547,6 +544,7 @@ import XCTest
                     return XCTFail("Expected an ambiguity error, got \(error)")
                 }
             }
+            XCTAssertThrowsError(try manager.gitDataDirectory(for: renamed))
         }
 
         func testBothSidecarFamiliesPreflightBeforeEitherWrites() async throws {
