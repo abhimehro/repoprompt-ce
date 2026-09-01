@@ -597,14 +597,7 @@ struct ManageWorkspacesView: View {
                             .foregroundColor(.secondary)
                         OptimizedWorkspaceRow(
                             workspace: workspace,
-                            onSwitch: {
-                                Task {
-                                    let result = await workspaceManager.requestWorkspaceSwitch(to: workspace)
-                                    if result.didSwitch {
-                                        isPresented = false
-                                    }
-                                }
-                            },
+                            onSwitch: nil,
                             onRename: {
                                 workspaceBeingRenamed = workspace
                                 renameField = workspace.name
