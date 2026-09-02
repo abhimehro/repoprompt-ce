@@ -1146,6 +1146,74 @@ import XCTest
             XCTAssertTrue(restartedManager.duplicateWorkspaceGroups().isEmpty)
             let restartedSwitch = await restartedManager.requestWorkspaceSwitch(to: restartedTarget)
             XCTAssertFalse(restartedSwitch.didSwitch)
+
+            let restoreCompletionSnapshot = await restartedClient.snapshot()
+            let restoreCompletionBaseline = try XCTUnwrap(restoreCompletionSnapshot.workspaces.first {
+                $0.document.workspaceID == workspace.id
+            })
+            let restoreCompletion = try await restartedClient.saveFailClosed(
+                restartedWorking,
+                fileURL: restoreCompletionBaseline.document.fileURL,
+                expectedWorkspaceRevision: restoreCompletionBaseline.revisions.workingRevision,
+                expectedContentDigest: restoreCompletionBaseline.document.contentDigest
+            )
+            XCTAssertTrue(
+                restoreCompletion.finalOutcome?.disposition == .applied
+                    || restoreCompletion.finalOutcome?.disposition == .unchanged
+                    || restoreCompletion.finalOutcome?.disposition == .deduplicated
+            )
+
+            let staleActivationClient = DomainWorkspaceAuthorityClient(
+                store: restartedRuntime.workspaceStore,
+                windowID: -791
+            )
+            let staleActivationManager = makeManager(
+                windowID: -791,
+                domainWorkspaceAuthorityClient: staleActivationClient
+            )
+            await staleActivationManager.awaitInitialized()
+            let staleActivationTarget = try XCTUnwrap(
+                staleActivationManager.workspace(withID: workspace.id)
+            )
+            XCTAssertNil(staleActivationTarget.consolidatedIntoWorkspaceID)
+
+            let reservedRetirementSaveID = UUID()
+            let retirementReservation = try await restartedClient.replaceWorking(
+                restartedWorking,
+                fileURL: restoreCompletionBaseline.document.fileURL,
+                expectedWorkspaceRevision: restoreCompletion.finalOutcome?.after?.workingRevision
+                    ?? restoreCompletionBaseline.revisions.workingRevision,
+                operationID: reservedRetirementSaveID
+            )
+            let retirementBaselineSnapshot = await restartedClient.snapshot()
+            let retirementBaseline = try XCTUnwrap(retirementBaselineSnapshot.workspaces.first {
+                $0.document.workspaceID == workspace.id
+            })
+            var incompleteRetirement = restartedWorking
+            incompleteRetirement.isHiddenInMenus = true
+            incompleteRetirement.consolidatedIntoWorkspaceID = canonicalID
+            let retirement = try await restartedClient.saveFailClosed(
+                incompleteRetirement,
+                fileURL: retirementBaseline.document.fileURL,
+                expectedWorkspaceRevision: retirementReservation.after?.workingRevision
+                    ?? retirementBaseline.revisions.workingRevision,
+                expectedContentDigest: retirementReservation.resultingDigest
+                    ?? retirementBaseline.document.contentDigest,
+                operationIDs: DomainWorkspaceSaveOperationIDs(
+                    working: UUID(),
+                    saved: reservedRetirementSaveID
+                )
+            )
+            XCTAssertTrue(retirement.workingCommitted)
+            XCTAssertEqual(retirement.saved?.errorCode, .operationIDCollision)
+
+            let staleActivation = await staleActivationManager.switchWorkspace(
+                to: staleActivationTarget,
+                saveState: false,
+                reason: "workingOnlyRetirementActivationTest"
+            )
+            XCTAssertFalse(staleActivation.didSwitch)
+            XCTAssertNotEqual(staleActivationManager.activeWorkspaceID, workspace.id)
         }
 
         func testSidecarMigrationRejectsAliasingAndStaleDestinations() throws {

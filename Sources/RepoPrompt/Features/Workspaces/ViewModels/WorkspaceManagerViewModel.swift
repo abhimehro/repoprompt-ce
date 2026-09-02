@@ -3717,6 +3717,11 @@ class WorkspaceManagerViewModel: ObservableObject {
             else {
                 return .blocked("Workspace \"\(loadedWorkspace.name)\" is a consolidated recovery copy. Restore it before opening it.")
             }
+            guard await canActivateWorkspaceAfterAuthorityCheck(
+                workspaceID: loadedWorkspace.id
+            ) else {
+                return .blocked("Workspace \"\(loadedWorkspace.name)\" could not be verified for activation. Refresh or restore it first.")
+            }
             activeWorkspaceID = loadedWorkspace.id // Set the active ID
         } else {
             let diskURL = workspaceFileURL(for: newWorkspace)
@@ -3737,6 +3742,11 @@ class WorkspaceManagerViewModel: ObservableObject {
                       !pendingConsolidatedRestoreIDs.contains(upgraded.id)
                 else {
                     return .blocked("Workspace \"\(upgraded.name)\" is a consolidated recovery copy. Restore it before opening it.")
+                }
+                guard await canActivateWorkspaceAfterAuthorityCheck(
+                    workspaceID: upgraded.id
+                ) else {
+                    return .blocked("Workspace \"\(upgraded.name)\" could not be verified for activation. Refresh or restore it first.")
                 }
                 activeWorkspaceID = upgraded.id
             } catch {
@@ -4792,6 +4802,24 @@ class WorkspaceManagerViewModel: ObservableObject {
             publishPendingConsolidatedRestoreIDs()
             return .unavailable
         }
+    }
+
+    /// Disk load may observe the older saved phase while authority already owns a newer working
+    /// lifecycle transition. Authority-backed activation therefore proceeds only from a fresh,
+    /// clear classification, followed by one final local projection check.
+    private func canActivateWorkspaceAfterAuthorityCheck(workspaceID: UUID) async -> Bool {
+        guard let target = workspace(withID: workspaceID) else { return false }
+        if domainWorkspaceAuthorityClient != nil, !target.isEphemeral {
+            switch await refreshAuthorityConsolidatedRestoreClassification(workspaceID: workspaceID) {
+            case .clear:
+                break
+            case .retired, .incomplete(_), .unavailable, .stale:
+                return false
+            }
+        }
+        guard let current = workspace(withID: workspaceID) else { return false }
+        return current.consolidatedIntoWorkspaceID == nil
+            && !pendingConsolidatedRestoreIDs.contains(workspaceID)
     }
 
     func applyDomainWorkspaceProjection(
