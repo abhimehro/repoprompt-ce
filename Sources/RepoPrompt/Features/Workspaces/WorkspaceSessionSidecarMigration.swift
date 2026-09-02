@@ -90,7 +90,8 @@ enum WorkspaceSessionSidecarMigration {
     /// carrying the UUID suffix is considered, so a rename can reuse a sidecar-only directory.
     static func workspaceDirectory(
         for workspace: WorkspaceModel,
-        root: URL
+        root: URL,
+        requireUniqueMatch: Bool = false
     ) throws -> URL {
         if let customStoragePath = workspace.customStoragePath {
             return customStoragePath.standardizedFileURL
@@ -148,7 +149,13 @@ enum WorkspaceSessionSidecarMigration {
             matches.append(child.standardizedFileURL)
         }
 
-        guard matches.count <= 1 else {
+        if matches.count > 1 {
+            guard requireUniqueMatch else {
+                // Preserve the predecessor's ordinary read/write locus for historical layouts
+                // split across multiple name-derived directories. Consolidation opts into strict
+                // uniqueness so it can never retire a workspace after copying only one fragment.
+                return derived
+            }
             throw WorkspaceSessionSidecarMigrationError.ambiguousWorkspaceDirectories(
                 workspaceID: workspace.id,
                 candidates: matches.sorted { $0.path < $1.path }

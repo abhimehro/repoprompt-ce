@@ -138,6 +138,48 @@ actor ChatDataService {
         }
     }
 
+    private nonisolated static func listChatSessionURLs(
+        in folder: URL,
+        limit: ChatHistoryLimit
+    ) async throws -> [URL] {
+        let maximumCount = limit == .unlimited ? nil : limit.rawValue
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<[URL], Error>) in
+            fileSaveQueue.async {
+                do {
+                    let contents = try FileManager.default.contentsOfDirectory(
+                        at: folder,
+                        includingPropertiesForKeys: [.contentModificationDateKey],
+                        options: [.skipsHiddenFiles]
+                    )
+                    let sortedFiles = contents.filter {
+                        $0.pathExtension.lowercased() == "json"
+                            && $0.lastPathComponent.hasPrefix("ChatSession-")
+                    }.sorted { lhs, rhs in
+                        let lhsDate = (try? lhs.resourceValues(
+                            forKeys: [.contentModificationDateKey]
+                        ))?.contentModificationDate ?? .distantPast
+                        let rhsDate = (try? rhs.resourceValues(
+                            forKeys: [.contentModificationDateKey]
+                        ))?.contentModificationDate ?? .distantPast
+                        return lhsDate > rhsDate
+                    }
+
+                    guard let maximumCount, sortedFiles.count > maximumCount else {
+                        continuation.resume(returning: sortedFiles)
+                        return
+                    }
+                    for url in sortedFiles.dropFirst(maximumCount) {
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                    continuation.resume(returning: Array(sortedFiles.prefix(maximumCount)))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     #if DEBUG
         nonisolated static func test_setWorkspaceRootOverride(_ root: URL?) async {
             await withCheckedContinuation { continuation in
@@ -160,8 +202,14 @@ actor ChatDataService {
         from sourceWorkspace: WorkspaceModel,
         to destinationWorkspace: WorkspaceModel
     ) async throws -> WorkspaceSessionSidecarPreparedBatch? {
-        let sourceWorkspaceDirectory = try resolvedWorkspaceFolderURL(for: sourceWorkspace)
-        let destinationWorkspaceDirectory = try resolvedWorkspaceFolderURL(for: destinationWorkspace)
+        let sourceWorkspaceDirectory = try resolvedWorkspaceFolderURL(
+            for: sourceWorkspace,
+            requireUniqueMatch: true
+        )
+        let destinationWorkspaceDirectory = try resolvedWorkspaceFolderURL(
+            for: destinationWorkspace,
+            requireUniqueMatch: true
+        )
         let canonicalWorkspaceID = destinationWorkspace.id
         return try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<WorkspaceSessionSidecarPreparedBatch?, Error>) in
@@ -177,14 +225,6 @@ actor ChatDataService {
                         source: sourceFolder,
                         destination: destinationFolder
                     )
-                    let sourceFiles = try WorkspaceSessionSidecarMigration.sessionFileURLs(
-                        in: sourceFolder,
-                        prefix: "ChatSession-"
-                    )
-                    guard !sourceFiles.isEmpty else {
-                        continuation.resume(returning: nil)
-                        return
-                    }
                     let prepared = try WorkspaceSessionSidecarMigration.prepareCopies(
                         from: sourceFolder,
                         to: destinationFolder,
@@ -421,36 +461,10 @@ actor ChatDataService {
     /// Returns a list of "ChatSession-xxx.json" files in the workspace’s Chats folder, sorted by mod date desc.
     func listChatSessions(for workspace: WorkspaceModel) async throws -> [URL] {
         let chatsFolder = try ensureChatsFolder(for: workspace)
-
-        let contents = try FileManager.default.contentsOfDirectory(
-            at: chatsFolder,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+        return try await Self.listChatSessionURLs(
+            in: chatsFolder,
+            limit: chatHistoryLimit
         )
-        let jsonFiles = contents.filter {
-            $0.pathExtension.lowercased() == "json" &&
-                $0.lastPathComponent.hasPrefix("ChatSession-")
-        }
-
-        let sortedFiles = jsonFiles.sorted { lhs, rhs in
-            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-            return lhsDate > rhsDate
-        }
-
-        // Apply chat history limit based on user setting
-        let limit = chatHistoryLimit
-        if limit != .unlimited, sortedFiles.count > limit.rawValue {
-            let filesToDelete = sortedFiles.dropFirst(limit.rawValue)
-            for url in filesToDelete {
-                // Best-effort delete; ignore individual failures
-                try? await Self.removeItem(at: url)
-            }
-            return Array(sortedFiles.prefix(limit.rawValue))
-        }
-
-        // If unlimited or under limit, return all files
-        return sortedFiles
     }
 
     /// Get metadata for recent chat sessions without loading full content
@@ -588,11 +602,13 @@ actor ChatDataService {
     }
 
     private nonisolated static func resolvedWorkspaceFolderURL(
-        for workspace: WorkspaceModel
+        for workspace: WorkspaceModel,
+        requireUniqueMatch: Bool = false
     ) throws -> URL {
         try WorkspaceSessionSidecarMigration.workspaceDirectory(
             for: workspace,
-            root: workspaceRootURL()
+            root: workspaceRootURL(),
+            requireUniqueMatch: requireUniqueMatch
         )
     }
 

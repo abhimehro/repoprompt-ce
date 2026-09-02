@@ -330,27 +330,18 @@ final class DomainWorkspacePresentationBridge {
               workspace.health.acceptsMutations,
               let model = workspaceManager?.workspace(withID: workspaceID)
         else { return false }
-        let cachedModel: WorkspaceModel
-        if let modelDocument = try? client.document(
+        let cachedModel: WorkspaceModel = if let modelDocument = try? client.document(
             for: model,
             fileURL: workspace.document.fileURL
         ), modelDocument.contentDigest == workspace.document.contentDigest {
-            cachedModel = model
+            model
         } else {
             // A same-window commit can be accepted just before a newer local edit is captured.
-            // Keep the bridge's cache canonical, but do not project that older accepted model over
-            // the newer local one. Advancing the baseline below lets the newer edit commit from the
-            // accepted revision; explicit failed-save reconciliation remains responsible for
-            // authoritative replacement when a two-phase cleanup save does not complete.
-            do {
-                cachedModel = try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
-                    documentBytes: workspace.document.documentBytes,
-                    fileURL: workspace.document.fileURL
-                )
-            } catch {
-                workspaceManager?.reportDomainProjectionFailure(error)
-                return false
-            }
+            // Keep that local model in both the manager and bridge cache. Advancing the baseline
+            // below lets the newer edit commit from the accepted revision; explicit failed-save
+            // reconciliation remains responsible for authoritative replacement when a two-phase
+            // cleanup save does not complete.
+            model
         }
         projectedModels[workspaceID] = cachedModel
         projectedDigests[workspaceID] = workspace.document.contentDigest

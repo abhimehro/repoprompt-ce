@@ -870,6 +870,11 @@ actor DomainWorkspaceContextAuthority {
             guard var record = records[workspaceID], record.health.acceptsMutations else {
                 return .failed
             }
+            guard record.document.metadata.consolidatedIntoWorkspaceID
+                == localDocument.metadata.consolidatedIntoWorkspaceID,
+                externalDocument.metadata.consolidatedIntoWorkspaceID
+                == localDocument.metadata.consolidatedIntoWorkspaceID
+            else { return .recoveryPending }
             let before = record.revisions
             let restoresCapturedDocument = record.document.contentDigest != localDocument.contentDigest
             let revisions: DomainRevisionState
@@ -993,6 +998,9 @@ actor DomainWorkspaceContextAuthority {
               var record = records[workspaceID],
               record.health.acceptsMutations
         else { return .failed }
+        guard record.document.metadata.consolidatedIntoWorkspaceID
+            == localDocument.metadata.consolidatedIntoWorkspaceID
+        else { return .recoveryPending }
         guard record.document.contentDigest != localDocument.contentDigest else {
             return .applied
         }
@@ -1020,6 +1028,7 @@ actor DomainWorkspaceContextAuthority {
                     contextUpdate.tombstones
                 ) { _, new in new },
                 operations: record.operations,
+                requiresMatchingConsolidationLifecycle: true,
                 now: Date()
             )
             catalogRevision = max(catalogRevision, persisted.catalogRevision)
@@ -1460,6 +1469,16 @@ actor DomainWorkspaceContextAuthority {
             guard record.health.acceptsMutations else {
                 return healthRejectionOutcome(envelope, record: record)
             }
+            if isDurableReplay,
+               record.document.metadata.consolidatedIntoWorkspaceID
+               != document.metadata.consolidatedIntoWorkspaceID
+            {
+                return conflictOutcome(
+                    envelope,
+                    record: record,
+                    diagnostic: "workspace_consolidation_lifecycle_changed_after_refresh"
+                )
+            }
             if !isDurableReplay,
                let expected = envelope.expectedWorkspaceRevision,
                expected != record.revisions.workingRevision
@@ -1514,6 +1533,8 @@ actor DomainWorkspaceContextAuthority {
             )
             let recorded = DomainRecordedOperation(fingerprint: fingerprint, recordedAt: Date(), outcome: provisional)
             let operations = record.operations + [recorded]
+            let requiresDirtyLifecycleFence = before.dirtyRevision != nil
+                && envelope.conflictRecoveryPolicy != .failClosed
             let persisted: DomainPersistenceWorkingCommit
             do {
                 persisted = try await persistence.persistWorking(
@@ -1523,6 +1544,8 @@ actor DomainWorkspaceContextAuthority {
                     contextRevisions: contextUpdate.revisions,
                     contextTombstones: record.contextTombstones.merging(contextUpdate.tombstones) { _, new in new },
                     operations: operations,
+                    requiresMatchingConsolidationLifecycle: isDurableReplay || requiresDirtyLifecycleFence,
+                    requiresMatchingSavedDigest: isDurableReplay,
                     now: recorded.recordedAt
                 )
                 catalogRevision = max(catalogRevision, persisted.catalogRevision)

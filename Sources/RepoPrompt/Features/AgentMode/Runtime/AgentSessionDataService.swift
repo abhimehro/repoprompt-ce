@@ -75,11 +75,16 @@ private actor AgentSessionDiskWriter {
     func commitPreparedWorkspaceSessionSidecarBatch(
         _ batch: WorkspaceSessionSidecarPreparedBatch
     ) throws {
+        let sourceFolder = batch.sourceFolder.standardizedFileURL
+        if let pendingSourceURL = pendingByURL.keys.first(where: { url in
+            let url = url.standardizedFileURL
+            return url.deletingLastPathComponent() == sourceFolder
+                && url.lastPathComponent.hasPrefix(batch.filenamePrefix)
+                && url.pathExtension.lowercased() == "json"
+        }) {
+            throw WorkspaceSessionSidecarMigrationError.sourceWriteInProgress(pendingSourceURL)
+        }
         for copy in batch.copies {
-            let sourceURL = copy.sourceURL.standardizedFileURL
-            guard pendingByURL[sourceURL] == nil else {
-                throw WorkspaceSessionSidecarMigrationError.sourceWriteInProgress(sourceURL)
-            }
             let destinationURL = copy.destinationURL.standardizedFileURL
             guard pendingByURL[destinationURL] == nil else {
                 throw WorkspaceSessionSidecarMigrationError.destinationWriteInProgress(destinationURL)
@@ -986,8 +991,14 @@ actor AgentSessionDataService {
         from sourceWorkspace: WorkspaceModel,
         to destinationWorkspace: WorkspaceModel
     ) async throws -> WorkspaceSessionSidecarPreparedBatch? {
-        let sourceWorkspaceDirectory = try resolvedWorkspaceFolderURL(for: sourceWorkspace)
-        let destinationWorkspaceDirectory = try resolvedWorkspaceFolderURL(for: destinationWorkspace)
+        let sourceWorkspaceDirectory = try resolvedWorkspaceFolderURL(
+            for: sourceWorkspace,
+            requireUniqueMatch: true
+        )
+        let destinationWorkspaceDirectory = try resolvedWorkspaceFolderURL(
+            for: destinationWorkspace,
+            requireUniqueMatch: true
+        )
         let sourceFolder = sourceWorkspaceDirectory
             .appendingPathComponent("AgentSessions", isDirectory: true)
             .standardizedFileURL
@@ -1002,7 +1013,6 @@ actor AgentSessionDataService {
             in: sourceFolder,
             prefix: "AgentSession-"
         )
-        guard !sourceFiles.isEmpty else { return nil }
 
         for sourceURL in sourceFiles {
             await diskWriter.waitUntilIdle(for: sourceURL.standardizedFileURL)
@@ -1047,6 +1057,7 @@ actor AgentSessionDataService {
             }
         }
         try await diskWriter.commitPreparedWorkspaceSessionSidecarBatch(batch)
+        guard !batch.copies.isEmpty else { return }
         for copy in batch.copies {
             let destinationURL = copy.destinationURL.standardizedFileURL
             let rawID = destinationURL.deletingPathExtension().lastPathComponent
@@ -1629,10 +1640,14 @@ actor AgentSessionDataService {
         return Self.defaultWorkspaceRootURL()
     }
 
-    private func resolvedWorkspaceFolderURL(for workspace: WorkspaceModel) throws -> URL {
+    private func resolvedWorkspaceFolderURL(
+        for workspace: WorkspaceModel,
+        requireUniqueMatch: Bool = false
+    ) throws -> URL {
         try WorkspaceSessionSidecarMigration.workspaceDirectory(
             for: workspace,
-            root: workspaceRootURL()
+            root: workspaceRootURL(),
+            requireUniqueMatch: requireUniqueMatch
         )
     }
 

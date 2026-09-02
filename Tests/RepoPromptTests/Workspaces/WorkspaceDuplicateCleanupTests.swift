@@ -193,6 +193,40 @@ import XCTest
             let baselineAfterOlderEcho = manager.debugDomainAuthorityBaseline(for: canonical.id)
             XCTAssertEqual(baselineAfterOlderEcho.revisions, canonicalBeforeLocalSave.revisions)
             XCTAssertEqual(baselineAfterOlderEcho.digest, canonicalBeforeLocalSave.document.contentDigest)
+
+            let projectionClient = DomainWorkspaceAuthorityClient(
+                store: runtime.workspaceStore,
+                windowID: -790
+            )
+            let projectionSnapshot = await projectionClient.snapshot()
+            let projectionDuplicate = try XCTUnwrap(projectionSnapshot.workspaces.first {
+                $0.document.workspaceID == duplicate.id
+            })
+            var projectionTrigger = try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
+                documentBytes: projectionDuplicate.document.documentBytes,
+                fileURL: projectionDuplicate.document.fileURL
+            )
+            projectionTrigger.currentPromptText = "Unrelated projection trigger"
+            let projectionOutcome = try await projectionClient.save(
+                projectionTrigger,
+                fileURL: projectionDuplicate.document.fileURL,
+                expectedWorkspaceRevision: projectionDuplicate.revisions.workingRevision,
+                expectedContentDigest: projectionDuplicate.document.contentDigest
+            )
+            XCTAssertTrue(
+                projectionOutcome.disposition == .applied
+                    || projectionOutcome.disposition == .unchanged
+                    || projectionOutcome.disposition == .deduplicated
+            )
+            let projectionSequence = await (runtime.workspaceStore.snapshot()).publicationSequence
+            let projectedTrigger = await presentationBridge.waitUntilProjected(through: projectionSequence)
+            XCTAssertTrue(projectedTrigger)
+            XCTAssertEqual(
+                manager.workspace(withID: canonical.id)?.currentPromptText,
+                mismatchedCanonical.currentPromptText,
+                "An unrelated projection must not reapply an older accepted self-echo."
+            )
+
             _ = try await manager.saveWorkspaceToFileAsync(
                 mismatchedCanonical,
                 preserveDiskRepoPathsIfUnchangedSinceBaseline: false
@@ -213,7 +247,14 @@ import XCTest
                 1,
                 "A user-hidden, unretired workspace must remain detectable as a duplicate."
             )
-
+            if manager.activeWorkspaceID != canonical.id {
+                let canonicalSwitch = try await manager.requestWorkspaceSwitch(
+                    to: XCTUnwrap(manager.workspace(withID: canonical.id)),
+                    saveState: false,
+                    reason: "duplicateCleanupTestSetup"
+                )
+                XCTAssertTrue(canonicalSwitch.didSwitch)
+            }
             let previousWindows = WindowStatesManager.shared.allWindows
             WindowStatesManager.shared.allWindows = []
             defer { WindowStatesManager.shared.allWindows = previousWindows }
@@ -226,17 +267,54 @@ import XCTest
             XCTAssertEqual(cleanup.backupURL?.deletingLastPathComponent(), backupDirectory)
             XCTAssertTrue(try FileManager.default.fileExists(atPath: XCTUnwrap(cleanup.backupURL).path))
 
+            let locallyRetired = try XCTUnwrap(manager.workspace(withID: duplicate.id))
+            XCTAssertTrue(locallyRetired.isHiddenInMenus)
+            XCTAssertEqual(locallyRetired.consolidatedIntoWorkspaceID, canonical.id)
+            let staleHideResult = try await manager.setWorkspaceHiddenFromSnapshot(
+                duplicate,
+                hidden: true
+            )
+            XCTAssertEqual(staleHideResult.consolidatedIntoWorkspaceID, canonical.id)
+            var rejectedStaleOrdinaryUnhide = false
+            do {
+                _ = try await manager.setWorkspaceHiddenFromSnapshot(
+                    duplicate,
+                    hidden: false
+                )
+            } catch {
+                rejectedStaleOrdinaryUnhide = true
+            }
+            XCTAssertTrue(rejectedStaleOrdinaryUnhide)
+            XCTAssertEqual(
+                manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID,
+                canonical.id
+            )
+            let staleManager = makeManager(windowID: -789)
+            await staleManager.awaitInitialized()
+            let staleSwitch = await staleManager.switchWorkspace(
+                to: duplicate,
+                saveState: false,
+                reason: "staleRetiredRecoveryTest"
+            )
+            XCTAssertFalse(staleSwitch.didSwitch)
+            XCTAssertNotEqual(staleManager.activeWorkspaceID, duplicate.id)
+            XCTAssertEqual(
+                staleManager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID,
+                canonical.id
+            )
+
             let staleIndexEntries = try legacyIndexEntries()
             XCTAssertEqual(staleIndexEntries.map(\.id), [canonical.id])
 
             let authorityInventory = await manager.loadWorkspaceSnapshotFromDisk()
-            XCTAssertEqual(Set(authorityInventory.map(\.id)), Set([canonical.id, duplicate.id]))
+            let authorityUserInventory = authorityInventory.filter { !$0.isSystemWorkspace }
+            XCTAssertEqual(Set(authorityUserInventory.map(\.id)), Set([canonical.id, duplicate.id]))
             let defaultInventory = WindowRoutingService.workspaceInventoryModels(
                 authorityInventory,
                 authorityIncompleteWorkspaceIDs: manager.pendingConsolidatedRestoreIDs,
                 includeHidden: false
             )
-            XCTAssertEqual(defaultInventory.map(\.id), [canonical.id])
+            XCTAssertEqual(defaultInventory.filter { !$0.isSystemWorkspace }.map(\.id), [canonical.id])
             let recoveryInventory = WindowRoutingService.workspaceInventoryModels(
                 authorityInventory,
                 authorityIncompleteWorkspaceIDs: manager.pendingConsolidatedRestoreIDs,
@@ -316,10 +394,17 @@ import XCTest
             // completed instead of passing immediately on the already-projected retirement.
             manager.applyWorkspaceHiddenStateInMemory(
                 workspaceID: duplicate.id,
-                hidden: true,
+                hidden: false,
                 consolidatedIntoWorkspaceID: nil,
                 dateModified: Date()
             )
+            XCTAssertEqual(
+                manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID,
+                canonical.id,
+                "A stale hidden-state fan-out must not erase a newer retirement marker."
+            )
+            let retiredIndex = try XCTUnwrap(manager.workspaces.firstIndex { $0.id == duplicate.id })
+            manager.workspaces[retiredIndex].consolidatedIntoWorkspaceID = nil
             manager.reloadWorkspacesFromDisk()
             let reloadDeadline = ContinuousClock.now.advanced(by: .seconds(5))
             while manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID != canonical.id,
@@ -357,6 +442,17 @@ import XCTest
             XCTAssertFalse(restored.isHiddenInMenus)
             XCTAssertNil(restored.consolidatedIntoWorkspaceID)
             XCTAssertFalse(manager.pendingConsolidatedRestoreIDs.contains(duplicate.id))
+            var rejectedStaleRetiredHide = false
+            do {
+                _ = try await manager.setWorkspaceHiddenFromSnapshot(
+                    inventoryRetired,
+                    hidden: true
+                )
+            } catch {
+                rejectedStaleRetiredHide = true
+            }
+            XCTAssertTrue(rejectedStaleRetiredHide)
+            XCTAssertNil(manager.workspace(withID: duplicate.id)?.consolidatedIntoWorkspaceID)
 
             let authoritativeRestored = try await authoritativeWorkspace(
                 duplicate.id,
@@ -472,7 +568,7 @@ import XCTest
             XCTAssertTrue(cleanup.retiredWorkspaceIDs.isEmpty)
             XCTAssertTrue(cleanup.skipped.contains {
                 $0.workspaceID == duplicate.id && $0.reason.hasPrefix("persist_failed:")
-            })
+            }, "Unexpected skips: \(cleanup.skipped)")
 
             let authoritativeCanonical = try await authoritativeWorkspace(canonical.id, in: runtime)
             XCTAssertEqual(authoritativeCanonical.currentPromptText, externalPrompt)
@@ -492,6 +588,101 @@ import XCTest
             XCTAssertNil(authoritativeDuplicate.consolidatedIntoWorkspaceID)
             XCTAssertFalse(authoritativeDuplicate.isHiddenInMenus)
             XCTAssertEqual(manager.duplicateWorkspaceGroups().count, 1)
+
+            let competingSnapshot = await externalClient.snapshot()
+            let competingDuplicate = try XCTUnwrap(competingSnapshot.workspaces.first {
+                $0.document.workspaceID == duplicate.id
+            })
+            var externallyRetired = duplicate
+            externallyRetired.isHiddenInMenus = true
+            externallyRetired.consolidatedIntoWorkspaceID = canonical.id
+            externallyRetired.dateModified = Date(timeIntervalSince1970: 400)
+            let retirementOutcome = try await externalClient.save(
+                externallyRetired,
+                fileURL: competingDuplicate.document.fileURL,
+                expectedWorkspaceRevision: competingDuplicate.revisions.workingRevision,
+                expectedContentDigest: competingDuplicate.document.contentDigest
+            )
+            XCTAssertTrue(
+                retirementOutcome.disposition == .applied
+                    || retirementOutcome.disposition == .unchanged
+                    || retirementOutcome.disposition == .deduplicated
+            )
+
+            let retiredSnapshot = await externalClient.snapshot()
+            let retiredDuplicate = try XCTUnwrap(retiredSnapshot.workspaces.first {
+                $0.document.workspaceID == duplicate.id
+            })
+            let reservedSavedOperationID = UUID()
+            _ = try await externalClient.replaceWorking(
+                externallyRetired,
+                fileURL: retiredDuplicate.document.fileURL,
+                expectedWorkspaceRevision: retiredDuplicate.revisions.workingRevision,
+                operationID: reservedSavedOperationID
+            )
+            let restoreSnapshot = await externalClient.snapshot()
+            let restoreBaseline = try XCTUnwrap(restoreSnapshot.workspaces.first {
+                $0.document.workspaceID == duplicate.id
+            })
+            var incompleteWorkingRestore = duplicate
+            incompleteWorkingRestore.currentPromptText = "Exact incomplete restore"
+            let incompleteRestore = try await externalClient.saveFailClosed(
+                incompleteWorkingRestore,
+                fileURL: restoreBaseline.document.fileURL,
+                expectedWorkspaceRevision: restoreBaseline.revisions.workingRevision,
+                expectedContentDigest: restoreBaseline.document.contentDigest,
+                operationIDs: DomainWorkspaceSaveOperationIDs(
+                    working: UUID(),
+                    saved: reservedSavedOperationID
+                )
+            )
+            XCTAssertTrue(incompleteRestore.workingCommitted)
+            XCTAssertEqual(incompleteRestore.saved?.errorCode, .operationIDCollision)
+
+            let staleRuntimeSnapshot = await managerClient.snapshot()
+            let staleRuntimeDuplicate = try XCTUnwrap(staleRuntimeSnapshot.workspaces.first {
+                $0.document.workspaceID == duplicate.id
+            })
+            XCTAssertNil(staleRuntimeDuplicate.document.metadata.consolidatedIntoWorkspaceID)
+            var staleRename = duplicate
+            staleRename.name = "Stale rename"
+            let staleRenameOutcome = try await managerClient.save(
+                staleRename,
+                fileURL: staleRuntimeDuplicate.document.fileURL,
+                expectedWorkspaceRevision: staleRuntimeDuplicate.revisions.workingRevision,
+                expectedContentDigest: staleRuntimeDuplicate.document.contentDigest
+            )
+            XCTAssertEqual(staleRenameOutcome.disposition, .conflict)
+            XCTAssertEqual(staleRenameOutcome.errorCode, .stateConflict)
+            let preservedSnapshot = await managerClient.snapshot()
+            let preservedIncomplete = try XCTUnwrap(preservedSnapshot.workspaces.first {
+                $0.document.workspaceID == duplicate.id
+            })
+
+            let refreshedStaleRenameOutcome = try await managerClient.save(
+                staleRename,
+                fileURL: preservedIncomplete.document.fileURL,
+                expectedWorkspaceRevision: preservedIncomplete.revisions.workingRevision,
+                expectedContentDigest: preservedIncomplete.document.contentDigest
+            )
+            XCTAssertEqual(refreshedStaleRenameOutcome.disposition, .conflict)
+            XCTAssertEqual(refreshedStaleRenameOutcome.errorCode, .stateConflict)
+
+            let finalPreservedSnapshot = await managerClient.snapshot()
+            let finalPreservedIncomplete = try XCTUnwrap(finalPreservedSnapshot.workspaces.first {
+                $0.document.workspaceID == duplicate.id
+            })
+            XCTAssertNotNil(finalPreservedIncomplete.revisions.dirtyRevision)
+            let preservedWorking = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: finalPreservedIncomplete.document.documentBytes
+            )
+            XCTAssertEqual(preservedWorking.currentPromptText, incompleteWorkingRestore.currentPromptText)
+            let stillRetiredOnDisk = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: Data(contentsOf: finalPreservedIncomplete.document.fileURL)
+            )
+            XCTAssertEqual(stillRetiredOnDisk.consolidatedIntoWorkspaceID, canonical.id)
         }
 
         func testWorkspaceRetirementMarkerRoundTripsAndDefaultsToNil() throws {
@@ -645,6 +836,32 @@ import XCTest
                 chatLegacyDirectory.standardizedFileURL
             )
 
+            let currentNameAgentDirectory = sidecarWorkspaceDirectory(
+                for: renamed,
+                root: agentWorkspaceRoot
+            )
+            try FileManager.default.createDirectory(
+                at: currentNameAgentDirectory,
+                withIntermediateDirectories: true
+            )
+            XCTAssertEqual(
+                try WorkspaceSessionSidecarMigration.workspaceDirectory(
+                    for: renamed,
+                    root: agentWorkspaceRoot
+                ),
+                currentNameAgentDirectory.standardizedFileURL,
+                "Ordinary access must preserve the predecessor's current-name path when rename history left multiple directories."
+            )
+            XCTAssertThrowsError(try WorkspaceSessionSidecarMigration.workspaceDirectory(
+                for: renamed,
+                root: agentWorkspaceRoot,
+                requireUniqueMatch: true
+            )) { error in
+                guard case WorkspaceSessionSidecarMigrationError.ambiguousWorkspaceDirectories = error else {
+                    return XCTFail("Expected consolidation to reject ambiguous sidecar directories, got \(error)")
+                }
+            }
+
             let secondDirectory = workspaceFileURL(for: renamed).deletingLastPathComponent()
             try FileManager.default.createDirectory(at: secondDirectory, withIntermediateDirectories: true)
             try Data("{}".utf8).write(to: secondDirectory.appendingPathComponent("workspace.json"))
@@ -696,10 +913,9 @@ import XCTest
                 workspaceID: duplicate.id,
                 name: "Prepared only"
             )).write(to: sourceAgentURL, options: .atomic)
-            try Data("not-json".utf8).write(
-                to: sourceChatDirectory.appendingPathComponent("ChatSession-\(UUID().uuidString).json"),
-                options: .atomic
-            )
+            let invalidChatURL = sourceChatDirectory
+                .appendingPathComponent("ChatSession-\(UUID().uuidString).json")
+            try Data("not-json".utf8).write(to: invalidChatURL, options: .atomic)
 
             let manager = makeManager(windowID: -786)
             manager.setDuplicateCleanupBackupDirectoryForTesting(
@@ -726,10 +942,50 @@ import XCTest
             XCTAssertTrue(FileManager.default.fileExists(atPath: sourceAgentURL.path))
             XCTAssertNotNil(manager.workspace(withID: duplicate.id))
             XCTAssertEqual(manager.duplicateWorkspaceGroups().count, 1)
+
+            try FileManager.default.removeItem(at: invalidChatURL)
+            try FileManager.default.removeItem(at: sourceAgentURL)
+            let pendingSessionID = UUID()
+            let pendingWriteEntered = WorkspaceDuplicateCleanupSuspensionGate()
+            let releasePendingWrite = WorkspaceDuplicateCleanupSuspensionGate()
+            await AgentSessionDataService.shared.test_setBeforeSessionWriteHook { url in
+                guard url.lastPathComponent == "AgentSession-\(pendingSessionID.uuidString).json" else { return }
+                await pendingWriteEntered.open()
+                await releasePendingWrite.wait()
+            }
+            let pendingSave = Task {
+                try await AgentSessionDataService.shared.saveAgentSession(
+                    AgentSession(
+                        id: pendingSessionID,
+                        workspaceID: duplicate.id,
+                        name: "Pending new source"
+                    ),
+                    for: duplicate
+                )
+            }
+            await pendingWriteEntered.wait()
+
+            let pendingCleanup = await manager.consolidateDuplicateWorkspaces()
+            XCTAssertEqual(pendingCleanup.groupsDetected, 1)
+            XCTAssertEqual(pendingCleanup.groupsConsolidated, 0)
+            XCTAssertTrue(pendingCleanup.retiredWorkspaceIDs.isEmpty)
+            XCTAssertTrue(pendingCleanup.skipped.contains {
+                $0.workspaceID == duplicate.id && $0.reason.hasPrefix("sidecar_migration_failed:")
+            })
+            XCTAssertNotNil(manager.workspace(withID: duplicate.id))
+
+            await releasePendingWrite.open()
+            _ = try await pendingSave.value
+            await AgentSessionDataService.shared.test_setBeforeSessionWriteHook(nil)
         }
 
         func testFailClosedSaveReportsAWorkingOnlyCommit() async throws {
             let canonicalID = UUID()
+            let canonical = WorkspaceModel(
+                id: canonicalID,
+                name: "Phase-aware canonical",
+                repoPaths: ["/tmp/phase-aware-save"]
+            )
             let workspace = WorkspaceModel(
                 id: UUID(),
                 name: "Phase-aware save",
@@ -737,8 +993,9 @@ import XCTest
                 isHiddenInMenus: true,
                 consolidatedIntoWorkspaceID: canonicalID
             )
+            try writeWorkspace(canonical)
             try writeWorkspace(workspace)
-            try writeLegacyIndex([workspace])
+            try writeLegacyIndex([canonical, workspace])
 
             let configuration = DomainRuntimeConfiguration(
                 mode: .app,
@@ -805,12 +1062,14 @@ import XCTest
             XCTAssertFalse(authoritative.isHiddenInMenus)
             XCTAssertNil(authoritative.consolidatedIntoWorkspaceID)
 
+            let savedRetiredBytes = try Data(contentsOf: after.document.fileURL)
             let stillRetiredOnDisk = try JSONDecoder().decode(
                 WorkspaceModel.self,
-                from: Data(contentsOf: after.document.fileURL)
+                from: savedRetiredBytes
             )
             XCTAssertTrue(stillRetiredOnDisk.isHiddenInMenus)
             XCTAssertEqual(stillRetiredOnDisk.consolidatedIntoWorkspaceID, canonicalID)
+            try FileManager.default.removeItem(at: after.document.fileURL)
 
             let secondClient = DomainWorkspaceAuthorityClient(
                 store: runtime.workspaceStore,
@@ -836,9 +1095,12 @@ import XCTest
             XCTAssertNil(secondTarget.consolidatedIntoWorkspaceID)
             XCTAssertTrue(secondManager.pendingConsolidatedRestoreIDs.contains(workspace.id))
             XCTAssertNil(secondManager.workspace(withID: workspace.id)?.consolidatedIntoWorkspaceID)
+            XCTAssertTrue(secondManager.duplicateWorkspaceGroups().isEmpty)
             let secondSwitch = await secondManager.requestWorkspaceSwitch(to: secondTarget)
             XCTAssertFalse(secondSwitch.didSwitch)
             secondBridge.stop()
+
+            try savedRetiredBytes.write(to: after.document.fileURL, options: .atomic)
 
             _ = await runtime.shutdown()
 
@@ -881,6 +1143,7 @@ import XCTest
             XCTAssertNil(restartedTarget.consolidatedIntoWorkspaceID)
             XCTAssertTrue(restartedManager.pendingConsolidatedRestoreIDs.contains(workspace.id))
             XCTAssertNil(restartedManager.workspace(withID: workspace.id)?.consolidatedIntoWorkspaceID)
+            XCTAssertTrue(restartedManager.duplicateWorkspaceGroups().isEmpty)
             let restartedSwitch = await restartedManager.requestWorkspaceSwitch(to: restartedTarget)
             XCTAssertFalse(restartedSwitch.didSwitch)
         }
