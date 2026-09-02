@@ -991,14 +991,8 @@ actor AgentSessionDataService {
         from sourceWorkspace: WorkspaceModel,
         to destinationWorkspace: WorkspaceModel
     ) async throws -> WorkspaceSessionSidecarPreparedBatch? {
-        let sourceWorkspaceDirectory = try resolvedWorkspaceFolderURL(
-            for: sourceWorkspace,
-            requireUniqueMatch: true
-        )
-        let destinationWorkspaceDirectory = try resolvedWorkspaceFolderURL(
-            for: destinationWorkspace,
-            requireUniqueMatch: true
-        )
+        let sourceWorkspaceDirectory = resolvedWorkspaceFolderURL(for: sourceWorkspace)
+        let destinationWorkspaceDirectory = resolvedWorkspaceFolderURL(for: destinationWorkspace)
         let sourceFolder = sourceWorkspaceDirectory
             .appendingPathComponent("AgentSessions", isDirectory: true)
             .standardizedFileURL
@@ -1640,20 +1634,16 @@ actor AgentSessionDataService {
         return Self.defaultWorkspaceRootURL()
     }
 
-    private func resolvedWorkspaceFolderURL(
-        for workspace: WorkspaceModel,
-        requireUniqueMatch: Bool = false
-    ) throws -> URL {
-        try WorkspaceSessionSidecarMigration.workspaceDirectory(
+    private func resolvedWorkspaceFolderURL(for workspace: WorkspaceModel) -> URL {
+        WorkspaceSessionSidecarMigration.workspaceDirectory(
             for: workspace,
-            root: workspaceRootURL(),
-            requireUniqueMatch: requireUniqueMatch
+            root: workspaceRootURL()
         )
     }
 
-    /// Return the main folder for the workspace (with custom or predecessor default path).
+    /// Return the main folder for the workspace.
     private func workspaceFolderURL(for workspace: WorkspaceModel) throws -> URL {
-        let workspaceDir = try resolvedWorkspaceFolderURL(for: workspace)
+        let workspaceDir = resolvedWorkspaceFolderURL(for: workspace)
         if !FileManager.default.fileExists(atPath: workspaceDir.path) {
             try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
         }

@@ -48,8 +48,6 @@ enum WorkspaceSessionSidecarMigrationError: LocalizedError {
     case invalidSessionFile(URL)
     case sessionIdentityMismatch(URL)
     case divergentCollision(URL)
-    case ambiguousWorkspaceDirectories(workspaceID: UUID, candidates: [URL])
-    case workspaceDirectoryScanFailed(workspaceID: UUID, root: URL, reason: String)
     case aliasedSessionFolders(source: URL, destination: URL)
     case sourceChanged(URL)
     case destinationChanged(URL)
@@ -64,11 +62,6 @@ enum WorkspaceSessionSidecarMigrationError: LocalizedError {
             "Session identity does not match its filename: \(url.lastPathComponent)"
         case let .divergentCollision(url):
             "A different session already exists in the canonical workspace: \(url.lastPathComponent)"
-        case let .ambiguousWorkspaceDirectories(workspaceID, candidates):
-            "Multiple session directories match \(workspaceID.uuidString): "
-                + candidates.map(\.path).joined(separator: ", ")
-        case let .workspaceDirectoryScanFailed(workspaceID, root, reason):
-            "Unable to resolve session storage for \(workspaceID.uuidString) under \(root.path): \(reason)"
         case let .aliasedSessionFolders(source, destination):
             "Source and destination session folders resolve to the same directory: "
                 + "\(source.path), \(destination.path)"
@@ -85,83 +78,17 @@ enum WorkspaceSessionSidecarMigrationError: LocalizedError {
 }
 
 enum WorkspaceSessionSidecarMigration {
-    /// Resolves a model to its historical sidecar directory without requiring a workspace document.
-    /// Custom per-workspace storage remains authoritative. Otherwise every immediate directory
-    /// carrying the UUID suffix is considered, so a rename can reuse a sidecar-only directory.
     static func workspaceDirectory(
         for workspace: WorkspaceModel,
-        root: URL,
-        requireUniqueMatch: Bool = false
-    ) throws -> URL {
+        root: URL
+    ) -> URL {
         if let customStoragePath = workspace.customStoragePath {
             return customStoragePath.standardizedFileURL
         }
-
-        let standardizedRoot = root.standardizedFileURL
-        let derived = standardizedRoot.appendingPathComponent(
+        return root.standardizedFileURL.appendingPathComponent(
             WorkspaceDirectoryName.directoryName(name: workspace.name, id: workspace.id),
             isDirectory: true
         )
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: standardizedRoot.path, isDirectory: &isDirectory) else {
-            return derived
-        }
-        guard isDirectory.boolValue else {
-            throw WorkspaceSessionSidecarMigrationError.workspaceDirectoryScanFailed(
-                workspaceID: workspace.id,
-                root: standardizedRoot,
-                reason: "The session storage root is not a directory."
-            )
-        }
-
-        let children: [URL]
-        do {
-            children = try fileManager.contentsOfDirectory(
-                at: standardizedRoot,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-        } catch {
-            throw WorkspaceSessionSidecarMigrationError.workspaceDirectoryScanFailed(
-                workspaceID: workspace.id,
-                root: standardizedRoot,
-                reason: error.localizedDescription
-            )
-        }
-
-        var matches: [URL] = []
-        for child in children {
-            guard WorkspaceDirectoryName.parse(child.lastPathComponent).id == workspace.id else {
-                continue
-            }
-            do {
-                guard try child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
-                    continue
-                }
-            } catch {
-                throw WorkspaceSessionSidecarMigrationError.workspaceDirectoryScanFailed(
-                    workspaceID: workspace.id,
-                    root: standardizedRoot,
-                    reason: error.localizedDescription
-                )
-            }
-            matches.append(child.standardizedFileURL)
-        }
-
-        if matches.count > 1 {
-            guard requireUniqueMatch else {
-                // Preserve the predecessor's ordinary read/write locus for historical layouts
-                // split across multiple name-derived directories. Consolidation opts into strict
-                // uniqueness so it can never retire a workspace after copying only one fragment.
-                return derived
-            }
-            throw WorkspaceSessionSidecarMigrationError.ambiguousWorkspaceDirectories(
-                workspaceID: workspace.id,
-                candidates: matches.sorted { $0.path < $1.path }
-            )
-        }
-        return matches.first ?? derived
     }
 
     static func validateDistinctSessionFolders(

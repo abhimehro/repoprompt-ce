@@ -3369,7 +3369,7 @@ class WorkspaceFilesViewModel: ObservableObject {
             throw GitDataRootLoadError.systemWorkspace(workspaceID: workspace.id)
         }
 
-        let gitDataURL = try workspaceManager.gitDataDirectory(for: workspace)
+        let gitDataURL = workspaceManager.gitDataDirectory(for: workspace)
         if !isFolderAlreadyLoaded(gitDataURL) {
             try await loadSupplementalRoot(
                 at: gitDataURL,
