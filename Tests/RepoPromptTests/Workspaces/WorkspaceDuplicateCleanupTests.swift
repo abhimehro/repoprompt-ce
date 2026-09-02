@@ -8,6 +8,8 @@ import XCTest
         private var originalMCPAutoStart = false
         private var originalStoragePath: String?
         private var storageRoot: URL!
+        private var agentWorkspaceRoot: URL!
+        private var chatWorkspaceRoot: URL!
         private var managers: [WorkspaceManagerViewModel] = []
 
         override func setUp() async throws {
@@ -18,6 +20,12 @@ import XCTest
             storageRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("WorkspaceDuplicateCleanupTests-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
+            agentWorkspaceRoot = storageRoot.appendingPathComponent("AgentWorkspaces", isDirectory: true)
+            chatWorkspaceRoot = storageRoot.appendingPathComponent("ChatWorkspaces", isDirectory: true)
+            try FileManager.default.createDirectory(at: agentWorkspaceRoot, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: chatWorkspaceRoot, withIntermediateDirectories: true)
+            await AgentSessionDataService.shared.test_setWorkspaceRootOverride(agentWorkspaceRoot)
+            await ChatDataService.test_setWorkspaceRootOverride(chatWorkspaceRoot)
             UserDefaults.standard.set(storageRoot.path, forKey: "GlobalCustomStorageURL")
             await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.removeAllForTesting()
         }
@@ -26,6 +34,8 @@ import XCTest
             managers.forEach { $0.prepareForWindowClose() }
             managers.removeAll()
             await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.removeAllForTesting()
+            await AgentSessionDataService.shared.test_setWorkspaceRootOverride(nil)
+            await ChatDataService.test_setWorkspaceRootOverride(nil)
             try? FileManager.default.removeItem(at: storageRoot)
             if let originalStoragePath {
                 UserDefaults.standard.set(originalStoragePath, forKey: "GlobalCustomStorageURL")
@@ -70,9 +80,10 @@ import XCTest
             try writeWorkspace(duplicate)
             try writeLegacyIndex([canonical, duplicate])
 
-            let duplicateDirectory = workspaceFileURL(for: duplicate).deletingLastPathComponent()
-            let chatsDirectory = duplicateDirectory.appendingPathComponent("Chats", isDirectory: true)
-            let agentSessionsDirectory = duplicateDirectory.appendingPathComponent("AgentSessions", isDirectory: true)
+            let chatsDirectory = sidecarWorkspaceDirectory(for: duplicate, root: chatWorkspaceRoot)
+                .appendingPathComponent("Chats", isDirectory: true)
+            let agentSessionsDirectory = sidecarWorkspaceDirectory(for: duplicate, root: agentWorkspaceRoot)
+                .appendingPathComponent("AgentSessions", isDirectory: true)
             let chatSidecarURL = chatsDirectory.appendingPathComponent(
                 "ChatSession-\(duplicateChatSessionID.uuidString).json"
             )
@@ -215,6 +226,29 @@ import XCTest
             XCTAssertEqual(cleanup.backupURL?.deletingLastPathComponent(), backupDirectory)
             XCTAssertTrue(try FileManager.default.fileExists(atPath: XCTUnwrap(cleanup.backupURL).path))
 
+            let staleIndexEntries = try legacyIndexEntries()
+            XCTAssertEqual(staleIndexEntries.map(\.id), [canonical.id])
+
+            let authorityInventory = await manager.loadWorkspaceSnapshotFromDisk()
+            XCTAssertEqual(Set(authorityInventory.map(\.id)), Set([canonical.id, duplicate.id]))
+            let defaultInventory = WindowRoutingService.workspaceInventoryModels(
+                authorityInventory,
+                authorityIncompleteWorkspaceIDs: manager.pendingConsolidatedRestoreIDs,
+                includeHidden: false
+            )
+            XCTAssertEqual(defaultInventory.map(\.id), [canonical.id])
+            let recoveryInventory = WindowRoutingService.workspaceInventoryModels(
+                authorityInventory,
+                authorityIncompleteWorkspaceIDs: manager.pendingConsolidatedRestoreIDs,
+                includeHidden: true
+            )
+            let inventoryRetired = try XCTUnwrap(recoveryInventory.first { $0.id == duplicate.id })
+            XCTAssertTrue(inventoryRetired.isHiddenInMenus)
+            XCTAssertEqual(inventoryRetired.consolidatedIntoWorkspaceID, canonical.id)
+
+            let markedSwitch = await manager.requestWorkspaceSwitch(to: inventoryRetired)
+            XCTAssertFalse(markedSwitch.didSwitch)
+
             let authoritativeCanonical = try await authoritativeWorkspace(
                 canonical.id,
                 in: runtime
@@ -226,11 +260,10 @@ import XCTest
             XCTAssertEqual(mergedTab.activeAgentSessionID, duplicateAgentSessionID)
             XCTAssertEqual(mergedTab.activeChatSessionID, duplicateChatSessionID)
 
-            let canonicalDirectory = workspaceFileURL(for: canonical).deletingLastPathComponent()
-            let canonicalChatSidecarURL = canonicalDirectory
+            let canonicalChatSidecarURL = sidecarWorkspaceDirectory(for: canonical, root: chatWorkspaceRoot)
                 .appendingPathComponent("Chats", isDirectory: true)
                 .appendingPathComponent(chatSidecarURL.lastPathComponent)
-            let canonicalAgentSidecarURL = canonicalDirectory
+            let canonicalAgentSidecarURL = sidecarWorkspaceDirectory(for: canonical, root: agentWorkspaceRoot)
                 .appendingPathComponent("AgentSessions", isDirectory: true)
                 .appendingPathComponent(agentSidecarURL.lastPathComponent)
             let migratedChat = try JSONDecoder().decode(
@@ -305,7 +338,7 @@ import XCTest
             }
             let restoreTask = Task { @MainActor in
                 try await manager.setWorkspaceHiddenFromSnapshot(
-                    projectedRetired,
+                    inventoryRetired,
                     hidden: false
                 )
             }
@@ -495,6 +528,13 @@ import XCTest
             try writeWorkspace(workspace)
             try writeLegacyIndex([workspace])
 
+            for index in 0 ... 1024 {
+                _ = FileManager.default.createFile(
+                    atPath: storageRoot.appendingPathComponent("unrelated-\(index).tmp").path,
+                    contents: Data()
+                )
+            }
+
             let resolver = WorkspaceStorageDirectoryResolver()
             XCTAssertEqual(
                 try resolver.resolveDirectory(
@@ -518,6 +558,29 @@ import XCTest
             XCTAssertEqual(savedURL.deletingLastPathComponent(), legacyDirectory.standardizedFileURL)
             XCTAssertFalse(FileManager.default.fileExists(atPath: workspaceFileURL(for: renamed).path))
 
+            let unusableRoot = storageRoot.appendingPathComponent("not-a-directory")
+            try Data("not a directory".utf8).write(to: unusableRoot, options: .atomic)
+            let customDirectory = storageRoot.appendingPathComponent("Explicit custom storage", isDirectory: true)
+            var customWorkspace = renamed
+            customWorkspace.customStoragePath = customDirectory
+            XCTAssertEqual(
+                try resolver.resolveDirectory(
+                    workspaceID: workspaceID,
+                    workspaceName: customWorkspace.name,
+                    customStoragePath: customWorkspace.customStoragePath,
+                    catalogFileURL: nil,
+                    baseRoot: unusableRoot
+                ),
+                customDirectory.standardizedFileURL
+            )
+            XCTAssertEqual(
+                try WorkspaceSessionSidecarMigration.workspaceDirectory(
+                    for: customWorkspace,
+                    root: unusableRoot
+                ),
+                customDirectory.standardizedFileURL
+            )
+
             let catalogDirectory = storageRoot.appendingPathComponent("Catalog-owned", isDirectory: true)
             XCTAssertEqual(
                 try WorkspaceStorageDirectoryResolver().resolveDirectory(
@@ -528,6 +591,58 @@ import XCTest
                     baseRoot: storageRoot
                 ),
                 catalogDirectory.standardizedFileURL
+            )
+
+            let expectedAgentSidecarRoot = MCPFilesystemConstants.identity
+                .applicationSupportRootURL()
+                .appendingPathComponent("Workspaces", isDirectory: true)
+                .standardizedFileURL
+            let supportDirectory = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first ?? FileManager.default.temporaryDirectory
+            let expectedChatSidecarRoot = supportDirectory
+                .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+                .appendingPathComponent("Workspaces", isDirectory: true)
+                .standardizedFileURL
+            XCTAssertEqual(
+                AgentSessionDataService.defaultWorkspaceRootURL(),
+                expectedAgentSidecarRoot
+            )
+            XCTAssertEqual(
+                ChatDataService.defaultWorkspaceRootURL(),
+                expectedChatSidecarRoot
+            )
+            let effectiveAgentWorkspaceRoot = await AgentSessionDataService.shared.test_workspaceRootURL()
+            XCTAssertEqual(effectiveAgentWorkspaceRoot, agentWorkspaceRoot.standardizedFileURL)
+            XCTAssertEqual(
+                ChatDataService.test_workspaceRootURL(),
+                chatWorkspaceRoot.standardizedFileURL
+            )
+
+            let agentLegacyDirectory = sidecarWorkspaceDirectory(for: workspace, root: agentWorkspaceRoot)
+            try FileManager.default.createDirectory(
+                at: agentLegacyDirectory.appendingPathComponent("AgentSessions", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            let chatLegacyDirectory = sidecarWorkspaceDirectory(for: workspace, root: chatWorkspaceRoot)
+            try FileManager.default.createDirectory(
+                at: chatLegacyDirectory,
+                withIntermediateDirectories: true
+            )
+            XCTAssertEqual(
+                try WorkspaceSessionSidecarMigration.workspaceDirectory(
+                    for: renamed,
+                    root: agentWorkspaceRoot
+                ),
+                agentLegacyDirectory.standardizedFileURL
+            )
+            XCTAssertEqual(
+                try WorkspaceSessionSidecarMigration.workspaceDirectory(
+                    for: renamed,
+                    root: chatWorkspaceRoot
+                ),
+                chatLegacyDirectory.standardizedFileURL
             )
 
             let secondDirectory = workspaceFileURL(for: renamed).deletingLastPathComponent()
@@ -548,58 +663,84 @@ import XCTest
         }
 
         func testBothSidecarFamiliesPreflightBeforeEitherWrites() async throws {
-            let sourceDirectory = storageRoot.appendingPathComponent("sidecar-source", isDirectory: true)
-            let destinationDirectory = storageRoot.appendingPathComponent("sidecar-destination", isDirectory: true)
-            let sourceAgentDirectory = sourceDirectory.appendingPathComponent("AgentSessions", isDirectory: true)
-            let sourceChatDirectory = sourceDirectory.appendingPathComponent("Chats", isDirectory: true)
+            let canonical = WorkspaceModel(
+                id: UUID(),
+                dateModified: Date(timeIntervalSince1970: 200),
+                name: "Canonical preflight target",
+                repoPaths: ["/tmp/sidecar-preflight-root"],
+                lastUsed: Date(timeIntervalSince1970: 200)
+            )
+            let duplicate = WorkspaceModel(
+                id: UUID(),
+                dateModified: Date(timeIntervalSince1970: 100),
+                name: "Duplicate preflight source",
+                repoPaths: canonical.repoPaths,
+                lastUsed: Date(timeIntervalSince1970: 100)
+            )
+            try writeWorkspace(canonical)
+            try writeWorkspace(duplicate)
+            try writeLegacyIndex([canonical, duplicate])
+
+            let sourceAgentDirectory = sidecarWorkspaceDirectory(for: duplicate, root: agentWorkspaceRoot)
+                .appendingPathComponent("AgentSessions", isDirectory: true)
+            let sourceChatDirectory = sidecarWorkspaceDirectory(for: duplicate, root: chatWorkspaceRoot)
+                .appendingPathComponent("Chats", isDirectory: true)
             try FileManager.default.createDirectory(at: sourceAgentDirectory, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: sourceChatDirectory, withIntermediateDirectories: true)
 
             let sessionID = UUID()
             let agentFilename = "AgentSession-\(sessionID.uuidString).json"
+            let sourceAgentURL = sourceAgentDirectory.appendingPathComponent(agentFilename)
             try JSONEncoder().encode(AgentSession(
                 id: sessionID,
-                workspaceID: UUID(),
+                workspaceID: duplicate.id,
                 name: "Prepared only"
-            )).write(to: sourceAgentDirectory.appendingPathComponent(agentFilename), options: .atomic)
+            )).write(to: sourceAgentURL, options: .atomic)
             try Data("not-json".utf8).write(
                 to: sourceChatDirectory.appendingPathComponent("ChatSession-\(UUID().uuidString).json"),
                 options: .atomic
             )
 
-            let agentBatch = try await AgentSessionDataService.shared.prepareWorkspaceSessionRehome(
-                from: sourceDirectory,
-                to: destinationDirectory,
-                canonicalWorkspaceID: UUID()
+            let manager = makeManager(windowID: -786)
+            manager.setDuplicateCleanupBackupDirectoryForTesting(
+                storageRoot.appendingPathComponent("preflight-backups", isDirectory: true)
             )
-            XCTAssertNotNil(agentBatch)
-            do {
-                _ = try await ChatDataService.prepareWorkspaceSessionRehome(
-                    from: sourceDirectory,
-                    to: destinationDirectory,
-                    canonicalWorkspaceID: UUID()
-                )
-                XCTFail("Expected the malformed Chat sidecar to fail preflight")
-            } catch {
-                XCTAssertFalse(error.localizedDescription.isEmpty)
-            }
-            XCTAssertFalse(FileManager.default.fileExists(
-                atPath: destinationDirectory
-                    .appendingPathComponent("AgentSessions", isDirectory: true)
-                    .appendingPathComponent(agentFilename).path
-            ))
+            await manager.awaitInitialized()
+
+            let previousWindows = WindowStatesManager.shared.allWindows
+            WindowStatesManager.shared.allWindows = []
+            defer { WindowStatesManager.shared.allWindows = previousWindows }
+
+            let cleanup = await manager.consolidateDuplicateWorkspaces()
+            XCTAssertEqual(cleanup.groupsDetected, 1)
+            XCTAssertEqual(cleanup.groupsConsolidated, 0)
+            XCTAssertTrue(cleanup.retiredWorkspaceIDs.isEmpty)
+            XCTAssertTrue(cleanup.skipped.contains {
+                $0.workspaceID == duplicate.id && $0.reason.hasPrefix("sidecar_preflight_failed:")
+            })
+
+            let destinationAgentURL = sidecarWorkspaceDirectory(for: canonical, root: agentWorkspaceRoot)
+                .appendingPathComponent("AgentSessions", isDirectory: true)
+                .appendingPathComponent(agentFilename)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destinationAgentURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: sourceAgentURL.path))
+            XCTAssertNotNil(manager.workspace(withID: duplicate.id))
+            XCTAssertEqual(manager.duplicateWorkspaceGroups().count, 1)
         }
 
         func testFailClosedSaveReportsAWorkingOnlyCommit() async throws {
+            let canonicalID = UUID()
             let workspace = WorkspaceModel(
                 id: UUID(),
                 name: "Phase-aware save",
-                repoPaths: ["/tmp/phase-aware-save"]
+                repoPaths: ["/tmp/phase-aware-save"],
+                isHiddenInMenus: true,
+                consolidatedIntoWorkspaceID: canonicalID
             )
             try writeWorkspace(workspace)
             try writeLegacyIndex([workspace])
 
-            let runtime = MCPDomainRuntime(configuration: .init(
+            let configuration = DomainRuntimeConfiguration(
                 mode: .app,
                 profileIdentifier: "workspace-phase-aware-save-\(UUID().uuidString)",
                 storageDirectory: storageRoot.appendingPathComponent("phase-runtime", isDirectory: true),
@@ -607,7 +748,8 @@ import XCTest
                 eventDirectory: storageRoot.appendingPathComponent("phase-events", isDirectory: true),
                 temporaryDirectory: storageRoot.appendingPathComponent("phase-tmp", isDirectory: true),
                 externalReloadInterval: nil
-            ))
+            )
+            let runtime = MCPDomainRuntime(configuration: configuration, runtimeID: UUID())
             try await runtime.start()
             defer { Task { _ = await runtime.shutdown() } }
 
@@ -631,6 +773,8 @@ import XCTest
 
             var updated = workspace
             updated.currentPromptText = "Durable working update"
+            updated.isHiddenInMenus = false
+            updated.consolidatedIntoWorkspaceID = nil
             let outcome = try await client.saveFailClosed(
                 updated,
                 fileURL: initial.document.fileURL,
@@ -658,6 +802,190 @@ import XCTest
                 from: after.document.documentBytes
             )
             XCTAssertEqual(authoritative.currentPromptText, updated.currentPromptText)
+            XCTAssertFalse(authoritative.isHiddenInMenus)
+            XCTAssertNil(authoritative.consolidatedIntoWorkspaceID)
+
+            let stillRetiredOnDisk = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: Data(contentsOf: after.document.fileURL)
+            )
+            XCTAssertTrue(stillRetiredOnDisk.isHiddenInMenus)
+            XCTAssertEqual(stillRetiredOnDisk.consolidatedIntoWorkspaceID, canonicalID)
+
+            let secondClient = DomainWorkspaceAuthorityClient(
+                store: runtime.workspaceStore,
+                windowID: -787
+            )
+            let secondManager = makeManager(
+                windowID: -787,
+                domainWorkspaceAuthorityClient: secondClient
+            )
+            await secondManager.awaitInitialized()
+            let secondBridge = DomainWorkspacePresentationBridge(
+                workspaceManager: secondManager,
+                client: secondClient
+            )
+            secondBridge.start()
+            defer { secondBridge.stop() }
+            let secondSequence = await (runtime.workspaceStore.snapshot()).publicationSequence
+            let secondProjected = await secondBridge.waitUntilProjected(through: secondSequence)
+            XCTAssertTrue(secondProjected)
+
+            let secondInventory = await secondManager.loadWorkspaceSnapshotFromDisk()
+            let secondTarget = try XCTUnwrap(secondInventory.first { $0.id == workspace.id })
+            XCTAssertNil(secondTarget.consolidatedIntoWorkspaceID)
+            XCTAssertTrue(secondManager.pendingConsolidatedRestoreIDs.contains(workspace.id))
+            XCTAssertNil(secondManager.workspace(withID: workspace.id)?.consolidatedIntoWorkspaceID)
+            let secondSwitch = await secondManager.requestWorkspaceSwitch(to: secondTarget)
+            XCTAssertFalse(secondSwitch.didSwitch)
+            secondBridge.stop()
+
+            _ = await runtime.shutdown()
+
+            let restartedRuntime = MCPDomainRuntime(configuration: configuration, runtimeID: UUID())
+            try await restartedRuntime.start()
+            defer { Task { _ = await restartedRuntime.shutdown() } }
+
+            let restartedSnapshot = await restartedRuntime.workspaceStore.snapshot()
+            let restartedRow = try XCTUnwrap(restartedSnapshot.workspaces.first {
+                $0.document.workspaceID == workspace.id
+            })
+            XCTAssertNotNil(restartedRow.revisions.dirtyRevision)
+            let restartedWorking = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: restartedRow.document.documentBytes
+            )
+            XCTAssertNil(restartedWorking.consolidatedIntoWorkspaceID)
+
+            let restartedClient = DomainWorkspaceAuthorityClient(
+                store: restartedRuntime.workspaceStore,
+                windowID: -788
+            )
+            let restartedManager = makeManager(
+                windowID: -788,
+                domainWorkspaceAuthorityClient: restartedClient
+            )
+            await restartedManager.awaitInitialized()
+            let restartedBridge = DomainWorkspacePresentationBridge(
+                workspaceManager: restartedManager,
+                client: restartedClient
+            )
+            restartedBridge.start()
+            defer { restartedBridge.stop() }
+            let restartedSequence = await (restartedRuntime.workspaceStore.snapshot()).publicationSequence
+            let restartedProjected = await restartedBridge.waitUntilProjected(through: restartedSequence)
+            XCTAssertTrue(restartedProjected)
+
+            let restartedInventory = await restartedManager.loadWorkspaceSnapshotFromDisk()
+            let restartedTarget = try XCTUnwrap(restartedInventory.first { $0.id == workspace.id })
+            XCTAssertNil(restartedTarget.consolidatedIntoWorkspaceID)
+            XCTAssertTrue(restartedManager.pendingConsolidatedRestoreIDs.contains(workspace.id))
+            XCTAssertNil(restartedManager.workspace(withID: workspace.id)?.consolidatedIntoWorkspaceID)
+            let restartedSwitch = await restartedManager.requestWorkspaceSwitch(to: restartedTarget)
+            XCTAssertFalse(restartedSwitch.didSwitch)
+        }
+
+        func testSidecarMigrationRejectsAliasingAndStaleDestinations() throws {
+            let fileManager = FileManager.default
+            let aliasRoot = storageRoot.appendingPathComponent("sidecar-alias", isDirectory: true)
+            let physicalRoot = storageRoot.appendingPathComponent("sidecar-physical", isDirectory: true)
+            let physicalFolder = physicalRoot.appendingPathComponent("AgentSessions", isDirectory: true)
+            try fileManager.createDirectory(at: physicalFolder, withIntermediateDirectories: true)
+            try fileManager.createSymbolicLink(at: aliasRoot, withDestinationURL: physicalRoot)
+
+            XCTAssertThrowsError(try WorkspaceSessionSidecarMigration.validateDistinctSessionFolders(
+                source: physicalFolder,
+                destination: aliasRoot.appendingPathComponent("AgentSessions", isDirectory: true)
+            )) { error in
+                guard case WorkspaceSessionSidecarMigrationError.aliasedSessionFolders = error else {
+                    return XCTFail("Expected aliased session folders, got \(error)")
+                }
+            }
+
+            let absentSessionID = UUID()
+            let absentCanonicalID = UUID()
+            let absentSource = storageRoot.appendingPathComponent("absent-source", isDirectory: true)
+            let absentDestination = storageRoot.appendingPathComponent("absent-destination", isDirectory: true)
+            try fileManager.createDirectory(at: absentSource, withIntermediateDirectories: true)
+            let absentFilename = "AgentSession-\(absentSessionID.uuidString).json"
+            let absentSourceURL = absentSource.appendingPathComponent(absentFilename)
+            let absentSourceData = try sidecarData(
+                sessionID: absentSessionID,
+                workspaceID: UUID(),
+                name: "Prepared absent"
+            )
+            try absentSourceData.write(to: absentSourceURL, options: .atomic)
+            let absentCopies = try WorkspaceSessionSidecarMigration.prepareCopies(
+                from: absentSource,
+                to: absentDestination,
+                filenamePrefix: "AgentSession-",
+                canonicalWorkspaceID: absentCanonicalID
+            )
+            let absentBatch = WorkspaceSessionSidecarPreparedBatch(
+                sourceFolder: absentSource,
+                destinationFolder: absentDestination,
+                filenamePrefix: "AgentSession-",
+                copies: absentCopies
+            )
+            try Data("source changed after prepare".utf8).write(to: absentSourceURL, options: .atomic)
+            XCTAssertThrowsError(try WorkspaceSessionSidecarMigration.commitPreparedBatch(absentBatch)) { error in
+                guard case WorkspaceSessionSidecarMigrationError.sourceChanged = error else {
+                    return XCTFail("Expected changed source, got \(error)")
+                }
+            }
+            try absentSourceData.write(to: absentSourceURL, options: .atomic)
+            try fileManager.createDirectory(at: absentDestination, withIntermediateDirectories: true)
+            let appearedURL = absentDestination.appendingPathComponent(absentFilename)
+            let appearedData = Data("appeared after prepare".utf8)
+            try appearedData.write(to: appearedURL, options: .atomic)
+            XCTAssertThrowsError(try WorkspaceSessionSidecarMigration.commitPreparedBatch(absentBatch)) { error in
+                guard case WorkspaceSessionSidecarMigrationError.destinationChanged = error else {
+                    return XCTFail("Expected changed absent destination, got \(error)")
+                }
+            }
+            XCTAssertEqual(try Data(contentsOf: appearedURL), appearedData)
+
+            let changedSessionID = UUID()
+            let changedSource = storageRoot.appendingPathComponent("changed-source", isDirectory: true)
+            let changedDestination = storageRoot.appendingPathComponent("changed-destination", isDirectory: true)
+            try fileManager.createDirectory(at: changedSource, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: changedDestination, withIntermediateDirectories: true)
+            let changedFilename = "AgentSession-\(changedSessionID.uuidString).json"
+            let preparedExistingData = try sidecarData(
+                sessionID: changedSessionID,
+                workspaceID: UUID(),
+                name: "Prepared existing"
+            )
+            try preparedExistingData.write(
+                to: changedSource.appendingPathComponent(changedFilename),
+                options: .atomic
+            )
+            let changedURL = changedDestination.appendingPathComponent(changedFilename)
+            try preparedExistingData.write(to: changedURL, options: .atomic)
+            let changedCopies = try WorkspaceSessionSidecarMigration.prepareCopies(
+                from: changedSource,
+                to: changedDestination,
+                filenamePrefix: "AgentSession-",
+                canonicalWorkspaceID: UUID()
+            )
+            let changedBatch = WorkspaceSessionSidecarPreparedBatch(
+                sourceFolder: changedSource,
+                destinationFolder: changedDestination,
+                filenamePrefix: "AgentSession-",
+                copies: changedCopies
+            )
+            let interveningData = try sidecarData(
+                sessionID: changedSessionID,
+                workspaceID: UUID(),
+                name: "Changed after prepare"
+            )
+            try interveningData.write(to: changedURL, options: .atomic)
+            XCTAssertThrowsError(try WorkspaceSessionSidecarMigration.commitPreparedBatch(changedBatch)) { error in
+                guard case WorkspaceSessionSidecarMigrationError.destinationChanged = error else {
+                    return XCTFail("Expected changed existing destination, got \(error)")
+                }
+            }
+            XCTAssertEqual(try Data(contentsOf: changedURL), interveningData)
         }
 
         private func authoritativeWorkspace(
@@ -705,6 +1033,38 @@ import XCTest
             try JSONEncoder().encode(entries).write(
                 to: storageRoot.appendingPathComponent("workspacesIndex.json"),
                 options: .atomic
+            )
+        }
+
+        private func legacyIndexEntries() throws -> [WorkspaceIndexEntry] {
+            try JSONDecoder().decode(
+                [WorkspaceIndexEntry].self,
+                from: Data(contentsOf: storageRoot.appendingPathComponent("workspacesIndex.json"))
+            )
+        }
+
+        private func sidecarWorkspaceDirectory(
+            for workspace: WorkspaceModel,
+            root: URL
+        ) -> URL {
+            root.appendingPathComponent(
+                WorkspaceDirectoryName.directoryName(name: workspace.name, id: workspace.id),
+                isDirectory: true
+            )
+        }
+
+        private func sidecarData(
+            sessionID: UUID,
+            workspaceID: UUID,
+            name: String
+        ) throws -> Data {
+            try JSONSerialization.data(
+                withJSONObject: [
+                    "id": sessionID.uuidString,
+                    "workspaceID": workspaceID.uuidString,
+                    "name": name
+                ],
+                options: [.sortedKeys]
             )
         }
 

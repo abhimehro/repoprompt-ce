@@ -429,29 +429,19 @@ struct ManageWorkspacesView: View {
 
         let backupNote = result.backupURL.map { "\n\nBackup saved at:\n\($0.path)" } ?? ""
 
-        if result.groupsConsolidated == result.groupsDetected && result.skipped.isEmpty {
+        if result.groupsConsolidated == result.groupsDetected, result.skipped.isEmpty {
             return "Successfully consolidated \(result.groupsConsolidated) duplicate workspace \(result.groupsConsolidated == 1 ? "group" : "groups").\(backupNote)"
         }
 
-        let reasons = result.skipped.map(\.reason)
-        var guidance: [String] = []
-        if reasons.contains(where: { $0.hasPrefix("sidecar_preflight_failed") }) {
-            guidance.append("some session copies failed preflight before either history store was changed")
+        let skippedNote: String
+        if result.skipped.isEmpty {
+            skippedNote = ""
+        } else {
+            let itemDescription = result.skipped.count == 1 ? "item was" : "items were"
+            skippedNote = " \(result.skipped.count) \(itemDescription) not fully consolidated."
+                + " Some steps may have partially completed, but the original recovery copies were preserved."
+                + " Review the remaining entries and retry."
         }
-        if reasons.contains(where: { $0.hasPrefix("sidecar_migration_failed") }) {
-            guidance.append("some session copies did not finish; their sources were preserved")
-        }
-        if reasons.contains(where: { $0.hasPrefix("persist_incomplete_working_committed") }) {
-            guidance.append("some workspace changes reached durable working state but did not finish saving")
-        } else if reasons.contains(where: { $0.hasPrefix("persist_failed") }) {
-            guidance.append("some workspace changes could not be persisted")
-        }
-        if guidance.isEmpty, !result.skipped.isEmpty {
-            guidance.append("some items remain active, protected, changed, or otherwise unresolved")
-        }
-        let skippedNote = result.skipped.isEmpty
-            ? ""
-            : " \(result.skipped.count) \(result.skipped.count == 1 ? "item was" : "items were") skipped: \(guidance.joined(separator: "; ")). Review the remaining entries and retry."
 
         return "Consolidated \(result.groupsConsolidated) of \(result.groupsDetected) duplicate \(result.groupsDetected == 1 ? "group" : "groups").\(skippedNote)\(backupNote)"
     }
@@ -945,15 +935,12 @@ struct ManageWorkspacesView: View {
     }
 
     private func toggleHiddenState(for ws: WorkspaceModel) {
-        if ws.consolidatedIntoWorkspaceID != nil
+        let isRecoveryCopy = ws.consolidatedIntoWorkspaceID != nil
             || workspaceManager.pendingConsolidatedRestoreIDs.contains(ws.id)
-        {
-            Task {
-                _ = try? await workspaceManager.setWorkspaceHiddenFromSnapshot(ws, hidden: false)
-            }
-        } else {
-            workspaceManager.setWorkspaceHidden(ws, hidden: !ws.isHiddenInMenus)
-        }
+        workspaceManager.setWorkspaceHidden(
+            ws,
+            hidden: isRecoveryCopy ? false : !ws.isHiddenInMenus
+        )
     }
 
     // MARK: - Create New Workspace

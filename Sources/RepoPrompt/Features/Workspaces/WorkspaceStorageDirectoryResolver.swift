@@ -16,26 +16,11 @@ enum WorkspaceStorageDirectoryResolutionError: LocalizedError {
     }
 }
 
-/// Resolves one workspace UUID to one physical directory without deriving identity from a mutable
-/// display name. The memo is process-wide because the manager, Agent sessions, and Chats all write
-/// the same storage tree from different isolation domains.
-final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
+/// Resolves one workspace UUID to one physical document directory without deriving identity from a
+/// mutable display name. Resolution is deliberately stateless: callers with an authoritative
+/// catalog URL supply it on each call, while legacy callers scan only the root they provide.
+final class WorkspaceStorageDirectoryResolver: Sendable {
     static let shared = WorkspaceStorageDirectoryResolver()
-
-    private enum Provenance {
-        case custom
-        case catalog
-        case discovered
-    }
-
-    private struct MemoEntry {
-        let directory: URL
-        let provenance: Provenance
-    }
-
-    private let lock = NSLock()
-    private var memoByWorkspaceID: [UUID: MemoEntry] = [:]
-    private let maximumRootEntryCount = 1024
 
     func resolveDirectory(
         workspaceID: UUID,
@@ -45,25 +30,14 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
         baseRoot: URL
     ) throws -> URL {
         if let customStoragePath {
-            let directory = customStoragePath.standardizedFileURL
-            store(
-                MemoEntry(directory: directory, provenance: .custom),
-                workspaceID: workspaceID
-            )
-            return directory
+            return customStoragePath.standardizedFileURL
         }
 
         if let catalogFileURL {
-            let directory = catalogFileURL.deletingLastPathComponent().standardizedFileURL
-            store(MemoEntry(directory: directory, provenance: .catalog), workspaceID: workspaceID)
-            return directory
+            return catalogFileURL.deletingLastPathComponent().standardizedFileURL
         }
 
         let standardizedRoot = baseRoot.standardizedFileURL
-        if let memoized = compatibleMemo(workspaceID: workspaceID) {
-            return memoized
-        }
-
         let derived = standardizedRoot.appendingPathComponent(
             DomainWorkspaceStoragePath.directoryName(name: workspaceName, id: workspaceID),
             isDirectory: true
@@ -95,14 +69,6 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
                 reason: error.localizedDescription
             )
         }
-        guard children.count <= maximumRootEntryCount else {
-            throw WorkspaceStorageDirectoryResolutionError.scanFailed(
-                workspaceID: workspaceID,
-                root: standardizedRoot,
-                reason: "The root contains more than \(maximumRootEntryCount) entries."
-            )
-        }
-
         var matches: [URL] = []
         for child in children {
             guard WorkspaceDirectoryName.parse(child.lastPathComponent).id == workspaceID else { continue }
@@ -127,74 +93,12 @@ final class WorkspaceStorageDirectoryResolver: @unchecked Sendable {
             )
         }
         if let match = matches.first {
-            store(
-                MemoEntry(
-                    directory: match,
-                    provenance: .discovered
-                ),
-                workspaceID: workspaceID
-            )
             return match
         }
 
         // A complete scan found no persisted incarnation. Returning the sanitized derived path is
         // therefore a creation target, not a guess made under filesystem uncertainty.
         return derived
-    }
-
-    func noteCatalogFileURLs(_ fileURLsByWorkspaceID: [UUID: URL]) {
-        lock.lock()
-        let projectedIDs = Set(fileURLsByWorkspaceID.keys)
-        let retiredCatalogIDs = memoByWorkspaceID.compactMap { workspaceID, entry -> UUID? in
-            guard case .catalog = entry.provenance,
-                  !projectedIDs.contains(workspaceID)
-            else { return nil }
-            return workspaceID
-        }
-        for workspaceID in retiredCatalogIDs {
-            memoByWorkspaceID.removeValue(forKey: workspaceID)
-        }
-        for (workspaceID, fileURL) in fileURLsByWorkspaceID {
-            memoByWorkspaceID[workspaceID] = MemoEntry(
-                directory: fileURL.deletingLastPathComponent().standardizedFileURL,
-                provenance: .catalog
-            )
-        }
-        lock.unlock()
-    }
-
-    func evict(workspaceID: UUID) {
-        lock.lock()
-        memoByWorkspaceID.removeValue(forKey: workspaceID)
-        lock.unlock()
-    }
-
-    #if DEBUG
-        func removeAllForTesting() {
-            lock.lock()
-            memoByWorkspaceID.removeAll()
-            lock.unlock()
-        }
-    #endif
-
-    private func compatibleMemo(workspaceID: UUID) -> URL? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let entry = memoByWorkspaceID[workspaceID] else { return nil }
-        switch entry.provenance {
-        case .catalog:
-            return entry.directory
-        case .custom, .discovered:
-            // Custom paths are supplied explicitly on every call. Discovered paths must be scanned
-            // again so a newly-created same-UUID sibling cannot hide behind a stale memo.
-            return nil
-        }
-    }
-
-    private func store(_ entry: MemoEntry, workspaceID: UUID) {
-        lock.lock()
-        memoByWorkspaceID[workspaceID] = entry
-        lock.unlock()
     }
 
     private func containsWorkspaceDocument(

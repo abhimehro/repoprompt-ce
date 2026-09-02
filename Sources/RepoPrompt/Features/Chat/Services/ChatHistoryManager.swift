@@ -70,6 +70,25 @@ public enum ChatHistoryLimit: Int, CaseIterable {
     }
 }
 
+#if DEBUG
+    private final class ChatWorkspaceRootOverride: @unchecked Sendable {
+        private let lock = NSLock()
+        private var root: URL?
+
+        func get() -> URL? {
+            lock.lock()
+            defer { lock.unlock() }
+            return root
+        }
+
+        func set(_ root: URL?) {
+            lock.lock()
+            self.root = root?.standardizedFileURL
+            lock.unlock()
+        }
+    }
+#endif
+
 /// An actor that reads/writes ChatSessions from each workspace's "Chats" folder.
 /// (Refactored to remove Task.detached usage but keep method signatures & behavior identical.)
 actor ChatDataService {
@@ -82,21 +101,82 @@ actor ChatDataService {
 
     private static let fileSaveQueue = DispatchQueue(label: "com.repoprompt.chatDataServiceFileSaveQueue")
 
+    #if DEBUG
+        private static let workspaceRootOverride = ChatWorkspaceRootOverride()
+    #endif
+
+    static func defaultWorkspaceRootURL() -> URL {
+        let supportDirectory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return supportDirectory
+            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            .appendingPathComponent("Workspaces", isDirectory: true)
+    }
+
+    private nonisolated static func workspaceRootURL() -> URL {
+        #if DEBUG
+            if let override = workspaceRootOverride.get() {
+                return override
+            }
+        #endif
+        return defaultWorkspaceRootURL()
+    }
+
+    private nonisolated static func removeItem(at url: URL) async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            fileSaveQueue.async {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    #if DEBUG
+        nonisolated static func test_setWorkspaceRootOverride(_ root: URL?) async {
+            await withCheckedContinuation { continuation in
+                fileSaveQueue.async {
+                    workspaceRootOverride.set(root)
+                    continuation.resume()
+                }
+            }
+        }
+
+        nonisolated static func test_workspaceRootURL() -> URL {
+            workspaceRootURL()
+        }
+    #endif
+
     /// Prepares a retired workspace's Oracle chat copies without changing either storage tree.
     /// This deliberately enumerates the directory directly: `listChatSessions` enforces the user's
     /// history limit and may delete old files, which must never happen during consolidation.
     nonisolated static func prepareWorkspaceSessionRehome(
-        from sourceWorkspaceDirectory: URL,
-        to destinationWorkspaceDirectory: URL,
-        canonicalWorkspaceID: UUID
+        from sourceWorkspace: WorkspaceModel,
+        to destinationWorkspace: WorkspaceModel
     ) async throws -> WorkspaceSessionSidecarPreparedBatch? {
-        try await withCheckedThrowingContinuation { continuation in
+        let sourceWorkspaceDirectory = try resolvedWorkspaceFolderURL(for: sourceWorkspace)
+        let destinationWorkspaceDirectory = try resolvedWorkspaceFolderURL(for: destinationWorkspace)
+        let canonicalWorkspaceID = destinationWorkspace.id
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<WorkspaceSessionSidecarPreparedBatch?, Error>) in
             fileSaveQueue.async {
                 do {
                     let sourceFolder = sourceWorkspaceDirectory
                         .appendingPathComponent("Chats", isDirectory: true)
+                        .standardizedFileURL
                     let destinationFolder = destinationWorkspaceDirectory
                         .appendingPathComponent("Chats", isDirectory: true)
+                        .standardizedFileURL
+                    try WorkspaceSessionSidecarMigration.validateDistinctSessionFolders(
+                        source: sourceFolder,
+                        destination: destinationFolder
+                    )
                     let sourceFiles = try WorkspaceSessionSidecarMigration.sessionFileURLs(
                         in: sourceFolder,
                         prefix: "ChatSession-"
@@ -112,7 +192,9 @@ actor ChatDataService {
                         canonicalWorkspaceID: canonicalWorkspaceID
                     )
                     continuation.resume(returning: WorkspaceSessionSidecarPreparedBatch(
+                        sourceFolder: sourceFolder,
                         destinationFolder: destinationFolder,
+                        filenamePrefix: "ChatSession-",
                         copies: prepared
                     ))
                 } catch {
@@ -129,13 +211,7 @@ actor ChatDataService {
         try await withCheckedThrowingContinuation { continuation in
             fileSaveQueue.async {
                 do {
-                    try FileManager.default.createDirectory(
-                        at: batch.destinationFolder,
-                        withIntermediateDirectories: true
-                    )
-                    for copy in batch.copies {
-                        try WorkspaceSessionSidecarMigration.write(copy)
-                    }
+                    try WorkspaceSessionSidecarMigration.commitPreparedBatch(batch)
                     continuation.resume(returning: ())
                 } catch {
                     continuation.resume(throwing: error)
@@ -368,7 +444,7 @@ actor ChatDataService {
             let filesToDelete = sortedFiles.dropFirst(limit.rawValue)
             for url in filesToDelete {
                 // Best-effort delete; ignore individual failures
-                try? FileManager.default.removeItem(at: url)
+                try? await Self.removeItem(at: url)
             }
             return Array(sortedFiles.prefix(limit.rawValue))
         }
@@ -494,7 +570,7 @@ actor ChatDataService {
 
     /// Delete a particular chat session file.
     func deleteChatSessionFile(_ fileURL: URL) async throws {
-        try FileManager.default.removeItem(at: fileURL)
+        try await Self.removeItem(at: fileURL)
     }
 
     // MARK: - Folder Helpers
@@ -511,19 +587,18 @@ actor ChatDataService {
         return chatsFolder
     }
 
-    /// Return the main folder for the workspace (with custom or default path).
-    private func workspaceFolderURL(for workspace: WorkspaceModel) throws -> URL {
-        let root = WorkspaceStoragePaths.configuredRoot()
-        if !FileManager.default.fileExists(atPath: root.path) {
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        }
-        let workspaceDir = try WorkspaceStorageDirectoryResolver.shared.resolveDirectory(
-            workspaceID: workspace.id,
-            workspaceName: workspace.name,
-            customStoragePath: workspace.customStoragePath,
-            catalogFileURL: nil,
-            baseRoot: root
+    private nonisolated static func resolvedWorkspaceFolderURL(
+        for workspace: WorkspaceModel
+    ) throws -> URL {
+        try WorkspaceSessionSidecarMigration.workspaceDirectory(
+            for: workspace,
+            root: workspaceRootURL()
         )
+    }
+
+    /// Return the main folder for the workspace (with custom or predecessor default path).
+    private func workspaceFolderURL(for workspace: WorkspaceModel) throws -> URL {
+        let workspaceDir = try Self.resolvedWorkspaceFolderURL(for: workspace)
         if !FileManager.default.fileExists(atPath: workspaceDir.path) {
             try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
         }

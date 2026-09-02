@@ -1,17 +1,17 @@
 import Foundation
-import RepoPromptDomainRuntime
 
 /// On-disk workspace directory naming convention: `Workspace-{name}-{uuid}`.
 ///
-/// The format is parsed by `HistorySessionScanner` for cross-workspace discovery. Live storage
-/// resolution is UUID/catalog based; this builder delegates to the domain sanitizer for legacy
-/// callers that still need a creation name.
+/// The format is written by `AgentSessionDataService` (workspace folder creation) and
+/// parsed by `HistorySessionScanner` (cross-workspace discovery). Centralizing it here
+/// keeps the single writer and the single reader in agreement on one shape, so the
+/// reader never drifts from how directories are actually laid down on disk.
 enum WorkspaceDirectoryName {
     static let prefix = "Workspace-"
 
     /// Build a directory name from a workspace name and UUID.
     static func directoryName(name: String, id: UUID) -> String {
-        DomainWorkspaceStoragePath.directoryName(name: name, id: id)
+        "\(prefix)\(name)-\(id.uuidString)"
     }
 
     /// Parse `Workspace-{name}-{uuid}` into `(name, id)`. Workspace names may contain
