@@ -45,6 +45,35 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         XCTAssertThrowsError(try resolver.resolvedLaunch(for: config))
     }
 
+    func testProductionDefaultRejectsCursorAgentSymlinkToGenericAgentBeforeProbe() async throws {
+        let rootDirectory = try makeTemporaryDirectory()
+        let packageDirectory = rootDirectory.appendingPathComponent("unrelated-package", isDirectory: true)
+        let binDirectory = rootDirectory.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+        let probeMarker = rootDirectory.appendingPathComponent("generic-agent-probed")
+        let genericAgent = try makeExecutable(
+            named: "agent",
+            in: packageDirectory,
+            marker: probeMarker,
+            output: "Usage: agent acp\nStart the Cursor Agent as an ACP (Agent Client Protocol) server"
+        )
+        try FileManager.default.createSymbolicLink(
+            at: binDirectory.appendingPathComponent("cursor-agent"),
+            withDestinationURL: genericAgent
+        )
+        let resolver = makeResolver(path: binDirectory.path)
+        let config = CursorAgentConfig(additionalPathHints: [], includeRepoPromptMCPServer: false)
+
+        let support = try await resolver.probeSupport(for: config)
+
+        guard case .unsupported = support else {
+            return XCTFail("Expected cursor-agent resolving to a generic agent executable to be unsupported")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: probeMarker.path))
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config))
+    }
+
     func testProductionDefaultFallsThroughStaleCursorAgentToVerifiedAgentAlias() async throws {
         let rootDirectory = try makeTemporaryDirectory()
         let legacyDirectory = rootDirectory.appendingPathComponent("legacy", isDirectory: true)

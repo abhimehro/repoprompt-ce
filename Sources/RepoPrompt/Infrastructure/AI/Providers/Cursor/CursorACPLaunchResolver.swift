@@ -463,9 +463,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                     preserveValidationError: true
                 )
                 if commandSelection == .automatic,
-                   candidate.entrypoint == .agentACP,
-                   (launch.executableIdentity.canonicalPath as NSString).lastPathComponent
-                   .caseInsensitiveCompare(CursorACPLaunchCandidate.cursorAgentACP.command) != .orderedSame
+                   launch.candidate == .agentACP
                 {
                     throw CursorACPLaunchResolutionError.unverifiedAgentAlias(
                         launch.executableIdentity.canonicalPath
