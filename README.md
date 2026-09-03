@@ -157,6 +157,7 @@ third-party notices in
   checks, source placement, and contribution preflight
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): contribution policy and pull request
   steps
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md): contributor covenant
 - [`docs/architecture/context-composer.md`](docs/architecture/context-composer.md): Context Composer architecture, invariants, and state ownership
 - [`docs/architecture/source-layout.md`](docs/architecture/source-layout.md):
   source ownership and placement rules
