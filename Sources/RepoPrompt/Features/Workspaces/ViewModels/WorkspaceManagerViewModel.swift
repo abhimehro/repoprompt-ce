@@ -4714,8 +4714,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         publishPendingConsolidatedRestoreIDs()
     }
 
-    /// Revalidates only a workspace already suspected by local projection metadata. Ordinary
-    /// switches do not pay for a catalog snapshot or direct saved-document read.
+    /// Revalidates one workspace's consolidated-restore state against the authority.
+    ///
+    /// `canActivateWorkspaceAfterAuthorityCheck` calls this for every non-ephemeral switch in
+    /// authority mode, so a switch does pay for a catalog snapshot and, when the workspace is
+    /// suspected, a direct saved-document read. That is deliberate: activation must not be decided
+    /// from the decode cache, which is exactly what let a retired workspace be activated.
     private func refreshAuthorityConsolidatedRestoreClassification(
         workspaceID: UUID
     ) async -> AuthorityConsolidatedRestoreClassification {

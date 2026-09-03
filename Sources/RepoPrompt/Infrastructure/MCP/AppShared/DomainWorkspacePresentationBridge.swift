@@ -179,7 +179,7 @@ struct DomainWorkspaceAuthorityClient {
         return await store.snapshot()
     }
 
-    fileprivate func document(for workspace: WorkspaceModel, fileURL: URL) throws -> DomainWorkspaceDocument {
+    private func document(for workspace: WorkspaceModel, fileURL: URL) throws -> DomainWorkspaceDocument {
         let bytes = try JSONEncoder().encode(workspace)
         return try DomainWorkspaceDocument.decode(documentBytes: bytes, fileURL: fileURL)
     }
@@ -330,20 +330,12 @@ final class DomainWorkspacePresentationBridge {
               workspace.health.acceptsMutations,
               let model = workspaceManager?.workspace(withID: workspaceID)
         else { return false }
-        let cachedModel: WorkspaceModel = if let modelDocument = try? client.document(
-            for: model,
-            fileURL: workspace.document.fileURL
-        ), modelDocument.contentDigest == workspace.document.contentDigest {
-            model
-        } else {
-            // A same-window commit can be accepted just before a newer local edit is captured.
-            // Keep that local model in both the manager and bridge cache. Advancing the baseline
-            // below lets the newer edit commit from the accepted revision; explicit failed-save
-            // reconciliation remains responsible for authoritative replacement when a two-phase
-            // cleanup save does not complete.
-            model
-        }
-        projectedModels[workspaceID] = cachedModel
+        // A same-window commit can be accepted just before a newer local edit is captured. Keep the
+        // local model in both the manager and bridge cache: advancing the baseline below lets the
+        // newer edit commit from the accepted revision, and explicit failed-save reconciliation
+        // remains responsible for authoritative replacement when a two-phase cleanup save does not
+        // complete. The outcome does not depend on re-encoding the model to compare digests.
+        projectedModels[workspaceID] = model
         projectedDigests[workspaceID] = workspace.document.contentDigest
         projectedHealth[workspaceID] = workspace.health
         workspaceManager?.applyDomainAuthorityBaseline(
