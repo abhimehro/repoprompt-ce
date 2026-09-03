@@ -173,6 +173,184 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             XCTAssertEqual(relativePeerProbeCount, 1)
         }
 
+        func testCanonicalCompactionRevalidatesEarlierPeerBeforeReturningBareToken() async throws {
+            let parent = try makeTemporaryDirectory(name: "CanonicalCompactionPeerDrift")
+            let earlierRootURL = parent.appendingPathComponent("Earlier", isDirectory: true)
+            let addressedRootURL = parent.appendingPathComponent("Addressed", isDirectory: true)
+            let laterRootURL = parent.appendingPathComponent("Later", isDirectory: true)
+            let relativePath = "Target.swift"
+            let addressedFileURL = addressedRootURL.appendingPathComponent(relativePath)
+            let earlierFileURL = earlierRootURL.appendingPathComponent(relativePath)
+            try write("earlier sentinel\n", to: earlierRootURL.appendingPathComponent("Earlier.swift"))
+            try write("addressed\n", to: addressedFileURL)
+            try write("later sentinel\n", to: laterRootURL.appendingPathComponent("Later.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let earlierRoot = try await store.loadRoot(path: earlierRootURL.path)
+            let addressedRoot = try await store.loadRoot(path: addressedRootURL.path)
+            let laterRoot = try await store.loadRoot(path: laterRootURL.path)
+            let roots = await store.rootRefs(scope: .visibleWorkspace)
+            let earlierRootRef = try XCTUnwrap(roots.first(where: { $0.id == earlierRoot.id }))
+            let addressedRootRef = try XCTUnwrap(roots.first(where: { $0.id == addressedRoot.id }))
+            let laterRootRef = try XCTUnwrap(roots.first(where: { $0.id == laterRoot.id }))
+            let namespace = WorkspaceExactFileNamespace.identity(roots: [
+                earlierRootRef,
+                addressedRootRef,
+                laterRootRef
+            ])
+            let laterSerialPosition = try XCTUnwrap(namespace.rootBindings.firstIndex {
+                $0.lookupRoot.id == laterRoot.id
+            })
+            let gate = MCPPathContractReleaseGate(name: "later canonical compaction peer")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileCandidateProbeGateForTesting(
+                purpose: .canonicalCompaction,
+                rootID: laterRoot.id,
+                serialPosition: laterSerialPosition
+            ) {
+                await gate.enterAndWait()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(relativePath),
+                    namespace: namespace
+                )
+            }
+            let compactionEntered = await gate.waitUntilEntered()
+            XCTAssertTrue(compactionEntered)
+            try write("peer duplicate\n", to: earlierFileURL)
+            gate.release()
+
+            let resolution = try await resolutionTask.value
+            guard case let .matched(match) = resolution else {
+                return XCTFail("Expected the addressed record with an explicit replay token, got \(resolution)")
+            }
+            XCTAssertEqual(match.file.rootID, addressedRoot.id)
+            XCTAssertNotEqual(match.canonicalPath, relativePath)
+            guard case .explicitRoot = try WorkspaceExactFileInput.parse(match.canonicalPath) else {
+                return XCTFail("Expected binding-explicit canonical path, got \(match.canonicalPath)")
+            }
+
+            let explicitReplay = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse(match.canonicalPath),
+                namespace: namespace
+            )
+            guard case let .matched(replayedMatch) = explicitReplay else {
+                return XCTFail("Expected the explicit replay token to remain resolvable")
+            }
+            XCTAssertEqual(replayedMatch.file.id, match.file.id)
+
+            let bareReplay = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse(relativePath),
+                namespace: namespace
+            )
+            guard case .issue(.ambiguousRootMatch) = bareReplay else {
+                return XCTFail("Expected the drifted bare token to fail closed, got \(bareReplay)")
+            }
+        }
+
+        @MainActor
+        func testExactResolutionLifecycleDiagnosticsRemainPathFreeAcrossQualifiedAndBareFlows() async throws {
+            let parent = try makeTemporaryDirectory(name: "ExactResolutionDiagnosticsPrivacy")
+            let addressedRootURL = parent.appendingPathComponent("SensitiveAddressedRoot", isDirectory: true)
+            let peerRootURL = parent.appendingPathComponent("SensitivePeerRoot", isDirectory: true)
+            let existingFilename = "ExistingSecret.swift"
+            let materializedFilename = "MaterializedSecret.swift"
+            let sensitiveContent = "private diagnostic payload"
+            let existingURL = addressedRootURL.appendingPathComponent(existingFilename)
+            let materializedURL = addressedRootURL.appendingPathComponent(materializedFilename)
+            try write("\(materializedFilename)\n", to: addressedRootURL.appendingPathComponent(".gitignore"))
+            try write(sensitiveContent, to: existingURL)
+            try write(sensitiveContent, to: materializedURL)
+            try write("peer diagnostic payload", to: peerRootURL.appendingPathComponent("PeerSecret.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let addressedRoot = try await store.loadRoot(path: addressedRootURL.path)
+            let peerRoot = try await store.loadRoot(path: peerRootURL.path)
+            addTeardownBlock {
+                await store.unloadRoot(id: addressedRoot.id)
+                await store.unloadRoot(id: peerRoot.id)
+            }
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let materializedBeforeResolution = await store.file(
+                rootID: addressedRoot.id,
+                relativePath: materializedFilename
+            )
+            XCTAssertNil(materializedBeforeResolution)
+
+            EditFlowPerf.resetDebugCaptureForTesting()
+            switch EditFlowPerf.beginDebugCapture(label: "exact-resolution-privacy", maxSamples: 200) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Exact-resolution diagnostics capture should start")
+            }
+            var didFinishCapture = false
+            defer {
+                if !didFinishCapture {
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                }
+            }
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+            try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                let inputs = try [
+                    WorkspaceExactFileInput.parse(existingURL.path),
+                    WorkspaceExactFileInput.parse(materializedURL.path),
+                    WorkspaceExactFileInput.parse(existingFilename)
+                ]
+                for input in inputs {
+                    let resolution = try await store.resolveExactExistingWorkspaceFile(
+                        input,
+                        namespace: namespace
+                    )
+                    guard case .matched = resolution else {
+                        XCTFail("Expected exact resolution for \(input.renderedPath), got \(resolution)")
+                        continue
+                    }
+                }
+            }
+
+            let events = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                $0.eventName == "WorkspaceExactResolution.Checkpoint"
+            }
+            didFinishCapture = true
+            XCTAssertFalse(events.isEmpty)
+            for purpose in [
+                "qualifiedTargetValidation",
+                "explicitMaterialization",
+                "bareRelativeNamespaceClassification",
+                "canonicalCompaction"
+            ] {
+                XCTAssertTrue(events.contains {
+                    $0.sanitizedDimensions.contains("purpose=\(purpose)")
+                }, "Missing exact-resolution diagnostics for \(purpose)")
+            }
+
+            let forbiddenFragments = [
+                addressedRootURL.path,
+                peerRootURL.path,
+                existingFilename,
+                materializedFilename,
+                sensitiveContent,
+                "SensitiveAddressedRoot",
+                "SensitivePeerRoot",
+                "diagnostic",
+                "payload"
+            ]
+            for event in events {
+                XCTAssertFalse(event.sanitizedDimensions.contains("/"), event.sanitizedDimensions)
+                for fragment in forbiddenFragments {
+                    XCTAssertFalse(event.sanitizedDimensions.contains(fragment), event.sanitizedDimensions)
+                }
+            }
+        }
+
         func testUnloadReloadDuringCatalogValidationCannotReturnStaleRecord() async throws {
             let rootURL = try makeTemporaryDirectory(name: "CatalogValidationLifetime")
             let targetURL = rootURL.appendingPathComponent("Target.swift")
@@ -185,7 +363,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             let namespace = await WorkspaceExactFileNamespace.identity(
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
-            let gate = TestReleaseFence(name: "exact catalog validation")
+            let gate = MCPPathContractReleaseGate(name: "exact catalog validation")
             addTeardownBlock {
                 gate.release()
                 await store.clearExactFileCandidateProbeGateForTesting()
@@ -221,6 +399,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             XCTAssertNil(staleCatalogRecord)
         }
 
+        @MainActor
         func testSameRootIDReplacementAfterCatalogValidationFailsClosed() async throws {
             let rootURL = try makeTemporaryDirectory(name: "CatalogValidationSameRootReplacement")
             let targetURL = rootURL.appendingPathComponent("Target.swift")
@@ -234,7 +413,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             let namespace = await WorkspaceExactFileNamespace.identity(
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
-            let gate = TestReleaseFence(name: "validated catalog result")
+            let gate = MCPPathContractReleaseGate(name: "validated catalog result")
             addTeardownBlock {
                 gate.release()
                 await store.clearExactFileCandidateProbeGateForTesting()
@@ -246,11 +425,27 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                 await gate.enterAndWait()
             }
 
+            EditFlowPerf.resetDebugCaptureForTesting()
+            switch EditFlowPerf.beginDebugCapture(label: "catalog-validation-replacement", maxSamples: 40) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Catalog validation diagnostics capture should start")
+            }
+            var didFinishCapture = false
+            defer {
+                if !didFinishCapture {
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                }
+            }
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
             let resolutionTask = Task {
-                try await store.resolveExactExistingWorkspaceFile(
-                    WorkspaceExactFileInput.parse(targetURL.path),
-                    namespace: namespace
-                )
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                    try await store.resolveExactExistingWorkspaceFile(
+                        WorkspaceExactFileInput.parse(targetURL.path),
+                        namespace: namespace
+                    )
+                }
             }
             let validationResultEntered = await gate.waitUntilEntered()
             XCTAssertTrue(validationResultEntered)
@@ -267,6 +462,101 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             }
             let preservedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
             XCTAssertEqual(preservedRecord?.id, originalRecord.id)
+
+            let probeEvents = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                $0.eventName == "WorkspaceExactResolution.Checkpoint"
+                    && $0.sanitizedDimensions.contains("purpose=qualifiedTargetValidation")
+                    && (
+                        $0.sanitizedDimensions.contains("status=bindingProbeBegan")
+                            || $0.sanitizedDimensions.contains("status=bindingProbeEnded")
+                    )
+            }
+            didFinishCapture = true
+            XCTAssertEqual(probeEvents.count(where: {
+                $0.sanitizedDimensions.contains("status=bindingProbeBegan")
+            }), 1)
+            let terminalEvents = probeEvents.filter {
+                $0.sanitizedDimensions.contains("status=bindingProbeEnded")
+            }
+            XCTAssertEqual(terminalEvents.count, 1)
+            XCTAssertTrue(terminalEvents.allSatisfy {
+                $0.sanitizedDimensions.contains("outcome=unavailable")
+            })
+        }
+
+        @MainActor
+        func testCancellationAfterEligibilityBalancesBindingProbeDiagnostics() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "CancelledEligibilityDiagnostics")
+            let targetURL = rootURL.appendingPathComponent("Missing.swift")
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let gate = MCPPathContractReleaseGate(name: "cancelled exact eligibility")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .candidateEligibility,
+                rootID: root.id
+            ) {
+                await gate.enterAndWaitIgnoringCancellationUntilRelease()
+            }
+
+            EditFlowPerf.resetDebugCaptureForTesting()
+            switch EditFlowPerf.beginDebugCapture(label: "cancelled-eligibility-diagnostics", maxSamples: 40) {
+            case .started:
+                break
+            case .busy:
+                return XCTFail("Cancellation diagnostics capture should start")
+            }
+            var didFinishCapture = false
+            defer {
+                if !didFinishCapture {
+                    _ = EditFlowPerf.debugCaptureSnapshot(finish: true)
+                }
+            }
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+            let resolutionTask = Task {
+                try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                    try await store.resolveExactExistingWorkspaceFile(
+                        WorkspaceExactFileInput.parse(targetURL.path),
+                        namespace: namespace
+                    )
+                }
+            }
+            let eligibilityEntered = await gate.waitUntilEntered()
+            XCTAssertTrue(eligibilityEntered)
+            resolutionTask.cancel()
+            gate.release()
+
+            do {
+                _ = try await resolutionTask.value
+                XCTFail("Expected exact resolution cancellation")
+            } catch is CancellationError {}
+
+            let probeEvents = EditFlowPerf.debugCaptureSnapshot(finish: true).lifecycleEvents.filter {
+                $0.eventName == "WorkspaceExactResolution.Checkpoint"
+                    && $0.sanitizedDimensions.contains("purpose=qualifiedTargetValidation")
+                    && (
+                        $0.sanitizedDimensions.contains("status=bindingProbeBegan")
+                            || $0.sanitizedDimensions.contains("status=bindingProbeEnded")
+                    )
+            }
+            didFinishCapture = true
+            let beganEvents = probeEvents.filter {
+                $0.sanitizedDimensions.contains("status=bindingProbeBegan")
+            }
+            let endedEvents = probeEvents.filter {
+                $0.sanitizedDimensions.contains("status=bindingProbeEnded")
+            }
+            XCTAssertEqual(beganEvents.count, 1)
+            XCTAssertEqual(endedEvents.count, beganEvents.count)
+            XCTAssertTrue(endedEvents.allSatisfy {
+                $0.sanitizedDimensions.contains("outcome=cancelled")
+            })
         }
 
         func testUnloadReloadDuringEligibilityCannotMaterializeReplacementLifetime() async throws {
@@ -278,7 +568,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
             try write("replacement lifetime\n", to: targetURL)
-            let gate = TestReleaseFence(name: "exact candidate eligibility")
+            let gate = MCPPathContractReleaseGate(name: "exact candidate eligibility")
             addTeardownBlock {
                 gate.release()
                 await store.clearExactFileCandidateProbeGateForTesting()
@@ -319,7 +609,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             let namespace = await WorkspaceExactFileNamespace.identity(
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
-            let gate = TestReleaseFence(name: "exact missing-file cleanup")
+            let gate = MCPPathContractReleaseGate(name: "exact missing-file cleanup")
             addTeardownBlock {
                 gate.release()
                 await store.clearExactFileCandidateProbeGateForTesting()
@@ -359,7 +649,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
             try write("late target\n", to: targetURL)
-            let gate = TestReleaseFence(name: "explicit managed registration")
+            let gate = MCPPathContractReleaseGate(name: "explicit managed registration")
             addTeardownBlock {
                 gate.release()
                 await store.clearExactFileCandidateProbeGateForTesting()
@@ -391,6 +681,68 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             }
         }
 
+        func testDirectoryClassificationReflectsPostPrunePathState() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "PostPruneDirectoryClassification")
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let roots = await store.rootRefs(scope: .visibleWorkspace)
+            let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+            let createdDirectoryURL = rootURL.appendingPathComponent("CreatedDirectory", isDirectory: true)
+            let removedDirectoryURL = rootURL.appendingPathComponent("RemovedDirectory", isDirectory: true)
+            let creationGate = MCPPathContractReleaseGate(name: "missing path becomes directory")
+            let removalGate = MCPPathContractReleaseGate(name: "directory becomes missing")
+            addTeardownBlock {
+                creationGate.release()
+                removalGate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+
+            await store.setExactFileSuspensionGateForTesting(
+                point: .missingFilePruneFence,
+                rootID: root.id
+            ) {
+                await creationGate.enterAndWait()
+            }
+            let creationResolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(createdDirectoryURL.path),
+                    namespace: namespace
+                )
+            }
+            let creationProbeEntered = await creationGate.waitUntilEntered()
+            XCTAssertTrue(creationProbeEntered)
+            try FileManager.default.createDirectory(at: createdDirectoryURL, withIntermediateDirectories: true)
+            creationGate.release()
+            let creationResolution = try await creationResolutionTask.value
+            guard case let .directory(match) = creationResolution else {
+                return XCTFail("Expected the post-fence directory, got \(creationResolution)")
+            }
+            XCTAssertEqual(match.relativePath, "CreatedDirectory")
+
+            await store.clearExactFileCandidateProbeGateForTesting()
+            try FileManager.default.createDirectory(at: removedDirectoryURL, withIntermediateDirectories: true)
+            await store.setExactFileSuspensionGateForTesting(
+                point: .missingFilePruneFence,
+                rootID: root.id
+            ) {
+                await removalGate.enterAndWait()
+            }
+            let removalResolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(removedDirectoryURL.path),
+                    namespace: namespace
+                )
+            }
+            let removalProbeEntered = await removalGate.waitUntilEntered()
+            XCTAssertTrue(removalProbeEntered)
+            try FileManager.default.removeItem(at: removedDirectoryURL)
+            removalGate.release()
+            let removalResolution = try await removalResolutionTask.value
+            guard case .claimedMissing = removalResolution else {
+                return XCTFail("Expected the removed post-fence directory to be missing, got \(removalResolution)")
+            }
+        }
+
         func testRecreatedFileDuringMissingPruneRetainsCurrentCatalogRecord() async throws {
             let rootURL = try makeTemporaryDirectory(name: "RecreatedFileDuringPrune")
             let targetURL = rootURL.appendingPathComponent("Target.swift")
@@ -404,7 +756,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
             try FileManager.default.removeItem(at: targetURL)
-            let gate = TestReleaseFence(name: "missing-file prune fence")
+            let gate = MCPPathContractReleaseGate(name: "missing-file prune fence")
             addTeardownBlock {
                 gate.release()
                 await store.clearExactFileCandidateProbeGateForTesting()
@@ -446,10 +798,10 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
             try write("target\n", to: targetURL)
-            let cleanupWaitGate = TestReleaseFence(name: "exact cleanup wait boundary")
-            let cleanupGate = TestReleaseFence(name: "store-owned codemap cleanup")
-            let cancellationCompletion = TestReleaseFence(name: "cancelled materialization completion")
-            let followupCompletion = TestReleaseFence(name: "followup materialization completion")
+            let cleanupWaitGate = MCPPathContractReleaseGate(name: "exact cleanup wait boundary")
+            let cleanupGate = MCPPathContractReleaseGate(name: "store-owned codemap cleanup")
+            let cancellationCompletion = MCPPathContractReleaseGate(name: "cancelled materialization completion")
+            let followupCompletion = MCPPathContractReleaseGate(name: "followup materialization completion")
             addTeardownBlock {
                 cleanupWaitGate.release()
                 cleanupGate.release()
@@ -481,7 +833,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             let cleanupFlightEntered = await cleanupGate.waitUntilEntered()
             XCTAssertTrue(cleanupFlightEntered)
             cleanupWaitGate.release()
-            try await AsyncTestWait.waitUntil("exact cleanup waiter registration", timeout: 10) {
+            try await MCPPathContractAsyncWait.waitUntil("exact cleanup waiter registration", timeout: 10) {
                 await store.codemapCleanupWaiterCountForTesting(rootID: root.id) == 1
             }
             let eventsBeforeCancellation = await store.codemapGraphIndexBuildStoreEventsForTesting(
@@ -522,7 +874,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             let lastEventOrdinalBeforeCleanupSettlement = eventsBeforeCleanupSettlement.map(\.ordinal).max() ?? 0
             cleanupGate.release()
             XCTAssertGreaterThanOrEqual(lastEventOrdinalBeforeCleanupSettlement, lastEventOrdinalBeforeCancellation)
-            try await AsyncTestWait.waitUntil("cancelled materialization codemap reschedule", timeout: 10) {
+            try await MCPPathContractAsyncWait.waitUntil("cancelled materialization codemap reschedule", timeout: 10) {
                 let events = await store.codemapGraphIndexBuildStoreEventsForTesting(rootID: root.id)
                 return events.contains {
                     $0.ordinal > lastEventOrdinalBeforeCleanupSettlement && $0.kind == .scheduled
@@ -1320,6 +1672,201 @@ final class MCPReadMutationPathContractTests: XCTestCase {
 
         func record() {
             count += 1
+        }
+    }
+
+    private enum MCPPathContractAsyncWait {
+        struct Timeout: Error, LocalizedError {
+            let description: String
+            let seconds: TimeInterval
+
+            var errorDescription: String? {
+                "Timed out after \(seconds)s waiting for \(description)"
+            }
+        }
+
+        static func waitUntil(
+            _ description: String,
+            timeout: TimeInterval,
+            condition: @escaping () async -> Bool
+        ) async throws {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: .seconds(max(0, timeout)))
+
+            while await !condition() {
+                try Task.checkCancellation()
+                guard clock.now < deadline else {
+                    throw Timeout(description: description, seconds: timeout)
+                }
+                await Task.yield()
+            }
+        }
+    }
+
+    private final class MCPPathContractReleaseGate: @unchecked Sendable {
+        private let name: String
+        private let lock = NSLock()
+        private var entered = false
+        private var released = false
+        private var releaseWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+        private var cancelledReleaseWaiters = Set<UUID>()
+        private var timedOutReleaseWaiters = Set<UUID>()
+        private var entryWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+        private var cancelledEntryWaiters = Set<UUID>()
+        private var timedOutEntryWaiters = Set<UUID>()
+
+        init(name: String) {
+            self.name = name
+        }
+
+        func enterAndWait() async {
+            let waiterID = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    registerReleaseWaiter(continuation, id: waiterID, ignoresCancellation: false)
+                }
+            } onCancel: {
+                cancelReleaseWaiter(id: waiterID)
+            }
+        }
+
+        func enterAndWaitIgnoringCancellationUntilRelease(timeout: TimeInterval = 30) async {
+            let waiterID = UUID()
+            let timeoutTask = Task.detached { [weak self] in
+                try? await Task.sleep(for: .seconds(max(0, timeout)))
+                guard !Task.isCancelled else { return }
+                self?.timeoutReleaseWaiter(id: waiterID, seconds: timeout)
+            }
+            await withCheckedContinuation { continuation in
+                registerReleaseWaiter(continuation, id: waiterID, ignoresCancellation: true)
+            }
+            timeoutTask.cancel()
+            await timeoutTask.value
+        }
+
+        @discardableResult
+        func waitUntilEntered(timeout: TimeInterval = 10) async -> Bool {
+            let waiterID = UUID()
+            let timeoutTask = Task.detached { [weak self] in
+                try? await Task.sleep(for: .seconds(max(0, timeout)))
+                guard !Task.isCancelled else { return }
+                self?.timeoutEntryWaiter(id: waiterID, seconds: timeout)
+            }
+            let didEnter = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    registerEntryWaiter(continuation, id: waiterID)
+                }
+            } onCancel: {
+                cancelEntryWaiter(id: waiterID)
+            }
+            timeoutTask.cancel()
+            await timeoutTask.value
+            return didEnter
+        }
+
+        func release() {
+            lock.lock()
+            released = true
+            let pending = Array(releaseWaiters.values)
+            releaseWaiters.removeAll()
+            cancelledReleaseWaiters.removeAll()
+            timedOutReleaseWaiters.removeAll()
+            lock.unlock()
+            pending.forEach { $0.resume() }
+        }
+
+        private func registerReleaseWaiter(
+            _ continuation: CheckedContinuation<Void, Never>,
+            id: UUID,
+            ignoresCancellation: Bool
+        ) {
+            lock.lock()
+            entered = true
+            let enteredWaiters = Array(entryWaiters.values)
+            entryWaiters.removeAll()
+            cancelledEntryWaiters.removeAll()
+            timedOutEntryWaiters.removeAll()
+            let shouldResume = released
+                || timedOutReleaseWaiters.remove(id) != nil
+                || (!ignoresCancellation && (Task.isCancelled || cancelledReleaseWaiters.remove(id) != nil))
+            if !shouldResume {
+                releaseWaiters[id] = continuation
+            }
+            lock.unlock()
+
+            enteredWaiters.forEach { $0.resume(returning: true) }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+
+        private func registerEntryWaiter(_ continuation: CheckedContinuation<Bool, Never>, id: UUID) {
+            lock.lock()
+            let didEnter: Bool?
+            if entered {
+                didEnter = true
+            } else if Task.isCancelled
+                || cancelledEntryWaiters.remove(id) != nil
+                || timedOutEntryWaiters.remove(id) != nil
+            {
+                didEnter = false
+            } else {
+                entryWaiters[id] = continuation
+                didEnter = nil
+            }
+            lock.unlock()
+
+            if let didEnter {
+                continuation.resume(returning: didEnter)
+            }
+        }
+
+        private func cancelReleaseWaiter(id: UUID) {
+            lock.lock()
+            let continuation = releaseWaiters.removeValue(forKey: id)
+            if continuation == nil, !released {
+                cancelledReleaseWaiters.insert(id)
+            }
+            lock.unlock()
+            continuation?.resume()
+        }
+
+        private func timeoutReleaseWaiter(id: UUID, seconds: TimeInterval) {
+            lock.lock()
+            let continuation = releaseWaiters.removeValue(forKey: id)
+            let shouldFail = continuation != nil || !released
+            if continuation == nil, !released {
+                timedOutReleaseWaiters.insert(id)
+            }
+            lock.unlock()
+
+            guard shouldFail else { return }
+            XCTFail("Timed out waiting for \(name) release after \(seconds)s")
+            continuation?.resume()
+        }
+
+        private func cancelEntryWaiter(id: UUID) {
+            lock.lock()
+            let continuation = entryWaiters.removeValue(forKey: id)
+            if continuation == nil, !entered {
+                cancelledEntryWaiters.insert(id)
+            }
+            lock.unlock()
+            continuation?.resume(returning: false)
+        }
+
+        private func timeoutEntryWaiter(id: UUID, seconds: TimeInterval) {
+            lock.lock()
+            let continuation = entryWaiters.removeValue(forKey: id)
+            let shouldFail = continuation != nil || !entered
+            if continuation == nil, !entered {
+                timedOutEntryWaiters.insert(id)
+            }
+            lock.unlock()
+
+            guard shouldFail else { return }
+            XCTFail("Timed out waiting for \(name) to enter after \(seconds)s")
+            continuation?.resume(returning: false)
         }
     }
 #endif

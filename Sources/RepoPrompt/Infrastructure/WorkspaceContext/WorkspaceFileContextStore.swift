@@ -17364,11 +17364,27 @@ actor WorkspaceFileContextStore {
         let file: WorkspaceFileRecord?
     }
 
+    private enum ExactFileDiskPathState: Equatable {
+        case regularFile
+        case directory
+        case missingOrOther
+    }
+
+    private struct ExactFileBindingObservation {
+        let rootID: UUID
+        let rootLifetimeID: UUID
+        let rootService: FileSystemService
+        let catalogFileID: UUID?
+        let catalogFileFullPath: String?
+        let diskPathState: ExactFileDiskPathState
+    }
+
     private struct ExactFileCandidates {
         let matches: [ExactFileCandidate]
         let blocked: Bool
         let hasUnavailableBinding: Bool
         let directoryBindings: [WorkspaceExactFileNamespace.RootBinding]
+        let bindingObservations: [ExactFileBindingObservation]
     }
 
     enum ExactFileCandidatePurpose: String {
@@ -17398,6 +17414,7 @@ actor WorkspaceFileContextStore {
         var blocked = false
         var hasUnavailableBinding = false
         var directoryBindings: [WorkspaceExactFileNamespace.RootBinding] = []
+        var bindingObservations: [ExactFileBindingObservation] = []
         for (serialPosition, binding) in bindings.enumerated() {
             #if DEBUG
                 if let gate = exactFileGateForTesting,
@@ -17419,6 +17436,27 @@ actor WorkspaceFileContextStore {
                     serialPosition: serialPosition
                 )
             )
+            var didEndBindingProbe = false
+            func endBindingProbe(outcome: String, rootToken: String? = nil) {
+                guard !didEndBindingProbe else { return }
+                didEndBindingProbe = true
+                EditFlowPerf.lifecycleEvent(
+                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
+                    EditFlowPerf.Dimensions(
+                        runPurpose: purpose.rawValue,
+                        status: "bindingProbeEnded",
+                        outcome: outcome,
+                        rootToken: rootToken,
+                        serialPosition: serialPosition
+                    )
+                )
+            }
+            defer {
+                endBindingProbe(
+                    outcome: Task.isCancelled ? "cancelled" : "unavailable",
+                    rootToken: rootStatesByID[binding.lookupRoot.id]?.service.diagnosticRootToken.uuidString
+                )
+            }
             if let candidate = file(rootID: binding.lookupRoot.id, relativePath: relativePath) {
                 EditFlowPerf.lifecycleEvent(
                     EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
@@ -17467,36 +17505,28 @@ actor WorkspaceFileContextStore {
                           currentRecord.standardizedFullPath == current.standardizedFullPath
                     else {
                         hasUnavailableBinding = true
+                        endBindingProbe(outcome: "unavailable")
                         continue
                     }
+                    bindingObservations.append(exactFileBindingObservation(
+                        binding: binding,
+                        relativePath: relativePath,
+                        state: currentState
+                    ))
                     matches.append(ExactFileCandidate(
                         binding: binding,
                         rootLifetimeID: validatedLifetimeID,
                         rootService: validatedService,
                         file: current
                     ))
-                    EditFlowPerf.lifecycleEvent(
-                        EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                        EditFlowPerf.Dimensions(
-                            runPurpose: purpose.rawValue,
-                            status: "bindingProbeEnded",
-                            outcome: "catalogCurrent",
-                            rootToken: currentState.service.diagnosticRootToken.uuidString,
-                            serialPosition: serialPosition
-                        )
+                    endBindingProbe(
+                        outcome: "catalogCurrent",
+                        rootToken: currentState.service.diagnosticRootToken.uuidString
                     )
                     continue
                 case .unavailable:
                     hasUnavailableBinding = true
-                    EditFlowPerf.lifecycleEvent(
-                        EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                        EditFlowPerf.Dimensions(
-                            runPurpose: purpose.rawValue,
-                            status: "bindingProbeEnded",
-                            outcome: "unavailable",
-                            serialPosition: serialPosition
-                        )
-                    )
+                    endBindingProbe(outcome: "unavailable")
                     continue
                 case .missing:
                     break
@@ -17504,15 +17534,7 @@ actor WorkspaceFileContextStore {
             }
             guard let state = rootStatesByID[binding.lookupRoot.id] else {
                 hasUnavailableBinding = true
-                EditFlowPerf.lifecycleEvent(
-                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                    EditFlowPerf.Dimensions(
-                        runPurpose: purpose.rawValue,
-                        status: "bindingProbeEnded",
-                        outcome: "unavailable",
-                        serialPosition: serialPosition
-                    )
-                )
+                endBindingProbe(outcome: "unavailable")
                 continue
             }
             EditFlowPerf.lifecycleEvent(
@@ -17548,15 +17570,7 @@ actor WorkspaceFileContextStore {
                         serialPosition: serialPosition
                     )
                 )
-                EditFlowPerf.lifecycleEvent(
-                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                    EditFlowPerf.Dimensions(
-                        runPurpose: purpose.rawValue,
-                        status: "bindingProbeEnded",
-                        outcome: "unavailable",
-                        serialPosition: serialPosition
-                    )
-                )
+                endBindingProbe(outcome: "unavailable")
                 continue
             }
             EditFlowPerf.lifecycleEvent(
@@ -17578,41 +17592,38 @@ actor WorkspaceFileContextStore {
             )
             switch eligibility {
             case .eligible:
+                bindingObservations.append(exactFileBindingObservation(
+                    binding: binding,
+                    relativePath: relativePath,
+                    state: currentState
+                ))
                 matches.append(ExactFileCandidate(
                     binding: binding,
                     rootLifetimeID: expectedLifetimeID,
                     rootService: state.service,
                     file: nil
                 ))
-                EditFlowPerf.lifecycleEvent(
-                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                    EditFlowPerf.Dimensions(
-                        runPurpose: purpose.rawValue,
-                        status: "bindingProbeEnded",
-                        outcome: "eligible",
-                        rootToken: currentState.service.diagnosticRootToken.uuidString,
-                        serialPosition: serialPosition
-                    )
+                endBindingProbe(
+                    outcome: "eligible",
+                    rootToken: currentState.service.diagnosticRootToken.uuidString
                 )
             case .ineligible(.ignored):
+                bindingObservations.append(exactFileBindingObservation(
+                    binding: binding,
+                    relativePath: relativePath,
+                    state: currentState
+                ))
                 matches.append(ExactFileCandidate(
                     binding: binding,
                     rootLifetimeID: expectedLifetimeID,
                     rootService: state.service,
                     file: nil
                 ))
-                EditFlowPerf.lifecycleEvent(
-                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                    EditFlowPerf.Dimensions(
-                        runPurpose: purpose.rawValue,
-                        status: "bindingProbeEnded",
-                        outcome: "ignored",
-                        rootToken: currentState.service.diagnosticRootToken.uuidString,
-                        serialPosition: serialPosition
-                    )
+                endBindingProbe(
+                    outcome: "ignored",
+                    rootToken: currentState.service.diagnosticRootToken.uuidString
                 )
             case .ineligible(.missingOrDirectory):
-                let isDirectory = directoryAppearsPresentOnDisk(root: currentState.root, relativePath: relativePath)
                 EditFlowPerf.lifecycleEvent(
                     EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
                     EditFlowPerf.Dimensions(
@@ -17654,33 +17665,33 @@ actor WorkspaceFileContextStore {
                         serialPosition: serialPosition
                     )
                 )
-                if isDirectory, stateAfterPrune != nil {
-                    directoryBindings.append(binding)
-                }
-                if stateAfterPrune == nil {
+                if let stateAfterPrune {
+                    let observation = exactFileBindingObservation(
+                        binding: binding,
+                        relativePath: relativePath,
+                        state: stateAfterPrune
+                    )
+                    bindingObservations.append(observation)
+                    if observation.diskPathState == .directory {
+                        directoryBindings.append(binding)
+                    }
+                } else {
                     hasUnavailableBinding = true
                 }
-                EditFlowPerf.lifecycleEvent(
-                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                    EditFlowPerf.Dimensions(
-                        runPurpose: purpose.rawValue,
-                        status: "bindingProbeEnded",
-                        outcome: stateAfterPrune == nil ? "unavailable" : "missingOrDirectory",
-                        rootToken: stateAfterPrune?.service.diagnosticRootToken.uuidString,
-                        serialPosition: serialPosition
-                    )
+                endBindingProbe(
+                    outcome: stateAfterPrune == nil ? "unavailable" : "missingOrDirectory",
+                    rootToken: stateAfterPrune?.service.diagnosticRootToken.uuidString
                 )
             case .ineligible:
+                bindingObservations.append(exactFileBindingObservation(
+                    binding: binding,
+                    relativePath: relativePath,
+                    state: currentState
+                ))
                 blocked = true
-                EditFlowPerf.lifecycleEvent(
-                    EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
-                    EditFlowPerf.Dimensions(
-                        runPurpose: purpose.rawValue,
-                        status: "bindingProbeEnded",
-                        outcome: "ineligible",
-                        rootToken: currentState.service.diagnosticRootToken.uuidString,
-                        serialPosition: serialPosition
-                    )
+                endBindingProbe(
+                    outcome: "ineligible",
+                    rootToken: currentState.service.diagnosticRootToken.uuidString
                 )
             }
         }
@@ -17688,8 +17699,57 @@ actor WorkspaceFileContextStore {
             matches: matches,
             blocked: blocked,
             hasUnavailableBinding: hasUnavailableBinding,
-            directoryBindings: directoryBindings
+            directoryBindings: directoryBindings,
+            bindingObservations: bindingObservations
         )
+    }
+
+    private func exactFileBindingObservation(
+        binding: WorkspaceExactFileNamespace.RootBinding,
+        relativePath: String,
+        state: RootState
+    ) -> ExactFileBindingObservation {
+        let catalogFile = file(rootID: binding.lookupRoot.id, relativePath: relativePath)
+        let diskPathState: ExactFileDiskPathState = if regularFileAppearsPresentOnDisk(root: state.root, relativePath: relativePath) {
+            .regularFile
+        } else if directoryAppearsPresentOnDisk(root: state.root, relativePath: relativePath) {
+            .directory
+        } else {
+            .missingOrOther
+        }
+        return ExactFileBindingObservation(
+            rootID: binding.lookupRoot.id,
+            rootLifetimeID: state.lifetimeID,
+            rootService: state.service,
+            catalogFileID: catalogFile?.id,
+            catalogFileFullPath: catalogFile?.standardizedFullPath,
+            diskPathState: diskPathState
+        )
+    }
+
+    private func exactFileBindingObservationsAreCurrent(
+        _ observations: [ExactFileBindingObservation],
+        relativePath: String,
+        bindings: [WorkspaceExactFileNamespace.RootBinding]
+    ) -> Bool {
+        guard observations.count == bindings.count else { return false }
+        for (binding, observation) in zip(bindings, observations) {
+            guard observation.rootID == binding.lookupRoot.id,
+                  let state = rootStatesByID[observation.rootID],
+                  state.lifetimeID == observation.rootLifetimeID,
+                  state.service === observation.rootService
+            else { return false }
+            let current = exactFileBindingObservation(
+                binding: binding,
+                relativePath: relativePath,
+                state: state
+            )
+            guard current.catalogFileID == observation.catalogFileID,
+                  current.catalogFileFullPath == observation.catalogFileFullPath,
+                  current.diskPathState == observation.diskPathState
+            else { return false }
+        }
+        return true
     }
 
     private enum ExactFileMaterializationResult {
@@ -17818,6 +17878,7 @@ actor WorkspaceFileContextStore {
             bindings: namespace.rootBindings,
             purpose: .canonicalCompaction
         )
+        try Task.checkCancellation()
         guard let currentState = rootStatesByID[file.rootID],
               currentState.lifetimeID == expectedLifetimeID,
               currentState.service === initialState.service,
@@ -17829,6 +17890,11 @@ actor WorkspaceFileContextStore {
            candidates.matches[0].file?.id == file.id,
            !candidates.blocked,
            !candidates.hasUnavailableBinding,
+           exactFileBindingObservationsAreCurrent(
+               candidates.bindingObservations,
+               relativePath: file.standardizedRelativePath,
+               bindings: namespace.rootBindings
+           ),
            exactRelativeTokenIsStructurallySafe(file, namespace: namespace)
         {
             return WorkspaceExactExistingFileMatch(file: file, canonicalPath: file.standardizedRelativePath)
