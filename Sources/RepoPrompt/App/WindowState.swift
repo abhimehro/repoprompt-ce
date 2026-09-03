@@ -1216,6 +1216,13 @@ class WindowState: ObservableObject {
                     "restore.window workspaceResolved windowID=\(windowID) workspaceID=\(WorkspaceRestorePerfLog.shortID(target.id)) workspaceName=\(target.name) entryWorkspaceID=\(WorkspaceRestorePerfLog.shortID(entry.workspaceID))"
                 )
             #endif
+            if target.isSystemWorkspace {
+                // The entry intended the system workspace, so the fallback state and the intended
+                // state coincide and there is nothing to protect. Clearing here keeps such a window
+                // capturing live state instead of re-emitting its restore-time entry for good --
+                // the observer below only fires for non-system workspaces.
+                unresolvedRestoreEntry = nil
+            }
             _ = await workspaceManager.requestWorkspaceSwitch(to: target, saveState: true, reason: "restore")
             #if DEBUG
                 if let restoreStartMS {
