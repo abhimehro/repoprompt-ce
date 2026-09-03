@@ -3,6 +3,551 @@ import RepoPromptDomainRuntime
 import XCTest
 
 final class MCPReadMutationPathContractTests: XCTestCase {
+    func testApplyEditsMissingTargetPolicyFailsClosedAcrossProjectedNamespace() {
+        let addressedRoot = WorkspaceRootRef(
+            id: UUID(),
+            name: "Addressed",
+            fullPath: "/tmp/addressed"
+        )
+        let peerRoot = WorkspaceRootRef(
+            id: UUID(),
+            name: "Peer",
+            fullPath: "/tmp/peer"
+        )
+        let unavailablePhysicalRoot = WorkspaceRootRef(
+            id: UUID(),
+            name: "Projected",
+            fullPath: "/tmp/missing-worktree"
+        )
+        let namespace = WorkspaceExactFileNamespace(rootBindings: [
+            .init(
+                lookupRoot: unavailablePhysicalRoot,
+                lookupRole: .projectedPhysical,
+                clientRoots: [addressedRoot],
+                preferredClientRoot: addressedRoot
+            ),
+            .init(
+                lookupRoot: peerRoot,
+                lookupRole: .canonical,
+                clientRoots: [peerRoot],
+                preferredClientRoot: peerRoot
+            )
+        ])
+        let displayAlias = ClientPathFormatter.nonAbsoluteRootAlias(
+            root: addressedRoot,
+            visibleRoots: namespace.clientRoots
+        )
+
+        let cases: [(label: String, input: WorkspaceExactFileInput, expected: Bool)] = [
+            ("absolute", .absolute("/tmp/addressed/New.swift"), true),
+            ("explicit root", .explicitRoot(alias: displayAlias, relativePath: "New.swift"), true),
+            ("projected display alias", .relative("\(displayAlias)/New.swift"), true),
+            ("bare relative", .relative("New.swift"), false),
+            ("literal subdirectory", .relative("unknown/New.swift"), false)
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                MCPApplyEditsMissingTargetPolicy.requiresExistingFile(
+                    testCase.input,
+                    namespace: namespace
+                ),
+                testCase.expected,
+                testCase.label
+            )
+        }
+    }
+
+    func testApplyEditsMissingTargetPolicyBlocksQualifiedDiskCreationAndAllowsBareCreate() async throws {
+        let parent = try makeTemporaryDirectory(name: "ApplyEditsMissingTargetDiskPolicy")
+        let physicalRootURL = parent.appendingPathComponent("Physical", isDirectory: true)
+        let logicalRootURL = parent.appendingPathComponent("Logical", isDirectory: true)
+        try FileManager.default.createDirectory(at: physicalRootURL, withIntermediateDirectories: true)
+
+        let store = WorkspaceFileContextStore()
+        let physicalRootRecord = try await store.loadRoot(path: physicalRootURL.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let physicalRoot = try XCTUnwrap(roots.first(where: { $0.id == physicalRootRecord.id }))
+        let logicalRoot = WorkspaceRootRef(id: UUID(), name: "Logical", fullPath: logicalRootURL.path)
+        let namespace = WorkspaceExactFileNamespace(rootBindings: [
+            .init(
+                lookupRoot: physicalRoot,
+                lookupRole: .projectedPhysical,
+                clientRoots: [logicalRoot],
+                preferredClientRoot: logicalRoot
+            )
+        ])
+        let displayAlias = ClientPathFormatter.nonAbsoluteRootAlias(
+            root: logicalRoot,
+            visibleRoots: namespace.clientRoots
+        )
+        let qualifiedInputs: [WorkspaceExactFileInput] = [
+            .absolute(logicalRootURL.appendingPathComponent("Qualified.swift").path),
+            .explicitRoot(alias: displayAlias, relativePath: "Qualified.swift"),
+            .relative("\(displayAlias)/Qualified.swift")
+        ]
+        for input in qualifiedInputs {
+            XCTAssertTrue(MCPApplyEditsMissingTargetPolicy.requiresExistingFile(input, namespace: namespace))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: physicalRootURL.appendingPathComponent("Qualified.swift").path))
+
+        let bareInput = WorkspaceExactFileInput.relative("Created.swift")
+        XCTAssertFalse(MCPApplyEditsMissingTargetPolicy.requiresExistingFile(bareInput, namespace: namespace))
+        let host = WorkspaceFileEditHost(
+            store: store,
+            target: .create(path: "Created.swift"),
+            lookupRootScope: .visibleWorkspace,
+            createPathResolutionPolicy: .canonicalAliasFirst,
+            selectCreatedFiles: false
+        )
+        let result = try await ApplyEditsService(engine: .default, host: host).run(
+            ApplyEditsRequest(
+                path: "Created.swift",
+                mode: .rewrite(newText: "created\n", onMissing: .create),
+                verbose: false
+            )
+        )
+        XCTAssertEqual(result.status, .success)
+        XCTAssertEqual(
+            try String(contentsOf: physicalRootURL.appendingPathComponent("Created.swift"), encoding: .utf8),
+            "created\n"
+        )
+    }
+
+    #if DEBUG
+        func testQualifiedResolutionSkipsPeerProbeWhileBareRelativeClassifiesNamespace() async throws {
+            let parent = try makeTemporaryDirectory(name: "QualifiedPeerIsolation")
+            let addressedRootURL = parent.appendingPathComponent("Addressed", isDirectory: true)
+            let peerRootURL = parent.appendingPathComponent("Peer", isDirectory: true)
+            let addressedFile = addressedRootURL.appendingPathComponent("Target.swift")
+            try write("addressed\n", to: addressedFile)
+            try write("peer\n", to: peerRootURL.appendingPathComponent("Peer.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let addressedRoot = try await store.loadRoot(path: addressedRootURL.path)
+            let peerRoot = try await store.loadRoot(path: peerRootURL.path)
+            let roots = await store.rootRefs(scope: .visibleWorkspace)
+            let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+            let peerSerialPosition = try XCTUnwrap(namespace.rootBindings.firstIndex {
+                $0.lookupRoot.id == peerRoot.id
+            })
+            let probe = ExactResolutionPeerProbe()
+            addTeardownBlock {
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+
+            await store.setExactFileCandidateProbeGateForTesting(
+                purpose: .canonicalCompaction,
+                rootID: peerRoot.id,
+                serialPosition: peerSerialPosition
+            ) {
+                await probe.record()
+            }
+            let qualifiedResolution = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse(addressedFile.path),
+                namespace: namespace
+            )
+            guard case let .matched(qualifiedMatch) = qualifiedResolution else {
+                return XCTFail("Expected the qualified target")
+            }
+            XCTAssertEqual(qualifiedMatch.file.rootID, addressedRoot.id)
+            let qualifiedPeerProbeCount = await probe.count
+            XCTAssertEqual(qualifiedPeerProbeCount, 0)
+
+            await store.setExactFileCandidateProbeGateForTesting(
+                purpose: .bareRelativeNamespaceClassification,
+                rootID: peerRoot.id,
+                serialPosition: peerSerialPosition
+            ) {
+                await probe.record()
+            }
+            let relativeResolution = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse("Target.swift"),
+                namespace: namespace
+            )
+            guard case let .matched(relativeMatch) = relativeResolution else {
+                return XCTFail("Expected the unique relative target")
+            }
+            XCTAssertEqual(relativeMatch.file.id, qualifiedMatch.file.id)
+            let relativePeerProbeCount = await probe.count
+            XCTAssertEqual(relativePeerProbeCount, 1)
+        }
+
+        func testUnloadReloadDuringCatalogValidationCannotReturnStaleRecord() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "CatalogValidationLifetime")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            try write("original\n", to: targetURL)
+
+            let store = WorkspaceFileContextStore()
+            let originalRoot = try await store.loadRoot(path: rootURL.path)
+            let originalFile = await store.file(rootID: originalRoot.id, relativePath: "Target.swift")
+            let staleFile = try XCTUnwrap(originalFile)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let gate = TestReleaseFence(name: "exact catalog validation")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .catalogValidation,
+                rootID: originalRoot.id
+            ) {
+                await gate.enterAndWait()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let entered = await gate.waitUntilEntered()
+            XCTAssertTrue(entered)
+            await store.unloadRoot(id: originalRoot.id)
+            let replacementRoot = try await store.loadRoot(path: rootURL.path)
+            gate.release()
+
+            let resolution = try await resolutionTask.value
+            guard case .issue(.unresolved) = resolution else {
+                return XCTFail("Expected unavailable binding after root replacement, got \(resolution)")
+            }
+            XCTAssertNotEqual(replacementRoot.id, originalRoot.id)
+            let staleCatalogRecord = await store.file(
+                rootID: originalRoot.id,
+                relativePath: staleFile.standardizedRelativePath
+            )
+            XCTAssertNil(staleCatalogRecord)
+        }
+
+        func testSameRootIDReplacementAfterCatalogValidationFailsClosed() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "CatalogValidationSameRootReplacement")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            try write("original\n", to: targetURL)
+
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let loadedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            let originalRecord = try XCTUnwrap(loadedRecord)
+            let replacementService = try await FileSystemService(path: rootURL.path)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let gate = TestReleaseFence(name: "validated catalog result")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .catalogValidationResult,
+                rootID: root.id
+            ) {
+                await gate.enterAndWait()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let validationResultEntered = await gate.waitUntilEntered()
+            XCTAssertTrue(validationResultEntered)
+            let replacementLifetimeID = await store.replaceRootLifetimeAndServiceKeepingCatalogForTesting(
+                rootID: root.id,
+                service: replacementService
+            )
+            XCTAssertNotNil(replacementLifetimeID)
+            gate.release()
+
+            let resolution = try await resolutionTask.value
+            guard case .issue(.unresolved) = resolution else {
+                return XCTFail("Expected same-root-ID epoch replacement to invalidate the validated record")
+            }
+            let preservedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertEqual(preservedRecord?.id, originalRecord.id)
+        }
+
+        func testUnloadReloadDuringEligibilityCannotMaterializeReplacementLifetime() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "EligibilityLifetime")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            let store = WorkspaceFileContextStore()
+            let originalRoot = try await store.loadRoot(path: rootURL.path)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            try write("replacement lifetime\n", to: targetURL)
+            let gate = TestReleaseFence(name: "exact candidate eligibility")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .candidateEligibility,
+                rootID: originalRoot.id
+            ) {
+                await gate.enterAndWait()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let entered = await gate.waitUntilEntered()
+            XCTAssertTrue(entered)
+            await store.unloadRoot(id: originalRoot.id)
+            let replacementRoot = try await store.loadRoot(path: rootURL.path)
+            gate.release()
+
+            let resolution = try await resolutionTask.value
+            guard case .issue(.unresolved) = resolution else {
+                return XCTFail("Expected unavailable binding after eligibility raced replacement, got \(resolution)")
+            }
+            XCTAssertNotEqual(replacementRoot.id, originalRoot.id)
+            let replacementFile = await store.file(rootID: replacementRoot.id, relativePath: "Target.swift")
+            XCTAssertEqual(replacementFile?.rootID, replacementRoot.id)
+        }
+
+        func testRootDisappearanceDuringMissingFileCleanupFailsClosed() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "MissingCleanupLifetime")
+            let targetURL = rootURL.appendingPathComponent("Missing.swift")
+            let store = WorkspaceFileContextStore()
+            let originalRoot = try await store.loadRoot(path: rootURL.path)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let gate = TestReleaseFence(name: "exact missing-file cleanup")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .candidateMissingFilePrune,
+                rootID: originalRoot.id
+            ) {
+                await gate.enterAndWait()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let entered = await gate.waitUntilEntered()
+            XCTAssertTrue(entered)
+            await store.unloadRoot(id: originalRoot.id)
+            gate.release()
+
+            let resolution = try await resolutionTask.value
+            guard case .issue(.unresolved) = resolution else {
+                return XCTFail("Expected unavailable binding after root disappearance, got \(resolution)")
+            }
+            let staleCatalogRecord = await store.file(rootID: originalRoot.id, relativePath: "Missing.swift")
+            XCTAssertNil(staleCatalogRecord)
+        }
+
+        func testCancellationDuringExplicitRegistrationDoesNotPublishRecord() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "CancelledExactMaterialization")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            try write("late target\n", to: targetURL)
+            let gate = TestReleaseFence(name: "explicit managed registration")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .explicitManagedRegistration,
+                rootID: root.id
+            ) {
+                await gate.enterAndWaitIgnoringCancellationUntilRelease()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let entered = await gate.waitUntilEntered()
+            XCTAssertTrue(entered)
+            resolutionTask.cancel()
+            gate.release()
+
+            do {
+                _ = try await resolutionTask.value
+                XCTFail("Expected exact materialization cancellation")
+            } catch is CancellationError {
+                let publishedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+                XCTAssertNil(publishedRecord)
+            }
+        }
+
+        func testRecreatedFileDuringMissingPruneRetainsCurrentCatalogRecord() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "RecreatedFileDuringPrune")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            try write("original\n", to: targetURL)
+
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let originalRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            let expectedRecord = try XCTUnwrap(originalRecord)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            try FileManager.default.removeItem(at: targetURL)
+            let gate = TestReleaseFence(name: "missing-file prune fence")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .missingFilePruneFence,
+                rootID: root.id
+            ) {
+                await gate.enterAndWait()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let entered = await gate.waitUntilEntered()
+            XCTAssertTrue(entered)
+            try write("recreated\n", to: targetURL)
+            gate.release()
+
+            let resolution = try await resolutionTask.value
+            guard case .issue(.unresolved) = resolution else {
+                return XCTFail("Expected recreated target to invalidate the stale missing classification")
+            }
+            let currentRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertEqual(currentRecord?.id, expectedRecord.id)
+            XCTAssertEqual(try String(contentsOf: targetURL, encoding: .utf8), "recreated\n")
+        }
+
+        func testCancellationDuringCodemapCleanupSettlesAndAllowsSubsequentMaterialization() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "CancelledCodemapCleanup")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            let followupURL = rootURL.appendingPathComponent("Followup.swift")
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            try write("target\n", to: targetURL)
+            let cleanupWaitGate = TestReleaseFence(name: "exact cleanup wait boundary")
+            let cleanupGate = TestReleaseFence(name: "store-owned codemap cleanup")
+            let cancellationCompletion = TestReleaseFence(name: "cancelled materialization completion")
+            let followupCompletion = TestReleaseFence(name: "followup materialization completion")
+            addTeardownBlock {
+                cleanupWaitGate.release()
+                cleanupGate.release()
+                cancellationCompletion.release()
+                followupCompletion.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .codemapCleanupWait,
+                rootID: root.id
+            ) {
+                await cleanupWaitGate.enterAndWaitIgnoringCancellationUntilRelease()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let cleanupWaitEntered = await cleanupWaitGate.waitUntilEntered()
+            XCTAssertTrue(cleanupWaitEntered)
+            let installedCleanupFlight = await store.installCodemapCleanupFlightForTesting(
+                rootID: root.id
+            ) {
+                await cleanupGate.enterAndWait()
+            }
+            XCTAssertTrue(installedCleanupFlight)
+            let cleanupFlightEntered = await cleanupGate.waitUntilEntered()
+            XCTAssertTrue(cleanupFlightEntered)
+            cleanupWaitGate.release()
+            try await AsyncTestWait.waitUntil("exact cleanup waiter registration", timeout: 10) {
+                await store.codemapCleanupWaiterCountForTesting(rootID: root.id) == 1
+            }
+            let eventsBeforeCancellation = await store.codemapGraphIndexBuildStoreEventsForTesting(
+                rootID: root.id
+            )
+            let lastEventOrdinalBeforeCancellation = eventsBeforeCancellation.map(\.ordinal).max() ?? 0
+            resolutionTask.cancel()
+            let cancellationObserver = Task {
+                let wasCancelled: Bool
+                do {
+                    _ = try await resolutionTask.value
+                    wasCancelled = false
+                } catch is CancellationError {
+                    wasCancelled = true
+                } catch {
+                    XCTFail("Expected cancellation, got \(error)")
+                    wasCancelled = false
+                }
+                await cancellationCompletion.enterAndWait()
+                return wasCancelled
+            }
+            let cancellationSettled = await cancellationCompletion.waitUntilEntered()
+            XCTAssertTrue(cancellationSettled)
+            if !cancellationSettled {
+                cleanupGate.release()
+            }
+            cancellationCompletion.release()
+            let wasCancelled = await cancellationObserver.value
+            XCTAssertTrue(wasCancelled)
+            let retainedCleanupWaiterCount = await store.codemapCleanupWaiterCountForTesting(rootID: root.id)
+            XCTAssertEqual(retainedCleanupWaiterCount, 0)
+            let firstMaterializedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertNotNil(firstMaterializedRecord)
+
+            let eventsBeforeCleanupSettlement = await store.codemapGraphIndexBuildStoreEventsForTesting(
+                rootID: root.id
+            )
+            let lastEventOrdinalBeforeCleanupSettlement = eventsBeforeCleanupSettlement.map(\.ordinal).max() ?? 0
+            cleanupGate.release()
+            XCTAssertGreaterThanOrEqual(lastEventOrdinalBeforeCleanupSettlement, lastEventOrdinalBeforeCancellation)
+            try await AsyncTestWait.waitUntil("cancelled materialization codemap reschedule", timeout: 10) {
+                let events = await store.codemapGraphIndexBuildStoreEventsForTesting(rootID: root.id)
+                return events.contains {
+                    $0.ordinal > lastEventOrdinalBeforeCleanupSettlement && $0.kind == .scheduled
+                }
+            }
+            try write("followup\n", to: followupURL)
+            let followupTask = Task {
+                let resolution = try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(followupURL.path),
+                    namespace: namespace
+                )
+                await followupCompletion.enterAndWait()
+                return resolution
+            }
+            let followupSettled = await followupCompletion.waitUntilEntered()
+            XCTAssertTrue(followupSettled)
+            followupCompletion.release()
+            let followupResolution = try await followupTask.value
+            guard case let .matched(match) = followupResolution else {
+                return XCTFail("Expected a subsequent materialization after cancellation settlement")
+            }
+            XCTAssertEqual(match.file.standardizedFullPath, StandardizedPath.absolute(followupURL.path))
+        }
+    #endif
+
     func testQualifiedMultiRootTokensReplayOnlyToAddressedRecordAndFailClosedAcrossRootLifetime() async throws {
         let parent = try makeTemporaryDirectory(name: "QualifiedReplayIdentity")
         let rootA = parent.appendingPathComponent("A", isDirectory: true)
@@ -416,7 +961,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             namespace: namespace
         )
 
-        XCTAssertEqual(resolution, .claimedMissing)
+        XCTAssertEqual(resolution, .issue(.unresolved(input: logicalFile.path)))
         let readableService = WorkspaceReadableFileService(store: store, homeDirectoryURL: canonicalRootURL)
         let folderResolution = try await readableService.resolveReadFileRequest(
             WorkspaceExactFileInput.parse(logicalRootURL.appendingPathComponent("Sources").path),
@@ -424,18 +969,20 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             rootRefs: [canonicalRoot],
             namespace: namespace
         )
-        guard case .noCandidate = folderResolution else {
+        guard case let .issue(.unresolved(input)) = folderResolution else {
             return XCTFail("Expected unavailable projected folder to fail closed")
         }
+        XCTAssertEqual(input, logicalRootURL.appendingPathComponent("Sources").path)
         let fileResolution = try await readableService.resolveReadFileRequest(
             WorkspaceExactFileInput.parse(logicalFile.path),
             rootScope: lookupContext.rootScope,
             rootRefs: [canonicalRoot],
             namespace: namespace
         )
-        guard case .noCandidate = fileResolution else {
+        guard case let .issue(.unresolved(input)) = fileResolution else {
             return XCTFail("Expected unavailable projected file to avoid external fallback")
         }
+        XCTAssertEqual(input, logicalFile.path)
         XCTAssertEqual(try String(contentsOf: logicalFile, encoding: .utf8), "base token\n")
     }
 
@@ -766,3 +1313,13 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 }
+
+#if DEBUG
+    private actor ExactResolutionPeerProbe {
+        private(set) var count = 0
+
+        func record() {
+            count += 1
+        }
+    }
+#endif
