@@ -105,6 +105,24 @@ final class MCPApplyEditsToolProvider: MCPAppToolProviding {
         }
     }
 
+    static func resolveMutationTargetAfterFreshness(
+        _ input: WorkspaceExactFileInput,
+        namespace: WorkspaceExactFileNamespace,
+        store: WorkspaceFileContextStore,
+        timeout: Duration = .seconds(MCPTimeoutPolicy.workspaceFreshnessWaitTimeoutSeconds)
+    ) async throws -> WorkspaceExactExistingFileResolution {
+        _ = try await store.awaitAppliedIngressForExplicitRequest(
+            input,
+            namespace: namespace,
+            timeout: timeout
+        )
+        try Task.checkCancellation()
+        let resolution = try await WorkspaceFileMutationService(store: store)
+            .resolveExactExistingFile(input, namespace: namespace)
+        try Task.checkCancellation()
+        return resolution
+    }
+
     private func executeApplyEdits(args: [String: Value]) async throws -> EditSummary {
         var requestPath: String? = nil
         do {
@@ -140,15 +158,12 @@ final class MCPApplyEditsToolProvider: MCPAppToolProviding {
             let store = await MainActor.run { dependencies.context.promptVM.workspaceFileContextStore }
             let roots = await store.rootRefs(scope: lookupContext.rootScope)
             let namespace = lookupContext.exactFileNamespace(storeRoots: roots)
-            let freshnessPath = switch exactInput {
-            case let .absolute(path): lookupContext.translateInputPath(path)
-            case .explicitRoot, .relative: exactInput.renderedPath
-            }
+            let resolution: WorkspaceExactExistingFileResolution
             do {
-                _ = try await store.awaitAppliedIngressForExplicitRequest(
-                    userPath: freshnessPath,
-                    fallbackScope: lookupContext.rootScope,
-                    timeout: .seconds(MCPTimeoutPolicy.workspaceFreshnessWaitTimeoutSeconds)
+                resolution = try await Self.resolveMutationTargetAfterFreshness(
+                    exactInput,
+                    namespace: namespace,
+                    store: store
                 )
             } catch is WorkspaceAppliedIngressWaitError {
                 return Self.retryableFailureSummary(
@@ -156,11 +171,6 @@ final class MCPApplyEditsToolProvider: MCPAppToolProviding {
                     failure: .workspaceFreshnessUnavailable()
                 )
             }
-            try Task.checkCancellation()
-
-            let mutationService = WorkspaceFileMutationService(store: store)
-            let resolution = try await mutationService.resolveExactExistingFile(exactInput, namespace: namespace)
-            try Task.checkCancellation()
             let effectivePath: String
             let displayPath: String
             let target: WorkspaceFileEditHost.Target

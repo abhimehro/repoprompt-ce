@@ -173,6 +173,182 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             XCTAssertEqual(relativePeerProbeCount, 1)
         }
 
+        func testReadProviderQualifiedReplayCompletesWhilePeerIngressIsHeld() async throws {
+            let fixture = try await makeQualifiedReplayFixture(name: "ReadProviderHeldPeer")
+            let heldPeer = try await MCPPathContractHeldPeerIngress.start(
+                store: fixture.store,
+                peerRoot: fixture.peerRoot
+            )
+            let completion = MCPPathContractReleaseGate(name: "qualified replay read completion")
+            let readTask = Task { @MainActor in
+                let readableService = WorkspaceReadableFileService(store: fixture.store)
+                let resolution = try await MCPServerViewModel.resolveReadFileRequestAfterFreshness(
+                    WorkspaceExactFileInput.parse(fixture.match.canonicalPath),
+                    readableService: readableService,
+                    rootScope: .visibleWorkspace,
+                    rootRefs: fixture.roots,
+                    namespace: fixture.namespace,
+                    timeout: .seconds(2)
+                )
+                guard case let .workspace(match) = resolution else {
+                    throw MCPPathContractTestError.unexpectedResolution(String(describing: resolution))
+                }
+                guard let snapshot = try await MCPServerViewModel.workspaceContentLoadForTesting(
+                    store: fixture.store,
+                    file: match.file
+                ) else {
+                    throw MCPPathContractTestError.missingContent
+                }
+                let content = snapshot.preparedContent.linesWithEndings.joined()
+                await completion.enterAndWait()
+                return (match.file.id, content)
+            }
+            addTeardownBlock {
+                completion.release()
+                readTask.cancel()
+                await heldPeer.settle(store: fixture.store)
+                _ = try? await readTask.value
+            }
+
+            let didComplete = await completion.waitUntilEntered()
+            XCTAssertTrue(didComplete)
+            let activeBarrierCount = await fixture.store.scopedIngressBarrierFlightCountForTesting()
+            XCTAssertGreaterThan(activeBarrierCount, 0)
+            completion.release()
+            let (fileID, content) = try await readTask.value
+            XCTAssertEqual(fileID, fixture.match.file.id)
+            XCTAssertEqual(content, "addressed token\n")
+            await heldPeer.settle(store: fixture.store)
+        }
+
+        func testApplyEditsProviderQualifiedReplayCompletesWhilePeerIngressIsHeld() async throws {
+            let fixture = try await makeQualifiedReplayFixture(name: "ApplyEditsProviderHeldPeer")
+            let heldPeer = try await MCPPathContractHeldPeerIngress.start(
+                store: fixture.store,
+                peerRoot: fixture.peerRoot
+            )
+            let completion = MCPPathContractReleaseGate(name: "qualified replay apply_edits completion")
+            let applyTask = Task { @MainActor in
+                let resolution = try await MCPApplyEditsToolProvider.resolveMutationTargetAfterFreshness(
+                    WorkspaceExactFileInput.parse(fixture.match.canonicalPath),
+                    namespace: fixture.namespace,
+                    store: fixture.store,
+                    timeout: .seconds(2)
+                )
+                guard case let .matched(match) = resolution else {
+                    throw MCPPathContractTestError.unexpectedResolution(String(describing: resolution))
+                }
+                let host = WorkspaceFileEditHost(
+                    store: fixture.store,
+                    target: .existing(match.file),
+                    selectCreatedFiles: false
+                )
+                let result = try await ApplyEditsService(engine: .default, host: host).run(
+                    ApplyEditsRequest(
+                        path: fixture.match.canonicalPath,
+                        mode: .single(search: "addressed", replace: "edited", replaceAll: false),
+                        verbose: false
+                    )
+                )
+                await completion.enterAndWait()
+                return result.status
+            }
+            addTeardownBlock {
+                completion.release()
+                applyTask.cancel()
+                await heldPeer.settle(store: fixture.store)
+                _ = try? await applyTask.value
+            }
+
+            let didComplete = await completion.waitUntilEntered()
+            XCTAssertTrue(didComplete)
+            let activeBarrierCount = await fixture.store.scopedIngressBarrierFlightCountForTesting()
+            XCTAssertGreaterThan(activeBarrierCount, 0)
+            XCTAssertEqual(try String(contentsOf: fixture.addressedFileURL, encoding: .utf8), "edited token\n")
+            XCTAssertEqual(try String(contentsOf: fixture.peerFileURL, encoding: .utf8), "peer token\n")
+            completion.release()
+            let status = try await applyTask.value
+            XCTAssertEqual(status, .success)
+            await heldPeer.settle(store: fixture.store)
+        }
+
+        func testReadProviderBareRelativeFreshnessWaitsForHeldPeerIngress() async throws {
+            let fixture = try await makeQualifiedReplayFixture(name: "BareRelativeHeldPeer")
+            let heldPeer = try await MCPPathContractHeldPeerIngress.start(
+                store: fixture.store,
+                peerRoot: fixture.peerRoot
+            )
+            let completion = MCPPathContractReleaseGate(name: "bare relative read completion")
+            let readTask = Task { @MainActor in
+                let resolution = try await MCPServerViewModel.resolveReadFileRequestAfterFreshness(
+                    .relative("Target.swift"),
+                    readableService: WorkspaceReadableFileService(store: fixture.store),
+                    rootScope: .visibleWorkspace,
+                    rootRefs: fixture.roots,
+                    namespace: fixture.namespace
+                )
+                await completion.enterAndWait()
+                return resolution
+            }
+            addTeardownBlock {
+                completion.release()
+                readTask.cancel()
+                await heldPeer.settle(store: fixture.store)
+                _ = try? await readTask.value
+            }
+
+            try await MCPPathContractAsyncWait.waitUntil("bare relative peer ingress join", timeout: 10) {
+                await fixture.store.scopedIngressBarrierStatsForTesting(rootID: fixture.peerRoot.id).joinCount > 0
+            }
+            await heldPeer.settle(store: fixture.store)
+            let didComplete = await completion.waitUntilEntered()
+            XCTAssertTrue(didComplete)
+            completion.release()
+            guard case let .workspace(match) = try await readTask.value else {
+                return XCTFail("Expected the bare relative path to resolve after the peer settled")
+            }
+            XCTAssertEqual(match.file.id, fixture.match.file.id)
+        }
+
+        func testReadProviderUnresolvedQualifiedInputFailsClosedWithoutWaitingForPeer() async throws {
+            let fixture = try await makeQualifiedReplayFixture(name: "UnresolvedQualifiedHeldPeer")
+            let heldPeer = try await MCPPathContractHeldPeerIngress.start(
+                store: fixture.store,
+                peerRoot: fixture.peerRoot
+            )
+            let completion = MCPPathContractReleaseGate(name: "unresolved qualified read completion")
+            let readTask = Task { @MainActor in
+                let resolution = try await MCPServerViewModel.resolveReadFileRequestAfterFreshness(
+                    .explicitRoot(alias: "MissingBinding", relativePath: "Target.swift"),
+                    readableService: WorkspaceReadableFileService(store: fixture.store),
+                    rootScope: .visibleWorkspace,
+                    rootRefs: fixture.roots,
+                    namespace: fixture.namespace,
+                    timeout: .seconds(2)
+                )
+                await completion.enterAndWait()
+                return resolution
+            }
+            addTeardownBlock {
+                completion.release()
+                readTask.cancel()
+                await heldPeer.settle(store: fixture.store)
+                _ = try? await readTask.value
+            }
+
+            let didComplete = await completion.waitUntilEntered()
+            XCTAssertTrue(didComplete)
+            let peerStats = await fixture.store.scopedIngressBarrierStatsForTesting(rootID: fixture.peerRoot.id)
+            XCTAssertEqual(peerStats.joinCount, 0)
+            completion.release()
+            let resolution = try await readTask.value
+            guard case let .issue(.unresolved(input)) = resolution else {
+                return XCTFail("Expected unresolved qualified input to fail closed")
+            }
+            XCTAssertEqual(input, "MissingBinding")
+            await heldPeer.settle(store: fixture.store)
+        }
+
         func testCanonicalCompactionRevalidatesEarlierPeerBeforeReturningBareToken() async throws {
             let parent = try makeTemporaryDirectory(name: "CanonicalCompactionPeerDrift")
             let earlierRootURL = parent.appendingPathComponent("Earlier", isDirectory: true)
@@ -1651,6 +1827,48 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         }
     }
 
+    #if DEBUG
+        private func makeQualifiedReplayFixture(
+            name: String
+        ) async throws -> MCPPathContractQualifiedReplayFixture {
+            let parent = try makeTemporaryDirectory(name: name)
+            let addressedRootURL = parent.appendingPathComponent("Addressed", isDirectory: true)
+            let peerRootURL = parent.appendingPathComponent("Peer", isDirectory: true)
+            let addressedFileURL = addressedRootURL.appendingPathComponent("Target.swift")
+            let peerFileURL = peerRootURL.appendingPathComponent("Peer.swift")
+            try write("addressed token\n", to: addressedFileURL)
+            try write("peer token\n", to: peerFileURL)
+
+            let store = WorkspaceFileContextStore()
+            let addressedRecord = try await store.loadRoot(path: addressedRootURL.path)
+            let peerRecord = try await store.loadRoot(path: peerRootURL.path)
+            let roots = await store.rootRefs(scope: .visibleWorkspace)
+            let namespace = WorkspaceExactFileNamespace.identity(roots: roots)
+            let resolution = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse(addressedFileURL.path),
+                namespace: namespace
+            )
+            guard case let .matched(match) = resolution,
+                  case .explicitRoot = try WorkspaceExactFileInput.parse(match.canonicalPath),
+                  let peerRoot = roots.first(where: { $0.id == peerRecord.id })
+            else {
+                throw MCPPathContractTestError.unexpectedResolution(String(describing: resolution))
+            }
+            guard match.file.rootID == addressedRecord.id else {
+                throw MCPPathContractTestError.unexpectedResolution(String(describing: resolution))
+            }
+            return MCPPathContractQualifiedReplayFixture(
+                store: store,
+                roots: roots,
+                peerRoot: peerRoot,
+                namespace: namespace,
+                match: match,
+                addressedFileURL: addressedFileURL,
+                peerFileURL: peerFileURL
+            )
+        }
+    #endif
+
     private func makeTemporaryDirectory(name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("RepoPromptTests", isDirectory: true)
@@ -1667,6 +1885,57 @@ final class MCPReadMutationPathContractTests: XCTestCase {
 }
 
 #if DEBUG
+    private enum MCPPathContractTestError: Error {
+        case missingContent
+        case unexpectedResolution(String)
+    }
+
+    private struct MCPPathContractQualifiedReplayFixture {
+        let store: WorkspaceFileContextStore
+        let roots: [WorkspaceRootRef]
+        let peerRoot: WorkspaceRootRef
+        let namespace: WorkspaceExactFileNamespace
+        let match: WorkspaceExactExistingFileMatch
+        let addressedFileURL: URL
+        let peerFileURL: URL
+    }
+
+    private struct MCPPathContractHeldPeerIngress {
+        let gate: MCPPathContractReleaseGate
+        let task: Task<[WorkspaceIngressBarrierSample], Never>
+
+        static func start(
+            store: WorkspaceFileContextStore,
+            peerRoot: WorkspaceRootRef
+        ) async throws -> MCPPathContractHeldPeerIngress {
+            await store.resetScopedIngressBarrierDiagnosticsForTesting(rootID: peerRoot.id)
+            let gate = MCPPathContractReleaseGate(name: "peer-only ingress flush")
+            await store.setScopedIngressBarrierWillFlushHandler { rootID in
+                guard rootID == peerRoot.id else { return }
+                await gate.enterAndWaitIgnoringCancellationUntilRelease()
+            }
+            let task = Task {
+                await store.awaitAppliedIngress(rootRefs: [peerRoot])
+            }
+            guard await gate.waitUntilEntered() else {
+                await store.setScopedIngressBarrierWillFlushHandler(nil)
+                gate.release()
+                _ = await task.value
+                throw MCPPathContractAsyncWait.Timeout(
+                    description: "peer-only ingress flush entry",
+                    seconds: 10
+                )
+            }
+            return MCPPathContractHeldPeerIngress(gate: gate, task: task)
+        }
+
+        func settle(store: WorkspaceFileContextStore) async {
+            await store.setScopedIngressBarrierWillFlushHandler(nil)
+            gate.release()
+            _ = await task.value
+        }
+    }
+
     private actor ExactResolutionPeerProbe {
         private(set) var count = 0
 

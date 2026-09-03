@@ -8852,6 +8852,27 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    func awaitAppliedIngressForExplicitRequest(
+        _ input: WorkspaceExactFileInput,
+        namespace: WorkspaceExactFileNamespace,
+        timeout: Duration
+    ) async throws -> [WorkspaceIngressBarrierSample] {
+        let rootIDs: [UUID] = switch input {
+        case let .absolute(path):
+            exactAbsoluteTarget(path, namespace: namespace).map { [$0.binding.lookupRoot.id] } ?? []
+        case let .explicitRoot(alias, _):
+            switch exactAliasBinding(alias: alias, namespace: namespace) {
+            case let .success(binding): [binding.lookupRoot.id]
+            case .failure: []
+            }
+        case .relative:
+            namespace.lookupRoots.map(\.id)
+        }
+        return try await awaitAppliedIngressWithTimeout(timeout) { [self] in
+            await awaitAppliedIngress(rootIDs: rootIDs)
+        }
+    }
+
     /// Awaits one shared freshness barrier for every path participating in a single mutation.
     /// Root IDs are deduplicated before waiting, so a move never spends the preflight timeout
     /// once for its source and again for its destination.

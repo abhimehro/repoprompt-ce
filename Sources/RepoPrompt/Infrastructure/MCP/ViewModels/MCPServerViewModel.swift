@@ -6181,6 +6181,32 @@ final class MCPServerViewModel: ObservableObject {
         }
     }
 
+    static func resolveReadFileRequestAfterFreshness(
+        _ input: WorkspaceExactFileInput,
+        readableService: WorkspaceReadableFileService,
+        rootScope: WorkspaceLookupRootScope,
+        rootRefs: [WorkspaceRootRef],
+        namespace: WorkspaceExactFileNamespace,
+        timeout: Duration = MCPTimeoutPolicy.workspaceFreshnessWaitTimeout
+    ) async throws -> WorkspaceReadableFileResolution {
+        try await readableService.awaitFreshnessForExplicitRequest(
+            input,
+            namespace: namespace,
+            timeout: timeout
+        )
+        try Task.checkCancellation()
+        let resolution = try await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.resolveReadableFile) {
+            try await readableService.resolveReadFileRequest(
+                input,
+                rootScope: rootScope,
+                rootRefs: rootRefs,
+                namespace: namespace
+            )
+        }
+        try Task.checkCancellation()
+        return resolution
+    }
+
     private func readFileBody(
         input: WorkspaceExactFileInput,
         startLine1Based: Int? = nil,
@@ -6193,27 +6219,13 @@ final class MCPServerViewModel: ObservableObject {
         let roots = await store.rootRefs(scope: lookupContext.rootScope)
         let namespace = lookupContext.exactFileNamespace(storeRoots: roots)
         let requestedPath = input.renderedPath
-        let freshnessPath = switch input {
-        case let .absolute(path): lookupContext.translateInputPath(path)
-        case .explicitRoot, .relative: requestedPath
-        }
-
-        try await readableService.awaitFreshnessForExplicitRequest(
-            freshnessPath,
+        let resolution = try await Self.resolveReadFileRequestAfterFreshness(
+            input,
+            readableService: readableService,
+            rootScope: lookupContext.rootScope,
             rootRefs: roots,
-            timeout: MCPTimeoutPolicy.workspaceFreshnessWaitTimeout
+            namespace: namespace
         )
-        try Task.checkCancellation()
-
-        let resolution = try await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.resolveReadableFile) {
-            try await readableService.resolveReadFileRequest(
-                input,
-                rootScope: lookupContext.rootScope,
-                rootRefs: roots,
-                namespace: namespace
-            )
-        }
-        try Task.checkCancellation()
 
         let readableFile: WorkspaceReadableFileHandle
         let displayPath: String
