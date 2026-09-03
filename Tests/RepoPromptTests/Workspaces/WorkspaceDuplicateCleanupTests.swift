@@ -808,6 +808,100 @@ import XCTest
             await AgentSessionDataService.shared.test_setBeforeSessionWriteHook(nil)
         }
 
+        func testChatCommitFailureWithdrawsTheAlreadyCommittedAgentBatch() async throws {
+            let canonical = WorkspaceModel(
+                id: UUID(),
+                dateModified: Date(timeIntervalSince1970: 200),
+                name: "Canonical rollback target",
+                repoPaths: ["/tmp/sidecar-rollback-root"],
+                lastUsed: Date(timeIntervalSince1970: 200)
+            )
+            let duplicate = WorkspaceModel(
+                id: UUID(),
+                dateModified: Date(timeIntervalSince1970: 100),
+                name: "Duplicate rollback source",
+                repoPaths: canonical.repoPaths,
+                lastUsed: Date(timeIntervalSince1970: 100)
+            )
+            try writeWorkspace(canonical)
+            try writeWorkspace(duplicate)
+            try writeLegacyIndex([canonical, duplicate])
+
+            let sourceAgentDirectory = sidecarWorkspaceDirectory(for: duplicate, root: agentWorkspaceRoot)
+                .appendingPathComponent("AgentSessions", isDirectory: true)
+            let sourceChatDirectory = sidecarWorkspaceDirectory(for: duplicate, root: chatWorkspaceRoot)
+                .appendingPathComponent("Chats", isDirectory: true)
+            try FileManager.default.createDirectory(at: sourceAgentDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: sourceChatDirectory, withIntermediateDirectories: true)
+
+            let agentSessionID = UUID()
+            let agentFilename = "AgentSession-\(agentSessionID.uuidString).json"
+            let sourceAgentURL = sourceAgentDirectory.appendingPathComponent(agentFilename)
+            try JSONEncoder().encode(AgentSession(
+                id: agentSessionID,
+                workspaceID: duplicate.id,
+                name: "Withdrawn on chat failure"
+            )).write(to: sourceAgentURL, options: .atomic)
+
+            let chatSessionID = UUID()
+            try sidecarData(
+                sessionID: chatSessionID,
+                workspaceID: duplicate.id,
+                name: "Blocked chat"
+            ).write(
+                to: sourceChatDirectory
+                    .appendingPathComponent("ChatSession-\(chatSessionID.uuidString).json"),
+                options: .atomic
+            )
+
+            // A regular file where the canonical Chats folder belongs passes Chat preflight -- which
+            // reads the source and probes individual destination files -- and then fails the Chat
+            // commit. That is the exact ordering that used to leave the Agent copy published.
+            let canonicalChatDirectory = sidecarWorkspaceDirectory(for: canonical, root: chatWorkspaceRoot)
+            try FileManager.default.createDirectory(
+                at: canonicalChatDirectory,
+                withIntermediateDirectories: true
+            )
+            try Data("blocked".utf8).write(
+                to: canonicalChatDirectory.appendingPathComponent("Chats"),
+                options: .atomic
+            )
+
+            let manager = makeManager(windowID: -787)
+            manager.setDuplicateCleanupBackupDirectoryForTesting(
+                storageRoot.appendingPathComponent("rollback-backups", isDirectory: true)
+            )
+            await manager.awaitInitialized()
+
+            let previousWindows = WindowStatesManager.shared.allWindows
+            WindowStatesManager.shared.allWindows = []
+            defer { WindowStatesManager.shared.allWindows = previousWindows }
+
+            let cleanup = await manager.consolidateDuplicateWorkspaces()
+            XCTAssertEqual(cleanup.groupsDetected, 1)
+            XCTAssertEqual(cleanup.groupsConsolidated, 0)
+            XCTAssertTrue(cleanup.retiredWorkspaceIDs.isEmpty)
+            XCTAssertTrue(cleanup.skipped.contains {
+                $0.workspaceID == duplicate.id && $0.reason.hasPrefix("sidecar_migration_failed:")
+            })
+
+            let destinationAgentDirectory = sidecarWorkspaceDirectory(for: canonical, root: agentWorkspaceRoot)
+                .appendingPathComponent("AgentSessions", isDirectory: true)
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: destinationAgentDirectory.appendingPathComponent(agentFilename).path
+            ))
+            if let indexData = try? Data(
+                contentsOf: destinationAgentDirectory.appendingPathComponent("AgentSessionIndex.json")
+            ) {
+                XCTAssertFalse(
+                    String(decoding: indexData, as: UTF8.self).contains(agentSessionID.uuidString)
+                )
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: sourceAgentURL.path))
+            XCTAssertNotNil(manager.workspace(withID: duplicate.id))
+            XCTAssertEqual(manager.duplicateWorkspaceGroups().count, 1)
+        }
+
         func testFailClosedSaveReportsAWorkingOnlyCommit() async throws {
             let canonicalID = UUID()
             let canonical = WorkspaceModel(

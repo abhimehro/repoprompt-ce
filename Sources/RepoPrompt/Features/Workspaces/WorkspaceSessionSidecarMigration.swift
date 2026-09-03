@@ -277,6 +277,57 @@ enum WorkspaceSessionSidecarMigration {
         }
     }
 
+    /// Withdraws the destination writes a committed batch published.
+    ///
+    /// The two sidecar families commit one after the other, so the later family's rejection arrives
+    /// when this family's files are already visible in the canonical workspace. Undoing them keeps
+    /// the canonical workspace free of a half-merged history while the duplicate it came from is
+    /// still present and still deletable by the user.
+    ///
+    /// Only bytes this batch published are withdrawn. A destination holding anything else belongs to
+    /// a newer writer and is deliberately left alone; it is returned instead, so the caller reports
+    /// the residue rather than claiming a clean withdrawal.
+    static func rollbackPreparedBatch(
+        _ batch: WorkspaceSessionSidecarPreparedBatch
+    ) -> [URL] {
+        var unresolved: [URL] = []
+        for copy in batch.copies {
+            let currentData = try? Data(contentsOf: copy.destinationURL, options: .mappedIfSafe)
+            switch copy.destinationState {
+            case .verifyOnly:
+                continue
+            case .absent:
+                guard let currentData else { continue }
+                guard currentData == copy.data else {
+                    unresolved.append(copy.destinationURL)
+                    continue
+                }
+                do {
+                    try FileManager.default.removeItem(at: copy.destinationURL)
+                } catch {
+                    unresolved.append(copy.destinationURL)
+                }
+            case let .replace(expectedData):
+                guard currentData == copy.data else {
+                    unresolved.append(copy.destinationURL)
+                    continue
+                }
+                do {
+                    try expectedData.write(to: copy.destinationURL, options: .atomic)
+                    if let modificationDate = copy.modificationDate {
+                        try FileManager.default.setAttributes(
+                            [.modificationDate: modificationDate],
+                            ofItemAtPath: copy.destinationURL.path
+                        )
+                    }
+                } catch {
+                    unresolved.append(copy.destinationURL)
+                }
+            }
+        }
+        return unresolved
+    }
+
     private struct NormalizedPayload {
         let data: Data
         let alreadyRehomed: Bool

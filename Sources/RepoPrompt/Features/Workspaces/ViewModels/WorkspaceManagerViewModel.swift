@@ -7049,21 +7049,38 @@ class WorkspaceManagerViewModel: ObservableObject {
                     )
                     continue
                 }
+                var committedAgentBatch: WorkspaceSessionSidecarPreparedBatch?
                 do {
                     if let agentBatch {
                         try await AgentSessionDataService.shared.commitWorkspaceSessionRehome(agentBatch)
+                        committedAgentBatch = agentBatch
                     }
                     if let chatBatch {
                         try await ChatDataService.commitWorkspaceSessionRehome(chatBatch)
                     }
                     sidecarReadyDuplicates.append(duplicate)
                 } catch {
+                    // Both families preflight before either writes, but they still commit serially,
+                    // so a Chat rejection arrives once the Agent files are already published.
+                    // Withdrawing them before this duplicate is reported as skipped is what stops the
+                    // canonical workspace from advertising rehomed Agent sessions whose Chat
+                    // counterparts stayed behind -- a state whose still-deletable duplicate holds the
+                    // only copy of the history that did not come across.
+                    var reason = "sidecar_migration_failed: \(error.localizedDescription)"
+                    if let committedAgentBatch {
+                        let unresolved = await AgentSessionDataService.shared
+                            .rollbackWorkspaceSessionRehome(committedAgentBatch)
+                        if !unresolved.isEmpty {
+                            reason = "sidecar_migration_partial: \(error.localizedDescription)"
+                                + " (\(unresolved.count) rehomed Agent session file(s) could not be withdrawn)"
+                        }
+                    }
                     skipped.append(
                         WorkspaceDuplicateCleanupSkippedItem(
                             workspaceID: duplicate.id,
                             workspaceName: duplicate.name,
                             windowID: nil,
-                            reason: "sidecar_migration_failed: \(error.localizedDescription)"
+                            reason: reason
                         )
                     )
                 }

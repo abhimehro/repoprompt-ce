@@ -93,6 +93,14 @@ private actor AgentSessionDiskWriter {
         try WorkspaceSessionSidecarMigration.commitPreparedBatch(batch)
     }
 
+    /// Withdraws a committed batch on the same serialized boundary that published it, so a normal
+    /// save cannot interleave between the two.
+    func rollbackPreparedWorkspaceSessionSidecarBatch(
+        _ batch: WorkspaceSessionSidecarPreparedBatch
+    ) -> [URL] {
+        WorkspaceSessionSidecarMigration.rollbackPreparedBatch(batch)
+    }
+
     #if DEBUG
         func test_setBeforeWriteHook(_ hook: (@Sendable (URL) async -> Void)?) {
             beforeWriteHook = hook
@@ -1052,20 +1060,46 @@ actor AgentSessionDataService {
         }
         try await diskWriter.commitPreparedWorkspaceSessionSidecarBatch(batch)
         guard !batch.copies.isEmpty else { return }
-        for copy in batch.copies {
-            let destinationURL = copy.destinationURL.standardizedFileURL
-            let rawID = destinationURL.deletingPathExtension().lastPathComponent
-                .replacingOccurrences(of: "AgentSession-", with: "")
-            guard let sessionID = UUID(uuidString: rawID) else {
-                throw WorkspaceSessionSidecarMigrationError.invalidSessionFile(destinationURL)
+        do {
+            for copy in batch.copies {
+                let destinationURL = copy.destinationURL.standardizedFileURL
+                let rawID = destinationURL.deletingPathExtension().lastPathComponent
+                    .replacingOccurrences(of: "AgentSession-", with: "")
+                guard let sessionID = UUID(uuidString: rawID) else {
+                    throw WorkspaceSessionSidecarMigrationError.invalidSessionFile(destinationURL)
+                }
+                try await discardSaveIfSessionWasDeleted(
+                    sessionID,
+                    fileURL: destinationURL,
+                    folder: batch.destinationFolder
+                )
             }
-            try await discardSaveIfSessionWasDeleted(
-                sessionID,
-                fileURL: destinationURL,
-                folder: batch.destinationFolder
-            )
+            _ = try await reconcileMetadataIndex(folder: batch.destinationFolder)
+        } catch {
+            // The files are already published here, so failing without withdrawing them would leave
+            // exactly the half-merged canonical workspace that a later family's rejection would.
+            await rollbackWorkspaceSessionRehome(batch)
+            throw error
         }
-        _ = try await reconcileMetadataIndex(folder: batch.destinationFolder)
+    }
+
+    /// Withdraws an Agent batch this service already committed, after a later step of the same
+    /// consolidation failed.
+    ///
+    /// Returns the destinations that could not be returned to their pre-commit state, so the
+    /// coordinator can disclose the residue instead of reporting a clean skip.
+    @discardableResult
+    func rollbackWorkspaceSessionRehome(
+        _ batch: WorkspaceSessionSidecarPreparedBatch
+    ) async -> [URL] {
+        let unresolved = await diskWriter.rollbackPreparedWorkspaceSessionSidecarBatch(batch)
+        guard batch.copies.contains(where: \.destinationState.requiresWrite) else {
+            return unresolved
+        }
+        // The metadata index is derived from the destination folder, so it keeps advertising the
+        // withdrawn sessions until it is rebuilt.
+        _ = try? await reconcileMetadataIndex(folder: batch.destinationFolder)
+        return unresolved
     }
 
     // MARK: - Public API
