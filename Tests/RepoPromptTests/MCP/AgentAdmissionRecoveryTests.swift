@@ -82,6 +82,32 @@ import XCTest
             }
         }
 
+        private actor CancellationIgnoringReleaseFence {
+            private var entered = false
+            private var released = false
+            private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+            private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+            func enterAndWaitIgnoringCancellationUntilRelease() async {
+                entered = true
+                entryWaiters.forEach { $0.resume() }
+                entryWaiters.removeAll()
+                guard !released else { return }
+                await withCheckedContinuation { releaseWaiters.append($0) }
+            }
+
+            func waitUntilEntered() async {
+                guard !entered else { return }
+                await withCheckedContinuation { entryWaiters.append($0) }
+            }
+
+            func release() {
+                released = true
+                releaseWaiters.forEach { $0.resume() }
+                releaseWaiters.removeAll()
+            }
+        }
+
         private var originalMCPAutoStart = false
         private var originalStoragePath: String?
         private var storageRoot: URL!
@@ -571,8 +597,8 @@ import XCTest
             let fixture = try await makeFixture()
             fixture.manager.activeWorkspace = fixture.workspaceA
             fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
-            let persistenceFence = TestReleaseFence(name: "admission persistence receipt")
-            let retryFence = TestReleaseFence(name: "admission recovery retry backoff")
+            let persistenceFence = CancellationIgnoringReleaseFence()
+            let retryFence = CancellationIgnoringReleaseFence()
             let sessionID = UUID()
             var admissionIdentity: AgentProvisionalAdmissionIdentity?
             var recoveryOutcome: AgentAdmissionRecoveryOutcome?
@@ -613,11 +639,11 @@ import XCTest
             }
             await persistenceFence.waitUntilEntered()
             admissionTask.cancel()
-            persistenceFence.release()
+            await persistenceFence.release()
             await retryFence.waitUntilEntered()
 
             guard let identity = admissionIdentity else {
-                retryFence.release()
+                await retryFence.release()
                 _ = try? await admissionTask.value
                 return XCTFail("Expected the persistence receipt to capture an admission identity")
             }
@@ -672,7 +698,7 @@ import XCTest
             XCTAssertEqual(stillOwned.revisions, dirtySnapshot.revisions)
             XCTAssertEqual(stillOwned.document.contentDigest, dirtySnapshot.document.contentDigest)
 
-            retryFence.release()
+            await retryFence.release()
             do {
                 _ = try await admissionTask.value
                 XCTFail("Cancellation must not return a provider-facing target")
@@ -1734,7 +1760,7 @@ import XCTest
             let agentModeVM = AgentModeViewModel(
                 testWorkspacePath: storageRoot.path,
                 codexControllerFactory: { _, _, _, _, _, _ in
-                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                    AgentAdmissionNoopCodexController()
                 },
                 testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
             )
@@ -1980,7 +2006,7 @@ import XCTest
             let agentModeVM = AgentModeViewModel(
                 testWorkspacePath: storageRoot.path,
                 codexControllerFactory: { _, _, _, _, _, _ in
-                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                    AgentAdmissionNoopCodexController()
                 },
                 testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
             )
@@ -2201,7 +2227,7 @@ import XCTest
             let agentModeVM = AgentModeViewModel(
                 testWorkspacePath: storageRoot.path,
                 codexControllerFactory: { _, _, _, _, _, _ in
-                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                    AgentAdmissionNoopCodexController()
                 },
                 testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
             )
@@ -2362,7 +2388,7 @@ import XCTest
             let agentModeVM = AgentModeViewModel(
                 testWorkspacePath: storageRoot.path,
                 codexControllerFactory: { _, _, _, _, _, _ in
-                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                    AgentAdmissionNoopCodexController()
                 },
                 testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
             )
@@ -2563,7 +2589,7 @@ import XCTest
             let viewModel = AgentModeViewModel(
                 testWorkspacePath: storageRoot.path,
                 codexControllerFactory: { _, _, _, _, _, _ in
-                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                    AgentAdmissionNoopCodexController()
                 },
                 testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
             )
@@ -2935,5 +2961,145 @@ import XCTest
             normalizedRecovered.dateModified = original.dateModified
             XCTAssertEqual(normalizedRecovered, original, file: file, line: line)
         }
+    }
+
+    private final class AgentAdmissionNoopCodexController: CodexSessionControlling {
+        private(set) var hasActiveThread = false
+
+        var events: AsyncStream<CodexNativeSessionController.Event> {
+            AsyncStream { _ in }
+        }
+
+        func ensureEventsStreamReady() {}
+
+        func startOrResume(
+            existing: CodexNativeSessionController.SessionRef?,
+            baseInstructions: String
+        ) async throws -> CodexNativeSessionController.SessionRef {
+            try await startOrResume(
+                existing: existing,
+                baseInstructions: baseInstructions,
+                model: nil,
+                reasoningEffort: nil,
+                serviceTier: nil
+            )
+        }
+
+        func startOrResume(
+            existing: CodexNativeSessionController.SessionRef?,
+            baseInstructions: String,
+            model: String?,
+            reasoningEffort: String?
+        ) async throws -> CodexNativeSessionController.SessionRef {
+            try await startOrResume(
+                existing: existing,
+                baseInstructions: baseInstructions,
+                model: model,
+                reasoningEffort: reasoningEffort,
+                serviceTier: nil
+            )
+        }
+
+        func startOrResume(
+            existing _: CodexNativeSessionController.SessionRef?,
+            baseInstructions _: String,
+            model: String?,
+            reasoningEffort: String?,
+            serviceTier _: String?
+        ) async throws -> CodexNativeSessionController.SessionRef {
+            hasActiveThread = true
+            return CodexNativeSessionController.SessionRef(
+                conversationID: "agent-admission-test",
+                rolloutPath: nil,
+                model: model,
+                reasoningEffort: reasoningEffort
+            )
+        }
+
+        func readThreadSnapshot(
+            includeTurns _: Bool,
+            timeout _: TimeInterval?
+        ) async throws -> CodexNativeSessionController.ThreadSnapshot {
+            CodexNativeSessionController.ThreadSnapshot(
+                conversationID: "agent-admission-test",
+                rolloutPath: nil,
+                model: nil,
+                reasoningEffort: nil,
+                runtimeStatus: .idle,
+                currentTurnID: nil,
+                activeTurnIDs: [],
+                latestTurnStatus: nil
+            )
+        }
+
+        func setThreadName(_: String, threadID _: String?) async throws {}
+
+        func startUserTurn(
+            text _: String,
+            images _: [AgentImageAttachment],
+            model _: String?,
+            reasoningEffort _: String?,
+            serviceTier _: String?
+        ) async throws -> CodexTurnStartReceipt {
+            CodexTurnStartReceipt(provisionalSubmissionID: "agent-admission-test")
+        }
+
+        func steerUserTurn(
+            text _: String,
+            images _: [AgentImageAttachment],
+            expectedTurnID: String
+        ) async throws -> CodexTurnSteerReceipt {
+            CodexTurnSteerReceipt(acceptedTurnID: expectedTurnID)
+        }
+
+        func prepareLifecycleAuthorityReconciliationAfterAcceptedMismatch(
+            expectedCurrentTurnID _: String,
+            acceptedDispatchTurnID _: String
+        ) async -> Bool {
+            true
+        }
+
+        func interruptUserTurn(expectedTurnID: String) async throws -> CodexTurnInterruptReceipt {
+            CodexTurnInterruptReceipt(interruptedTurnID: expectedTurnID)
+        }
+
+        func reconcileAndInterruptCurrentTurn() async throws -> CodexTurnInterruptReceipt {
+            CodexTurnInterruptReceipt(interruptedTurnID: "agent-admission-test")
+        }
+
+        func compactThread() async throws {}
+
+        func getThreadGoal() async throws -> CodexNativeSessionController.ThreadGoal? {
+            nil
+        }
+
+        func setThreadGoalObjective(_: String) async throws -> CodexNativeSessionController.ThreadGoal {
+            throw CancellationError()
+        }
+
+        func setThreadGoalStatus(
+            _: CodexNativeSessionController.ThreadGoalStatus
+        ) async throws -> CodexNativeSessionController.ThreadGoal {
+            throw CancellationError()
+        }
+
+        func clearThreadGoal() async throws -> Bool {
+            false
+        }
+
+        func pendingTurnFailure(
+            turnID _: String?
+        ) async -> CodexNativeSessionController.TurnFailure? {
+            nil
+        }
+
+        func acknowledgePendingTurnFailure(
+            turnID _: String?,
+            failure _: CodexNativeSessionController.TurnFailure
+        ) async {}
+
+        func cancelCurrentTurn() async {}
+        func shutdown() async {}
+        func respondToServerRequest(id _: CodexAppServerRequestID, result _: [String: Any]) async {}
     }
 #endif

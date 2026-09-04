@@ -2,12 +2,13 @@
 set -euo pipefail
 
 # Retry-safe Tip publication. Every remote mutation is reconciled by observing
-# exact release state; protected main and the public P -> T -> S ladder are
-# rechecked immediately before a draft becomes public.
+# exact release state; protected-main ancestry and the public P -> T -> S ladder
+# are rechecked immediately before a draft becomes public.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROLLOUT_TOOL="$SCRIPT_DIR/stable_rollout.py"
 APPLE_IDENTITY_POLICY="$SCRIPT_DIR/apple_identity_policy.json"
+SOURCE_COMMIT_VERIFIER="$SCRIPT_DIR/verify_tip_source_commit.sh"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 require_env() { [[ -n "${!1:-}" ]] || fail "Missing required environment variable: $1"; }
@@ -15,7 +16,7 @@ require_command() { command -v "$1" >/dev/null 2>&1 || fail "Missing required co
 require_file() { [[ -f "$1" && ! -L "$1" ]] || fail "Missing regular non-symlink file: $1"; }
 
 for name in \
-    TIP_GH_TOKEN TIP_UPDATE_REPOSITORY TIP_SOURCE_REPOSITORY TIP_SOURCE_BRANCH \
+    TIP_GH_TOKEN TIP_SOURCE_GH_TOKEN TIP_UPDATE_REPOSITORY TIP_SOURCE_REPOSITORY TIP_SOURCE_BRANCH \
     TIP_COMMIT TIP_TAG TIP_BUILD_NUMBER TIP_PUBLISH_INSTALLATION_TYPE \
     TIP_EXPECTED_ROLLOUT_ROLE TIP_EXPECTED_SIGNING_IDENTITY \
     TIP_EXPECTED_MIGRATION_PHASE TIP_RELEASE_TITLE TIP_RELEASE_NOTES; do
@@ -24,11 +25,17 @@ done
 for command in curl gh python3 shasum; do require_command "$command"; done
 require_file "$ROLLOUT_TOOL"
 require_file "$APPLE_IDENTITY_POLICY"
+require_file "$SOURCE_COMMIT_VERIFIER"
 
 [[ "$TIP_SOURCE_BRANCH" == "main" ]] || fail "Tip publication source branch must remain main"
 [[ "$TIP_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "TIP_COMMIT must be a full lowercase Git SHA"
 [[ "$TIP_TAG" =~ ^tip-[0-9a-f]{12}$ ]] || fail "TIP_TAG must be tip-<12 lowercase hex>"
-[[ "$#" -ge 1 ]] || fail "Usage: $0 <release-asset>..."
+[[ "${1:-}" == "--rollout-declaration" && "$#" -ge 2 ]] ||
+    fail "Usage: $0 --rollout-declaration <checked-in-declaration> <release-asset>..."
+ROLLOUT_DECLARATION="$2"
+shift 2
+require_file "$ROLLOUT_DECLARATION"
+[[ "$#" -ge 1 ]] || fail "Usage: $0 --rollout-declaration <checked-in-declaration> <release-asset>..."
 case "$TIP_UPDATE_REPOSITORY" in
     "$TIP_SOURCE_REPOSITORY"|repoprompt/repoprompt-ce-updates)
         fail "Tip publication repository must be separate from source and Stable updates"
@@ -194,29 +201,15 @@ fetch_json_status() {
     printf '%s\n' "$status"
 }
 
-fetch_live_main() {
-    local response="$TMP_DIR/live-main.json" status
-    status="$(fetch_json_status \
-        "https://api.github.com/repos/$TIP_SOURCE_REPOSITORY/commits/$TIP_SOURCE_BRANCH" \
-        "$response")"
-    [[ "$status" == "200" ]] || fail "Protected-main lookup failed with HTTP $status"
-    python3 - "$response" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1], encoding="utf-8")).get("sha", ""))
-PY
-}
-
-require_live_main() {
-    local phase="$1" live_main
-    live_main="$(fetch_live_main)"
-    [[ "$live_main" =~ ^[0-9a-f]{40}$ ]] || fail "$phase did not resolve a full live-main SHA"
-    [[ "$live_main" == "$TIP_COMMIT" ]] ||
-        fail "$phase rejected stale Tip candidate: candidate=$TIP_COMMIT live-main=$live_main"
+require_main_lineage() {
+    "$SOURCE_COMMIT_VERIFIER" --allow-ancestor "$1"
 }
 
 LIVE_AUDIT_INDEX=0
+STABLE_AUDIT_INDEX=0
 LIVE_MANIFEST_PATH=""
 LIVE_APPCAST_PATH=""
+STABLE_APPCAST_PATH=""
 fetch_live_tip_rollout() {
     LIVE_AUDIT_INDEX=$((LIVE_AUDIT_INDEX + 1))
     local release_file="$TMP_DIR/live-release-$LIVE_AUDIT_INDEX.json" status report
@@ -386,16 +379,17 @@ PY
 
 audit_stable_tip_floor() {
     local phase="$1"
-    local stable_feed_url stable_appcast
+    local stable_feed_url
+    STABLE_AUDIT_INDEX=$((STABLE_AUDIT_INDEX + 1))
+    STABLE_APPCAST_PATH="$TMP_DIR/stable-floor-$STABLE_AUDIT_INDEX.xml"
     stable_feed_url="$(python3 "$ROLLOUT_TOOL" feed-url \
         --policy "$APPLE_IDENTITY_POLICY" --channel stable)"
-    stable_appcast="$TMP_DIR/stable-floor-$LIVE_AUDIT_INDEX.xml"
     curl --fail --location --silent --show-error \
         --connect-timeout 10 --max-time 30 \
-        "$stable_feed_url" --output "$stable_appcast"
+        "$stable_feed_url" --output "$STABLE_APPCAST_PATH"
     python3 "$ROLLOUT_TOOL" validate-stable-tip-floor \
         --policy "$APPLE_IDENTITY_POLICY" \
-        --stable-appcast "$stable_appcast" \
+        --stable-appcast "$STABLE_APPCAST_PATH" \
         --tip-manifest "$CANDIDATE_MANIFEST" \
         --tip-appcast "$CANDIDATE_APPCAST" ||
         fail "$phase rejected an unsafe Stable/Tip build floor"
@@ -411,6 +405,8 @@ audit_live_rollout_progression() {
         --policy "$APPLE_IDENTITY_POLICY"
         --candidate-manifest "$CANDIDATE_MANIFEST"
         --candidate-appcast "$CANDIDATE_APPCAST"
+        --declaration "$ROLLOUT_DECLARATION"
+        --stable-appcast "$STABLE_APPCAST_PATH"
     )
     if fetch_live_tip_rollout; then
         arguments+=(
@@ -422,10 +418,61 @@ audit_live_rollout_progression() {
     audit_retained_enclosures
 }
 
+# Returns 0 when found, 1 only for a confirmed absence, and 2 on observation error.
 lookup_release() {
-    GH_TOKEN="$TIP_GH_TOKEN" gh api --paginate --slurp \
-        "/repos/$TIP_UPDATE_REPOSITORY/releases?per_page=100" \
-        --jq "flatten | map(select(.tag_name == \"$TIP_TAG\")) | if length == 0 then empty elif length == 1 then .[0] else error(\"duplicate release tag\") end"
+    local output="$1" pages_file status
+    pages_file="$(mktemp "$TMP_DIR/release-pages.XXXXXX")"
+    rm -f "$output"
+    if ! GH_TOKEN="$TIP_GH_TOKEN" gh api --paginate \
+        "/repos/$TIP_UPDATE_REPOSITORY/releases?per_page=100" > "$pages_file"; then
+        rm -f "$pages_file"
+        return 2
+    fi
+    if python3 - "$pages_file" "$output" "$TIP_TAG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+pages_path, output_path, tag = sys.argv[1:]
+raw = Path(pages_path).read_text(encoding="utf-8")
+decoder = json.JSONDecoder()
+offset = 0
+page_count = 0
+matches = []
+while True:
+    while offset < len(raw) and raw[offset].isspace():
+        offset += 1
+    if offset == len(raw):
+        break
+    try:
+        page, offset = decoder.raw_decode(raw, offset)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"ERROR: malformed paginated release response: {error}")
+    if not isinstance(page, list):
+        raise SystemExit("ERROR: paginated release response must contain JSON arrays")
+    page_count += 1
+    for release in page:
+        if not isinstance(release, dict):
+            raise SystemExit("ERROR: paginated release response contains a malformed release")
+        if release.get("tag_name") == tag:
+            matches.append(release)
+if page_count == 0:
+    raise SystemExit("ERROR: paginated release response contained no JSON pages")
+if len(matches) > 1:
+    raise SystemExit(f"ERROR: duplicate release tag: {tag}")
+if not matches:
+    raise SystemExit(3)
+Path(output_path).write_text(json.dumps(matches[0], separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+    then
+        rm -f "$pages_file"
+        return 0
+    else
+        status=$?
+        rm -f "$pages_file"
+        [[ "$status" == 3 ]] && return 1
+        return 2
+    fi
 }
 
 validate_release_metadata() {
@@ -458,10 +505,41 @@ PY
 }
 
 write_release_json() {
-    local output="$1" value
-    value="$(lookup_release)"
-    [[ -n "$value" ]] || return 1
-    printf '%s\n' "$value" > "$output"
+    local output="$1" status release_id="" direct_output
+    if [[ -f "$output" ]]; then
+        release_id="$(python3 - "$output" <<'PY'
+import json
+import sys
+
+try:
+    release = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+release_id = release.get("id") if isinstance(release, dict) else None
+if isinstance(release_id, int):
+    print(release_id)
+PY
+)"
+    fi
+    if [[ -n "$release_id" ]]; then
+        direct_output="$(mktemp "$TMP_DIR/release-by-id.XXXXXX")"
+        if ! GH_TOKEN="$TIP_GH_TOKEN" gh api \
+            "/repos/$TIP_UPDATE_REPOSITORY/releases/$release_id" > "$direct_output"; then
+            rm -f "$direct_output"
+            fail "Authenticated Tip release lookup by id failed"
+        fi
+        mv "$direct_output" "$output"
+        return 0
+    fi
+    if lookup_release "$output"; then
+        return 0
+    else
+        status=$?
+    fi
+    case "$status" in
+        1) return 1 ;;
+        *) fail "Authenticated Tip release lookup failed" ;;
+    esac
 }
 
 create_draft_if_missing() {
@@ -469,17 +547,19 @@ create_draft_if_missing() {
     if write_release_json "$release_file"; then
         return 0
     fi
-    require_live_main "pre-draft creation"
-    if ! GH_TOKEN="$TIP_GH_TOKEN" gh release create "$TIP_TAG" \
-        --repo "$TIP_UPDATE_REPOSITORY" \
-        --target "$TIP_SOURCE_BRANCH" \
-        --draft \
-        --title "$TIP_RELEASE_TITLE" \
-        --notes "$TIP_RELEASE_NOTES"; then
+    require_main_lineage "pre-draft creation"
+    if ! GH_TOKEN="$TIP_GH_TOKEN" gh api --method POST \
+        "/repos/$TIP_UPDATE_REPOSITORY/releases" \
+        -f tag_name="$TIP_TAG" \
+        -f target_commitish="$TIP_SOURCE_BRANCH" \
+        -f name="$TIP_RELEASE_TITLE" \
+        -f body="$TIP_RELEASE_NOTES" \
+        -F draft=true \
+        -F prerelease=false > "$release_file"; then
         write_release_json "$release_file" || fail "Unable to create or reconcile Tip release draft"
         return 0
     fi
-    write_release_json "$release_file" || fail "Created Tip draft is not observable"
+    validate_release_metadata "$release_file" draft
 }
 
 download_authenticated_asset() {
@@ -539,7 +619,8 @@ PY
 }
 
 upload_missing_assets() {
-    local release_file="$1" names_file="$TMP_DIR/remote-names"
+    local release_file="$1" names_file="$TMP_DIR/remote-names" release_id
+    release_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$release_file")"
     python3 - "$release_file" > "$names_file" <<'PY'
 import json
 import sys
@@ -547,14 +628,27 @@ release = json.load(open(sys.argv[1], encoding="utf-8"))
 for asset in release.get("assets", []):
     print(asset.get("name", ""))
 PY
-    local path name
+    local path name encoded_name upload_response upload_status
     for path in "${ASSETS[@]}"; do
         name="$(basename "$path")"
         if grep -Fx "$name" "$names_file" >/dev/null; then
             continue
         fi
-        if ! GH_TOKEN="$TIP_GH_TOKEN" gh release upload "$TIP_TAG" "$path" \
-            --repo "$TIP_UPDATE_REPOSITORY"; then
+        encoded_name="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$name")"
+        upload_response="$(mktemp "$TMP_DIR/upload-response.XXXXXX")"
+        upload_status="$(curl --location --silent --show-error \
+            --connect-timeout 10 --max-time 1800 \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'Content-Type: application/octet-stream' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --header "Authorization: Bearer $TIP_GH_TOKEN" \
+            --data-binary "@$path" \
+            --output "$upload_response" --write-out '%{http_code}' \
+            "https://uploads.github.com/repos/$TIP_UPDATE_REPOSITORY/releases/$release_id/assets?name=$encoded_name")" ||
+            upload_status="000"
+        rm -f "$upload_response"
+        if [[ "$upload_status" != "201" ]]; then
             write_release_json "$release_file" || fail "Unable to reconcile Tip asset upload: $name"
             audit_authenticated_release_assets "$release_file" true
             grep -Fx "$name" <(python3 - "$release_file" <<'PY'
@@ -562,7 +656,7 @@ import json,sys
 for asset in json.load(open(sys.argv[1], encoding="utf-8")).get("assets", []):
     print(asset.get("name", ""))
 PY
-) >/dev/null || fail "Tip asset upload failed: $name"
+) >/dev/null || fail "Tip asset upload failed with HTTP $upload_status: $name"
         fi
         write_release_json "$release_file" || fail "Tip release draft disappeared after uploading $name"
     done
@@ -571,7 +665,7 @@ PY
 publish_draft() {
     local release_file="$1" release_id
     release_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$release_file")"
-    require_live_main "final pre-publication"
+    require_main_lineage "final pre-publication"
     audit_live_rollout_progression "final pre-publication"
     if ! GH_TOKEN="$TIP_GH_TOKEN" gh api --method PATCH \
         "/repos/$TIP_UPDATE_REPOSITORY/releases/$release_id" \
@@ -642,7 +736,7 @@ PY
 }
 
 validate_candidate_bindings
-require_live_main "publication setup"
+require_main_lineage "publication setup"
 audit_live_rollout_progression "publication setup"
 release_file="$TMP_DIR/release.json"
 create_draft_if_missing "$release_file"

@@ -6,11 +6,6 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
-    inputs:
-      confirm_identity_rollout_role:
-        description: For preparer/transition/successor, enter the exact checked-in role
-        required: false
-        type: string
 
 concurrency:
   group: >-
@@ -19,7 +14,8 @@ concurrency:
       (github.event.workflow_run.conclusion == 'success' && 'main-tip-channel') ||
       format('main-tip-skipped-{0}', github.run_id)
     }}
-  queue: max
+  queue: single
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -38,8 +34,6 @@ jobs:
       build-number: ${{ steps.tip.outputs.build-number }}
       tag: ${{ steps.tip.outputs.tag }}
       tooling-commit: ${{ steps.tip.outputs.tooling-commit }}
-      should-publish: ${{ steps.tip.outputs.should-publish }}
-      skip-reason: ${{ steps.tip.outputs.skip-reason }}
       rollout-role: ${{ steps.tip.outputs.rollout-role }}
       rollout-identity: ${{ steps.tip.outputs.rollout-identity }}
       migration-phase: ${{ steps.tip.outputs.migration-phase }}
@@ -61,7 +55,6 @@ jobs:
           WORKFLOW_RUN_COMMIT: ${{ github.event.workflow_run.head_sha }}
           WORKFLOW_DEFINITION_COMMIT: ${{ github.workflow_sha }}
           TIP_UPDATE_REPOSITORY: ${{ vars.TIP_UPDATE_REPOSITORY || 'repoprompt/repoprompt-ce-tip-updates' }}
-          CONFIRMED_ROLLOUT_ROLE: ${{ inputs.confirm_identity_rollout_role }}
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
@@ -124,19 +117,6 @@ jobs:
             exit 1
           }
 
-          should_publish=true
-          skip_reason=""
-          if [[ "$ROLLOUT_ROLE" != "legacy" ]]; then
-            if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
-              should_publish=false
-              skip_reason="role-requires-dispatch"
-              echo "Identity rollout role $ROLLOUT_ROLE requires an explicit workflow dispatch; skipping automatic publication."
-            elif [[ "$CONFIRMED_ROLLOUT_ROLE" != "$ROLLOUT_ROLE" ]]; then
-              echo "confirm_identity_rollout_role must exactly match checked-in role $ROLLOUT_ROLE" >&2
-              exit 1
-            fi
-          fi
-
           stable_appcast="$RUNNER_TEMP/stable-appcast.xml"
           stable_feed_url="$(python3 Scripts/stable_rollout.py feed-url \
             --policy Scripts/apple_identity_policy.json --channel stable)"
@@ -175,53 +155,15 @@ jobs:
             echo "build-number=$build_number"
             echo "tag=$tag"
             echo "tooling-commit=$tooling_commit"
-            echo "should-publish=$should_publish"
-            echo "skip-reason=$skip_reason"
             echo "rollout-role=$ROLLOUT_ROLE"
             echo "rollout-identity=$ROLLOUT_IDENTITY"
             echo "migration-phase=$REPOPROMPT_IDENTITY_MIGRATION_PHASE"
             echo "installation-type=$ROLLOUT_INSTALLATION_TYPE"
           } >> "$GITHUB_OUTPUT"
 
-  automatic-tip-dormant:
-    name: Automatic Tip Publication Dormant (Dispatch Required)
-    needs: setup
-    if: >-
-      github.event_name == 'workflow_run' &&
-      needs.setup.outputs.should-publish != 'true' &&
-      needs.setup.outputs.skip-reason == 'role-requires-dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Report suppressed automatic publication
-        env:
-          ROLLOUT_ROLE: ${{ needs.setup.outputs.rollout-role }}
-          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
-          TIP_TAG: ${{ needs.setup.outputs.tag }}
-        run: |
-          set -euo pipefail
-          commit="${TIP_COMMIT:-unresolved}"
-          tag="${TIP_TAG:-unresolved}"
-          {
-            echo "## Automatic Tip Publication Dormant (Dispatch Required)"
-            echo
-            echo "- Rollout role: $ROLLOUT_ROLE"
-            echo "- Commit: $commit"
-            echo "- Tag: $tag"
-            echo
-            echo "This automatic workflow_run was intentionally suppressed because the nonlegacy rollout role requires an explicit dispatch."
-            echo "Nothing was built, signed, or published."
-            echo
-            echo "To publish this role, dispatch Publish Tip from protected main and enter confirm_identity_rollout_role=$ROLLOUT_ROLE. The candidate commit is selected automatically from main."
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "Automatic Tip publication is intentionally dormant for rollout role $ROLLOUT_ROLE."
-
   credential-preflight:
     name: Preflight Tip Rollout Credentials
     needs: setup
-    if: needs.setup.outputs.should-publish == 'true'
     environment: tip-release
     runs-on: macos-26
     timeout-minutes: 30
@@ -243,6 +185,14 @@ jobs:
           path: approved-source
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Verify authenticated protected-main authority
+        env:
+          TIP_SOURCE_GH_TOKEN: ${{ github.token }}
+          TIP_SOURCE_REPOSITORY: ${{ github.repository }}
+          TIP_SOURCE_BRANCH: main
+          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
+        run: ./trusted-control-plane/Scripts/verify_tip_source_commit.sh "credential preflight"
 
       - name: Validate role-selected Tip credentials
         env:
@@ -373,9 +323,9 @@ jobs:
           if [[ "$ROLLOUT_ROLE" == "transition" ]]; then
             printf '%s' "$SUCCESSOR_INSTALLER_P12_BASE64" | base64 --decode > "$INSTALLER_CERTIFICATE_PATH" || fail "successor installer P12 write failed"
             security import "$INSTALLER_CERTIFICATE_PATH" -k "$PREFLIGHT_KEYCHAIN_PATH" -P "$SUCCESSOR_INSTALLER_P12_PASSWORD" \
-              -T /usr/bin/productbuild -T /usr/bin/security \
+              -T /usr/bin/productbuild -T /usr/bin/productsign -T /usr/bin/security \
               >/dev/null || fail "successor installer P12 import failed"
-            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: \
+            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,productsign: \
               -s -k "$CI_KEYCHAIN_PASSWORD" "$PREFLIGHT_KEYCHAIN_PATH" \
               >/dev/null || fail "successor installer key partition setup failed"
             security find-identity -v -p basic "$PREFLIGHT_KEYCHAIN_PATH" |
@@ -388,7 +338,6 @@ jobs:
     needs:
       - setup
       - credential-preflight
-    if: needs.setup.outputs.should-publish == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     permissions:
@@ -544,8 +493,8 @@ jobs:
             installer_certificate="$RUNNER_TEMP/repoprompt-tip-installer.p12"
             printf '%s' "$SUCCESSOR_INSTALLER_P12_BASE64" | base64 --decode > "$installer_certificate"
             security import "$installer_certificate" -k "$KEYCHAIN_PATH" \
-              -P "$SUCCESSOR_INSTALLER_P12_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/security
-            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: \
+              -P "$SUCCESSOR_INSTALLER_P12_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/productsign -T /usr/bin/security
+            security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,productsign: \
               -s -k "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
             verify_identity basic "$EXPECTED_INSTALLER_IDENTITY" installer
             rm -f "$installer_certificate"
@@ -655,7 +604,7 @@ jobs:
           printf '%s' "$SENTRY_AUTH_TOKEN" > "$SENTRY_TOKEN_FILE"
           chmod 600 "$SENTRY_TOKEN_FILE"
 
-      - name: Sign and notarize staged tip
+      - name: Sign application
         env:
           TIP_COMMIT: ${{ needs.setup.outputs.commit }}
           TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
@@ -673,8 +622,54 @@ jobs:
           REPOPROMPT_SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           REPOPROMPT_SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
           REPOPROMPT_SENTRY_AUTH_TOKEN_FILE: ${{ runner.temp }}/repoprompt-tip-secrets/sentry-auth-token
+          SPARKLE_PRIVATE_KEY: ${{ needs.setup.outputs.installation-type == 'application' && secrets.SPARKLE_PRIVATE_KEY || '' }}
+        run: ./trusted-control-plane/Scripts/main_tip_release.sh sign-application
+
+      - name: Build package
+        if: needs.setup.outputs.installation-type == 'package'
+        env:
+          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
+          TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
+          TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
+          TIP_TAG: ${{ needs.setup.outputs.tag }}
+          REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR: ${{ github.workspace }}/trusted-control-plane/Scripts
+          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/tip-source
+        run: ./trusted-control-plane/Scripts/main_tip_release.sh build-package
+
+      - name: Submit package notarization
+        if: needs.setup.outputs.installation-type == 'package'
+        env:
+          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
+          TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
+          TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
+          TIP_TAG: ${{ needs.setup.outputs.tag }}
+          REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR: ${{ github.workspace }}/trusted-control-plane/Scripts
+          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/tip-source
+        run: ./trusted-control-plane/Scripts/main_tip_release.sh submit-package-notarization
+
+      - name: Staple package
+        if: needs.setup.outputs.installation-type == 'package'
+        env:
+          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
+          TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
+          TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
+          TIP_TAG: ${{ needs.setup.outputs.tag }}
+          REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR: ${{ github.workspace }}/trusted-control-plane/Scripts
+          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/tip-source
+        run: ./trusted-control-plane/Scripts/main_tip_release.sh staple-package
+
+      - name: Validate package
+        if: needs.setup.outputs.installation-type == 'package'
+        env:
+          TIP_COMMIT: ${{ needs.setup.outputs.commit }}
+          TIP_SHORT_SHA: ${{ needs.setup.outputs.short-sha }}
+          TIP_BUILD_NUMBER: ${{ needs.setup.outputs.build-number }}
+          TIP_TAG: ${{ needs.setup.outputs.tag }}
+          TIP_UPDATE_REPOSITORY: ${{ vars.TIP_UPDATE_REPOSITORY || 'repoprompt/repoprompt-ce-tip-updates' }}
+          REPOPROMPT_CONTROL_PLANE_SCRIPTS_DIR: ${{ github.workspace }}/trusted-control-plane/Scripts
+          REPOPROMPT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/tip-source
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: ./trusted-control-plane/Scripts/main_tip_release.sh sign
+        run: ./trusted-control-plane/Scripts/main_tip_release.sh validate-package
 
       - name: Remove ephemeral keychain
         if: always()
@@ -682,6 +677,7 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/repoprompt-tip.keychain-db" || true
           rm -rf "$RUNNER_TEMP/repoprompt-tip-secrets"
           rm -f "$RUNNER_TEMP/repoprompt-tip.p12"
+          rm -f "$RUNNER_TEMP/repoprompt-tip-installer.p12"
           rm -f "$RUNNER_TEMP/repoprompt-tip-successor.p12"
           rm -f "$RUNNER_TEMP/repoprompt-successor-identity-anchor"
 
@@ -824,6 +820,7 @@ jobs:
           TIP_TAG: ${{ needs.setup.outputs.tag }}
           TIP_UPDATE_REPOSITORY: ${{ vars.TIP_UPDATE_REPOSITORY || 'repoprompt/repoprompt-ce-tip-updates' }}
           TIP_GH_TOKEN: ${{ secrets.TIP_UPDATE_REPOSITORY_TOKEN }}
+          TIP_SOURCE_GH_TOKEN: ${{ github.token }}
           TIP_SOURCE_REPOSITORY: ${{ github.repository }}
           TIP_SOURCE_BRANCH: main
           TIP_PUBLISH_INSTALLATION_TYPE: ${{ needs.setup.outputs.installation-type }}

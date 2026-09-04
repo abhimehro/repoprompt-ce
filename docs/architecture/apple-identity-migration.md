@@ -30,21 +30,23 @@ The checked-in Tip declaration is the controlled `P → T → S` rehearsal:
   items and supplies the normal rollback window.
 
 All three roles use the same Tip feed and `appcast.xml`; the rollout manifest is the same
-`identity-rollout.json` asset name. No sibling feed or Sparkle key is introduced. Automatic
-`workflow_run` notifications publish only legacy Tip builds. For P, T, and S they stop successfully
-in a read-only diagnostic before credentials or builds; that outcome is not release authorization.
+`identity-rollout.json` asset name. No sibling feed or Sparkle key is introduced. A successful `CI`
+run for protected `main` automatically continues into the complete `Publish Tip` pipeline for the
+exact passing commit, regardless of the checked-in rollout role. A role changes the artifact and
+identity policy; it never suppresses publication or produces a successful no-publication run.
 
-Each nonlegacy role requires an explicit `workflow_dispatch` from protected `main` with
-`confirm_identity_rollout_role` exactly equal to the checked-in role. There is no operator-supplied
-commit field. GitHub's selected `main` SHA is the candidate, and setup requires that SHA, the workflow
-definition, the release-tooling checkout, and freshly fetched protected `origin/main` to be the same
-commit.
+Manual dispatch is a recovery path and takes no operator-supplied release inputs. The checked-in
+declaration on protected `main` supplies the rollout role and identity policy. There is no
+operator-supplied commit field. GitHub's selected `main` SHA is the candidate, and setup
+requires that SHA, the workflow definition, the release-tooling checkout, and freshly fetched
+protected `origin/main` to be the same commit.
 
-Automatic and manual runs occupy separate concurrency lanes and queue without cancelling in-flight
-release work. Publication is serialized across the lanes. Before any draft mutation and again
-immediately before publication, the publisher rechecks protected `main`, validates the authenticated
-public Tip appcast/manifest, enforces the monotonic `P → T → S` state machine with exact retained
-manifest bytes, and verifies retained enclosure size/SHA-256 from the immutable release assets.
+Automatic and manual runs use separate single-entry rolling queues without cancelling in-flight
+release work, and publication remains serialized across both lanes. Before any draft mutation and
+again immediately before publication, the publisher
+rechecks protected `main`, validates the authenticated public Tip appcast/manifest, enforces the
+monotonic `P → T → S` state machine while allowing newer same-role builds with exact retained
+manifest bytes, and verifies retained enclosure size/SHA-256 from immutable release assets.
 For T and S, setup and publication also require the greatest Stable build to remain strictly below
 P's retained Tip build; otherwise an unprepared later Stable build could satisfy T's Sparkle floor.
 Draft creation, asset upload, and publication are reconciled by observation after ambiguous network
@@ -102,6 +104,14 @@ trusted control-plane checkout. The minimal executable is never launched; it avo
 copy of the main app binary while still giving Security.framework a successor-signed designated
 requirement on both supported architectures.
 
+The transition packaging evidence chain is: validate the successor-signed app, build and
+Installer-sign the final PKG, submit that PKG once, print the accepted Apple submission ID, staple the
+PKG, then validate its ticket, package structure, and byte-identical app payload. Package mode does
+not create a temporary app notarization ZIP or separately staple the embedded app. Application mode
+continues to notarize/staple the app through a temporary ZIP and separately notarize/staple its DMG.
+Failed or non-accepted submissions with an Apple ID automatically emit the corresponding
+`notarytool log`.
+
 The Tip workflow performs the rehearsal under the protected `tip-release` environment. Its cheap
 role-aware credential preflight runs before the secret-free build and checks the policy projection plus
 the role-selected application P12/password, provisioning profile, and notarytool private key/key ID/
@@ -110,25 +120,34 @@ role separately requires the successor application P12/password only to create a
 successor anchor. After every P12 import, the signing job verifies that the policy-derived identity is
 present and usable in the ephemeral keychain before any `codesign` or `productbuild` call.
 
-## Manual gates and next operator action
+## Rollout gates and next operator action
 
-The manual gates are ordered: approve and dispatch P first, inspect its signed/notarized ZIP and
-retained `identity-rollout.json`, then update the declaration with P's exact manifest digest before
-dispatching T. After T is verified, update the declaration with both exact predecessor digests before
-dispatching S. Never publish a nonlegacy role from an automatic `workflow_run` notification.
+The checked-in declaration is the rollout authorization boundary. Review and merge P first, inspect
+its automatically published signed/notarized ZIP and retained `identity-rollout.json`, then update the
+declaration with P's exact manifest digest before merging T. After T is verified, update the
+declaration with both exact predecessor digests before merging S. Successful protected-main CI
+automatically publishes each reviewed role; no second dispatch approval is required.
 
-P was published and independently verified at `tip-2f94412e6ab5`; its retained
-`identity-rollout.json` SHA-256 is
-`3c69703fa7582105633b36e8874fe2a28e1832aabb776351e68dbf3367e122db`. The checked-in Tip
-declaration now pins that immutable predecessor and selects T.
+Stable 1.4.0 (build `36`) is now the official Stable epoch. The authenticated live Tip is
+transition tag `tip-57b572038048`, build `35.15.39`, with `identity-rollout.json` SHA-256
+`c8d28103b5e95370fc0de7df19c34797552e99803228794754bfbfe292e3e421`; it retains P
+`tip-2f94412e6ab5` at build `35.15.18`, whose manifest SHA-256 is
+`3c69703fa7582105633b36e8874fe2a28e1832aabb776351e68dbf3367e122db`. Because that retained P
+is below Stable 36, normal T -> P progression remains forbidden. The schema-2 checked-in Tip
+declaration contains the sole explicit `resetAuthority` for this exact live transition, retained P,
+and Stable epoch. The release tool matches every recorded tag, manifest digest, retained-P fact, and
+Stable epoch fact against the authenticated public files and rejects absent, mismatched, or tampered
+reset data; it does not add a generic progression bypass or silently discard authenticated history.
+The replacement P must be newer than both live Tip `35.15.39` and Stable `36` (the next Tip encoding
+begins at `36.0.x`). After publication, clear the reset authority and advance the declaration with P's
+exact manifest digest before merging T.
 
-The workflow capability for T is now explicit and deterministic: after this change reaches protected
-`main`, a reviewed dispatch uses `confirm_identity_rollout_role=transition`, and GitHub selects the
-exact current main SHA without a commit field. That capability is not release authorization. T and S
-remain **NO-GO** until the runtime proof below is complete, including a reviewed recovery story for a
-lost committed P journal and a policy that distinguishes a fresh successor installation from a client
-that skipped the preparer/transition bridge. S also requires a later declaration change containing
-both T's and P's exact manifest digests.
+The workflow capability for T is explicit and deterministic: after a reviewed transition declaration
+reaches protected `main` and CI passes, GitHub selects and publishes that exact commit automatically.
+The declaration change must not merge until the runtime proof below is complete, including a reviewed
+recovery story for a lost committed P journal and a policy that distinguishes a fresh successor
+installation from a client that skipped the preparer/transition bridge. S also requires a later
+declaration change containing both T's and P's exact manifest digests.
 
 ## Required proof gate
 
