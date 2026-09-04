@@ -54,6 +54,65 @@ final class AgentRunMCPToolServiceSteerResumeTests: XCTestCase {
         await viewModel.mcpDeactivateControlContext(sessionID: sessionID, cleanupSessionStore: true)
     }
 
+    func testReconstructedSteerAcceptsBeforeLaterBookkeepingFailure() async throws {
+        let window = try await makeWindow()
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+
+        let viewModel = window.agentModeViewModel
+        let sessionID = UUID()
+        viewModel.upsertSessionIndex(
+            sessionID: sessionID,
+            tabID: UUID(),
+            name: "Persisted reconstructed steer",
+            lastUserMessageAt: nil,
+            savedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastRunStateRaw: AgentSessionRunState.completed.rawValue,
+            itemCount: 2,
+            agentKindRaw: "codex",
+            agentModelRaw: "test-model",
+            agentReasoningEffortRaw: nil,
+            autoEditEnabled: false
+        )
+        var providerDispatchCount = 0
+        var reconstructedTarget: AgentModeViewModel.MCPSessionTarget?
+        var service = makeService(window: window)
+        service.testDispatchSteerInstruction = { dispatchedSessionID, _, _, agentModeVM in
+            providerDispatchCount += 1
+            let session = try XCTUnwrap(agentModeVM.mcpControlledSession(sessionID: dispatchedSessionID))
+            session.runState = .running
+            agentModeVM.publishMCPStateChange(for: session)
+            return .startedRun
+        }
+        service.testAfterSteerDispatchBeforeBookkeeping = { target in
+            reconstructedTarget = target
+            throw MCPError.internalError("synthetic post-dispatch bookkeeping failure")
+        }
+
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("steer"),
+                "session_id": .string(sessionID.uuidString),
+                "message": .string("dispatch exactly once before bookkeeping fails")
+            ])
+            XCTFail("Expected synthetic post-dispatch bookkeeping failure")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains("synthetic post-dispatch bookkeeping failure"),
+                String(describing: error)
+            )
+        }
+
+        let target = try XCTUnwrap(reconstructedTarget)
+        XCTAssertEqual(target.origin, .createdForSessionResume)
+        XCTAssertEqual(try XCTUnwrap(target.recoveryClaim).state, .accepted)
+        XCTAssertEqual(providerDispatchCount, 1)
+        let discardResult = await viewModel.mcpDiscardSessionTarget(target)
+        XCTAssertEqual(discardResult, .complete)
+        XCTAssertNotNil(viewModel.session(for: target.tabID, createIfNeeded: false))
+        XCTAssertNotNil(window.workspaceManager.composeTab(with: target.tabID))
+        XCTAssertEqual(providerDispatchCount, 1)
+    }
+
     func testSteerReactivationDispatchFailureCleansControlContext() async throws {
         let window = try await makeWindow()
         defer { WindowStatesManager.shared.unregisterWindowState(window) }

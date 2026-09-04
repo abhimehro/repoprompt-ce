@@ -268,6 +268,7 @@ struct AgentRunMCPToolService {
         var testBeforeWorktreeBindingCommit: (() async -> Void)?
         var testBeforeProviderDispatch: (() async -> Void)?
         var testBeforeSteerDispatch: (() async -> Void)?
+        var testAfterSteerDispatchBeforeBookkeeping: ((AgentModeViewModel.MCPSessionTarget?) async throws -> Void)?
         var testAfterProviderStartBeforeBookkeeping: (() async -> Void)?
         var testDispatchSteerInstruction: ((
             _ sessionID: UUID,
@@ -473,9 +474,7 @@ struct AgentRunMCPToolService {
                     let diagnostics = WorktreeStartupBenchmarkDiagnostics.shared
                     try diagnostics.registerRecoverableStartTarget(
                         correlationID: worktreeStartupCorrelationID,
-                        agentSessionID: targetSessionID,
-                        targetTabID: target.tabID,
-                        targetOrigin: target.origin
+                        target: target
                     )
                     try diagnostics.requireRecoverableStartNotAborted(
                         correlationID: worktreeStartupCorrelationID
@@ -486,12 +485,14 @@ struct AgentRunMCPToolService {
                         phase: .discardRequested,
                         errorCategory: "target_registration"
                     )
-                    await agentModeVM.mcpDiscardSessionTarget(target)
-                    try? WorktreeStartupBenchmarkDiagnostics.shared.recordRecoverableStartPhase(
-                        correlationID: worktreeStartupCorrelationID,
-                        phase: .discardCompleted,
-                        providerRunActive: false
-                    )
+                    let discardResult = await agentModeVM.mcpDiscardSessionTarget(target)
+                    if discardResult == .complete {
+                        try? WorktreeStartupBenchmarkDiagnostics.shared.recordRecoverableStartPhase(
+                            correlationID: worktreeStartupCorrelationID,
+                            phase: .discardCompleted,
+                            providerRunActive: false
+                        )
+                    }
                     throw error
                 }
             }
@@ -638,9 +639,9 @@ struct AgentRunMCPToolService {
                     )
                 }
             #endif
-            await agentModeVM.mcpDiscardSessionTarget(target)
+            let discardResult = await agentModeVM.mcpDiscardSessionTarget(target)
             #if DEBUG
-                if worktreeStartupBenchmarkToken != nil {
+                if worktreeStartupBenchmarkToken != nil, discardResult == .complete {
                     try? WorktreeStartupBenchmarkDiagnostics.shared.recordRecoverableStartPhase(
                         correlationID: worktreeStartupCorrelationID,
                         phase: .discardCompleted,
@@ -707,6 +708,7 @@ struct AgentRunMCPToolService {
                 spawnParentSessionID,
                 oracleLaunchSource.source
             )
+            agentModeVM.mcpAcceptSessionTarget(target)
             agentModeVM.recordAgentSessionProviderLifecycle(
                 target: target,
                 phase: .afterProviderStart,
@@ -762,9 +764,9 @@ struct AgentRunMCPToolService {
                     )
                 }
             #endif
-            await agentModeVM.mcpDiscardSessionTarget(target)
+            let discardResult = await agentModeVM.mcpDiscardSessionTarget(target)
             #if DEBUG
-                if worktreeStartupBenchmarkToken != nil {
+                if worktreeStartupBenchmarkToken != nil, discardResult == .complete {
                     try? WorktreeStartupBenchmarkDiagnostics.shared.recordRecoverableStartPhase(
                         correlationID: worktreeStartupCorrelationID,
                         phase: .discardCompleted,
@@ -1002,6 +1004,12 @@ struct AgentRunMCPToolService {
                     workflow: workflow,
                     agentModeVM: agentModeVM
                 )
+                if let reactivatedTarget = resolution.reactivatedTarget {
+                    agentModeVM.mcpAcceptSessionTarget(reactivatedTarget)
+                }
+                #if DEBUG
+                    try await testAfterSteerDispatchBeforeBookkeeping?(resolution.reactivatedTarget)
+                #endif
                 await Task.yield()
                 snapshot = await currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM)
             } else {
@@ -1026,12 +1034,19 @@ struct AgentRunMCPToolService {
                                 expectedWorkspaceID: expectedWorkspaceID
                             )
                         }
-                        return try await dispatchSteerInstruction(
+                        let confirmedDelivery = try await dispatchSteerInstruction(
                             sessionID: sessionID,
                             text: text,
                             workflow: workflow,
                             agentModeVM: agentModeVM
                         )
+                        if let reactivatedTarget = resolution.reactivatedTarget {
+                            agentModeVM.mcpAcceptSessionTarget(reactivatedTarget)
+                        }
+                        #if DEBUG
+                            try await testAfterSteerDispatchBeforeBookkeeping?(resolution.reactivatedTarget)
+                        #endif
+                        return confirmedDelivery
                     }
                 } catch {
                     clearFollowUpPendingAfterSteerFailure(

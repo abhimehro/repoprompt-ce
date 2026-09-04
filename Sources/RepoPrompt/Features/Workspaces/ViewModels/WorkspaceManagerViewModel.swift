@@ -591,12 +591,22 @@ class WorkspaceManagerViewModel: ObservableObject {
     private var domainWorkingCommitTasks: [UUID: Task<Void, Never>] = [:]
     private var domainWorkingCommitGeneration: [UUID: UInt64] = [:]
     private var scheduledWorkspaceSaveTasks: [UUID: [UUID: Task<Void, Never>]] = [:]
-    private var agentAdmissionRecoveryTasks: [AgentProvisionalAdmissionIdentity: (
+    private enum AgentAdmissionRecoveryMutation: Hashable {
+        case removeTab
+        case clearBinding
+    }
+
+    private struct AgentAdmissionRecoveryKey: Hashable {
+        let identity: AgentProvisionalAdmissionIdentity
+        let mutation: AgentAdmissionRecoveryMutation
+    }
+
+    private var agentAdmissionRecoveryTasks: [AgentAdmissionRecoveryKey: (
         token: UUID,
         task: Task<AgentAdmissionRecoveryOutcome, Never>
     )] = [:]
     private var agentAdmissionRecoveryWorkingCommits: [
-        AgentProvisionalAdmissionIdentity: AgentAdmissionRecoveryWorkingCommit
+        AgentAdmissionRecoveryKey: AgentAdmissionRecoveryWorkingCommit
     ] = [:]
     private var agentAdmissionRecoveryOwners: Set<AgentProvisionalAdmissionIdentity> = []
     private var domainWorkspaceFileURLsByID: [UUID: URL] = [:]
@@ -6147,8 +6157,22 @@ class WorkspaceManagerViewModel: ObservableObject {
     func recoverProvisionalAgentAdmission(
         _ identity: AgentProvisionalAdmissionIdentity
     ) async -> AgentAdmissionRecoveryOutcome {
+        await recoverProvisionalAgentAdmission(identity, mutation: .removeTab)
+    }
+
+    func recoverProvisionalAgentSessionBinding(
+        _ identity: AgentProvisionalAdmissionIdentity
+    ) async -> AgentAdmissionRecoveryOutcome {
+        await recoverProvisionalAgentAdmission(identity, mutation: .clearBinding)
+    }
+
+    private func recoverProvisionalAgentAdmission(
+        _ identity: AgentProvisionalAdmissionIdentity,
+        mutation: AgentAdmissionRecoveryMutation
+    ) async -> AgentAdmissionRecoveryOutcome {
         agentAdmissionRecoveryOwners.insert(identity)
-        if let existing = agentAdmissionRecoveryTasks[identity] {
+        let key = AgentAdmissionRecoveryKey(identity: identity, mutation: mutation)
+        if let existing = agentAdmissionRecoveryTasks[key] {
             #if DEBUG
                 await agentAdmissionRecoveryDidCoalesceHandlerForTesting?(identity)
             #endif
@@ -6159,12 +6183,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             guard let self else {
                 return AgentAdmissionRecoveryOutcome.failed(.workspaceChanged)
             }
-            return await performProvisionalAgentAdmissionRecovery(identity)
+            return await performProvisionalAgentAdmissionRecovery(key)
         }
-        agentAdmissionRecoveryTasks[identity] = (token, task)
+        agentAdmissionRecoveryTasks[key] = (token, task)
         let outcome = await task.value
-        if agentAdmissionRecoveryTasks[identity]?.token == token {
-            agentAdmissionRecoveryTasks.removeValue(forKey: identity)
+        if agentAdmissionRecoveryTasks[key]?.token == token {
+            agentAdmissionRecoveryTasks.removeValue(forKey: key)
         }
         switch outcome {
         case .retryablePartial, .failed:
@@ -6179,7 +6203,9 @@ class WorkspaceManagerViewModel: ObservableObject {
         _ identity: AgentProvisionalAdmissionIdentity
     ) {
         agentAdmissionRecoveryOwners.remove(identity)
-        agentAdmissionRecoveryWorkingCommits.removeValue(forKey: identity)
+        agentAdmissionRecoveryWorkingCommits = agentAdmissionRecoveryWorkingCommits.filter {
+            $0.key.identity != identity
+        }
     }
 
     private enum ProvisionalAdmissionProjection {
@@ -6201,13 +6227,19 @@ class WorkspaceManagerViewModel: ObservableObject {
     private struct PreparedInMemoryAdmissionRemoval {
         let workspaceIndex: Int
         let recoveredWorkspace: WorkspaceModel?
-        let promptRemoval: PromptViewModel.ProvisionalAgentAdmissionProjectionRemoval?
+        let promptMutation: PromptAdmissionRecoveryMutation?
         let stateVersion: Int
+    }
+
+    private enum PromptAdmissionRecoveryMutation {
+        case remove(PromptViewModel.ProvisionalAgentAdmissionProjectionRemoval)
+        case replace(WorkspaceModel)
     }
 
     private static func provisionalAdmissionProjection(
         in workspace: WorkspaceModel,
         identity: AgentProvisionalAdmissionIdentity,
+        mutation: AgentAdmissionRecoveryMutation = .removeTab,
         modificationDate: Date = Date()
     ) -> ProvisionalAdmissionProjection {
         guard workspace.id == identity.workspaceID else { return .conflict }
@@ -6223,6 +6255,14 @@ class WorkspaceManagerViewModel: ObservableObject {
             guard !workspace.composeTabs.contains(where: {
                 $0.activeAgentSessionID == identity.sessionID
             }) else { return .conflict }
+            return mutation == .removeTab ? .absent(workspace) : .conflict
+        }
+        if mutation == .clearBinding,
+           workspace.composeTabs[tabIndex].activeAgentSessionID == nil,
+           !workspace.composeTabs.enumerated().contains(where: { index, tab in
+               index != tabIndex && tab.activeAgentSessionID == identity.sessionID
+           })
+        {
             return .absent(workspace)
         }
         guard workspace.composeTabs[tabIndex].activeAgentSessionID == identity.sessionID,
@@ -6232,15 +6272,21 @@ class WorkspaceManagerViewModel: ObservableObject {
         else { return .conflict }
 
         var recovered = workspace
-        let removedWasActive = recovered.activeComposeTabID == identity.tabID
-        recovered.composeTabs.remove(at: tabIndex)
-        if recovered.composeTabs.isEmpty {
-            let replacement = ComposeTabState(id: identity.replacementTabID)
-            recovered.composeTabs = [replacement]
-            recovered.activeComposeTabID = replacement.id
-        } else if removedWasActive {
-            let fallbackIndex = min(tabIndex, recovered.composeTabs.count - 1)
-            recovered.activeComposeTabID = recovered.composeTabs[fallbackIndex].id
+        switch mutation {
+        case .removeTab:
+            let removedWasActive = recovered.activeComposeTabID == identity.tabID
+            recovered.composeTabs.remove(at: tabIndex)
+            if recovered.composeTabs.isEmpty {
+                let replacement = ComposeTabState(id: identity.replacementTabID)
+                recovered.composeTabs = [replacement]
+                recovered.activeComposeTabID = replacement.id
+            } else if removedWasActive {
+                let fallbackIndex = min(tabIndex, recovered.composeTabs.count - 1)
+                recovered.activeComposeTabID = recovered.composeTabs[fallbackIndex].id
+            }
+        case .clearBinding:
+            recovered.composeTabs[tabIndex].activeAgentSessionID = nil
+            recovered.composeTabs[tabIndex].lastModified = modificationDate
         }
         recovered.dateModified = modificationDate
 
@@ -6253,12 +6299,14 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     private func prepareProvisionalAdmissionRemovalFromMemory(
-        _ identity: AgentProvisionalAdmissionIdentity
+        _ identity: AgentProvisionalAdmissionIdentity,
+        mutation: AgentAdmissionRecoveryMutation
     ) -> PreparedInMemoryAdmissionRemoval? {
         guard let index = workspaceIndex(for: identity.workspaceID) else { return nil }
         let projection = Self.provisionalAdmissionProjection(
             in: workspaces[index],
-            identity: identity
+            identity: identity,
+            mutation: mutation
         )
         let recoveredWorkspace: WorkspaceModel?
         switch projection {
@@ -6266,18 +6314,38 @@ class WorkspaceManagerViewModel: ObservableObject {
         case .absent: recoveredWorkspace = nil
         case let .removed(recovered): recoveredWorkspace = recovered
         }
-        let promptRemoval: PromptViewModel.ProvisionalAgentAdmissionProjectionRemoval?
+        let promptMutation: PromptAdmissionRecoveryMutation?
         if activeWorkspaceID == identity.workspaceID {
-            guard let prepared = promptViewModel.prepareProvisionalAgentAdmissionProjectionRemoval(identity)
-            else { return nil }
-            promptRemoval = prepared
+            switch mutation {
+            case .removeTab:
+                guard let prepared = promptViewModel.prepareProvisionalAgentAdmissionProjectionRemoval(identity)
+                else { return nil }
+                promptMutation = .remove(prepared)
+            case .clearBinding:
+                var live = workspaces[index]
+                live.composeTabs = promptViewModel.currentComposeTabs
+                live.stashedTabs = promptViewModel.currentStashedTabs
+                live.activeComposeTabID = promptViewModel.activeComposeTabID
+                switch Self.provisionalAdmissionProjection(
+                    in: live,
+                    identity: identity,
+                    mutation: mutation
+                ) {
+                case .conflict:
+                    return nil
+                case .absent:
+                    promptMutation = nil
+                case let .removed(recovered):
+                    promptMutation = .replace(recovered)
+                }
+            }
         } else {
-            promptRemoval = nil
+            promptMutation = nil
         }
         return PreparedInMemoryAdmissionRemoval(
             workspaceIndex: index,
             recoveredWorkspace: recoveredWorkspace,
-            promptRemoval: promptRemoval,
+            promptMutation: promptMutation,
             stateVersion: stateVersionByWorkspaceID[identity.workspaceID, default: 0]
         )
     }
@@ -6292,8 +6360,13 @@ class WorkspaceManagerViewModel: ObservableObject {
         if let recoveredWorkspace = removal.recoveredWorkspace {
             workspaces[removal.workspaceIndex] = recoveredWorkspace
         }
-        if let promptRemoval = removal.promptRemoval {
-            promptViewModel.applyProvisionalAgentAdmissionProjectionRemoval(promptRemoval)
+        if let promptMutation = removal.promptMutation {
+            switch promptMutation {
+            case let .remove(promptRemoval):
+                promptViewModel.applyProvisionalAgentAdmissionProjectionRemoval(promptRemoval)
+            case let .replace(workspace):
+                promptViewModel.loadComposeTabsFromWorkspace(workspace)
+            }
         }
         return InMemoryAdmissionRemoval(
             workspaceIndex: removal.workspaceIndex,
@@ -6302,9 +6375,13 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     private func removeProvisionalAdmissionFromMemory(
-        _ identity: AgentProvisionalAdmissionIdentity
+        _ identity: AgentProvisionalAdmissionIdentity,
+        mutation: AgentAdmissionRecoveryMutation
     ) -> InMemoryAdmissionRemoval? {
-        guard let removal = prepareProvisionalAdmissionRemovalFromMemory(identity) else { return nil }
+        guard let removal = prepareProvisionalAdmissionRemovalFromMemory(
+            identity,
+            mutation: mutation
+        ) else { return nil }
         return applyProvisionalAdmissionRemovalFromMemory(removal, identity: identity)
     }
 
@@ -6335,39 +6412,41 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     private func abandonAgentAdmissionRecoveryWorkingCommits(workspaceID: UUID) {
         agentAdmissionRecoveryWorkingCommits = agentAdmissionRecoveryWorkingCommits.filter {
-            $0.key.workspaceID != workspaceID
+            $0.key.identity.workspaceID != workspaceID
         }
     }
 
     private func retainAgentAdmissionRecoveryWorkingCommit(
         _ commit: AgentAdmissionRecoveryWorkingCommit,
-        for identity: AgentProvisionalAdmissionIdentity
+        for key: AgentAdmissionRecoveryKey
     ) {
-        abandonAgentAdmissionRecoveryWorkingCommits(workspaceID: identity.workspaceID)
-        agentAdmissionRecoveryWorkingCommits[identity] = commit
+        abandonAgentAdmissionRecoveryWorkingCommits(workspaceID: key.identity.workspaceID)
+        agentAdmissionRecoveryWorkingCommits[key] = commit
     }
 
     private func performProvisionalAgentAdmissionRecovery(
-        _ identity: AgentProvisionalAdmissionIdentity
+        _ key: AgentAdmissionRecoveryKey
     ) async -> AgentAdmissionRecoveryOutcome {
+        let identity = key.identity
+        let mutation = key.mutation
         guard let workspace = workspace(withID: identity.workspaceID) else {
             return .failed(.workspaceChanged)
         }
         if workspace.isEphemeral {
-            guard removeProvisionalAdmissionFromMemory(identity) != nil else {
+            guard removeProvisionalAdmissionFromMemory(identity, mutation: mutation) != nil else {
                 return .ownershipChanged
             }
             return .localOnly
         }
         guard let domainWorkspaceAuthorityClient else {
-            return await recoverLegacyProvisionalAgentAdmission(identity)
+            return await recoverLegacyProvisionalAgentAdmission(key)
         }
 
         await drainWorkingCommitsForAdmissionRecovery(workspaceID: identity.workspaceID)
         var removal: InMemoryAdmissionRemoval?
         for _ in 0 ..< 3 {
             guard let snapshot = await domainWorkspaceAuthorityClient.canonicalWorkspaceSnapshot(identity.workspaceID) else {
-                if let owned = agentAdmissionRecoveryWorkingCommits[identity] {
+                if let owned = agentAdmissionRecoveryWorkingCommits[key] {
                     return .retryablePartial(owned)
                 }
                 return .failed(.durabilityUncertain)
@@ -6384,9 +6463,10 @@ class WorkspaceManagerViewModel: ObservableObject {
             let canonicalProjection = Self.provisionalAdmissionProjection(
                 in: canonical,
                 identity: identity,
+                mutation: mutation,
                 modificationDate: canonical.dateModified
             )
-            if let owned = agentAdmissionRecoveryWorkingCommits[identity] {
+            if let owned = agentAdmissionRecoveryWorkingCommits[key] {
                 let stillOwned = switch canonicalProjection {
                 case .absent:
                     owned.revision == snapshot.revisions.workingRevision
@@ -6397,10 +6477,11 @@ class WorkspaceManagerViewModel: ObservableObject {
                     false
                 }
                 guard stillOwned else {
-                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: identity)
+                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: key)
                     if case .conflict = canonicalProjection {
                         return terminalRecoveryOutcomeForCanonicalConflict(
                             identity,
+                            mutation: mutation,
                             removal: removal,
                             canonical: canonical,
                             snapshot: snapshot
@@ -6413,15 +6494,19 @@ class WorkspaceManagerViewModel: ObservableObject {
             case .conflict:
                 return terminalRecoveryOutcomeForCanonicalConflict(
                     identity,
+                    mutation: mutation,
                     removal: removal,
                     canonical: canonical,
                     snapshot: snapshot
                 )
             case .absent:
                 if removal == nil,
-                   agentAdmissionRecoveryWorkingCommits[identity] == nil
+                   agentAdmissionRecoveryWorkingCommits[key] == nil
                 {
-                    guard let applied = removeProvisionalAdmissionFromMemory(identity) else {
+                    guard let applied = removeProvisionalAdmissionFromMemory(
+                        identity,
+                        mutation: mutation
+                    ) else {
                         return .ownershipChanged
                     }
                     removal = applied
@@ -6430,16 +6515,17 @@ class WorkspaceManagerViewModel: ObservableObject {
                 if snapshot.revisions.dirtyRevision == nil {
                     reconcileRecoveredAdmission(
                         identity,
+                        mutation: mutation,
                         removal: removal,
                         snapshot: snapshot
                     )
-                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: identity)
+                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: key)
                     return .alreadyRecovered(
                         revision: snapshot.revisions.savedRevision,
                         digest: snapshot.document.contentDigest
                     )
                 }
-                guard let owned = agentAdmissionRecoveryWorkingCommits[identity],
+                guard let owned = agentAdmissionRecoveryWorkingCommits[key],
                       owned.revision == snapshot.revisions.workingRevision,
                       owned.digest == snapshot.document.contentDigest
                 else { return .ownershipChanged }
@@ -6472,8 +6558,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                 if final.revisions.dirtyRevision == nil,
                    final.document.contentDigest == owned.digest
                 {
-                    reconcileRecoveredAdmission(identity, removal: removal, snapshot: final)
-                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: identity)
+                    reconcileRecoveredAdmission(
+                        identity,
+                        mutation: mutation,
+                        removal: removal,
+                        snapshot: final
+                    )
+                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: key)
                     return .recovered(
                         revision: final.revisions.savedRevision,
                         digest: final.document.contentDigest
@@ -6503,7 +6594,10 @@ class WorkspaceManagerViewModel: ObservableObject {
                     return .failed(.persistenceFailure)
                 }
                 if removal == nil {
-                    guard let applied = removeProvisionalAdmissionFromMemory(identity) else {
+                    guard let applied = removeProvisionalAdmissionFromMemory(
+                        identity,
+                        mutation: mutation
+                    ) else {
                         return .ownershipChanged
                     }
                     removal = applied
@@ -6513,13 +6607,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                     revision: snapshot.revisions.workingRevision &+ 1,
                     digest: replacementDocument.contentDigest
                 )
-                if let retained = agentAdmissionRecoveryWorkingCommits[identity],
+                if let retained = agentAdmissionRecoveryWorkingCommits[key],
                    retained != anticipated
                 {
-                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: identity)
+                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: key)
                     return .ownershipChanged
                 }
-                retainAgentAdmissionRecoveryWorkingCommit(anticipated, for: identity)
+                retainAgentAdmissionRecoveryWorkingCommit(anticipated, for: key)
                 #if DEBUG
                     let injectedReplacementOutcome = await agentAdmissionRecoveryReplacementDispatchHandlerForTesting?(
                         identity.workspaceID,
@@ -6566,11 +6660,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                 switch Self.provisionalAdmissionProjection(
                     in: workingModel,
                     identity: identity,
+                    mutation: mutation,
                     modificationDate: workingModel.dateModified
                 ) {
                 case .conflict:
                     return terminalRecoveryOutcomeForCanonicalConflict(
                         identity,
+                        mutation: mutation,
                         removal: removal,
                         canonical: workingModel,
                         snapshot: working
@@ -6587,8 +6683,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                 }
 
                 if working.revisions.dirtyRevision == nil {
-                    reconcileRecoveredAdmission(identity, removal: removal, snapshot: working)
-                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: identity)
+                    reconcileRecoveredAdmission(
+                        identity,
+                        mutation: mutation,
+                        removal: removal,
+                        snapshot: working
+                    )
+                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: key)
                     return .recovered(
                         revision: working.revisions.savedRevision,
                         digest: working.document.contentDigest
@@ -6625,8 +6726,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                 if final.revisions.dirtyRevision == nil,
                    final.document.contentDigest == owned.digest
                 {
-                    reconcileRecoveredAdmission(identity, removal: removal, snapshot: final)
-                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: identity)
+                    reconcileRecoveredAdmission(
+                        identity,
+                        mutation: mutation,
+                        removal: removal,
+                        snapshot: final
+                    )
+                    agentAdmissionRecoveryWorkingCommits.removeValue(forKey: key)
                     return .recovered(
                         revision: final.revisions.savedRevision,
                         digest: final.document.contentDigest
@@ -6696,6 +6802,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     private func reconcileRecoveredAdmission(
         _ identity: AgentProvisionalAdmissionIdentity,
+        mutation: AgentAdmissionRecoveryMutation,
         removal: InMemoryAdmissionRemoval?,
         snapshot: DomainWorkspaceSnapshot
     ) {
@@ -6711,12 +6818,16 @@ class WorkspaceManagerViewModel: ObservableObject {
                documentBytes: snapshot.document.documentBytes,
                fileURL: snapshot.document.fileURL
            ),
-           case .absent = Self.provisionalAdmissionProjection(in: canonical, identity: identity)
+           case .absent = Self.provisionalAdmissionProjection(
+               in: canonical,
+               identity: identity,
+               mutation: mutation
+           )
         {
             workspaces[index] = canonical
             appliedCanonicalToUnchangedState = true
         } else if removal != nil {
-            _ = removeProvisionalAdmissionFromMemory(identity)
+            _ = removeProvisionalAdmissionFromMemory(identity, mutation: mutation)
         }
         applyDomainAuthorityBaseline(
             workspaceID: identity.workspaceID,
@@ -6785,6 +6896,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     private func terminalRecoveryOutcomeForCanonicalConflict(
         _ identity: AgentProvisionalAdmissionIdentity,
+        mutation: AgentAdmissionRecoveryMutation,
         removal: InMemoryAdmissionRemoval?,
         canonical: WorkspaceModel,
         snapshot: DomainWorkspaceSnapshot
@@ -6794,6 +6906,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         guard reconcileCanonicalAdmissionSuccessor(
             identity,
+            mutation: mutation,
             removal: removal,
             canonical: canonical,
             snapshot: snapshot
@@ -6807,6 +6920,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     /// recovery still suppresses ordinary writers so a stale removal cannot be published afterward.
     private func reconcileCanonicalAdmissionSuccessor(
         _ identity: AgentProvisionalAdmissionIdentity,
+        mutation _: AgentAdmissionRecoveryMutation,
         removal: InMemoryAdmissionRemoval?,
         canonical: WorkspaceModel,
         snapshot: DomainWorkspaceSnapshot
@@ -6868,8 +6982,10 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     private func recoverLegacyProvisionalAgentAdmission(
-        _ identity: AgentProvisionalAdmissionIdentity
+        _ key: AgentAdmissionRecoveryKey
     ) async -> AgentAdmissionRecoveryOutcome {
+        let identity = key.identity
+        let mutation = key.mutation
         guard let workspace = workspace(withID: identity.workspaceID) else {
             return .failed(.workspaceChanged)
         }
@@ -6888,11 +7004,15 @@ class WorkspaceManagerViewModel: ObservableObject {
         } catch {
             return .failed(.unrecoverableDocument)
         }
-        switch Self.provisionalAdmissionProjection(in: persisted, identity: identity) {
+        switch Self.provisionalAdmissionProjection(
+            in: persisted,
+            identity: identity,
+            mutation: mutation
+        ) {
         case .conflict:
             return .ownershipChanged
         case .absent:
-            guard removeProvisionalAdmissionFromMemory(identity) != nil else {
+            guard removeProvisionalAdmissionFromMemory(identity, mutation: mutation) != nil else {
                 return .ownershipChanged
             }
             return .alreadyRecovered(revision: nil, digest: nil)
@@ -6903,7 +7023,10 @@ class WorkspaceManagerViewModel: ObservableObject {
             } catch {
                 return .failed(.persistenceFailure)
             }
-            guard let removalBeforeWrite = prepareProvisionalAdmissionRemovalFromMemory(identity) else {
+            guard let removalBeforeWrite = prepareProvisionalAdmissionRemovalFromMemory(
+                identity,
+                mutation: mutation
+            ) else {
                 return .ownershipChanged
             }
             await drainWorkingCommitsForAdmissionRecovery(workspaceID: identity.workspaceID)
@@ -6923,9 +7046,16 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
             guard verified.id == identity.workspaceID,
                   verified == recoveredPersisted,
-                  case .absent = Self.provisionalAdmissionProjection(in: verified, identity: identity)
+                  case .absent = Self.provisionalAdmissionProjection(
+                      in: verified,
+                      identity: identity,
+                      mutation: mutation
+                  )
             else { return .failed(.durabilityUncertain) }
-            guard let currentRemoval = prepareProvisionalAdmissionRemovalFromMemory(identity) else {
+            guard let currentRemoval = prepareProvisionalAdmissionRemovalFromMemory(
+                identity,
+                mutation: mutation
+            ) else {
                 return .failed(.durabilityUncertain)
             }
             if stateVersionByWorkspaceID[identity.workspaceID, default: 0] == removalBeforeWrite.stateVersion,
@@ -6933,8 +7063,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                workspaces[currentRemoval.workspaceIndex].id == identity.workspaceID
             {
                 workspaces[currentRemoval.workspaceIndex] = verified
-                if let promptRemoval = currentRemoval.promptRemoval {
-                    promptViewModel.applyProvisionalAgentAdmissionProjectionRemoval(promptRemoval)
+                if let promptMutation = currentRemoval.promptMutation {
+                    switch promptMutation {
+                    case let .remove(promptRemoval):
+                        promptViewModel.applyProvisionalAgentAdmissionProjectionRemoval(promptRemoval)
+                    case let .replace(workspace):
+                        promptViewModel.loadComposeTabsFromWorkspace(workspace)
+                    }
                 }
                 lastSavedVersionByWorkspaceID[identity.workspaceID] = removalBeforeWrite.stateVersion
             } else if applyProvisionalAdmissionRemovalFromMemory(

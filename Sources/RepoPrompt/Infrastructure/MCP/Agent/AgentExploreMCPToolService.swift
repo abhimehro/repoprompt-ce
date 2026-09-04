@@ -333,7 +333,7 @@ struct AgentExploreMCPToolService {
             target,
             expectedWorkspaceID: context.expectedWorkspaceID
         )
-        return try await startRun(
+        let outcome = try await startRun(
             target,
             message,
             context.metadata,
@@ -346,6 +346,8 @@ struct AgentExploreMCPToolService {
             nil,
             nil
         )
+        context.agentModeVM.mcpAcceptSessionTarget(target)
+        return outcome
     }
 
     private func validateBatchWorktreeRequest(

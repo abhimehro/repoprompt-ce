@@ -50,6 +50,38 @@ import XCTest
             }
         }
 
+        private actor RecoveryInterleavingGate {
+            private var started = false
+            private var released = false
+            private var startWaiters: [CheckedContinuation<Void, Never>] = []
+            private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+            func markStarted() {
+                started = true
+                let waiters = startWaiters
+                startWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+
+            func markStartedAndWaitForRelease() async {
+                markStarted()
+                guard !released else { return }
+                await withCheckedContinuation { releaseWaiters.append($0) }
+            }
+
+            func waitUntilStarted() async {
+                guard !started else { return }
+                await withCheckedContinuation { startWaiters.append($0) }
+            }
+
+            func release() {
+                released = true
+                let waiters = releaseWaiters
+                releaseWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+
         private var originalMCPAutoStart = false
         private var originalStoragePath: String?
         private var storageRoot: URL!
@@ -1306,6 +1338,1208 @@ import XCTest
             XCTAssertNil(finalSnapshot?.revisions.dirtyRevision)
         }
 
+        func testFrozenBoundAndExactSelectorsRejectBindingDriftWithoutRebinding() async throws {
+            let beforeHydration = try await makeFixture()
+            beforeHydration.manager.activeWorkspace = beforeHydration.workspaceA
+            beforeHydration.prompt.loadComposeTabsFromWorkspace(beforeHydration.workspaceA)
+            let boundViewModel = makeAgentModeViewModel(for: beforeHydration)
+            let boundSession = boundViewModel.session(for: beforeHydration.identity.tabID)
+            let boundIndexEntry = upsertIndexEntry(
+                beforeHydration.identity.sessionID,
+                tabID: beforeHydration.identity.tabID,
+                in: boundViewModel
+            )
+            var authorityHookRan = false
+            boundViewModel.test_setAfterMCPSessionTargetDiscardRetired { sessionID in
+                guard sessionID == beforeHydration.identity.sessionID else { return }
+                authorityHookRan = true
+                _ = boundViewModel.test_installPersistentSessionBinding(
+                    sessionID: nil,
+                    on: boundSession,
+                    compareAndSetInWorkspaceID: beforeHydration.workspaceA.id
+                )
+            }
+
+            do {
+                _ = try await boundViewModel.mcpResolveOrCreateSessionTarget(
+                    tabID: beforeHydration.identity.tabID,
+                    sessionID: nil,
+                    createIfNeeded: true,
+                    sessionName: nil,
+                    expectedWorkspaceID: beforeHydration.workspaceA.id
+                )
+                XCTFail("A bound-tab selector must reject binding drift after authority acquisition.")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("selector was frozen"), error.localizedDescription)
+            }
+            XCTAssertTrue(authorityHookRan)
+            XCTAssertNil(boundSession.activeAgentSessionID)
+            XCTAssertNil(beforeHydration.manager.activeAgentSessionID(
+                forTabID: beforeHydration.identity.tabID,
+                inWorkspaceID: beforeHydration.workspaceA.id
+            ))
+            XCTAssertEqual(
+                boundViewModel.test_ownerValidatedSessionIndex[beforeHydration.identity.sessionID],
+                boundIndexEntry,
+                "Frozen selector rejection must not rewrite the stale index fallback."
+            )
+            boundViewModel.test_setAfterMCPSessionTargetDiscardRetired(nil)
+
+            let afterHydration = try await makeFixture()
+            afterHydration.manager.activeWorkspace = afterHydration.workspaceA
+            afterHydration.prompt.loadComposeTabsFromWorkspace(afterHydration.workspaceA)
+            let exactViewModel = makeAgentModeViewModel(for: afterHydration)
+            let exactSession = exactViewModel.session(for: afterHydration.identity.tabID)
+            let exactIndexEntry = upsertIndexEntry(
+                afterHydration.identity.sessionID,
+                tabID: afterHydration.identity.tabID,
+                in: exactViewModel
+            )
+            var hydrationHookRan = false
+            exactViewModel.test_setAfterExplicitTabSessionReady {
+                hydrationHookRan = true
+                _ = exactViewModel.test_installPersistentSessionBinding(
+                    sessionID: nil,
+                    on: exactSession,
+                    compareAndSetInWorkspaceID: afterHydration.workspaceA.id
+                )
+            }
+
+            do {
+                _ = try await exactViewModel.mcpResolveOrCreateSessionTarget(
+                    tabID: afterHydration.identity.tabID,
+                    sessionID: afterHydration.identity.sessionID,
+                    createIfNeeded: false,
+                    sessionName: nil,
+                    expectedWorkspaceID: afterHydration.workspaceA.id
+                )
+                XCTFail("An exact selector must reject binding drift after hydration.")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("selector was frozen"), error.localizedDescription)
+            }
+            XCTAssertTrue(hydrationHookRan)
+            XCTAssertNil(exactSession.activeAgentSessionID)
+            XCTAssertNil(afterHydration.manager.activeAgentSessionID(
+                forTabID: afterHydration.identity.tabID,
+                inWorkspaceID: afterHydration.workspaceA.id
+            ))
+            XCTAssertEqual(
+                exactViewModel.test_ownerValidatedSessionIndex[afterHydration.identity.sessionID],
+                exactIndexEntry,
+                "Exact selector rejection must not use the index to recreate the binding."
+            )
+            exactViewModel.test_setAfterExplicitTabSessionReady(nil)
+        }
+
+        func testIndexOnlySessionReconstructionIsClaimBearingAndRecoverable() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let viewModel = makeAgentModeViewModel(for: fixture)
+            let reconstructedSessionID = UUID()
+            let indexedTabID = fixture.leftTab.id
+            let restoreEntry = upsertIndexEntry(
+                reconstructedSessionID,
+                tabID: indexedTabID,
+                in: viewModel
+            )
+            var artifactDeletionCount = 0
+            viewModel.test_setAgentSessionDeleter { _, _ in
+                artifactDeletionCount += 1
+            }
+
+            let target = try await viewModel.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: reconstructedSessionID,
+                createIfNeeded: true,
+                sessionName: "index-only reconstruction",
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+
+            XCTAssertEqual(target.origin, .createdForSessionResume)
+            XCTAssertNotNil(target.recoveryClaim)
+            XCTAssertNotEqual(target.tabID, indexedTabID)
+            XCTAssertNil(fixture.manager.activeAgentSessionID(
+                forTabID: indexedTabID,
+                inWorkspaceID: fixture.workspaceA.id
+            ))
+            let discard = await viewModel.mcpDiscardSessionTarget(target)
+            XCTAssertEqual(discard, .complete)
+            XCTAssertEqual(target.recoveryClaim?.state, .complete)
+            XCTAssertEqual(viewModel.test_ownerValidatedSessionIndex[reconstructedSessionID], restoreEntry)
+            XCTAssertEqual(artifactDeletionCount, 0)
+            XCTAssertFalse(fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs.contains(where: {
+                $0.id == target.tabID
+            }) == true)
+            XCTAssertNil(viewModel.session(for: target.tabID, createIfNeeded: false))
+        }
+
+        func testPostInstallCancellationRecoversCanonicalBindingWithoutLifecycleIdentity() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let viewModel = makeAgentModeViewModel(for: fixture)
+            let targetTabID = fixture.leftTab.id
+            let publicationGate = RecoveryInterleavingGate()
+            var installedSessionID: UUID?
+            var capturedTarget: AgentModeViewModel.MCPSessionTarget?
+            viewModel.test_setAfterProvisionalExistingTabBindingInstalled {
+                installedSessionID = fixture.manager.activeAgentSessionID(
+                    forTabID: targetTabID,
+                    inWorkspaceID: fixture.workspaceA.id
+                )
+                if let installedSessionID {
+                    capturedTarget = viewModel.test_outstandingProvisionalMCPSessionTarget(
+                        sessionID: installedSessionID
+                    )
+                }
+                await publicationGate.markStartedAndWaitForRelease()
+            }
+            defer { viewModel.test_setAfterProvisionalExistingTabBindingInstalled(nil) }
+
+            let resolution = Task { @MainActor in
+                try await viewModel.mcpResolveOrCreateSessionTarget(
+                    tabID: targetTabID,
+                    sessionID: nil,
+                    createIfNeeded: true,
+                    sessionName: "post-install cancellation",
+                    expectedWorkspaceID: fixture.workspaceA.id
+                )
+            }
+            await publicationGate.waitUntilStarted()
+            let sessionID = try XCTUnwrap(installedSessionID)
+            let preLifecycleTarget = try XCTUnwrap(capturedTarget)
+            let preLifecycleRuntime = try XCTUnwrap(viewModel.session(for: targetTabID, createIfNeeded: false))
+            XCTAssertNil(preLifecycleTarget.lifecycleIdentity)
+            let canonicalBeforeCancellation = try await canonicalModel(fixture)
+            XCTAssertTrue(canonicalBeforeCancellation.composeTabs.contains {
+                $0.id == targetTabID && $0.activeAgentSessionID == sessionID
+            })
+
+            resolution.cancel()
+            await publicationGate.release()
+            do {
+                _ = try await resolution.value
+                XCTFail("Cancellation after binding installation must reject the target.")
+            } catch {
+                XCTAssertTrue(error is CancellationError, String(describing: error))
+            }
+
+            XCTAssertEqual(preLifecycleTarget.recoveryClaim?.state, .complete)
+            XCTAssertEqual(viewModel.test_pendingMCPSessionTargetDiscardCount, 0)
+            XCTAssertEqual(viewModel.test_outstandingProvisionalMCPSessionTargetCount, 0)
+            XCTAssertTrue(viewModel.session(for: targetTabID, createIfNeeded: false) === preLifecycleRuntime)
+            XCTAssertNil(preLifecycleRuntime.activeAgentSessionID)
+            let canonical = try await canonicalModel(fixture)
+            let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            for workspace in try [
+                XCTUnwrap(fixture.manager.workspace(withID: fixture.workspaceA.id)),
+                canonical,
+                disk
+            ] {
+                XCTAssertTrue(workspace.composeTabs.contains {
+                    $0.id == targetTabID && $0.activeAgentSessionID == nil
+                })
+                XCTAssertFalse(workspace.composeTabs.contains {
+                    $0.activeAgentSessionID == sessionID
+                })
+            }
+        }
+
+        func testCanonicalRecoveryPreservesRotatedRuntimeGeneration() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let viewModel = makeAgentModeViewModel(for: fixture)
+            let target = try await viewModel.mcpResolveOrCreateSessionTarget(
+                tabID: fixture.leftTab.id,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: "rotated runtime generation",
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            let sessionID = try XCTUnwrap(target.sessionID)
+            let originalLifecycle = try XCTUnwrap(target.lifecycleIdentity)
+            let runtime = viewModel.session(for: target.tabID)
+            _ = viewModel.test_installPersistentSessionBinding(
+                sessionID: nil,
+                on: runtime,
+                compareAndSetInWorkspaceID: fixture.workspaceA.id
+            )
+            let rotatedBinding = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(
+                sessionID: sessionID,
+                on: runtime,
+                compareAndSetInWorkspaceID: fixture.workspaceA.id
+            ))
+            XCTAssertNotEqual(rotatedBinding.generation, originalLifecycle.persistentBindingGeneration)
+            var artifactDeletionCount = 0
+            viewModel.test_setAgentSessionDeleter { _, _ in
+                artifactDeletionCount += 1
+            }
+
+            let discard = await viewModel.mcpDiscardSessionTarget(target)
+
+            XCTAssertEqual(discard, .complete)
+            XCTAssertEqual(target.recoveryClaim?.state, .complete)
+            XCTAssertTrue(viewModel.session(for: target.tabID, createIfNeeded: false) === runtime)
+            XCTAssertEqual(runtime.activeAgentSessionID, sessionID)
+            XCTAssertEqual(runtime.persistentSessionBindingIdentity, rotatedBinding)
+            XCTAssertEqual(artifactDeletionCount, 0)
+            let canonical = try await canonicalModel(fixture)
+            XCTAssertTrue(canonical.composeTabs.contains {
+                $0.id == target.tabID && $0.activeAgentSessionID == nil
+            })
+            XCTAssertNil(fixture.manager.activeAgentSessionID(
+                forTabID: target.tabID,
+                inWorkspaceID: fixture.workspaceA.id
+            ))
+            XCTAssertEqual(viewModel.test_pendingMCPSessionTargetDiscardCount, 0)
+            XCTAssertEqual(viewModel.test_outstandingProvisionalMCPSessionTargetCount, 0)
+        }
+
+        func testProvisionalParentIndexPublicationDoesNotBlockExactCleanup() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let viewModel = makeAgentModeViewModel(for: fixture)
+            let targetTabID = fixture.rightTab.id
+            let parentSessionID = fixture.identity.sessionID
+            let target = try await viewModel.mcpResolveOrCreateSessionTarget(
+                tabID: targetTabID,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: "provisional indexed child",
+                parentSessionID: parentSessionID,
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            let sessionID = try XCTUnwrap(target.sessionID)
+            let provisionalIndexEntry = try XCTUnwrap(viewModel.test_ownerValidatedSessionIndex[sessionID])
+            XCTAssertEqual(provisionalIndexEntry.tabID, targetTabID)
+            XCTAssertEqual(provisionalIndexEntry.parentSessionID, parentSessionID)
+            XCTAssertEqual(target.recoveryClaim?.state, .provisional)
+
+            let artifactURL = try await AgentSessionDataService.shared.saveAgentSession(
+                AgentSession(
+                    id: sessionID,
+                    workspaceID: fixture.workspaceA.id,
+                    composeTabID: targetTabID,
+                    name: "Provisional indexed child",
+                    savedAt: Date(timeIntervalSince1970: 1_800_000_401),
+                    itemCount: 0,
+                    autoEditEnabled: false
+                ),
+                for: fixture.workspaceA,
+                preparation: .alreadyCanonicalTranscript,
+                trustedCanonicalItemCount: 0
+            )
+            let worktreeRoot = storageRoot.appendingPathComponent(
+                "provisional-indexed-child-worktree",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
+            let store = fixture.prompt.workspaceFileContextStore
+            let preparation = try await store.prepareSessionWorktreeOwnership(
+                ownerID: sessionID,
+                bindingFingerprint: "provisional-indexed-child",
+                physicalRootPaths: [worktreeRoot.path]
+            )
+            _ = try await store.commitSessionWorktreeOwnership(preparation)
+            var exactArtifactDeletionCount = 0
+            viewModel.test_setAgentSessionDeleter { deletedSessionID, workspace in
+                XCTAssertEqual(deletedSessionID, sessionID)
+                XCTAssertEqual(workspace.id, fixture.workspaceA.id)
+                exactArtifactDeletionCount += 1
+                try await AgentSessionDataService.shared.deleteAgentSession(id: deletedSessionID, for: workspace)
+            }
+
+            let discard = await viewModel.mcpDiscardSessionTarget(target)
+
+            XCTAssertEqual(discard, .complete)
+            XCTAssertEqual(target.recoveryClaim?.state, .complete)
+            XCTAssertEqual(exactArtifactDeletionCount, 1)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: artifactURL.path))
+            XCTAssertNil(viewModel.test_ownerValidatedSessionIndex[sessionID])
+            XCTAssertNil(viewModel.session(for: targetTabID, createIfNeeded: false))
+            let releasedOwnership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+            XCTAssertEqual(releasedOwnership.installedOwnerCount, 0)
+            XCTAssertEqual(releasedOwnership.rootClaimCount, 0)
+            XCTAssertEqual(
+                fixture.manager.activeAgentSessionID(
+                    forTabID: fixture.identity.tabID,
+                    inWorkspaceID: fixture.workspaceA.id
+                ),
+                parentSessionID
+            )
+            let canonical = try await canonicalModel(fixture)
+            XCTAssertTrue(canonical.composeTabs.contains {
+                $0.id == targetTabID && $0.activeAgentSessionID == nil
+            })
+            XCTAssertTrue(canonical.composeTabs.contains {
+                $0.id == fixture.identity.tabID && $0.activeAgentSessionID == parentSessionID
+            })
+            XCTAssertEqual(viewModel.test_pendingMCPSessionTargetDiscardCount, 0)
+            XCTAssertEqual(viewModel.test_outstandingProvisionalMCPSessionTargetCount, 0)
+        }
+
+        func testBindingOnlyRecoveryClearsExactSessionAndPreservesTabContent() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let originalTab = try XCTUnwrap(
+                fixture.workspaceA.composeTabs.first { $0.id == fixture.identity.tabID }
+            )
+
+            let outcome = await fixture.manager.recoverProvisionalAgentSessionBinding(fixture.identity)
+
+            guard case .recovered = outcome else {
+                return XCTFail("Expected durable binding recovery, received \(outcome).")
+            }
+            let canonical = try await canonicalModel(fixture)
+            let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            for workspace in try [
+                XCTUnwrap(fixture.manager.workspace(withID: fixture.workspaceA.id)),
+                canonical,
+                disk
+            ] {
+                let recoveredTab = try XCTUnwrap(
+                    workspace.composeTabs.first { $0.id == fixture.identity.tabID }
+                )
+                XCTAssertNil(recoveredTab.activeAgentSessionID)
+                XCTAssertEqual(recoveredTab.name, originalTab.name)
+                XCTAssertEqual(recoveredTab.promptText, originalTab.promptText)
+                XCTAssertEqual(recoveredTab.selection, originalTab.selection)
+                XCTAssertEqual(recoveredTab.isPinned, originalTab.isPinned)
+                XCTAssertEqual(workspace.composeTabs.count, fixture.workspaceA.composeTabs.count)
+            }
+            let promptTab = try XCTUnwrap(
+                fixture.prompt.currentComposeTabs.first { $0.id == fixture.identity.tabID }
+            )
+            XCTAssertNil(promptTab.activeAgentSessionID)
+            XCTAssertEqual(promptTab.promptText, originalTab.promptText)
+            XCTAssertEqual(fixture.prompt.activeComposeTabID, fixture.workspaceA.activeComposeTabID)
+        }
+
+        func testCancelledExplicitTabBindingRecoversExactlyAndPreservesAcceptedSuccessor() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let originalTab = fixture.leftTab
+            let originalTabCount = fixture.workspaceA.composeTabs.count
+            let agentModeVM = AgentModeViewModel(
+                testWorkspacePath: storageRoot.path,
+                codexControllerFactory: { _, _, _, _, _, _ in
+                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                },
+                testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
+            )
+            agentModeVM.test_setSidebarAutoArchiveDependencies(
+                promptManager: fixture.prompt,
+                workspaceManager: fixture.manager
+            )
+            let indexOwner = AgentModeViewModel.SessionIndexOwner(
+                workspaceID: fixture.workspaceA.id,
+                activationEpoch: 1
+            )
+            agentModeVM.test_installSessionIndexSnapshot(
+                [:],
+                owner: indexOwner,
+                latestOwner: indexOwner,
+                activeWorkspace: fixture.workspaceA
+            )
+
+            let publicationGate = RecoveryInterleavingGate()
+            let store = fixture.prompt.workspaceFileContextStore
+            var cancelledSessionID: UUID?
+            var staleTarget: AgentModeViewModel.MCPSessionTarget?
+            var artifactURL: URL?
+            var hookFailure: Error?
+            var exactArtifactDeletionCount = 0
+            let worktreeRoot = storageRoot.appendingPathComponent(
+                "cancelled-explicit-tab-worktree",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
+            agentModeVM.test_setAgentSessionDeleter { sessionID, workspace in
+                XCTAssertEqual(sessionID, cancelledSessionID)
+                XCTAssertEqual(workspace.id, fixture.workspaceA.id)
+                exactArtifactDeletionCount += 1
+                try await AgentSessionDataService.shared.deleteAgentSession(id: sessionID, for: workspace)
+            }
+            agentModeVM.test_setAfterDurableExplicitTabSessionBinding {
+                do {
+                    let sessionID = try XCTUnwrap(
+                        fixture.manager.activeAgentSessionID(
+                            forTabID: originalTab.id,
+                            inWorkspaceID: fixture.workspaceA.id
+                        )
+                    )
+                    cancelledSessionID = sessionID
+                    staleTarget = agentModeVM.test_outstandingProvisionalMCPSessionTarget(
+                        sessionID: sessionID
+                    )
+                    try await agentModeVM.mcpActivateControlContext(
+                        forTabID: originalTab.id,
+                        sessionID: sessionID,
+                        originatingConnectionID: nil,
+                        startPending: true
+                    )
+                    try agentModeVM.mcpStageAgentRunOracleReviewSource(
+                        .captured(.init(
+                            sourceTabID: fixture.rightTab.id,
+                            workspaceID: fixture.workspaceA.id,
+                            sourceSelectionRevision: 1,
+                            promptText: "cancelled explicit binding source",
+                            selection: StoredSelection(),
+                            lookupContext: .visibleWorkspace,
+                            reviewGitContext: .automaticOnly(
+                                base: "HEAD",
+                                workspaceRootPaths: fixture.workspaceA.repoPaths
+                            ),
+                            sourceAgentSessionID: nil,
+                            sourceAgentRunID: nil,
+                            sourceWorktreeBindings: []
+                        )),
+                        targetTabID: originalTab.id,
+                        targetSessionID: sessionID,
+                        expectedParentSessionID: nil
+                    )
+                    artifactURL = try await AgentSessionDataService.shared.saveAgentSession(
+                        AgentSession(
+                            id: sessionID,
+                            workspaceID: fixture.workspaceA.id,
+                            composeTabID: originalTab.id,
+                            name: "Cancelled explicit binding",
+                            savedAt: Date(timeIntervalSince1970: 1_800_000_400),
+                            itemCount: 0,
+                            autoEditEnabled: false
+                        ),
+                        for: fixture.workspaceA,
+                        preparation: .alreadyCanonicalTranscript,
+                        trustedCanonicalItemCount: 0
+                    )
+                    let preparation = try await store.prepareSessionWorktreeOwnership(
+                        ownerID: sessionID,
+                        bindingFingerprint: "cancelled-explicit-binding",
+                        physicalRootPaths: [worktreeRoot.path]
+                    )
+                    _ = try await store.commitSessionWorktreeOwnership(preparation)
+                } catch {
+                    hookFailure = error
+                }
+                await publicationGate.markStartedAndWaitForRelease()
+            }
+            defer { agentModeVM.test_setAfterDurableExplicitTabSessionBinding(nil) }
+
+            let resolution = Task { @MainActor in
+                try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                    tabID: originalTab.id,
+                    sessionID: nil,
+                    createIfNeeded: true,
+                    sessionName: "cancelled explicit binding",
+                    expectedWorkspaceID: fixture.workspaceA.id
+                )
+            }
+            await publicationGate.waitUntilStarted()
+            XCTAssertNil(hookFailure)
+            let sessionID = try XCTUnwrap(cancelledSessionID)
+            let recoveredStaleTarget = try XCTUnwrap(staleTarget)
+            XCTAssertTrue(try FileManager.default.fileExists(atPath: XCTUnwrap(artifactURL).path))
+            XCTAssertTrue(agentModeVM.mcpHasAgentRunOracleReviewContextExpectation(tabID: originalTab.id))
+            let installedOwnership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+            XCTAssertEqual(installedOwnership.installedOwnerCount, 1)
+            XCTAssertEqual(installedOwnership.rootClaimCount, 1)
+            for competitor in [(originalTab.id as UUID?, nil as UUID?), (nil, sessionID as UUID?)] {
+                do {
+                    _ = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                        tabID: competitor.0,
+                        sessionID: competitor.1,
+                        createIfNeeded: true,
+                        sessionName: "must not adopt provisional binding",
+                        expectedWorkspaceID: fixture.workspaceA.id
+                    )
+                    XCTFail("A competing selector must not adopt a provisional explicit-tab binding.")
+                } catch {
+                    XCTAssertTrue(error.localizedDescription.contains("still provisional"), error.localizedDescription)
+                }
+            }
+
+            resolution.cancel()
+            await publicationGate.release()
+            do {
+                _ = try await resolution.value
+                XCTFail("Cancellation after durable explicit-tab binding must reject resolution.")
+            } catch {
+                XCTAssertTrue(error is CancellationError, String(describing: error))
+            }
+
+            XCTAssertEqual(try XCTUnwrap(recoveredStaleTarget.recoveryClaim).state, .complete)
+            XCTAssertEqual(exactArtifactDeletionCount, 1)
+            XCTAssertFalse(try FileManager.default.fileExists(atPath: XCTUnwrap(artifactURL).path))
+            XCTAssertNil(agentModeVM.session(for: originalTab.id, createIfNeeded: false))
+            XCTAssertNil(agentModeVM.test_ownerValidatedSessionIndex[sessionID])
+            XCTAssertFalse(agentModeVM.mcpHasAgentRunOracleReviewContextExpectation(tabID: originalTab.id))
+            let cancelledRegistrationIsActive = await AgentRunSessionStore.hasActiveRegistration(
+                sessionID: sessionID
+            )
+            XCTAssertFalse(cancelledRegistrationIsActive)
+            let releasedOwnership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+            XCTAssertEqual(releasedOwnership.installedOwnerCount, 0)
+            XCTAssertEqual(releasedOwnership.rootClaimCount, 0)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+            XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+
+            let canonical = try await canonicalModel(fixture)
+            let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            let managerWorkspace = try XCTUnwrap(fixture.manager.workspace(withID: fixture.workspaceA.id))
+            let promptWorkspace = try XCTUnwrap(fixture.prompt.sidebarWorkspaceSnapshot)
+            for workspace in [managerWorkspace, canonical, disk] {
+                XCTAssertEqual(workspace.composeTabs.count, originalTabCount)
+                let recoveredTab = try XCTUnwrap(workspace.composeTabs.first { $0.id == originalTab.id })
+                XCTAssertNil(recoveredTab.activeAgentSessionID)
+                XCTAssertEqual(recoveredTab.name, originalTab.name)
+                XCTAssertEqual(recoveredTab.promptText, originalTab.promptText)
+                XCTAssertEqual(recoveredTab.selection, originalTab.selection)
+                XCTAssertEqual(recoveredTab.isPinned, originalTab.isPinned)
+            }
+            XCTAssertEqual(promptWorkspace.composeTabs.count, originalTabCount)
+            let sidebarTab = try XCTUnwrap(
+                promptWorkspace.composeTabs.first { $0.id == originalTab.id }
+            )
+            XCTAssertNil(sidebarTab.activeAgentSessionID)
+            XCTAssertEqual(sidebarTab.name, originalTab.name)
+            XCTAssertEqual(sidebarTab.promptText, originalTab.promptText)
+            XCTAssertEqual(sidebarTab.selection, originalTab.selection)
+            XCTAssertEqual(sidebarTab.isPinned, originalTab.isPinned)
+            let promptTab = try XCTUnwrap(
+                fixture.prompt.currentComposeTabs.first { $0.id == originalTab.id }
+            )
+            XCTAssertNil(promptTab.activeAgentSessionID)
+            XCTAssertEqual(promptTab.promptText, originalTab.promptText)
+            XCTAssertEqual(promptTab.selection, originalTab.selection)
+
+            agentModeVM.test_setAfterDurableExplicitTabSessionBinding(nil)
+            let successor = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: originalTab.id,
+                sessionID: nil,
+                createIfNeeded: true,
+                sessionName: "accepted explicit-tab successor",
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            let successorSessionID = try XCTUnwrap(successor.sessionID)
+            XCTAssertNotEqual(successorSessionID, sessionID)
+            agentModeVM.mcpAcceptSessionTarget(successor)
+            let staleReplay = await agentModeVM.mcpDiscardSessionTarget(recoveredStaleTarget)
+            XCTAssertEqual(staleReplay, .complete)
+            XCTAssertEqual(exactArtifactDeletionCount, 1)
+            let successorCanonical = try await canonicalModel(fixture)
+            let successorDisk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            for workspace in try [
+                XCTUnwrap(fixture.manager.workspace(withID: fixture.workspaceA.id)),
+                successorCanonical,
+                successorDisk
+            ] {
+                XCTAssertTrue(workspace.composeTabs.contains {
+                    $0.id == originalTab.id && $0.activeAgentSessionID == successorSessionID
+                })
+            }
+            XCTAssertTrue(fixture.prompt.currentComposeTabs.contains {
+                $0.id == originalTab.id && $0.activeAgentSessionID == successorSessionID
+            })
+            XCTAssertTrue(fixture.prompt.sidebarWorkspaceSnapshot?.composeTabs.contains {
+                $0.id == originalTab.id && $0.activeAgentSessionID == successorSessionID
+            } == true)
+            let settledLookup = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: successorSessionID,
+                createIfNeeded: false,
+                sessionName: nil,
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            XCTAssertEqual(settledLookup.tabID, originalTab.id)
+            XCTAssertNil(settledLookup.recoveryClaim)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+            XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+        }
+
+        func testInFlightCanonicalRecoveryRetiresBeforeSameSessionSuccessorAdmission() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let agentModeVM = AgentModeViewModel(
+                testWorkspacePath: storageRoot.path,
+                codexControllerFactory: { _, _, _, _, _, _ in
+                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                },
+                testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
+            )
+            agentModeVM.test_setSidebarAutoArchiveDependencies(
+                promptManager: fixture.prompt,
+                workspaceManager: fixture.manager
+            )
+            let indexOwner = AgentModeViewModel.SessionIndexOwner(
+                workspaceID: fixture.workspaceA.id,
+                activationEpoch: 1
+            )
+            agentModeVM.test_installSessionIndexSnapshot(
+                [:],
+                owner: indexOwner,
+                latestOwner: indexOwner,
+                activeWorkspace: fixture.workspaceA
+            )
+            let staleSession = agentModeVM.session(for: fixture.identity.tabID)
+            let staleBinding = try XCTUnwrap(agentModeVM.test_installPersistentSessionBinding(
+                sessionID: fixture.identity.sessionID,
+                on: staleSession
+            ))
+            let staleAuthorityID = UUID()
+            agentModeVM.test_installMCPSessionTargetDiscardAuthority(
+                staleAuthorityID,
+                sessionID: fixture.identity.sessionID
+            )
+            agentModeVM.upsertSessionIndex(
+                sessionID: fixture.identity.sessionID,
+                tabID: fixture.identity.tabID,
+                name: "Provisional",
+                lastUserMessageAt: nil,
+                savedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                lastRunStateRaw: AgentSessionRunState.idle.rawValue,
+                itemCount: 0,
+                agentKindRaw: "codex",
+                agentModelRaw: "test-model",
+                agentReasoningEffortRaw: nil,
+                autoEditEnabled: false
+            )
+            let staleIndexEntry = try XCTUnwrap(
+                agentModeVM.test_ownerValidatedSessionIndex[fixture.identity.sessionID]
+            )
+            let staleClaim = AgentProvisionalAdmissionClaim(identity: fixture.identity)
+            let staleTarget = AgentModeViewModel.MCPSessionTarget(
+                tabID: fixture.identity.tabID,
+                sessionID: fixture.identity.sessionID,
+                origin: .createdNewTab,
+                lifecycleIdentity: .init(
+                    workspaceID: fixture.identity.workspaceID,
+                    tabID: fixture.identity.tabID,
+                    sessionID: fixture.identity.sessionID,
+                    persistentBindingGeneration: staleBinding.generation,
+                    bindingTransitionGeneration: staleSession.bindingTransitionGeneration
+                ),
+                recoveryClaim: staleClaim,
+                discardAuthorityID: staleAuthorityID
+            )
+            agentModeVM.test_registerOutstandingProvisionalMCPSessionTarget(staleTarget)
+            guard agentModeVM.test_provisionalRuntimeTargetIdentityCount == 1 else {
+                return XCTFail("The synthetic target must carry the exact registered runtime identity.")
+            }
+            let canonicalRecoveryGate = RecoveryInterleavingGate()
+            fixture.manager.setAgentAdmissionRecoveryReplacementDispatchHandlerForTesting { workspaceID, _ in
+                XCTAssertEqual(workspaceID, fixture.workspaceA.id)
+                await canonicalRecoveryGate.markStartedAndWaitForRelease()
+                return nil
+            }
+            defer {
+                fixture.manager.setAgentAdmissionRecoveryReplacementDispatchHandlerForTesting(nil)
+                agentModeVM.test_setBeforeMCPSessionTargetDiscardAuthorityEstablishment(nil)
+                agentModeVM.test_setAfterMCPSessionTargetDiscardRetired(nil)
+            }
+            agentModeVM.test_setAgentSessionsDeleter { _, _ in }
+
+            let staleDiscard = Task { @MainActor in
+                await agentModeVM.mcpDiscardSessionTarget(staleTarget)
+            }
+            await canonicalRecoveryGate.waitUntilStarted()
+
+            let successorAuthorityGate = RecoveryInterleavingGate()
+            agentModeVM.test_setBeforeMCPSessionTargetDiscardAuthorityEstablishment { sessionID in
+                guard sessionID == fixture.identity.sessionID else { return }
+                await successorAuthorityGate.markStarted()
+            }
+            agentModeVM.test_setAfterMCPSessionTargetDiscardRetired { sessionID in
+                XCTAssertEqual(sessionID, fixture.identity.sessionID)
+                XCTAssertFalse(fixture.manager.workspaces.contains { workspace in
+                    workspace.composeTabs.contains { $0.activeAgentSessionID == sessionID }
+                })
+                XCTAssertFalse(fixture.prompt.currentComposeTabs.contains {
+                    $0.activeAgentSessionID == sessionID
+                })
+                if let preservedRuntime = agentModeVM.session(
+                    for: fixture.identity.tabID,
+                    createIfNeeded: false
+                ) {
+                    XCTAssertEqual(preservedRuntime.activeAgentSessionID, sessionID)
+                    _ = agentModeVM.test_installPersistentSessionBinding(
+                        sessionID: nil,
+                        on: preservedRuntime
+                    )
+                }
+                if let preservedIndexEntry = agentModeVM.test_ownerValidatedSessionIndex[sessionID] {
+                    XCTAssertEqual(preservedIndexEntry, staleIndexEntry)
+                }
+            }
+            var successorResolutionCompleted = false
+            let successorResolution = Task { @MainActor in
+                let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                    tabID: nil,
+                    sessionID: fixture.identity.sessionID,
+                    createIfNeeded: true,
+                    sessionName: "canonical successor",
+                    expectedWorkspaceID: fixture.workspaceA.id
+                )
+                successorResolutionCompleted = true
+                return target
+            }
+            await successorAuthorityGate.waitUntilStarted()
+            XCTAssertFalse(successorResolutionCompleted)
+
+            await canonicalRecoveryGate.release()
+            let staleDiscardResult = await staleDiscard.value
+            XCTAssertEqual(staleDiscardResult, .complete)
+            let successor = try await successorResolution.value
+            let successorClaim = try XCTUnwrap(successor.recoveryClaim)
+            let successorSession = try XCTUnwrap(agentModeVM.session(
+                for: successor.tabID,
+                createIfNeeded: false
+            ))
+            agentModeVM.upsertSessionIndex(
+                sessionID: fixture.identity.sessionID,
+                tabID: successor.tabID,
+                name: "Canonical successor",
+                lastUserMessageAt: nil,
+                savedAt: Date(timeIntervalSince1970: 1_800_000_200),
+                lastRunStateRaw: AgentSessionRunState.running.rawValue,
+                itemCount: 1,
+                agentKindRaw: "codex",
+                agentModelRaw: "test-model",
+                agentReasoningEffortRaw: nil,
+                autoEditEnabled: false
+            )
+            try await agentModeVM.mcpActivateControlContext(
+                forTabID: successor.tabID,
+                sessionID: fixture.identity.sessionID,
+                originatingConnectionID: nil,
+                startPending: true
+            )
+            try agentModeVM.mcpStageAgentRunOracleReviewSource(
+                .captured(.init(
+                    sourceTabID: fixture.leftTab.id,
+                    workspaceID: fixture.workspaceA.id,
+                    sourceSelectionRevision: 1,
+                    promptText: "canonical successor source",
+                    selection: StoredSelection(),
+                    lookupContext: .visibleWorkspace,
+                    reviewGitContext: .automaticOnly(
+                        base: "HEAD",
+                        workspaceRootPaths: fixture.workspaceA.repoPaths
+                    ),
+                    sourceAgentSessionID: nil,
+                    sourceAgentRunID: nil,
+                    sourceWorktreeBindings: []
+                )),
+                targetTabID: successor.tabID,
+                targetSessionID: fixture.identity.sessionID,
+                expectedParentSessionID: nil
+            )
+            let successorRoot = storageRoot.appendingPathComponent("canonical-successor-root", isDirectory: true)
+            try FileManager.default.createDirectory(at: successorRoot, withIntermediateDirectories: true)
+            let store = fixture.prompt.workspaceFileContextStore
+            let preparation = try await store.prepareSessionWorktreeOwnership(
+                ownerID: fixture.identity.sessionID,
+                bindingFingerprint: "canonical-successor-generation",
+                physicalRootPaths: [successorRoot.path]
+            )
+            _ = try await store.commitSessionWorktreeOwnership(preparation)
+            let successorIndexEntry = try XCTUnwrap(
+                agentModeVM.test_ownerValidatedSessionIndex[fixture.identity.sessionID]
+            )
+            agentModeVM.mcpAcceptSessionTarget(successor)
+
+            XCTAssertEqual(staleClaim.state, .complete)
+            XCTAssertEqual(successorClaim.state, .accepted)
+            XCTAssertTrue(agentModeVM.session(for: successor.tabID, createIfNeeded: false) === successorSession)
+            XCTAssertTrue(agentModeVM.mcpHasAgentRunOracleReviewContextExpectation(tabID: successor.tabID))
+            XCTAssertEqual(
+                agentModeVM.test_ownerValidatedSessionIndex[fixture.identity.sessionID],
+                successorIndexEntry
+            )
+            let ownership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+            XCTAssertEqual(ownership.installedOwnerCount, 1)
+            XCTAssertEqual(ownership.rootClaimCount, 1)
+            let canonical = try await canonicalModel(fixture)
+            let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            for workspace in try [
+                XCTUnwrap(fixture.manager.workspace(withID: fixture.workspaceA.id)),
+                canonical,
+                disk
+            ] {
+                XCTAssertTrue(workspace.composeTabs.contains {
+                    $0.id == successor.tabID
+                        && $0.activeAgentSessionID == fixture.identity.sessionID
+                })
+            }
+        }
+
+        func testFreshTargetReservesRecoveryAgainstSessionAndTabSelectorsBeforeResolverReturns() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let baselineTabIDs = fixture.workspaceA.composeTabs.map(\.id)
+            let agentModeVM = AgentModeViewModel(
+                testWorkspacePath: storageRoot.path,
+                codexControllerFactory: { _, _, _, _, _, _ in
+                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                },
+                testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
+            )
+            agentModeVM.test_setSidebarAutoArchiveDependencies(
+                promptManager: fixture.prompt,
+                workspaceManager: fixture.manager
+            )
+            let indexOwner = AgentModeViewModel.SessionIndexOwner(
+                workspaceID: fixture.workspaceA.id,
+                activationEpoch: 1
+            )
+            agentModeVM.test_installSessionIndexSnapshot(
+                [:],
+                owner: indexOwner,
+                latestOwner: indexOwner,
+                activeWorkspace: fixture.workspaceA
+            )
+
+            let publicationGate = RecoveryInterleavingGate()
+            var publishedTabID: UUID?
+            var publishedSessionID: UUID?
+            var resolverReturned = false
+            var artifactDeletionCount = 0
+            agentModeVM.test_setAfterDurableChildTabCreation {
+                let publishedTab = fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs.first(where: {
+                    !baselineTabIDs.contains($0.id)
+                })
+                publishedTabID = publishedTab?.id
+                publishedSessionID = publishedTab?.activeAgentSessionID
+                XCTAssertNotNil(publishedTabID)
+                XCTAssertNotNil(publishedSessionID)
+                XCTAssertFalse(resolverReturned)
+                XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 1)
+                await publicationGate.markStartedAndWaitForRelease()
+            }
+            defer { agentModeVM.test_setAfterDurableChildTabCreation(nil) }
+            agentModeVM.test_setAgentSessionsDeleter { tabID, workspace in
+                XCTAssertEqual(tabID, publishedTabID)
+                XCTAssertEqual(workspace.id, fixture.workspaceA.id)
+                artifactDeletionCount += 1
+            }
+
+            let originalResolution = Task { @MainActor in
+                let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                    tabID: nil,
+                    sessionID: nil,
+                    createIfNeeded: true,
+                    sessionName: "cancelled after durable publication",
+                    expectedWorkspaceID: fixture.workspaceA.id
+                )
+                resolverReturned = true
+                return target
+            }
+            await publicationGate.waitUntilStarted()
+
+            let sessionID = try XCTUnwrap(publishedSessionID)
+            let tabID = try XCTUnwrap(publishedTabID)
+            XCTAssertFalse(resolverReturned)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 1)
+            XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+            do {
+                _ = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                    tabID: nil,
+                    sessionID: sessionID,
+                    createIfNeeded: true,
+                    sessionName: "must not steal fresh recovery",
+                    expectedWorkspaceID: fixture.workspaceA.id
+                )
+                XCTFail("A same-session resolver must not acquire a durably published provisional target.")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("still provisional"), error.localizedDescription)
+            }
+            XCTAssertFalse(resolverReturned)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 1)
+            do {
+                _ = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                    tabID: tabID,
+                    sessionID: nil,
+                    createIfNeeded: true,
+                    sessionName: "must not adopt fresh recovery by tab",
+                    expectedWorkspaceID: fixture.workspaceA.id
+                )
+                XCTFail("A tab-only resolver must not adopt a durably published provisional target.")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("still provisional"), error.localizedDescription)
+            }
+            XCTAssertFalse(resolverReturned)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 1)
+
+            originalResolution.cancel()
+            await publicationGate.release()
+            do {
+                _ = try await originalResolution.value
+                XCTFail("Cancellation after durable publication must fail the original resolution.")
+            } catch {
+                XCTAssertTrue(error is CancellationError, String(describing: error))
+            }
+
+            XCTAssertFalse(resolverReturned)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+            XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+            XCTAssertNil(agentModeVM.session(for: tabID, createIfNeeded: false))
+            XCTAssertNil(agentModeVM.test_ownerValidatedSessionIndex[sessionID])
+            XCTAssertEqual(artifactDeletionCount, 1)
+            let canonical = try await canonicalModel(fixture)
+            let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            for workspace in try [
+                XCTUnwrap(fixture.manager.workspace(withID: fixture.workspaceA.id)),
+                canonical,
+                disk
+            ] {
+                XCTAssertEqual(workspace.composeTabs.map(\.id), baselineTabIDs)
+                XCTAssertFalse(workspace.composeTabs.contains { $0.activeAgentSessionID == sessionID })
+            }
+            XCTAssertEqual(fixture.prompt.currentComposeTabs.map(\.id), baselineTabIDs)
+
+            agentModeVM.test_setAfterDurableChildTabCreation(nil)
+            let successor = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: sessionID,
+                createIfNeeded: true,
+                sessionName: "accepted successor",
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            agentModeVM.mcpAcceptSessionTarget(successor)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+            let acceptedDiscardResult = await agentModeVM.mcpDiscardSessionTarget(successor)
+            XCTAssertEqual(acceptedDiscardResult, .complete)
+            XCTAssertNotNil(agentModeVM.session(for: successor.tabID, createIfNeeded: false))
+            XCTAssertTrue(fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs.contains(where: {
+                $0.id == successor.tabID && $0.activeAgentSessionID == sessionID
+            }) == true)
+            XCTAssertEqual(artifactDeletionCount, 1)
+
+            let postAcceptanceLookup = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: sessionID,
+                createIfNeeded: false,
+                sessionName: nil,
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            XCTAssertEqual(postAcceptanceLookup.tabID, successor.tabID)
+            XCTAssertNil(postAcceptanceLookup.recoveryClaim)
+        }
+
+        func testFixedSessionReconstructionPublishesRecoveryBeforeParentInvalidation() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let baselineTabIDs = fixture.workspaceA.composeTabs.map(\.id)
+            let parentTabID = fixture.identity.tabID
+            let parentSessionID = fixture.identity.sessionID
+            let reconstructedSessionID = UUID()
+            let restoredTabID = UUID()
+            let agentModeVM = AgentModeViewModel(
+                testWorkspacePath: storageRoot.path,
+                codexControllerFactory: { _, _, _, _, _, _ in
+                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                },
+                testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
+            )
+            agentModeVM.test_setSidebarAutoArchiveDependencies(
+                promptManager: fixture.prompt,
+                workspaceManager: fixture.manager
+            )
+            let indexOwner = AgentModeViewModel.SessionIndexOwner(
+                workspaceID: fixture.workspaceA.id,
+                activationEpoch: 1
+            )
+            agentModeVM.test_installSessionIndexSnapshot(
+                [:],
+                owner: indexOwner,
+                latestOwner: indexOwner,
+                activeWorkspace: fixture.workspaceA
+            )
+            agentModeVM.upsertSessionIndex(
+                sessionID: reconstructedSessionID,
+                tabID: restoredTabID,
+                name: "Persisted reconstruction",
+                lastUserMessageAt: nil,
+                savedAt: Date(timeIntervalSince1970: 1_800_000_300),
+                lastRunStateRaw: AgentSessionRunState.completed.rawValue,
+                itemCount: 4,
+                agentKindRaw: "codex",
+                agentModelRaw: "test-model",
+                agentReasoningEffortRaw: nil,
+                autoEditEnabled: false
+            )
+            let restoreEntry = try XCTUnwrap(
+                agentModeVM.test_ownerValidatedSessionIndex[reconstructedSessionID]
+            )
+
+            let publicationGate = RecoveryInterleavingGate()
+            var publishedTabID: UUID?
+            var staleTarget: AgentModeViewModel.MCPSessionTarget?
+            var resolverReturned = false
+            var artifactDeletionCount = 0
+            agentModeVM.test_setAfterDurableChildTabCreation {
+                let publishedTab = fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs.first(where: {
+                    !baselineTabIDs.contains($0.id)
+                })
+                publishedTabID = publishedTab?.id
+                staleTarget = agentModeVM.test_outstandingProvisionalMCPSessionTarget(
+                    sessionID: reconstructedSessionID
+                )
+                XCTAssertEqual(publishedTab?.activeAgentSessionID, reconstructedSessionID)
+                XCTAssertNotNil(staleTarget)
+                XCTAssertFalse(resolverReturned)
+                XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 1)
+                await publicationGate.markStartedAndWaitForRelease()
+            }
+            defer { agentModeVM.test_setAfterDurableChildTabCreation(nil) }
+            agentModeVM.test_setAgentSessionsDeleter { _, _ in
+                artifactDeletionCount += 1
+            }
+
+            let reconstruction = Task { @MainActor in
+                let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                    tabID: nil,
+                    sessionID: reconstructedSessionID,
+                    createIfNeeded: true,
+                    sessionName: "reconstructed after persistence",
+                    parentSessionID: parentSessionID,
+                    expectedWorkspaceID: fixture.workspaceA.id
+                )
+                resolverReturned = true
+                return target
+            }
+            await publicationGate.waitUntilStarted()
+
+            let childTabID = try XCTUnwrap(publishedTabID)
+            let persistedTabs = try XCTUnwrap(
+                fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs
+            )
+            let invalidatedPromptTabs = persistedTabs.filter { $0.id != parentTabID }
+            fixture.prompt.setCurrentComposeTabsForAgentAdmissionRecoveryTesting(
+                invalidatedPromptTabs,
+                activeComposeTabID: childTabID
+            )
+            XCTAssertFalse(fixture.prompt.currentComposeTabs.contains { tab in
+                tab.activeAgentSessionID == parentSessionID
+            })
+            XCTAssertTrue(fixture.prompt.currentComposeTabs.contains { tab in
+                tab.id == childTabID && tab.activeAgentSessionID == reconstructedSessionID
+            })
+
+            await publicationGate.release()
+            do {
+                _ = try await reconstruction.value
+                XCTFail("A reconstructed child must reject when its represented parent disappears.")
+            } catch {
+                XCTAssertTrue(
+                    error.localizedDescription.contains("parent Agent session was removed"),
+                    error.localizedDescription
+                )
+            }
+
+            XCTAssertFalse(resolverReturned)
+            let recoveredStaleTarget = try XCTUnwrap(staleTarget)
+            XCTAssertEqual(try XCTUnwrap(recoveredStaleTarget.recoveryClaim).state, .complete)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+            XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+            if let preservedRuntime = agentModeVM.session(for: childTabID, createIfNeeded: false) {
+                XCTAssertEqual(preservedRuntime.activeAgentSessionID, reconstructedSessionID)
+                _ = agentModeVM.test_installPersistentSessionBinding(
+                    sessionID: nil,
+                    on: preservedRuntime
+                )
+            }
+            let hasActiveRegistration = await AgentRunSessionStore.hasActiveRegistration(
+                sessionID: reconstructedSessionID
+            )
+            XCTAssertFalse(hasActiveRegistration)
+            XCTAssertEqual(
+                agentModeVM.test_ownerValidatedSessionIndex[reconstructedSessionID],
+                restoreEntry
+            )
+            XCTAssertEqual(
+                artifactDeletionCount,
+                0,
+                "Reconstruction recovery preserves the pre-existing session artifact."
+            )
+            let canonical = try await canonicalModel(fixture)
+            let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            for workspace in try [
+                XCTUnwrap(fixture.manager.workspace(withID: fixture.workspaceA.id)),
+                canonical,
+                disk
+            ] {
+                XCTAssertEqual(workspace.composeTabs.map(\.id), baselineTabIDs)
+                XCTAssertFalse(workspace.composeTabs.contains { tab in
+                    tab.id == childTabID || tab.activeAgentSessionID == reconstructedSessionID
+                })
+            }
+            XCTAssertEqual(
+                fixture.prompt.currentComposeTabs.map(\.id),
+                [fixture.leftTab.id, fixture.rightTab.id]
+            )
+            XCTAssertFalse(fixture.prompt.currentComposeTabs.contains { tab in
+                tab.id == childTabID || tab.activeAgentSessionID == reconstructedSessionID
+            })
+
+            agentModeVM.test_setAfterDurableChildTabCreation(nil)
+            let successor = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: reconstructedSessionID,
+                createIfNeeded: true,
+                sessionName: "accepted reconstructed successor",
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            agentModeVM.mcpAcceptSessionTarget(successor)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+
+            let staleDiscardResult = await agentModeVM.mcpDiscardSessionTarget(recoveredStaleTarget)
+            XCTAssertEqual(staleDiscardResult, .complete)
+            XCTAssertNotNil(agentModeVM.session(for: successor.tabID, createIfNeeded: false))
+            XCTAssertTrue(fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs.contains(where: { tab in
+                tab.id == successor.tabID && tab.activeAgentSessionID == reconstructedSessionID
+            }) == true)
+            XCTAssertEqual(artifactDeletionCount, 0)
+
+            let postAcceptanceLookup = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: reconstructedSessionID,
+                createIfNeeded: false,
+                sessionName: nil,
+                expectedWorkspaceID: fixture.workspaceA.id
+            )
+            XCTAssertEqual(postAcceptanceLookup.tabID, successor.tabID)
+            XCTAssertNil(postAcceptanceLookup.recoveryClaim)
+        }
+
         private struct Fixture {
             let runtime: MCPDomainRuntime
             let client: DomainWorkspaceAuthorityClient
@@ -1320,6 +2554,57 @@ import XCTest
             let identity: AgentProvisionalAdmissionIdentity
             let leftTab: ComposeTabState
             let rightTab: ComposeTabState
+        }
+
+        private func makeAgentModeViewModel(
+            for fixture: Fixture,
+            indexEntries: [UUID: AgentSessionIndexEntry] = [:]
+        ) -> AgentModeViewModel {
+            let viewModel = AgentModeViewModel(
+                testWorkspacePath: storageRoot.path,
+                codexControllerFactory: { _, _, _, _, _, _ in
+                    LifecycleNoopCodexController(recorder: LifecycleRecorder())
+                },
+                testWorkspaceFileContextStore: fixture.prompt.workspaceFileContextStore
+            )
+            viewModel.test_setSidebarAutoArchiveDependencies(
+                promptManager: fixture.prompt,
+                workspaceManager: fixture.manager
+            )
+            let owner = AgentModeViewModel.SessionIndexOwner(
+                workspaceID: fixture.workspaceA.id,
+                activationEpoch: 1
+            )
+            viewModel.test_installSessionIndexSnapshot(
+                indexEntries,
+                owner: owner,
+                latestOwner: owner,
+                activeWorkspace: fixture.workspaceA
+            )
+            return viewModel
+        }
+
+        private func upsertIndexEntry(
+            _ sessionID: UUID,
+            tabID: UUID,
+            parentSessionID: UUID? = nil,
+            in viewModel: AgentModeViewModel
+        ) -> AgentSessionIndexEntry {
+            viewModel.upsertSessionIndex(
+                sessionID: sessionID,
+                tabID: tabID,
+                name: "Admission recovery test",
+                lastUserMessageAt: nil,
+                savedAt: Date(timeIntervalSince1970: 1_800_000_500),
+                lastRunStateRaw: AgentSessionRunState.idle.rawValue,
+                itemCount: 0,
+                agentKindRaw: "codex",
+                agentModelRaw: "test-model",
+                agentReasoningEffortRaw: nil,
+                autoEditEnabled: false,
+                parentSessionID: parentSessionID
+            )
+            return viewModel.test_ownerValidatedSessionIndex[sessionID]!
         }
 
         private func makeFixture() async throws -> Fixture {

@@ -1269,11 +1269,29 @@ import XCTest
             )
             let sessionID = UUID()
             let tabID = UUID()
+            let lifecycleIdentity = AgentSessionLifecycleAuthority.Identity(
+                workspaceID: scope.workspaceID,
+                tabID: tabID,
+                sessionID: sessionID,
+                persistentBindingGeneration: UUID(),
+                bindingTransitionGeneration: 0
+            )
+            let claim = AgentProvisionalAdmissionClaim(identity: .init(
+                recoveryID: UUID(),
+                workspaceID: scope.workspaceID,
+                tabID: tabID,
+                sessionID: sessionID,
+                replacementTabID: UUID()
+            ))
             try diagnostics.registerRecoverableStartTarget(
                 correlationID: arm.correlationID,
-                agentSessionID: sessionID,
-                targetTabID: tabID,
-                targetOrigin: .createdNewTab
+                target: AgentModeViewModel.MCPSessionTarget(
+                    tabID: tabID,
+                    sessionID: sessionID,
+                    origin: .createdNewTab,
+                    lifecycleIdentity: lifecycleIdentity,
+                    recoveryClaim: claim
+                )
             )
             try diagnostics.recordRecoverableStartWorktree(
                 correlationID: arm.correlationID,

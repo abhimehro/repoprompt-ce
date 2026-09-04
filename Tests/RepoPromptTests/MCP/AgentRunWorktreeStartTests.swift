@@ -3314,6 +3314,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         XCTAssertEqual(after.rootClaimCount, 0)
         XCTAssertEqual(after.pathReservationCount, 0)
         XCTAssertNil(agentModeVM.session(for: target.tabID, createIfNeeded: false))
+        XCTAssertEqual(try XCTUnwrap(target.recoveryClaim).state, .complete)
 
         let provisionalTarget = try await agentModeVM.mcpResolveOrCreateSessionTarget(
             tabID: nil,
@@ -3351,6 +3352,327 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         XCTAssertEqual(provisionalAfter.provisionalOwnerCount, 0)
         XCTAssertEqual(provisionalAfter.pathReservationCount, 0)
         XCTAssertNil(agentModeVM.session(for: provisionalTarget.tabID, createIfNeeded: false))
+    }
+
+    func testAcceptedTargetDiscardPreservesDurableAndLogicalOwnership() async throws {
+        let root = try makeTemporaryDirectory(named: "accepted-target-discard")
+        try Data("seed".utf8).write(to: root.appendingPathComponent("Seed.swift"))
+        let window = try await makeWindow(root: root)
+        let workspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let agentModeVM = window.agentModeViewModel
+        let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "accepted target"
+        )
+        let sessionID = try XCTUnwrap(target.sessionID)
+        let claim = try XCTUnwrap(target.recoveryClaim)
+        let store = window.promptManager.workspaceFileContextStore
+        let physicalRoot = root.appendingPathComponent("accepted-physical", isDirectory: true)
+        try FileManager.default.createDirectory(at: physicalRoot, withIntermediateDirectories: true)
+        let preparation = try await store.prepareSessionWorktreeOwnership(
+            ownerID: sessionID,
+            bindingFingerprint: "accepted-owned-root",
+            physicalRootPaths: [physicalRoot.path]
+        )
+        _ = try await store.commitSessionWorktreeOwnership(preparation)
+        let indexBefore = agentModeVM.test_ownerValidatedSessionIndex[sessionID]
+
+        agentModeVM.mcpAcceptSessionTarget(target)
+        await agentModeVM.mcpDiscardSessionTarget(target)
+        await agentModeVM.mcpDiscardSessionTarget(target)
+
+        XCTAssertEqual(claim.state, .accepted)
+        XCTAssertNotNil(agentModeVM.session(for: target.tabID, createIfNeeded: false))
+        XCTAssertNotNil(window.workspaceManager.workspace(withID: workspace.id)?.composeTabs.first(where: {
+            $0.id == target.tabID && $0.activeAgentSessionID == sessionID
+        }))
+        XCTAssertEqual(agentModeVM.test_ownerValidatedSessionIndex[sessionID], indexBefore)
+        let ownership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+        XCTAssertEqual(ownership.installedOwnerCount, 1)
+        XCTAssertEqual(ownership.rootClaimCount, 1)
+    }
+
+    func testArtifactCleanupRetrySkipsRecoveredWorkspaceMutation() async throws {
+        let root = try makeTemporaryDirectory(named: "artifact-cleanup-retry")
+        let window = try await makeWindow(root: root)
+        let agentModeVM = window.agentModeViewModel
+        let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "artifact cleanup retry"
+        )
+        let claim = try XCTUnwrap(target.recoveryClaim)
+        var deletionAttempts = 0
+        let retryGate = AgentRunWorktreeStartAsyncGate()
+        agentModeVM.test_setBeforeAutomaticMCPSessionTargetDiscardRetry {
+            await retryGate.markStartedAndWaitForRelease()
+        }
+        defer { agentModeVM.test_setBeforeAutomaticMCPSessionTargetDiscardRetry(nil) }
+        agentModeVM.test_setAgentSessionsDeleter { _, _ in
+            deletionAttempts += 1
+            if deletionAttempts == 1 {
+                throw NSError(domain: "AgentRunWorktreeStartTests.artifactCleanup", code: 1)
+            }
+        }
+
+        let firstResult = await agentModeVM.mcpDiscardSessionTarget(target)
+        await retryGate.waitUntilStarted()
+
+        XCTAssertEqual(firstResult, .retainedForRetry)
+        XCTAssertEqual(claim.state, .workspaceRecovered)
+        XCTAssertEqual(deletionAttempts, 1)
+        XCTAssertNil(agentModeVM.session(for: target.tabID, createIfNeeded: false))
+        XCTAssertFalse(window.workspaceManager.workspaces.contains(where: { workspace in
+            workspace.composeTabs.contains(where: { $0.id == target.tabID })
+        }))
+
+        await retryGate.release()
+        let finalResult = await agentModeVM.mcpRetryPendingSessionTargetDiscards()
+
+        XCTAssertEqual(finalResult, .complete)
+        XCTAssertEqual(claim.state, .complete)
+        XCTAssertEqual(deletionAttempts, 2)
+    }
+
+    func testInFlightArtifactDeletionRetiresBeforeAcceptedSuccessorForSameSession() async throws {
+        let root = try makeTemporaryDirectory(named: "artifact-successor-race")
+        let window = try await makeWindow(root: root)
+        let workspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let agentModeVM = window.agentModeViewModel
+        let staleTarget = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "stale artifact owner"
+        )
+        let sessionID = try XCTUnwrap(staleTarget.sessionID)
+        let staleClaim = try XCTUnwrap(staleTarget.recoveryClaim)
+        let deletionGate = AgentRunWorktreeStartAsyncGate()
+        let authorityGate = AgentRunWorktreeStartAsyncGate()
+        agentModeVM.test_setBeforeMCPSessionTargetDiscardAuthorityEstablishment { establishedSessionID in
+            guard establishedSessionID == sessionID else { return }
+            await authorityGate.markStarted()
+        }
+        defer { agentModeVM.test_setBeforeMCPSessionTargetDiscardAuthorityEstablishment(nil) }
+        var deletionAttempts = 0
+        agentModeVM.test_setAgentSessionsDeleter { _, _ in
+            deletionAttempts += 1
+            await deletionGate.markStartedAndWaitForRelease()
+        }
+
+        let staleDiscard = Task { @MainActor in
+            await agentModeVM.mcpDiscardSessionTarget(staleTarget)
+        }
+        await deletionGate.waitUntilStarted()
+        XCTAssertEqual(staleClaim.state, .workspaceRecovered)
+
+        var successorResolutionCompleted = false
+        let successorResolution = Task { @MainActor in
+            let successor = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: sessionID,
+                createIfNeeded: true,
+                sessionName: "accepted successor"
+            )
+            successorResolutionCompleted = true
+            return successor
+        }
+        await authorityGate.waitUntilStarted()
+        XCTAssertFalse(successorResolutionCompleted)
+
+        await deletionGate.release()
+        let staleDiscardResult = await staleDiscard.value
+        XCTAssertEqual(staleDiscardResult, .complete)
+        let successor = try await successorResolution.value
+        let successorClaim = try XCTUnwrap(successor.recoveryClaim)
+        let store = window.promptManager.workspaceFileContextStore
+        let successorRoot = root.appendingPathComponent("successor-owned-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: successorRoot, withIntermediateDirectories: true)
+        let successorPreparation = try await store.prepareSessionWorktreeOwnership(
+            ownerID: sessionID,
+            bindingFingerprint: "successor-generation",
+            physicalRootPaths: [successorRoot.path]
+        )
+        _ = try await store.commitSessionWorktreeOwnership(successorPreparation)
+        agentModeVM.upsertSessionIndex(
+            sessionID: sessionID,
+            tabID: successor.tabID,
+            name: "Accepted successor",
+            lastUserMessageAt: nil,
+            savedAt: Date(timeIntervalSince1970: 1_800_000_100),
+            lastRunStateRaw: AgentSessionRunState.running.rawValue,
+            itemCount: 1,
+            agentKindRaw: "codex",
+            agentModelRaw: "test-model",
+            agentReasoningEffortRaw: nil,
+            autoEditEnabled: false
+        )
+        try await agentModeVM.mcpActivateControlContext(
+            forTabID: successor.tabID,
+            sessionID: sessionID,
+            originatingConnectionID: nil,
+            startPending: true
+        )
+        let sourceTabID = try XCTUnwrap(workspace.activeComposeTabID)
+        try agentModeVM.mcpStageAgentRunOracleReviewSource(
+            .captured(.init(
+                sourceTabID: sourceTabID,
+                workspaceID: workspace.id,
+                sourceSelectionRevision: 1,
+                promptText: "successor review source",
+                selection: StoredSelection(),
+                lookupContext: .visibleWorkspace,
+                reviewGitContext: .automaticOnly(base: "HEAD", workspaceRootPaths: [root.path]),
+                sourceAgentSessionID: nil,
+                sourceAgentRunID: nil,
+                sourceWorktreeBindings: []
+            )),
+            targetTabID: successor.tabID,
+            targetSessionID: sessionID,
+            expectedParentSessionID: nil
+        )
+        let successorIndexEntry = try XCTUnwrap(agentModeVM.test_ownerValidatedSessionIndex[sessionID])
+        agentModeVM.mcpAcceptSessionTarget(successor)
+
+        XCTAssertEqual(staleClaim.state, .complete)
+        XCTAssertEqual(successorClaim.state, .accepted)
+        XCTAssertEqual(deletionAttempts, 1)
+        XCTAssertTrue(agentModeVM.mcpHasAgentRunOracleReviewContextExpectation(tabID: successor.tabID))
+        XCTAssertEqual(agentModeVM.test_ownerValidatedSessionIndex[sessionID], successorIndexEntry)
+        XCTAssertNotNil(agentModeVM.session(for: successor.tabID, createIfNeeded: false))
+        let ownership = await store.sessionWorktreeOwnershipDebugSnapshotForTesting()
+        XCTAssertEqual(ownership.installedOwnerCount, 1)
+        XCTAssertEqual(ownership.rootClaimCount, 1)
+    }
+
+    func testCancelledDiscardCallerStillSettlesTrackedCleanup() async throws {
+        let root = try makeTemporaryDirectory(named: "cancelled-discard-caller")
+        let window = try await makeWindow(root: root)
+        let agentModeVM = window.agentModeViewModel
+        let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "cancelled cleanup caller"
+        )
+        let claim = try XCTUnwrap(target.recoveryClaim)
+        let callerGate = AgentRunWorktreeStartAsyncGate()
+        let caller = Task { @MainActor in
+            await callerGate.markStartedAndWaitForRelease()
+            return await agentModeVM.mcpDiscardSessionTarget(target)
+        }
+        await callerGate.waitUntilStarted()
+        caller.cancel()
+        await callerGate.release()
+
+        let callerResult = await caller.value
+        XCTAssertEqual(callerResult, .complete)
+        XCTAssertEqual(claim.state, .complete)
+        XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+        XCTAssertNil(agentModeVM.session(for: target.tabID, createIfNeeded: false))
+    }
+
+    func testDroppedTargetStillOwnsArtifactRetryUntilSettlement() async throws {
+        let root = try makeTemporaryDirectory(named: "dropped-target-cleanup")
+        let window = try await makeWindow(root: root)
+        let agentModeVM = window.agentModeViewModel
+        var target: AgentModeViewModel.MCPSessionTarget? = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "dropped cleanup target"
+        )
+        let claim = try XCTUnwrap(target?.recoveryClaim)
+        let retryGate = AgentRunWorktreeStartAsyncGate()
+        agentModeVM.test_setBeforeAutomaticMCPSessionTargetDiscardRetry {
+            await retryGate.markStartedAndWaitForRelease()
+        }
+        defer { agentModeVM.test_setBeforeAutomaticMCPSessionTargetDiscardRetry(nil) }
+        var deletionAttempts = 0
+        agentModeVM.test_setAgentSessionsDeleter { _, _ in
+            deletionAttempts += 1
+            if deletionAttempts == 1 {
+                throw NSError(domain: "AgentRunWorktreeStartTests.droppedTarget", code: 1)
+            }
+        }
+
+        let firstDiscardResult = try await agentModeVM.mcpDiscardSessionTarget(XCTUnwrap(target))
+        XCTAssertEqual(firstDiscardResult, .retainedForRetry)
+        await retryGate.waitUntilStarted()
+        target = nil
+        XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 1)
+        await retryGate.release()
+
+        let retryResult = await agentModeVM.mcpRetryPendingSessionTargetDiscards()
+        XCTAssertEqual(retryResult, .complete)
+        XCTAssertEqual(deletionAttempts, 2)
+        XCTAssertEqual(claim.state, .complete)
+        XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+    }
+
+    func testResumeTargetRecoveryPreservesSessionArtifactAndRestoresIndexEntry() async throws {
+        let root = try makeTemporaryDirectory(named: "resume-target-recovery")
+        let window = try await makeWindow(root: root)
+        let agentModeVM = window.agentModeViewModel
+        let createdTarget = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "resume target recovery"
+        )
+        let sessionID = try XCTUnwrap(createdTarget.sessionID)
+        let restoredTabID = UUID()
+        let savedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        agentModeVM.upsertSessionIndex(
+            sessionID: sessionID,
+            tabID: restoredTabID,
+            name: "Persisted session",
+            lastUserMessageAt: nil,
+            savedAt: savedAt,
+            lastRunStateRaw: AgentSessionRunState.completed.rawValue,
+            itemCount: 3,
+            agentKindRaw: "codex",
+            agentModelRaw: "test-model",
+            agentReasoningEffortRaw: nil,
+            autoEditEnabled: false
+        )
+        let restoreEntry = try XCTUnwrap(agentModeVM.test_ownerValidatedSessionIndex[sessionID])
+        agentModeVM.upsertSessionIndex(
+            sessionID: sessionID,
+            tabID: createdTarget.tabID,
+            name: "Hydrated session",
+            lastUserMessageAt: nil,
+            savedAt: savedAt,
+            lastRunStateRaw: AgentSessionRunState.completed.rawValue,
+            itemCount: 3,
+            agentKindRaw: "codex",
+            agentModelRaw: "test-model",
+            agentReasoningEffortRaw: nil,
+            autoEditEnabled: false
+        )
+        let resumeTarget = AgentModeViewModel.MCPSessionTarget(
+            tabID: createdTarget.tabID,
+            sessionID: sessionID,
+            origin: .createdForSessionResume,
+            lifecycleIdentity: createdTarget.lifecycleIdentity,
+            recoveryClaim: createdTarget.recoveryClaim,
+            discardAuthorityID: createdTarget.discardAuthorityID,
+            discardRestoreIndexEntry: restoreEntry
+        )
+        var deletionAttempts = 0
+        agentModeVM.test_setAgentSessionsDeleter { _, _ in
+            deletionAttempts += 1
+        }
+
+        await agentModeVM.mcpDiscardSessionTarget(resumeTarget)
+
+        XCTAssertEqual(try XCTUnwrap(resumeTarget.recoveryClaim).state, .complete)
+        XCTAssertEqual(deletionAttempts, 0)
+        XCTAssertEqual(agentModeVM.test_ownerValidatedSessionIndex[sessionID], restoreEntry)
+        XCTAssertNil(agentModeVM.session(for: resumeTarget.tabID, createIfNeeded: false))
     }
 
     #if DEBUG
@@ -3420,9 +3742,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             let sessionID = try XCTUnwrap(target.sessionID)
             try diagnostics.registerRecoverableStartTarget(
                 correlationID: arm.correlationID,
-                agentSessionID: sessionID,
-                targetTabID: target.tabID,
-                targetOrigin: target.origin
+                target: target
             )
             let startup = WorktreeStartupContext(
                 agentSessionID: sessionID,
@@ -3493,7 +3813,29 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
                 .joined()
             XCTAssertEqual(recovery.ownedPhysicalPathDigests, [expectedOwnedDigest])
             XCTAssertTrue(agentModeVM.worktreeBindings(forAgentSessionID: sessionID).isEmpty)
-            await agentModeVM.mcpDiscardSessionTarget(target)
+            let driftWorkspace = window.workspaceManager.createWorkspace(
+                name: "Diagnostic abort drift",
+                repoPaths: [fixture.repo.path],
+                ephemeral: true
+            )
+            window.workspaceManager.activeWorkspace = driftWorkspace
+            let driftTabIDs = try XCTUnwrap(window.workspaceManager.activeWorkspace).composeTabs.map(\.id)
+            let abortDecision = try diagnostics.requestRecoverableStartAbort(
+                scope: scope,
+                correlationID: arm.correlationID,
+                controlID: control.controlID
+            )
+            let reconstructedTarget = try XCTUnwrap(abortDecision.target)
+            XCTAssertEqual(reconstructedTarget.lifecycleIdentity, target.lifecycleIdentity)
+            XCTAssertEqual(reconstructedTarget.recoveryClaim, target.recoveryClaim)
+
+            let discardResult = await agentModeVM.mcpDiscardSessionTarget(reconstructedTarget)
+            XCTAssertEqual(discardResult, .complete)
+            XCTAssertFalse(window.workspaceManager.workspace(withID: workspace.id)?.composeTabs.contains(where: {
+                $0.id == target.tabID
+            }) == true)
+            XCTAssertEqual(window.workspaceManager.activeWorkspaceID, driftWorkspace.id)
+            XCTAssertEqual(window.workspaceManager.activeWorkspace?.composeTabs.map(\.id), driftTabIDs)
         }
     #endif
 
@@ -4119,6 +4461,55 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         XCTAssertEqual(Set(bindings.map(\.worktreeID)).count, 2)
         XCTAssertEqual(Set(bindings.map(\.worktreeRootPath)).count, 2)
         XCTAssertEqual(Set(bindings.compactMap(\.branch)).count, 2)
+        XCTAssertTrue(recorder.observations.allSatisfy { $0.recoveryClaim?.state == .accepted })
+    }
+
+    func testRunAndManageAcceptanceBoundariesPreserveAcceptedTargetsOnDiscard() async throws {
+        let runRoot = try makeTemporaryDirectory(named: "run-acceptance-boundary")
+        let runWindow = try await makeWindow(root: runRoot)
+        var runTarget: AgentModeViewModel.MCPSessionTarget?
+        var providerDispatchCount = 0
+        var runService = makeAgentRunStartService(
+            window: runWindow,
+            sourceTabID: nil,
+            onProviderStart: { providerDispatchCount += 1 }
+        )
+        runService.testAfterTargetResolution = { runTarget = $0 }
+
+        _ = try await runService.execute(args: [
+            "op": .string("start"),
+            "message": .string("accept run target"),
+            "detach": .bool(true),
+            "timeout": .int(0)
+        ])
+
+        let acceptedRunTarget = try XCTUnwrap(runTarget)
+        XCTAssertEqual(try XCTUnwrap(acceptedRunTarget.recoveryClaim).state, .accepted)
+        XCTAssertEqual(providerDispatchCount, 1)
+        await runWindow.agentModeViewModel.mcpDiscardSessionTarget(acceptedRunTarget)
+        XCTAssertNotNil(runWindow.agentModeViewModel.session(for: acceptedRunTarget.tabID, createIfNeeded: false))
+        XCTAssertNotNil(runWindow.workspaceManager.composeTab(with: acceptedRunTarget.tabID))
+
+        let manageRoot = try makeTemporaryDirectory(named: "manage-acceptance-boundary")
+        let manageWindow = try await makeWindow(root: manageRoot)
+        var manageTarget: AgentModeViewModel.MCPSessionTarget?
+        var bindCount = 0
+        var manageService = makeAgentManageService(
+            window: manageWindow,
+            onBindCurrentRequest: { bindCount += 1 }
+        )
+        manageService.testAfterTargetResolution = { manageTarget = $0 }
+
+        _ = try await manageService.execute(args: [
+            "op": .string("create_session")
+        ])
+
+        let acceptedManageTarget = try XCTUnwrap(manageTarget)
+        XCTAssertEqual(try XCTUnwrap(acceptedManageTarget.recoveryClaim).state, .accepted)
+        XCTAssertEqual(bindCount, 1)
+        await manageWindow.agentModeViewModel.mcpDiscardSessionTarget(acceptedManageTarget)
+        XCTAssertNotNil(manageWindow.agentModeViewModel.session(for: acceptedManageTarget.tabID, createIfNeeded: false))
+        XCTAssertNotNil(manageWindow.workspaceManager.composeTab(with: acceptedManageTarget.tabID))
     }
 
     func testAgentRunQueuedStartRejectsWorkspaceDriftBeforeProviderDispatch() async throws {
@@ -4505,6 +4896,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             expectedWorkspaceID: firstWorkspace.id
         )
         let sessionID = try XCTUnwrap(target.sessionID)
+        window.agentModeViewModel.mcpAcceptSessionTarget(target)
         let secondWorkspace = window.workspaceManager.createWorkspace(
             name: "Steer Reactivation Drift Workspace B",
             repoPaths: [secondRoot.path],
@@ -4545,13 +4937,18 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         let firstFixture = try makeGitFixture()
         let secondFixture = try makeGitFixture()
         let window = try await makeWindow(root: firstFixture.repo)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let firstWorkspaceInitialTabIDs = firstWorkspace.composeTabs.map(\.id)
         let secondWorkspace = window.workspaceManager.createWorkspace(
             name: "Run Post Admission Workspace B",
             repoPaths: [secondFixture.repo.path],
             ephemeral: true
         )
         var providerDispatchCount = 0
+        var capturedTarget: AgentModeViewModel.MCPSessionTarget?
         var capturedSession: AgentModeViewModel.TabSession?
+        var secondWorkspaceTabIDsAfterSwitch: [UUID]?
+        var secondWorkspaceAgentIDsAfterSwitch: [UUID?]?
         var switchSucceeded = false
         var service = makeAgentRunStartService(
             window: window,
@@ -4559,6 +4956,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             onProviderStart: { providerDispatchCount += 1 }
         )
         service.testAfterTargetResolution = { target in
+            capturedTarget = target
             capturedSession = window.agentModeViewModel.session(for: target.tabID)
             let result = await window.workspaceManager.switchWorkspace(
                 to: secondWorkspace,
@@ -4566,6 +4964,18 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
                 reason: "agentRunPostAdmissionWorkspaceDrift"
             )
             switchSucceeded = result.didSwitch
+            secondWorkspaceTabIDsAfterSwitch = window.workspaceManager.activeWorkspace?.composeTabs.map(\.id)
+            secondWorkspaceAgentIDsAfterSwitch = window.workspaceManager.activeWorkspace?.composeTabs.map(\.activeAgentSessionID)
+            let liveSession = window.agentModeViewModel.session(for: target.tabID)
+            XCTAssertEqual(
+                liveSession.bindingTransitionGeneration,
+                target.lifecycleIdentity?.bindingTransitionGeneration
+            )
+            XCTAssertEqual(
+                window.workspaceManager.workspace(withID: firstWorkspace.id)?.composeTabs
+                    .first(where: { $0.id == target.tabID })?.activeAgentSessionID,
+                target.sessionID
+            )
         }
 
         do {
@@ -4582,11 +4992,162 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         }
         XCTAssertTrue(switchSucceeded)
         XCTAssertEqual(providerDispatchCount, 0)
+        let rejectedTarget = try XCTUnwrap(capturedTarget)
         XCTAssertTrue(try XCTUnwrap(capturedSession).worktreeBindings.isEmpty)
+        XCTAssertNil(window.agentModeViewModel.session(for: rejectedTarget.tabID, createIfNeeded: false))
+        XCTAssertEqual(try XCTUnwrap(rejectedTarget.recoveryClaim).state, .complete)
+        XCTAssertEqual(
+            window.workspaceManager.workspace(withID: firstWorkspace.id)?.composeTabs.map(\.id),
+            firstWorkspaceInitialTabIDs
+        )
+        XCTAssertEqual(window.workspaceManager.activeWorkspace?.composeTabs.map(\.id), secondWorkspaceTabIDsAfterSwitch)
+        XCTAssertEqual(
+            window.workspaceManager.activeWorkspace?.composeTabs.map(\.activeAgentSessionID),
+            secondWorkspaceAgentIDsAfterSwitch
+        )
         let firstDescriptors = try await VCSService.shared.listGitWorktrees(at: firstFixture.repo)
         let secondDescriptors = try await VCSService.shared.listGitWorktrees(at: secondFixture.repo)
         XCTAssertTrue(firstDescriptors.allSatisfy(\.isMain))
         XCTAssertTrue(secondDescriptors.allSatisfy(\.isMain))
+    }
+
+    func testSuspendedProvisionalRunRejectsStopLookupWithoutLosingRecoveryAuthority() async throws {
+        let firstFixture = try makeGitFixture()
+        let secondFixture = try makeGitFixture()
+        let window = try await makeWindow(root: firstFixture.repo)
+        let firstWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let firstWorkspaceInitialTabIDs = firstWorkspace.composeTabs.map(\.id)
+        let secondWorkspace = window.workspaceManager.createWorkspace(
+            name: "Suspended provisional drift workspace",
+            repoPaths: [secondFixture.repo.path],
+            ephemeral: true
+        )
+        let suspensionGate = AgentRunWorktreeStartAsyncGate()
+        var providerDispatchCount = 0
+        var capturedTarget: AgentModeViewModel.MCPSessionTarget?
+        var runService = makeAgentRunStartService(
+            window: window,
+            sourceTabID: nil,
+            onProviderStart: { providerDispatchCount += 1 }
+        )
+        runService.testAfterTargetResolution = { target in
+            capturedTarget = target
+            await suspensionGate.markStartedAndWaitForRelease()
+        }
+        let run = Task { @MainActor in
+            try await runService.execute(args: [
+                "op": .string("start"),
+                "message": .string("fail after provisional suspension"),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+        }
+        await suspensionGate.waitUntilStarted()
+
+        let target = try XCTUnwrap(capturedTarget)
+        let sessionID = try XCTUnwrap(target.sessionID)
+        let claim = try XCTUnwrap(target.recoveryClaim)
+        XCTAssertEqual(claim.state, .provisional)
+        XCTAssertEqual(window.agentModeViewModel.test_outstandingProvisionalMCPSessionTargetCount, 1)
+        XCTAssertEqual(window.agentModeViewModel.test_pendingMCPSessionTargetDiscardCount, 0)
+        let manageService = makeAgentManageService(window: window)
+        do {
+            _ = try await manageService.execute(args: [
+                "op": .string("stop_session"),
+                "session_id": .string(sessionID.uuidString)
+            ])
+            XCTFail("stop_session must fail closed while the target is provisional.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("cannot be stopped"), error.localizedDescription)
+        }
+        XCTAssertEqual(claim.state, .provisional)
+        XCTAssertEqual(window.agentModeViewModel.test_outstandingProvisionalMCPSessionTargetCount, 1)
+        XCTAssertEqual(window.agentModeViewModel.test_pendingMCPSessionTargetDiscardCount, 0)
+
+        let switchResult = await window.workspaceManager.switchWorkspace(
+            to: secondWorkspace,
+            saveState: false,
+            reason: "suspendedProvisionalRunFailure"
+        )
+        XCTAssertTrue(switchResult.didSwitch)
+        let secondWorkspaceTabIDs = try XCTUnwrap(window.workspaceManager.activeWorkspace).composeTabs.map(\.id)
+        let inactiveSession = try XCTUnwrap(window.agentModeViewModel.session(
+            for: target.tabID,
+            createIfNeeded: false
+        ))
+        XCTAssertEqual(inactiveSession.activeAgentSessionID, sessionID)
+        XCTAssertEqual(
+            inactiveSession.bindingTransitionGeneration,
+            target.lifecycleIdentity?.bindingTransitionGeneration
+        )
+        XCTAssertEqual(inactiveSession.persistentSessionBindingIdentity?.tabID, target.tabID)
+        XCTAssertEqual(inactiveSession.persistentSessionBindingIdentity?.sessionID, sessionID)
+        XCTAssertEqual(
+            window.workspaceManager.workspace(withID: firstWorkspace.id)?.composeTabs
+                .first(where: { $0.id == target.tabID })?.activeAgentSessionID,
+            sessionID
+        )
+        await suspensionGate.release()
+        do {
+            _ = try await run.value
+            XCTFail("The suspended run must fail after its captured workspace changes.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("active workspace"), error.localizedDescription)
+        }
+
+        XCTAssertEqual(providerDispatchCount, 0)
+        XCTAssertEqual(claim.state, .complete)
+        XCTAssertEqual(window.agentModeViewModel.test_outstandingProvisionalMCPSessionTargetCount, 0)
+        XCTAssertEqual(window.agentModeViewModel.test_pendingMCPSessionTargetDiscardCount, 0)
+        XCTAssertNil(window.agentModeViewModel.session(for: target.tabID, createIfNeeded: false))
+        XCTAssertNil(window.agentModeViewModel.test_ownerValidatedSessionIndex[sessionID])
+        XCTAssertEqual(
+            window.workspaceManager.workspace(withID: firstWorkspace.id)?.composeTabs.map(\.id),
+            firstWorkspaceInitialTabIDs
+        )
+        XCTAssertEqual(window.workspaceManager.activeWorkspace?.composeTabs.map(\.id), secondWorkspaceTabIDs)
+        let firstDescriptors = try await VCSService.shared.listGitWorktrees(at: firstFixture.repo)
+        let secondDescriptors = try await VCSService.shared.listGitWorktrees(at: secondFixture.repo)
+        XCTAssertTrue(firstDescriptors.allSatisfy(\.isMain))
+        XCTAssertTrue(secondDescriptors.allSatisfy(\.isMain))
+    }
+
+    func testAcceptedTargetAndRepeatedStopLookupsReleaseProvisionalAuthority() async throws {
+        let root = try makeTemporaryDirectory(named: "accepted-stop-lookup")
+        let window = try await makeWindow(root: root)
+        let agentModeVM = window.agentModeViewModel
+        let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: nil,
+            createIfNeeded: true,
+            sessionName: "accepted stop lookup"
+        )
+        let sessionID = try XCTUnwrap(target.sessionID)
+        let claim = try XCTUnwrap(target.recoveryClaim)
+
+        agentModeVM.mcpAcceptSessionTarget(target)
+        XCTAssertEqual(claim.state, .accepted)
+        XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+
+        let manageService = makeAgentManageService(window: window)
+        for _ in 0 ..< 2 {
+            _ = try await manageService.execute(args: [
+                "op": .string("stop_session"),
+                "session_id": .string(sessionID.uuidString)
+            ])
+            let lookup = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+                tabID: nil,
+                sessionID: sessionID,
+                createIfNeeded: false,
+                sessionName: nil
+            )
+            XCTAssertEqual(lookup.origin, .existingSession)
+            XCTAssertNil(lookup.recoveryClaim)
+            XCTAssertNil(lookup.discardAuthorityID)
+            XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
+        }
+        XCTAssertNotNil(agentModeVM.session(for: target.tabID, createIfNeeded: false))
+        XCTAssertNotNil(window.workspaceManager.composeTab(with: target.tabID))
     }
 
     func testAgentExploreRejectsDriftBeforeExplicitWorktreeAndBetweenBatchChildren() async throws {
@@ -4698,6 +5259,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             expectedWorkspaceID: firstWorkspace.id
         )
         let sessionID = try XCTUnwrap(resumableTarget.sessionID)
+        window.agentModeViewModel.mcpAcceptSessionTarget(resumableTarget)
         let resumableSession = window.agentModeViewModel.session(for: resumableTarget.tabID)
         let originalAgent = resumableSession.selectedAgent
         let secondWorkspace = window.workspaceManager.createWorkspace(
@@ -4748,6 +5310,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
             expectedWorkspaceID: firstWorkspace.id
         )
         let sessionID = try XCTUnwrap(target.sessionID)
+        window.agentModeViewModel.mcpAcceptSessionTarget(target)
         let session = window.agentModeViewModel.session(for: target.tabID)
         let originalAgent = session.selectedAgent
         let originalModel = session.selectedModelRaw
@@ -5607,6 +6170,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         struct Observation {
             let sessionID: UUID
             let tabID: UUID
+            let recoveryClaim: AgentProvisionalAdmissionClaim?
             let message: String
             let taskLabelKind: AgentModelCatalog.TaskLabelKind?
             let workflow: AgentWorkflowDefinition?
@@ -5667,6 +6231,7 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
                     .init(
                         sessionID: sessionID,
                         tabID: target.tabID,
+                        recoveryClaim: target.recoveryClaim,
                         message: message,
                         taskLabelKind: taskLabelKind,
                         workflow: workflow,
@@ -6098,11 +6663,15 @@ private actor AgentRunWorktreeStartAsyncGate {
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func markStartedAndWaitForRelease() async {
+    func markStarted() {
         started = true
         let waiters = startWaiters
         startWaiters.removeAll()
         waiters.forEach { $0.resume() }
+    }
+
+    func markStartedAndWaitForRelease() async {
+        markStarted()
         guard !released else { return }
         await withCheckedContinuation { releaseWaiters.append($0) }
     }
