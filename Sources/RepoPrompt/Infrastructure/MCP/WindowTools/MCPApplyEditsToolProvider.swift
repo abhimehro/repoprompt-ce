@@ -9,9 +9,11 @@ enum MCPApplyEditsMissingTargetPolicy {
         _ input: WorkspaceExactFileInput,
         namespace: WorkspaceExactFileNamespace
     ) -> Bool {
-        // Creation must choose an unqualified destination so a stale exact identity cannot silently become a new file.
+        // Root-qualified replay identities must not become create destinations after their binding disappears.
         switch input {
-        case .absolute, .explicitRoot:
+        case .absolute:
+            false
+        case .explicitRoot:
             true
         case let .relative(relativePath):
             // A resolved alias names one binding, so losing that binding must not redirect the request into creation.
@@ -67,7 +69,7 @@ final class MCPApplyEditsToolProvider: MCPAppToolProviding {
             `{"path": "file.swift", "edits": [{"search": "old1", "replace": "new1"}, {"search": "old2", "replace": "new2"}]}`
 
             Note: Modes are mutually exclusive. Providing more than one will result in an error.
-            Existing workspace files use exact, literal-first paths. Reuse the path returned by `read_file`; `<root-alias>//<relative-path>` explicitly selects a root when needed. Approved external read paths are not editable. Missing-file creation accepts only unqualified relative destinations; absolute paths, explicit `//` paths, and resolved display aliases identify existing files only.
+            Existing workspace files use exact, literal-first paths. Reuse the path returned by `read_file`; `<root-alias>//<relative-path>` explicitly selects a root when needed. Approved external read paths are not editable. Missing-file creation accepts contained absolute paths and unqualified relative destinations; explicit `//` paths and resolved display aliases identify existing files only.
 
             Options: `verbose` (show diff), `on_missing` (for rewrite only: "error" | "create", default: "error")
             Edits are literal. Use real JSON newlines for multi-line search/replace (not `\\n`). If a match fails, the tool may retry internally with escape decoding.
@@ -185,7 +187,9 @@ final class MCPApplyEditsToolProvider: MCPAppToolProviding {
                 throw MCPError.invalidParams("'\(request.path)' is a folder; apply_edits requires a file path.")
             case .claimedMissing, .noCandidate:
                 if MCPApplyEditsMissingTargetPolicy.requiresExistingFile(exactInput, namespace: namespace) {
-                    throw MCPError.invalidParams("File '\(request.path)' does not exist. Qualified paths identify existing files only.")
+                    throw MCPError.invalidParams(
+                        "File '\(request.path)' does not exist. Explicit root and resolved display-alias paths identify existing files only."
+                    )
                 }
                 effectivePath = lookupContext.translateInputPath(request.path)
                 displayPath = request.path

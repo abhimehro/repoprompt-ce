@@ -1239,7 +1239,9 @@ actor WorkspaceFileContextStore {
         private var rootUnloadDidDetachHandler: (@Sendable ([String]) async -> Void)?
         private var ensureIndexedFilesEligibilityDidResolveHandler: (@Sendable (UUID, String) async -> Void)?
         private var contextBuilderSelectionCandidateEligibilityDidResolveHandler: (@Sendable (UUID) async -> Void)?
+        private var contextBuilderSelectionCandidateDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
         private var publishedGitArtifactIngressDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
+        private var postWriteCatalogRegistrationDidBeginHandler: (@Sendable (UUID, String) async -> Void)?
         private var watcherSinkWillApplyHandler: (@Sendable (UUID) async -> Void)?
         private var storeEditDeferredPublicationDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
         private var publisherIngressWillWaitHandler: (@Sendable (Set<UUID>) async -> Void)?
@@ -1965,10 +1967,22 @@ actor WorkspaceFileContextStore {
             contextBuilderSelectionCandidateEligibilityDidResolveHandler = handler
         }
 
+        func setContextBuilderSelectionCandidateDidRegisterHandler(
+            _ handler: (@Sendable (UUID, String) async -> Void)?
+        ) {
+            contextBuilderSelectionCandidateDidRegisterHandler = handler
+        }
+
         func setPublishedGitArtifactIngressDidRegisterHandler(
             _ handler: (@Sendable (UUID, String) async -> Void)?
         ) {
             publishedGitArtifactIngressDidRegisterHandler = handler
+        }
+
+        func setPostWriteCatalogRegistrationDidBeginHandler(
+            _ handler: (@Sendable (UUID, String) async -> Void)?
+        ) {
+            postWriteCatalogRegistrationDidBeginHandler = handler
         }
 
         func setWatcherSinkWillApplyHandler(_ handler: (@Sendable (UUID) async -> Void)?) {
@@ -16696,25 +16710,44 @@ actor WorkspaceFileContextStore {
             throw CancellationError()
         }
         didCommitCodemapMutation = true
-        let destinationEligibility = await state.service.registerExplicitlyManagedRegularFile(relativePath: newPath)
-        let destinationManagedOnly: Bool
-        switch destinationEligibility {
-        case .eligible:
-            destinationManagedOnly = false
-        case .ineligible(.ignored):
-            destinationManagedOnly = true
-        case let .ineligible(reason):
-            throw WorkspaceFileContextStoreError.catalogMaterializationFailed("moved file is not catalog-eligible at destination: \(reason.description)")
-        }
-        withCodemapPathLocalCatalogMutation(rootID: rootID) {
-            removeFile(relativePath: oldPath, rootID: rootID)
-            indexFile(relativePath: newPath, root: state.root, managedOnly: destinationManagedOnly)
-            publishAppliedIndexEvent(
-                root: state.root,
-                upsertedFiles: destinationManagedOnly ? [] : (file(rootID: rootID, relativePath: newPath).map { [$0] } ?? []),
-                removedFileIDs: oldFileWasDiscoverable ? (oldFile.map { [$0.id] } ?? []) : [],
-                removedFilePaths: oldFileWasDiscoverable ? (oldFile.map { [$0.standardizedRelativePath] } ?? []) : []
-            )
+        let destinationRegistration = await state.service.beginExplicitlyManagedRegularFileRegistration(relativePath: newPath)
+        var pendingRegistrationToken = destinationRegistration.token
+        do {
+            try Task.checkCancellation()
+            guard let currentState = rootStatesByID[rootID],
+                  currentState.lifetimeID == state.lifetimeID,
+                  currentState.service === state.service
+            else {
+                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
+            }
+            let destinationManagedOnly: Bool
+            switch destinationRegistration.eligibility {
+            case .eligible:
+                destinationManagedOnly = false
+            case .ineligible(.ignored):
+                destinationManagedOnly = true
+            case let .ineligible(reason):
+                throw WorkspaceFileContextStoreError.catalogMaterializationFailed("moved file is not catalog-eligible at destination: \(reason.description)")
+            }
+            withCodemapPathLocalCatalogMutation(rootID: rootID) {
+                removeFile(relativePath: oldPath, rootID: rootID)
+                indexFile(relativePath: newPath, root: state.root, managedOnly: destinationManagedOnly)
+                publishAppliedIndexEvent(
+                    root: state.root,
+                    upsertedFiles: destinationManagedOnly ? [] : (file(rootID: rootID, relativePath: newPath).map { [$0] } ?? []),
+                    removedFileIDs: oldFileWasDiscoverable ? (oldFile.map { [$0.id] } ?? []) : [],
+                    removedFilePaths: oldFileWasDiscoverable ? (oldFile.map { [$0.standardizedRelativePath] } ?? []) : []
+                )
+            }
+            if let token = pendingRegistrationToken {
+                _ = await state.service.commitExplicitlyManagedRegularFileRegistration(token)
+                pendingRegistrationToken = nil
+            }
+        } catch {
+            if let pendingRegistrationToken {
+                _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+            }
+            throw error
         }
     }
 
@@ -18153,19 +18186,35 @@ actor WorkspaceFileContextStore {
                 rootToken: state.service.diagnosticRootToken.uuidString
             )
         )
-        let registeredEligibility = await state.service.registerExplicitlyManagedRegularFile(relativePath: candidate.relativePath)
+        let registration = await state.service.beginExplicitlyManagedRegularFileRegistration(
+            relativePath: candidate.relativePath
+        )
+        let registeredEligibility = registration.eligibility
+        var pendingRegistrationToken = registration.token
         #if DEBUG
             await awaitExactFileSuspensionGateForTesting(
                 point: .explicitManagedRegistration,
                 rootID: candidate.rootID
             )
         #endif
-        try Task.checkCancellation()
+        if Task.isCancelled {
+            if let pendingRegistrationToken {
+                _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                    pendingRegistrationToken
+                )
+            }
+            throw CancellationError()
+        }
         guard let currentState = rootStatesByID[candidate.rootID],
               currentState.lifetimeID == candidate.lifetimeID,
               currentState.service === candidate.service,
               file(rootID: candidate.rootID, relativePath: candidate.relativePath) == nil
         else {
+            if let pendingRegistrationToken {
+                _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                    pendingRegistrationToken
+                )
+            }
             EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
                 correlation: lifecycleCorrelation,
@@ -18218,7 +18267,14 @@ actor WorkspaceFileContextStore {
                 expectedLifetimeID: candidate.lifetimeID,
                 requireCatalogFileAbsent: true
             )
-            try Task.checkCancellation()
+            if Task.isCancelled {
+                if let pendingRegistrationToken {
+                    _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                        pendingRegistrationToken
+                    )
+                }
+                throw CancellationError()
+            }
             let stateAfterPrune: RootState? = rootStatesByID[candidate.rootID].flatMap { state in
                 guard missingClassificationIsCurrent,
                       state.lifetimeID == candidate.lifetimeID,
@@ -18238,12 +18294,27 @@ actor WorkspaceFileContextStore {
                 )
             )
             guard stateAfterPrune != nil else {
+                if let pendingRegistrationToken {
+                    _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                        pendingRegistrationToken
+                    )
+                }
                 setTerminalOutcome("unavailable")
                 return .unavailable
+            }
+            if let pendingRegistrationToken {
+                _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                    pendingRegistrationToken
+                )
             }
             setTerminalOutcome("noCandidate")
             return .noCandidate
         case .ineligible:
+            if let pendingRegistrationToken {
+                _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                    pendingRegistrationToken
+                )
+            }
             setTerminalOutcome("blocked")
             return .blocked
         }
@@ -18272,6 +18343,11 @@ actor WorkspaceFileContextStore {
         )
         if Task.isCancelled {
             finishCodemapRootMutationFence(codemapFence, didCommitMutation: false)
+            if let pendingRegistrationToken {
+                _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                    pendingRegistrationToken
+                )
+            }
             throw CancellationError()
         }
         guard let codemapFence,
@@ -18282,6 +18358,11 @@ actor WorkspaceFileContextStore {
               file(rootID: candidate.rootID, relativePath: candidate.relativePath) == nil
         else {
             finishCodemapRootMutationFence(codemapFence, didCommitMutation: false)
+            if let pendingRegistrationToken {
+                _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                    pendingRegistrationToken
+                )
+            }
             setTerminalOutcome("unavailable")
             return .unavailable
         }
@@ -18300,6 +18381,12 @@ actor WorkspaceFileContextStore {
                 managedOnly: managedOnly
             )
             didCommitCatalogMutation = true
+            if let registrationToken = pendingRegistrationToken {
+                _ = await candidate.service.commitExplicitlyManagedRegularFileRegistration(
+                    registrationToken
+                )
+                pendingRegistrationToken = nil
+            }
             EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.WorkspaceExactResolution.checkpoint,
                 correlation: lifecycleCorrelation,
@@ -18344,6 +18431,11 @@ actor WorkspaceFileContextStore {
             setTerminalOutcome("materialized")
             return .materialized(materialized)
         } catch {
+            if let pendingRegistrationToken {
+                _ = await candidate.service.rollbackExplicitlyManagedRegularFileRegistration(
+                    pendingRegistrationToken
+                )
+            }
             setTerminalOutcome(error is CancellationError ? "cancelled" : "error")
             throw error
         }
@@ -18357,39 +18449,69 @@ actor WorkspaceFileContextStore {
     ) async throws -> WorkspaceFileCatalogMaterializationResult {
         let state = try state(for: rootID)
         let standardizedRelativePath = StandardizedPath.relative(relativePath)
-        let eligibility = await state.service.registerExplicitlyManagedRegularFile(relativePath: standardizedRelativePath)
+        let registration = await state.service.beginExplicitlyManagedRegularFileRegistration(
+            relativePath: standardizedRelativePath
+        )
+        var pendingRegistrationToken = registration.token
+        #if DEBUG
+            if let postWriteCatalogRegistrationDidBeginHandler {
+                await postWriteCatalogRegistrationDidBeginHandler(rootID, standardizedRelativePath)
+            }
+        #endif
 
-        func materialize(managedOnly: Bool) throws -> WorkspaceFileCatalogMaterializationResult {
-            let perform = {
-                try self.materializeCatalogRegularFile(
-                    rootID: rootID,
-                    relativePath: standardizedRelativePath,
-                    managedOnly: managedOnly
-                )
+        do {
+            try Task.checkCancellation()
+            guard let currentState = rootStatesByID[rootID],
+                  currentState.lifetimeID == state.lifetimeID,
+                  currentState.service === state.service
+            else {
+                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
             }
-            let file = if codemapPathLocalMutation {
-                try withCodemapPathLocalCatalogMutation(rootID: rootID, perform)
-            } else {
-                try perform()
-            }
-            return .materialized(file)
-        }
 
-        switch eligibility {
-        case .ineligible(.ignored):
-            // A direct app/MCP write is an explicit request to manage this exact file.
-            // Keep it available for follow-up read_file/apply_edits calls without making
-            // ignored siblings discoverable through scans or replay.
-            return try materialize(managedOnly: true)
-        case let .ineligible(reason):
-            guard isExpectedDiskWriteCatalogIneligibility(reason) else {
-                throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
-                    "file was written but is not catalog-eligible after the write: \(reason.description)"
-                )
+            func materialize(managedOnly: Bool) throws -> WorkspaceFileCatalogMaterializationResult {
+                let perform = {
+                    try self.materializeCatalogRegularFile(
+                        rootID: rootID,
+                        relativePath: standardizedRelativePath,
+                        managedOnly: managedOnly
+                    )
+                }
+                let file = if codemapPathLocalMutation {
+                    try withCodemapPathLocalCatalogMutation(rootID: rootID, perform)
+                } else {
+                    try perform()
+                }
+                return .materialized(file)
             }
-            return .ineligible(reason)
-        case .eligible:
-            return try materialize(managedOnly: false)
+
+            let result: WorkspaceFileCatalogMaterializationResult
+            switch registration.eligibility {
+            case .ineligible(.ignored):
+                // A direct app/MCP write is an explicit request to manage this exact file.
+                // Keep it available for follow-up read_file/apply_edits calls without making
+                // ignored siblings discoverable through scans or replay.
+                result = try materialize(managedOnly: true)
+            case let .ineligible(reason):
+                guard isExpectedDiskWriteCatalogIneligibility(reason) else {
+                    throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                        "file was written but is not catalog-eligible after the write: \(reason.description)"
+                    )
+                }
+                result = .ineligible(reason)
+            case .eligible:
+                result = try materialize(managedOnly: false)
+            }
+
+            if let token = pendingRegistrationToken {
+                _ = await state.service.commitExplicitlyManagedRegularFileRegistration(token)
+                pendingRegistrationToken = nil
+            }
+            return result
+        } catch {
+            if let pendingRegistrationToken {
+                _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+            }
+            throw error
         }
     }
 
@@ -18477,29 +18599,44 @@ actor WorkspaceFileContextStore {
             ), state.lifetimeID == expectedBatchLifetimeID else {
                 return staleRootResult()
             }
-            let eligibility = await state.service.registerExplicitlyManagedRegularFile(
+            let registration = await state.service.beginExplicitlyManagedRegularFileRegistration(
                 relativePath: relativePath
             )
+            var pendingRegistrationToken = registration.token
             #if DEBUG
                 if let publishedGitArtifactIngressDidRegisterHandler {
                     await publishedGitArtifactIngressDidRegisterHandler(request.root.id, relativePath)
                 }
             #endif
+            if Task.isCancelled {
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
+                return staleRootResult()
+            }
 
             guard let revalidatedState = exactRootState(
                 expectedRoot: request.root,
                 expectedKind: .workspaceGitData
-            ), revalidatedState.lifetimeID == expectedBatchLifetimeID else {
+            ), revalidatedState.lifetimeID == expectedBatchLifetimeID,
+            revalidatedState.service === state.service
+            else {
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 return staleRootResult()
             }
 
             let managedOnly: Bool
-            switch eligibility {
+            switch registration.eligibility {
             case .eligible:
                 managedOnly = false
             case .ineligible(.ignored):
                 managedOnly = true
             case .ineligible(.missingOrDirectory):
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 pruneCatalogFileMissingOnDisk(
                     rootID: request.root.id,
                     relativePath: relativePath,
@@ -18508,6 +18645,9 @@ actor WorkspaceFileContextStore {
                 append(artifact, .missingOnDisk)
                 continue
             case let .ineligible(reason):
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 append(artifact, .ineligible(reason: reason))
                 continue
             }
@@ -18519,8 +18659,15 @@ actor WorkspaceFileContextStore {
                     managedOnly: managedOnly
                 )
                 didPublishCatalogMutation = true
+                if let token = pendingRegistrationToken {
+                    _ = await state.service.commitExplicitlyManagedRegularFileRegistration(token)
+                    pendingRegistrationToken = nil
+                }
                 append(artifact, .cataloged(record: record))
             } catch {
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 if !regularFileAppearsPresentOnDisk(
                     root: revalidatedState.root,
                     relativePath: relativePath
@@ -19455,22 +19602,51 @@ actor WorkspaceFileContextStore {
                 return .resolved(files: [record], route: .catalogFile)
             }
 
-            let registered = await state.service.registerExplicitlyManagedRegularFile(
+            let registration = await state.service.beginExplicitlyManagedRegularFileRegistration(
                 relativePath: relativePath
             )
-            try Task.checkCancellation()
+            var pendingRegistrationToken = registration.token
+            #if DEBUG
+                if let contextBuilderSelectionCandidateDidRegisterHandler {
+                    await contextBuilderSelectionCandidateDidRegisterHandler(authorization.root.id, relativePath)
+                }
+            #endif
+            if Task.isCancelled {
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
+                throw CancellationError()
+            }
+            guard let currentState = rootStatesByID[authorization.root.id],
+                  currentState.lifetimeID == state.lifetimeID,
+                  currentState.service === state.service
+            else {
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
+                return .staleAuthority(.lifetime)
+            }
             if let mismatch = sessionRootAuthorizationMismatch(authorization) {
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 return .staleAuthority(mismatch)
             }
             let managedOnly: Bool
-            switch registered {
+            switch registration.eligibility {
             case .eligible:
                 managedOnly = false
             case .ineligible(.ignored):
                 managedOnly = true
             case .ineligible(.missingOrDirectory):
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 return .noCandidate
             case let .ineligible(reason):
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 return .blockedOrAmbiguous(
                     contextBuilderSelectionCandidateBlock(for: reason)
                 )
@@ -19481,11 +19657,18 @@ actor WorkspaceFileContextStore {
                     relativePath: relativePath,
                     managedOnly: managedOnly
                 )
+                if let token = pendingRegistrationToken {
+                    _ = await state.service.commitExplicitlyManagedRegularFileRegistration(token)
+                    pendingRegistrationToken = nil
+                }
                 if let mismatch = sessionRootAuthorizationMismatch(authorization) {
                     return .staleAuthority(mismatch)
                 }
                 return .resolved(files: [record], route: .materializedFile)
             } catch {
+                if let pendingRegistrationToken {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                }
                 return .blockedOrAmbiguous(.materializationFailed)
             }
 

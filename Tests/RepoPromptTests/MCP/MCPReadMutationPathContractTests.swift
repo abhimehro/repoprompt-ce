@@ -39,7 +39,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         )
 
         let cases: [(label: String, input: WorkspaceExactFileInput, expected: Bool)] = [
-            ("absolute", .absolute("/tmp/addressed/New.swift"), true),
+            ("absolute", .absolute("/tmp/addressed/New.swift"), false),
             ("explicit root", .explicitRoot(alias: displayAlias, relativePath: "New.swift"), true),
             ("projected display alias", .relative("\(displayAlias)/New.swift"), true),
             ("bare relative", .relative("New.swift"), false),
@@ -58,7 +58,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         }
     }
 
-    func testApplyEditsMissingTargetPolicyBlocksQualifiedDiskCreationAndAllowsBareCreate() async throws {
+    func testApplyEditsMissingTargetPolicyBlocksQualifiedDiskCreationAndAllowsComposedAbsoluteAndBareCreate() async throws {
         let parent = try makeTemporaryDirectory(name: "ApplyEditsMissingTargetDiskPolicy")
         let physicalRootURL = parent.appendingPathComponent("Physical", isDirectory: true)
         let logicalRootURL = parent.appendingPathComponent("Logical", isDirectory: true)
@@ -69,6 +69,25 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         let roots = await store.rootRefs(scope: .visibleWorkspace)
         let physicalRoot = try XCTUnwrap(roots.first(where: { $0.id == physicalRootRecord.id }))
         let logicalRoot = WorkspaceRootRef(id: UUID(), name: "Logical", fullPath: logicalRootURL.path)
+        let binding = AgentSessionWorktreeBinding(
+            id: "binding-absolute-create",
+            repositoryID: "repo-absolute-create",
+            repoKey: "repo-key",
+            logicalRootPath: logicalRoot.fullPath,
+            logicalRootName: logicalRoot.name,
+            worktreeID: "worktree-absolute-create",
+            worktreeRootPath: physicalRoot.fullPath,
+            source: "test"
+        )
+        let projection = WorkspaceRootBindingProjection(
+            sessionID: UUID(),
+            boundRoots: [.init(logicalRoot: logicalRoot, physicalRoot: physicalRoot, binding: binding)],
+            visibleLogicalRoots: [logicalRoot]
+        )
+        let lookupContext = WorkspaceLookupContext(
+            rootScope: projection.lookupRootScope,
+            bindingProjection: projection
+        )
         let namespace = WorkspaceExactFileNamespace(rootBindings: [
             .init(
                 lookupRoot: physicalRoot,
@@ -82,7 +101,6 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             visibleRoots: namespace.clientRoots
         )
         let qualifiedInputs: [WorkspaceExactFileInput] = [
-            .absolute(logicalRootURL.appendingPathComponent("Qualified.swift").path),
             .explicitRoot(alias: displayAlias, relativePath: "Qualified.swift"),
             .relative("\(displayAlias)/Qualified.swift")
         ]
@@ -90,6 +108,33 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             XCTAssertTrue(MCPApplyEditsMissingTargetPolicy.requiresExistingFile(input, namespace: namespace))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: physicalRootURL.appendingPathComponent("Qualified.swift").path))
+
+        let logicalAbsoluteTargetURL = logicalRootURL.appendingPathComponent("AbsoluteCreated.swift")
+        let physicalAbsoluteTargetURL = physicalRootURL.appendingPathComponent("AbsoluteCreated.swift")
+        let absoluteInput = WorkspaceExactFileInput.absolute(logicalAbsoluteTargetURL.path)
+        XCTAssertFalse(MCPApplyEditsMissingTargetPolicy.requiresExistingFile(absoluteInput, namespace: namespace))
+        let translatedAbsolutePath = lookupContext.translateInputPath(logicalAbsoluteTargetURL.path)
+        XCTAssertEqual(translatedAbsolutePath, physicalAbsoluteTargetURL.path)
+        let absoluteHost = WorkspaceFileEditHost(
+            store: store,
+            target: .create(path: translatedAbsolutePath),
+            lookupRootScope: .visibleWorkspace,
+            createPathResolutionPolicy: .canonicalAliasFirst,
+            selectCreatedFiles: false
+        )
+        let absoluteResult = try await ApplyEditsService(engine: .default, host: absoluteHost).run(
+            ApplyEditsRequest(
+                path: logicalAbsoluteTargetURL.path,
+                mode: .rewrite(newText: "absolute created\n", onMissing: .create),
+                verbose: false
+            )
+        )
+        XCTAssertEqual(absoluteResult.status, .success)
+        XCTAssertEqual(
+            try String(contentsOf: physicalAbsoluteTargetURL, encoding: .utf8),
+            "absolute created\n"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logicalAbsoluteTargetURL.path))
 
         let bareInput = WorkspaceExactFileInput.relative("Created.swift")
         XCTAssertFalse(MCPApplyEditsMissingTargetPolicy.requiresExistingFile(bareInput, namespace: namespace))
@@ -112,6 +157,65 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             try String(contentsOf: physicalRootURL.appendingPathComponent("Created.swift"), encoding: .utf8),
             "created\n"
         )
+    }
+
+    func testApplyEditsComposedAbsoluteCreateRejectsOutsidePhysicalRootWithoutDiskWrite() async throws {
+        let parent = try makeTemporaryDirectory(name: "ApplyEditsOutsideAbsoluteCreate")
+        let physicalRootURL = parent.appendingPathComponent("Physical", isDirectory: true)
+        let logicalRootURL = parent.appendingPathComponent("Logical", isDirectory: true)
+        try FileManager.default.createDirectory(at: physicalRootURL, withIntermediateDirectories: true)
+
+        let store = WorkspaceFileContextStore()
+        let physicalRootRecord = try await store.loadRoot(path: physicalRootURL.path)
+        let roots = await store.rootRefs(scope: .visibleWorkspace)
+        let physicalRoot = try XCTUnwrap(roots.first { $0.id == physicalRootRecord.id })
+        let logicalRoot = WorkspaceRootRef(id: UUID(), name: "Logical", fullPath: logicalRootURL.path)
+        let binding = AgentSessionWorktreeBinding(
+            id: "binding-outside-absolute-create",
+            repositoryID: "repo-outside-absolute-create",
+            repoKey: "repo-key",
+            logicalRootPath: logicalRoot.fullPath,
+            logicalRootName: logicalRoot.name,
+            worktreeID: "worktree-outside-absolute-create",
+            worktreeRootPath: physicalRoot.fullPath,
+            source: "test"
+        )
+        let projection = WorkspaceRootBindingProjection(
+            sessionID: UUID(),
+            boundRoots: [.init(logicalRoot: logicalRoot, physicalRoot: physicalRoot, binding: binding)],
+            visibleLogicalRoots: [logicalRoot]
+        )
+        let lookupContext = WorkspaceLookupContext(
+            rootScope: projection.lookupRootScope,
+            bindingProjection: projection
+        )
+        let outsideAbsoluteURL = parent.appendingPathComponent("Outside.swift")
+        let translatedOutsidePath = lookupContext.translateInputPath(outsideAbsoluteURL.path)
+        XCTAssertEqual(translatedOutsidePath, outsideAbsoluteURL.path)
+
+        let host = WorkspaceFileEditHost(
+            store: store,
+            target: .create(path: translatedOutsidePath),
+            lookupRootScope: .visibleWorkspace,
+            createPathResolutionPolicy: .canonicalAliasFirst,
+            selectCreatedFiles: false
+        )
+        do {
+            _ = try await ApplyEditsService(engine: .default, host: host).run(
+                ApplyEditsRequest(
+                    path: outsideAbsoluteURL.path,
+                    mode: .rewrite(newText: "outside\n", onMissing: .create),
+                    verbose: false
+                )
+            )
+            XCTFail("Expected an outside-root absolute create to fail closed")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("Could not resolve a destination within the current workspace"),
+                "Unexpected outside-root rejection: \(error)"
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outsideAbsoluteURL.path))
     }
 
     #if DEBUG
@@ -816,16 +920,32 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             XCTAssertNil(staleCatalogRecord)
         }
 
-        func testCancellationDuringExplicitRegistrationDoesNotPublishRecord() async throws {
-            let rootURL = try makeTemporaryDirectory(name: "CancelledExactMaterialization")
+        func testCancellationDuringIgnoredExplicitRegistrationRollsBackAndRetryConverges() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "CancelledIgnoredExactMaterialization")
             let targetURL = rootURL.appendingPathComponent("Target.swift")
+            try write("Target.swift\n", to: rootURL.appendingPathComponent(".gitignore"))
+            try write("late ignored target\n", to: targetURL)
+
             let store = WorkspaceFileContextStore()
             let root = try await store.loadRoot(path: rootURL.path)
             let namespace = await WorkspaceExactFileNamespace.identity(
                 roots: store.rootRefs(scope: .visibleWorkspace)
             )
-            try write("late target\n", to: targetURL)
-            let gate = MCPPathContractReleaseGate(name: "explicit managed registration")
+            let loadedService = await store.fileSystemServiceForTesting(rootID: root.id)
+            let service = try XCTUnwrap(loadedService)
+            let initialRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertNil(initialRecord)
+            let initialRegistration = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(initialRegistration.pendingOwnerCount, 0)
+            XCTAssertFalse(initialRegistration.hasCommittedOwner)
+            XCTAssertNil(initialRegistration.visitedItem)
+            XCTAssertFalse(initialRegistration.isVisited)
+            XCTAssertFalse(initialRegistration.isRegistered)
+            XCTAssertFalse(initialRegistration.watcherExemptsPath)
+
+            let gate = MCPPathContractReleaseGate(name: "ignored explicit managed registration")
             addTeardownBlock {
                 gate.release()
                 await store.clearExactFileCandidateProbeGateForTesting()
@@ -843,18 +963,462 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                     namespace: namespace
                 )
             }
-            let entered = await gate.waitUntilEntered()
-            XCTAssertTrue(entered)
+            let gateEntered = await gate.waitUntilEntered()
+            XCTAssertTrue(gateEntered)
+            let pendingRegistration = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(pendingRegistration.pendingOwnerCount, 1)
+            XCTAssertFalse(pendingRegistration.hasCommittedOwner)
+            XCTAssertEqual(pendingRegistration.visitedItem, false)
+            XCTAssertTrue(pendingRegistration.isRegistered)
+            XCTAssertTrue(pendingRegistration.watcherExemptsPath)
+            let watcherFilteredWhilePending = await service.watcherFiltersIgnoredRegularFileEventForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertFalse(watcherFilteredWhilePending)
+
             resolutionTask.cancel()
             gate.release()
 
             do {
                 _ = try await resolutionTask.value
                 XCTFail("Expected exact materialization cancellation")
-            } catch is CancellationError {
-                let publishedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
-                XCTAssertNil(publishedRecord)
+            } catch is CancellationError {}
+
+            let publishedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertNil(publishedRecord)
+            let rolledBackRegistration = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(rolledBackRegistration.pendingOwnerCount, 0)
+            XCTAssertFalse(rolledBackRegistration.hasCommittedOwner)
+            XCTAssertNil(rolledBackRegistration.visitedItem)
+            XCTAssertFalse(rolledBackRegistration.isVisited)
+            XCTAssertFalse(rolledBackRegistration.isRegistered)
+            XCTAssertFalse(rolledBackRegistration.watcherExemptsPath)
+            let watcherFilteredAfterRollback = await service.watcherFiltersIgnoredRegularFileEventForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertTrue(watcherFilteredAfterRollback)
+
+            _ = try await service.scanOneLevelAndDiff(relativeFolderPath: "")
+            let reconciledRegistration = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertNil(reconciledRegistration.visitedItem)
+            XCTAssertFalse(reconciledRegistration.isVisited)
+            XCTAssertFalse(reconciledRegistration.isRegistered)
+            XCTAssertFalse(reconciledRegistration.watcherExemptsPath)
+
+            await store.clearExactFileCandidateProbeGateForTesting()
+            let retryResolution = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse(targetURL.path),
+                namespace: namespace
+            )
+            guard case let .matched(retryMatch) = retryResolution else {
+                return XCTFail("Expected ignored target materialization retry, got \(retryResolution)")
             }
+            XCTAssertEqual(retryMatch.file.standardizedFullPath, StandardizedPath.absolute(targetURL.path))
+            let committedRegistration = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(committedRegistration.pendingOwnerCount, 0)
+            XCTAssertTrue(committedRegistration.hasCommittedOwner)
+            XCTAssertEqual(committedRegistration.visitedItem, false)
+            XCTAssertTrue(committedRegistration.isVisited)
+            XCTAssertTrue(committedRegistration.isRegistered)
+            XCTAssertTrue(committedRegistration.watcherExemptsPath)
+            let watcherFilteredAfterCommit = await service.watcherFiltersIgnoredRegularFileEventForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertFalse(watcherFilteredAfterCommit)
+        }
+
+        func testIgnoredExplicitRegistrationPreservesConcurrentCommittedOwner() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "ConcurrentIgnoredRegistration")
+            try write("Target.swift\n", to: rootURL.appendingPathComponent(".gitignore"))
+            try write("ignored target\n", to: rootURL.appendingPathComponent("Target.swift"))
+
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let loadedService = await store.fileSystemServiceForTesting(rootID: root.id)
+            let service = try XCTUnwrap(loadedService)
+            let firstRegistration = await service.beginExplicitlyManagedRegularFileRegistration(
+                relativePath: "Target.swift"
+            )
+            let secondRegistration = await service.beginExplicitlyManagedRegularFileRegistration(
+                relativePath: "Target.swift"
+            )
+            let firstToken = try XCTUnwrap(firstRegistration.token)
+            let secondToken = try XCTUnwrap(secondRegistration.token)
+            XCTAssertNotEqual(firstToken, secondToken)
+
+            let pendingSnapshot = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(pendingSnapshot.pendingOwnerCount, 2)
+            XCTAssertFalse(pendingSnapshot.hasCommittedOwner)
+
+            let firstCommitSucceeded = await service.commitExplicitlyManagedRegularFileRegistration(firstToken)
+            let repeatedFirstRollbackSucceeded = await service.rollbackExplicitlyManagedRegularFileRegistration(firstToken)
+            let secondRollbackSucceeded = await service.rollbackExplicitlyManagedRegularFileRegistration(secondToken)
+            let repeatedSecondCommitSucceeded = await service.commitExplicitlyManagedRegularFileRegistration(secondToken)
+            XCTAssertTrue(firstCommitSucceeded)
+            XCTAssertFalse(repeatedFirstRollbackSucceeded)
+            XCTAssertTrue(secondRollbackSucceeded)
+            XCTAssertFalse(repeatedSecondCommitSucceeded)
+
+            let settledSnapshot = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(settledSnapshot.pendingOwnerCount, 0)
+            XCTAssertTrue(settledSnapshot.hasCommittedOwner)
+            XCTAssertEqual(settledSnapshot.visitedItem, false)
+            XCTAssertTrue(settledSnapshot.isRegistered)
+            XCTAssertTrue(settledSnapshot.watcherExemptsPath)
+        }
+
+        func testPostWriteFailedEligibleSupersessionRestoresOlderIgnoredBaseline() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "FailedPostWriteEligibleRegistrationOverlap")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            let ignoreURL = rootURL.appendingPathComponent(".gitignore")
+            try write("Target.swift\n", to: ignoreURL)
+            try write("eligible after drift\n", to: targetURL)
+
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let loadedService = await store.fileSystemServiceForTesting(rootID: root.id)
+            let service = try XCTUnwrap(loadedService)
+
+            let ignoredRegistration = await service.beginExplicitlyManagedRegularFileRegistration(
+                relativePath: "Target.swift"
+            )
+            let ignoredToken = try XCTUnwrap(ignoredRegistration.token)
+            guard case .ineligible(.ignored) = ignoredRegistration.eligibility else {
+                return XCTFail("Expected the older registration to be ignored")
+            }
+
+            try FileManager.default.removeItem(at: ignoreURL)
+            try await service.refreshIgnoreRules()
+            let gate = MCPPathContractReleaseGate(name: "post-write eligible registration")
+            addTeardownBlock {
+                gate.release()
+                await store.setPostWriteCatalogRegistrationDidBeginHandler(nil)
+            }
+            await store.setPostWriteCatalogRegistrationDidBeginHandler { gatedRootID, relativePath in
+                guard gatedRootID == root.id, relativePath == "Target.swift" else { return }
+                await gate.enterAndWait()
+            }
+
+            let failedMaterializationTask = Task {
+                try await store.materializeCatalogFileAfterDiskWrite(
+                    rootID: root.id,
+                    relativePath: "Target.swift"
+                )
+            }
+            let gateEntered = await gate.waitUntilEntered()
+            XCTAssertTrue(gateEntered)
+
+            let overlapping = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(overlapping.pendingOwnerCount, 2)
+            XCTAssertFalse(overlapping.hasCommittedOwner)
+            XCTAssertEqual(overlapping.visitedItem, false)
+            XCTAssertTrue(overlapping.isVisited)
+            XCTAssertTrue(overlapping.isRegistered)
+            XCTAssertTrue(overlapping.watcherExemptsPath)
+
+            await store.unloadRoot(id: root.id)
+            gate.release()
+            do {
+                _ = try await failedMaterializationTask.value
+                XCTFail("Expected stale post-write catalog materialization to fail")
+            } catch let error as WorkspaceFileContextStoreError {
+                XCTAssertEqual(error, .rootNotLoaded(root.id))
+            }
+
+            let afterEligibleRollback = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(afterEligibleRollback.pendingOwnerCount, 1)
+            XCTAssertFalse(afterEligibleRollback.hasCommittedOwner)
+
+            let ignoredRollbackSucceeded = await service.rollbackExplicitlyManagedRegularFileRegistration(
+                ignoredToken
+            )
+            XCTAssertTrue(ignoredRollbackSucceeded)
+
+            let settled = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(settled.pendingOwnerCount, 0)
+            XCTAssertFalse(settled.hasCommittedOwner)
+            XCTAssertNil(settled.visitedItem)
+            XCTAssertFalse(settled.isVisited)
+            XCTAssertFalse(settled.isRegistered)
+            XCTAssertFalse(settled.watcherExemptsPath)
+            let catalogRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertNil(catalogRecord)
+        }
+
+        func testPublishedGitArtifactCancellationAfterRegistrationRollsBackIgnoredState() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "CancelledPublishedGitArtifactRegistration")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            try write("Target.swift\n", to: rootURL.appendingPathComponent(".gitignore"))
+            try write("ignored artifact\n", to: targetURL)
+
+            let store = WorkspaceFileContextStore()
+            let loadedRoot = try await store.loadRoot(path: rootURL.path, kind: .workspaceGitData)
+            let loadedRootRef = await store.exactRootRef(path: rootURL.path, kind: .workspaceGitData)
+            let root = try XCTUnwrap(loadedRootRef)
+            let loadedService = await store.fileSystemServiceForTesting(rootID: loadedRoot.id)
+            let service = try XCTUnwrap(loadedService)
+            let artifact = GitDiffPublishedArtifact(
+                kind: .map,
+                absolutePath: targetURL.path,
+                gitDataRelativePath: "Target.swift",
+                clientAlias: nil,
+                selectionDisposition: .primaryAutoSelect
+            )
+            let gate = MCPPathContractReleaseGate(name: "published Git artifact registration")
+            addTeardownBlock {
+                gate.release()
+                await store.setPublishedGitArtifactIngressDidRegisterHandler(nil)
+            }
+            await store.setPublishedGitArtifactIngressDidRegisterHandler { gatedRootID, relativePath in
+                guard gatedRootID == root.id, relativePath == "Target.swift" else { return }
+                await gate.enterAndWaitIgnoringCancellationUntilRelease()
+            }
+
+            let ingressTask = Task {
+                await store.ingressPublishedGitArtifacts(
+                    WorkspacePublishedGitArtifactIngressRequest(root: root, artifacts: [artifact])
+                )
+            }
+            let registrationDidBegin = await gate.waitUntilEntered()
+            XCTAssertTrue(registrationDidBegin)
+            let pending = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(pending.pendingOwnerCount, 1)
+            XCTAssertFalse(pending.hasCommittedOwner)
+            XCTAssertTrue(pending.isVisited)
+            XCTAssertTrue(pending.isRegistered)
+            XCTAssertTrue(pending.watcherExemptsPath)
+
+            ingressTask.cancel()
+            gate.release()
+
+            let result = await ingressTask.value
+            XCTAssertEqual(result.outcomes.map(\.status), [.staleRoot])
+            let publishedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertNil(publishedRecord)
+            let settled = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(settled.pendingOwnerCount, 0)
+            XCTAssertFalse(settled.hasCommittedOwner)
+            XCTAssertNil(settled.visitedItem)
+            XCTAssertFalse(settled.isVisited)
+            XCTAssertFalse(settled.isRegistered)
+            XCTAssertFalse(settled.watcherExemptsPath)
+            let watcherFilteredAfterCancellation = await service.watcherFiltersIgnoredRegularFileEventForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertTrue(watcherFilteredAfterCancellation)
+        }
+
+        func testContextBuilderRegistrationRejectsSameRootIDLifetimeReplacement() async throws {
+            let fixture = try ReviewGitRepositoryFixture(name: #function)
+            addTeardownBlock { fixture.cleanup() }
+            let rootURL = try fixture.makeRepository(
+                named: "repo",
+                files: [
+                    ".gitignore": "Target.swift\n",
+                    "Target.swift": "ignored candidate\n"
+                ]
+            )
+            let store = WorkspaceFileContextStore()
+            let ownerID = UUID()
+            addTeardownBlock { await store.releaseSessionWorktreeOwnership(ownerID: ownerID) }
+            let preparation = try await store.prepareSessionWorktreeOwnership(
+                ownerID: ownerID,
+                bindingFingerprint: "context-builder-registration-replacement",
+                physicalRootPaths: [rootURL.path]
+            )
+            let ownedRoots = try await store.commitSessionWorktreeOwnership(preparation)
+            let ownedRoot = try XCTUnwrap(ownedRoots.first)
+            let loadedRootRef = await store.exactRootRef(path: rootURL.path, kind: .sessionWorktree)
+            let root = try XCTUnwrap(loadedRootRef)
+            XCTAssertEqual(root.id, ownedRoot.rootID)
+            let loadedOldService = await store.fileSystemServiceForTesting(rootID: root.id)
+            let oldService = try XCTUnwrap(loadedOldService)
+            let authorization = WorkspaceSessionRootAuthorization(
+                sessionID: ownerID,
+                ownershipGeneration: preparation.token.generation,
+                root: root,
+                lifetimeID: ownedRoot.lifetimeID
+            )
+            let gate = MCPPathContractReleaseGate(name: "Context Builder managed registration")
+            addTeardownBlock {
+                gate.release()
+                await store.setContextBuilderSelectionCandidateDidRegisterHandler(nil)
+            }
+            await store.setContextBuilderSelectionCandidateDidRegisterHandler { gatedRootID, relativePath in
+                guard gatedRootID == root.id, relativePath == "Target.swift" else { return }
+                await gate.enterAndWait()
+            }
+
+            let resolutionTask = Task {
+                try await store.resolveContextBuilderSelectionCandidate(
+                    path: rootURL.appendingPathComponent("Target.swift").path,
+                    authorization: authorization,
+                    folderPolicy: .filesOnly
+                )
+            }
+            let registrationDidBegin = await gate.waitUntilEntered()
+            XCTAssertTrue(registrationDidBegin)
+            let pending = await oldService.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(pending.pendingOwnerCount, 1)
+            XCTAssertTrue(pending.isRegistered)
+            XCTAssertTrue(pending.watcherExemptsPath)
+
+            let replacementService = try await FileSystemService(path: rootURL.path)
+            let replacementLifetimeID = await store.replaceRootLifetimeAndServiceKeepingCatalogForTesting(
+                rootID: root.id,
+                service: replacementService
+            )
+            XCTAssertNotNil(replacementLifetimeID)
+            gate.release()
+
+            let resolution = try await resolutionTask.value
+            XCTAssertEqual(resolution, .staleAuthority(.lifetime))
+            let publishedRecord = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertNil(publishedRecord)
+            let oldSettled = await oldService.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(oldSettled.pendingOwnerCount, 0)
+            XCTAssertFalse(oldSettled.hasCommittedOwner)
+            XCTAssertNil(oldSettled.visitedItem)
+            XCTAssertFalse(oldSettled.isVisited)
+            XCTAssertFalse(oldSettled.isRegistered)
+            XCTAssertFalse(oldSettled.watcherExemptsPath)
+            let oldWatcherFiltered = await oldService.watcherFiltersIgnoredRegularFileEventForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertTrue(oldWatcherFiltered)
+            let replacementSettled = await replacementService.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(replacementSettled.pendingOwnerCount, 0)
+            XCTAssertFalse(replacementSettled.hasCommittedOwner)
+            XCTAssertNil(replacementSettled.visitedItem)
+            XCTAssertFalse(replacementSettled.isVisited)
+            XCTAssertFalse(replacementSettled.isRegistered)
+            XCTAssertFalse(replacementSettled.watcherExemptsPath)
+            let replacementWatcherFiltered = await replacementService.watcherFiltersIgnoredRegularFileEventForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertTrue(replacementWatcherFiltered)
+        }
+
+        func testIgnoredRegistrationRollbackPreservesNewerEligibleMaterializationAfterPolicyDrift() async throws {
+            let rootURL = try makeTemporaryDirectory(name: "IgnoredEligibleRegistrationOverlap")
+            let targetURL = rootURL.appendingPathComponent("Target.swift")
+            let ignoreURL = rootURL.appendingPathComponent(".gitignore")
+            try write("Target.swift\n", to: ignoreURL)
+            try write("eligible after drift\n", to: targetURL)
+
+            let store = WorkspaceFileContextStore()
+            let root = try await store.loadRoot(path: rootURL.path)
+            let namespace = await WorkspaceExactFileNamespace.identity(
+                roots: store.rootRefs(scope: .visibleWorkspace)
+            )
+            let loadedService = await store.fileSystemServiceForTesting(rootID: root.id)
+            let service = try XCTUnwrap(loadedService)
+            let gate = MCPPathContractReleaseGate(name: "ignored registration policy drift")
+            addTeardownBlock {
+                gate.release()
+                await store.clearExactFileCandidateProbeGateForTesting()
+            }
+            await store.setExactFileSuspensionGateForTesting(
+                point: .explicitManagedRegistration,
+                rootID: root.id
+            ) {
+                await gate.enterAndWaitIgnoringCancellationUntilRelease()
+            }
+
+            let staleResolutionTask = Task {
+                try await store.resolveExactExistingWorkspaceFile(
+                    WorkspaceExactFileInput.parse(targetURL.path),
+                    namespace: namespace
+                )
+            }
+            let gateEntered = await gate.waitUntilEntered()
+            XCTAssertTrue(gateEntered)
+            let pendingIgnored = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(pendingIgnored.pendingOwnerCount, 1)
+            let recordWhileIgnoredRegistrationIsPending = await store.file(
+                rootID: root.id,
+                relativePath: "Target.swift"
+            )
+            XCTAssertNil(recordWhileIgnoredRegistrationIsPending)
+
+            await store.clearExactFileCandidateProbeGateForTesting()
+            try FileManager.default.removeItem(at: ignoreURL)
+            try await service.refreshIgnoreRules()
+            let eligibleMaterialization = try await store.materializeCatalogFileAfterDiskWrite(
+                rootID: root.id,
+                relativePath: "Target.swift"
+            )
+            guard case let .materialized(eligibleFile) = eligibleMaterialization else {
+                return XCTFail("Expected the newer eligible registration to materialize, got \(eligibleMaterialization)")
+            }
+            XCTAssertEqual(eligibleFile.standardizedFullPath, StandardizedPath.absolute(targetURL.path))
+
+            staleResolutionTask.cancel()
+            gate.release()
+            do {
+                _ = try await staleResolutionTask.value
+                XCTFail("Expected the stale ignored registration to cancel")
+            } catch is CancellationError {}
+
+            let recordAfterStaleRollback = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertEqual(recordAfterStaleRollback?.id, eligibleFile.id)
+            let settled = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertEqual(settled.pendingOwnerCount, 0)
+            XCTAssertEqual(settled.visitedItem, false)
+            XCTAssertFalse(settled.isRegistered)
+            XCTAssertFalse(settled.watcherExemptsPath)
+            let watcherFilteredAfterPolicyDrift = await service.watcherFiltersIgnoredRegularFileEventForTesting(
+                relativePath: "Target.swift"
+            )
+            XCTAssertFalse(watcherFilteredAfterPolicyDrift)
+
+            try FileManager.default.removeItem(at: targetURL)
+            let deletionDeltas = await store.reconcileLoadedRootCatalogWithDisk(rootID: root.id)
+            XCTAssertTrue(deletionDeltas.contains(.fileRemoved("Target.swift")))
+            let recordAfterDeletion = await store.file(rootID: root.id, relativePath: "Target.swift")
+            XCTAssertNil(recordAfterDeletion)
+
+            try write("retry after deletion\n", to: targetURL)
+            let retryResolution = try await store.resolveExactExistingWorkspaceFile(
+                WorkspaceExactFileInput.parse(targetURL.path),
+                namespace: namespace
+            )
+            guard case let .matched(retryMatch) = retryResolution else {
+                return XCTFail("Expected recreation to materialize after deletion, got \(retryResolution)")
+            }
+            XCTAssertEqual(retryMatch.file.standardizedFullPath, StandardizedPath.absolute(targetURL.path))
         }
 
         func testDirectoryClassificationReflectsPostPrunePathState() async throws {
