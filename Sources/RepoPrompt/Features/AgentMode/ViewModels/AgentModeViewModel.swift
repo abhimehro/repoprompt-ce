@@ -718,6 +718,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         let lifecycleIdentity: AgentSessionLifecycleAuthority.Identity
     }
 
+    private struct MCPSessionTargetDiscardAuthority {
+        let authorityID: UUID
+        let workspaceID: UUID?
+    }
+
     /// The registry, rather than an MCP request stack, owns recovery after durable admission.
     /// One outcome-driven retry handles transient settlement without polling; later explicit
     /// discard attempts can resume a responsibility that remains nonterminal.
@@ -727,7 +732,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     private var outstandingProvisionalMCPSessionTargets: [UUID: MCPSessionTarget] = [:]
     /// A newer same-session target cannot become provider-visible until cleanup holding an older
     /// authority has crossed every suspension point where it could still mutate session state.
-    private var mcpSessionTargetDiscardAuthorityBySessionID: [UUID: UUID] = [:]
+    private var mcpSessionTargetDiscardAuthorityBySessionID: [UUID: MCPSessionTargetDiscardAuthority] = [:]
     private var retiringMCPSessionTargetDiscardSessionIDByRecoveryID: [UUID: UUID] = [:]
     private var bindingOnlyMCPSessionTargetRecoveryIDs: Set<UUID> = []
     private var provisionalRuntimeTargetIdentityByRecoveryID: [UUID: ProvisionalRuntimeTargetIdentity] = [:]
@@ -770,6 +775,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         private var test_beforeAutomaticMCPSessionTargetDiscardRetry: (@MainActor () async -> Void)?
         private var test_beforeMCPSessionTargetDiscardAuthorityEstablishment: (@MainActor (UUID) async -> Void)?
         private var test_afterMCPSessionTargetDiscardRetired: (@MainActor (UUID) async -> Void)?
+        private var test_afterMCPPersistedSessionResolution: (@MainActor (UUID) async -> Void)?
         private var test_terminalPublicationOverride: ((
             AgentRunTerminalCommitRevision,
             AgentRunEpochTransitionKind?,
@@ -845,11 +851,20 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             test_afterMCPSessionTargetDiscardRetired = observer
         }
 
+        func test_setAfterMCPPersistedSessionResolution(
+            _ observer: (@MainActor (UUID) async -> Void)?
+        ) {
+            test_afterMCPPersistedSessionResolution = observer
+        }
+
         func test_installMCPSessionTargetDiscardAuthority(
             _ discardAuthorityID: UUID,
             sessionID: UUID
         ) {
-            mcpSessionTargetDiscardAuthorityBySessionID[sessionID] = discardAuthorityID
+            mcpSessionTargetDiscardAuthorityBySessionID[sessionID] = MCPSessionTargetDiscardAuthority(
+                authorityID: discardAuthorityID,
+                workspaceID: nil
+            )
         }
 
         var test_pendingMCPSessionTargetDiscardCount: Int {
@@ -6558,7 +6573,19 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return parsedUUID
         }
         // Fall back to persisted
-        return try await AgentSessionDataService.shared.resolveAgentSessionID(reference: trimmed, for: workspace)
+        let resolved = try await AgentSessionDataService.shared.resolveAgentSessionID(
+            reference: trimmed,
+            for: workspace
+        )
+        #if DEBUG
+            await test_afterMCPPersistedSessionResolution?(workspace.id)
+        #endif
+        guard workspaceManager?.activeWorkspaceID == workspace.id else {
+            throw MCPError.invalidParams(
+                "The active workspace changed while the Agent session reference was resolved."
+            )
+        }
+        return resolved
     }
 
     func requireCurrentMCPWorkspaceTarget(
@@ -7453,9 +7480,13 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         var reservedSessionID: UUID?
         do {
             if let intendedSessionID = selector.intendedSessionID {
+                guard let reservationWorkspaceID = expectedWorkspaceID ?? workspaceManager?.activeWorkspaceID else {
+                    throw MCPError.internalError("Workspace unavailable during Agent session reservation.")
+                }
                 try await establishMCPSessionTargetDiscardAuthority(
                     discardAuthorityID,
-                    sessionID: intendedSessionID
+                    sessionID: intendedSessionID,
+                    workspaceID: reservationWorkspaceID
                 )
                 reservedSessionID = intendedSessionID
             }
@@ -7488,7 +7519,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 }
                 return target
             }
-            guard mcpSessionTargetDiscardAuthorityBySessionID[resolvedSessionID] == discardAuthorityID else {
+            guard mcpSessionTargetDiscardAuthorityBySessionID[resolvedSessionID]?.authorityID == discardAuthorityID else {
                 throw MCPError.invalidParams(
                     "The Agent session target was superseded before provider dispatch."
                 )
@@ -7966,7 +7997,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 expectedSessionID: resolvedSessionID
             )
         )
-        guard mcpSessionTargetDiscardAuthorityBySessionID[sessionID] == discardAuthorityID else {
+        guard mcpSessionTargetDiscardAuthorityBySessionID[sessionID]?.authorityID == discardAuthorityID else {
             throw MCPError.invalidParams("The Agent session target authority changed during resolution.")
         }
         guard let lifecycleIdentity = target.lifecycleIdentity else {
@@ -8137,7 +8168,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
         return try await workspaceManager.withAgentSessionAdmission(
             workspaceID: owningWorkspaceID,
-            admissionID: UUID()
+            admissionID: UUID(),
+            refreshCanonicalState: true
         ) {
             guard workspaceManager.activeWorkspaceID == expectedWorkspaceID,
                   workspaceManager.workspaces.first(where: {
@@ -8927,7 +8959,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
     private func establishMCPSessionTargetDiscardAuthority(
         _ discardAuthorityID: UUID,
-        sessionID: UUID
+        sessionID: UUID,
+        workspaceID: UUID
     ) async throws {
         #if DEBUG
             await test_beforeMCPSessionTargetDiscardAuthorityEstablishment?(sessionID)
@@ -8980,7 +9013,19 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 "The previous Agent session target is still provisional. Retry after it settles."
             )
         }
-        mcpSessionTargetDiscardAuthorityBySessionID[sessionID] = discardAuthorityID
+        guard workspaceManager?.reserveProvisionalAgentSession(
+            workspaceID: workspaceID,
+            sessionID: sessionID,
+            ownerID: discardAuthorityID
+        ) == true else {
+            throw MCPError.internalError(
+                "The Agent session target is still provisional in another window. Retry after it settles."
+            )
+        }
+        mcpSessionTargetDiscardAuthorityBySessionID[sessionID] = MCPSessionTargetDiscardAuthority(
+            authorityID: discardAuthorityID,
+            workspaceID: workspaceID
+        )
         #if DEBUG
             await test_afterMCPSessionTargetDiscardRetired?(sessionID)
         #endif
@@ -9030,7 +9075,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     ) throws {
         guard let sessionID = target.sessionID else { return }
         if let discardAuthorityID {
-            guard mcpSessionTargetDiscardAuthorityBySessionID[sessionID] == discardAuthorityID else {
+            guard mcpSessionTargetDiscardAuthorityBySessionID[sessionID]?.authorityID == discardAuthorityID else {
                 throw MCPError.invalidParams("The Agent session target authority changed during resolution.")
             }
         } else {
@@ -9052,6 +9097,15 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
     /// Stop is a control read, so it must not mutate a session whose recovery owner has not settled.
     func mcpSettledLiveSessionForStop(sessionID: UUID) throws -> TabSession? {
+        if let workspaceManager,
+           let workspaceID = workspaceManager.activeWorkspaceID,
+           workspaceManager.hasActiveProvisionalAgentSession(
+               workspaceID: workspaceID,
+               sessionID: sessionID
+           )
+        {
+            return nil
+        }
         guard !outstandingProvisionalMCPSessionTargets.values.contains(where: { target in
             target.sessionID == sessionID
                 && target.recoveryClaim?.state != .accepted
@@ -9077,15 +9131,23 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         _ discardAuthorityID: UUID,
         sessionID: UUID
     ) {
-        guard mcpSessionTargetDiscardAuthorityBySessionID[sessionID] == discardAuthorityID else { return }
-        mcpSessionTargetDiscardAuthorityBySessionID.removeValue(forKey: sessionID)
+        guard mcpSessionTargetDiscardAuthorityBySessionID[sessionID]?.authorityID == discardAuthorityID,
+              let authority = mcpSessionTargetDiscardAuthorityBySessionID.removeValue(forKey: sessionID)
+        else { return }
+        if let workspaceID = authority.workspaceID {
+            workspaceManager?.releaseProvisionalAgentSession(
+                workspaceID: workspaceID,
+                sessionID: sessionID,
+                ownerID: discardAuthorityID
+            )
+        }
     }
 
     private func mcpSessionTargetDiscardAuthorityIsCurrent(_ target: MCPSessionTarget) -> Bool {
         guard let sessionID = target.sessionID,
               let discardAuthorityID = target.discardAuthorityID
         else { return false }
-        return mcpSessionTargetDiscardAuthorityBySessionID[sessionID] == discardAuthorityID
+        return mcpSessionTargetDiscardAuthorityBySessionID[sessionID]?.authorityID == discardAuthorityID
     }
 
     private func pendingMCPSessionTargetDiscardIsCurrent(
@@ -9252,8 +9314,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             }
         }
         claim.markComplete()
-        if mcpSessionTargetDiscardAuthorityBySessionID[sessionID] == target.discardAuthorityID {
-            mcpSessionTargetDiscardAuthorityBySessionID.removeValue(forKey: sessionID)
+        if let discardAuthorityID = target.discardAuthorityID {
+            releaseMCPSessionTargetDiscardAuthority(
+                discardAuthorityID,
+                sessionID: sessionID
+            )
         }
         return .complete
     }

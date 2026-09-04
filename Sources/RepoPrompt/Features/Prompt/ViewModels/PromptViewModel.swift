@@ -3019,19 +3019,11 @@ class PromptViewModel: ObservableObject {
 
         return try await manager.withAgentSessionAdmission(
             workspaceID: expectedWorkspaceID,
-            admissionID: UUID()
+            admissionID: UUID(),
+            refreshCanonicalState: true
         ) {
             guard manager.activeWorkspaceID == expectedWorkspaceID,
-                  let index = manager.workspaces.firstIndex(where: {
-                      $0.id == expectedWorkspaceID
-                  }),
-                  let newTab = makeComposeTab(
-                      for: .blank,
-                      explicitName: name,
-                      workspaceIndex: index,
-                      manager: manager,
-                      blankAgentSessionID: sessionID
-                  )
+                  let index = manager.workspaces.firstIndex(where: { $0.id == expectedWorkspaceID })
             else {
                 return .rejected(
                     AgentAdmissionPersistenceReceipt(
@@ -3039,6 +3031,41 @@ class PromptViewModel: ObservableObject {
                         commitEvidence: .none
                     ),
                     .workspaceChanged
+                )
+            }
+            let workspaceTabs = manager.workspaces[index].composeTabs
+                + manager.workspaces[index].stashedTabs.map(\.tab)
+            guard !workspaceTabs.contains(where: { $0.activeAgentSessionID == sessionID }) else {
+                return .rejected(
+                    AgentAdmissionPersistenceReceipt(
+                        outcome: .rejected(reason: "session_already_bound"),
+                        commitEvidence: .none
+                    ),
+                    .sessionIdentityChanged
+                )
+            }
+            guard let newTab = makeComposeTab(
+                for: .blank,
+                explicitName: name,
+                workspaceIndex: index,
+                manager: manager,
+                blankAgentSessionID: sessionID
+            ) else {
+                return .rejected(
+                    AgentAdmissionPersistenceReceipt(
+                        outcome: .rejected(reason: "workspace_changed"),
+                        commitEvidence: .none
+                    ),
+                    .workspaceChanged
+                )
+            }
+            guard !workspaceTabs.contains(where: { $0.id == newTab.id }) else {
+                return .rejected(
+                    AgentAdmissionPersistenceReceipt(
+                        outcome: .rejected(reason: "tab_identity_collision"),
+                        commitEvidence: .none
+                    ),
+                    .sessionIdentityChanged
                 )
             }
 
@@ -3167,35 +3194,86 @@ class PromptViewModel: ObservableObject {
         _ identity: AgentProvisionalAdmissionIdentity,
         manager: WorkspaceManagerViewModel
     ) async -> AgentAdmissionRecoveryOutcome {
-        // Recovery crossed the durable commit boundary, so caller cancellation must not
-        // end settlement. Each manager entry remains bounded and revalidates the exact
-        // recovery-owned revision and digest before it retries a canonical command.
-        let settlementTask = Task { @MainActor in
-            var retryAttempt = 0
-            while true {
-                let outcome = await manager.recoverProvisionalAgentAdmission(identity)
+        let outcome = await manager.recoverProvisionalAgentAdmission(identity)
+        switch outcome {
+        case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged:
+            return outcome
+        case .retryablePartial:
+            retainProvisionalAgentAdmissionRecovery(
+                identity,
+                initialOutcome: outcome,
+                manager: manager
+            )
+        case let .failed(category):
+            guard category.isRetryableAgentAdmissionRecoveryFailure else {
+                manager.finishProvisionalAgentAdmissionRecovery(identity)
+                return outcome
+            }
+            retainProvisionalAgentAdmissionRecovery(
+                identity,
+                initialOutcome: outcome,
+                manager: manager
+            )
+        }
+        return outcome
+    }
+
+    private func retainProvisionalAgentAdmissionRecovery(
+        _ identity: AgentProvisionalAdmissionIdentity,
+        initialOutcome: AgentAdmissionRecoveryOutcome,
+        manager: WorkspaceManagerViewModel
+    ) {
+        manager.retainProvisionalAgentAdmissionRecovery(
+            recoveryID: identity.recoveryID,
+            workspaceID: identity.workspaceID,
+            sessionID: identity.sessionID,
+            reservationOwnerID: identity.recoveryID
+        ) { [self, manager] in
+            defer { manager.finishProvisionalAgentAdmissionRecovery(identity) }
+            var priorOutcome = initialOutcome
+            for attempt in 0 ..< 4 {
+                await waitForProvisionalAgentAdmissionRecoveryRetry(
+                    attempt: attempt,
+                    outcome: priorOutcome
+                )
+                let outcome: AgentAdmissionRecoveryOutcome
+                do {
+                    outcome = try await manager.withAgentSessionAdmission(
+                        workspaceID: identity.workspaceID,
+                        admissionID: UUID()
+                    ) {
+                        await manager.recoverProvisionalAgentAdmission(identity)
+                    }
+                } catch {
+                    continue
+                }
                 switch outcome {
                 case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged:
-                    return outcome
+                    await notifyAgentAdmissionRecoveryCompletedForTesting(
+                        identity,
+                        outcome: outcome
+                    )
+                    return
                 case .retryablePartial:
-                    await waitForProvisionalAgentAdmissionRecoveryRetry(
-                        attempt: retryAttempt,
-                        outcome: outcome
-                    )
+                    priorOutcome = outcome
+                    continue
                 case let .failed(category):
-                    guard category.isRetryableAgentAdmissionRecoveryFailure else {
-                        manager.finishProvisionalAgentAdmissionRecovery(identity)
-                        return outcome
+                    if category.isRetryableAgentAdmissionRecoveryFailure {
+                        priorOutcome = outcome
+                        continue
                     }
-                    await waitForProvisionalAgentAdmissionRecoveryRetry(
-                        attempt: retryAttempt,
+                    await notifyAgentAdmissionRecoveryCompletedForTesting(
+                        identity,
                         outcome: outcome
                     )
+                    return
                 }
-                retryAttempt &+= 1
             }
+            await notifyAgentAdmissionRecoveryCompletedForTesting(
+                identity,
+                outcome: priorOutcome
+            )
         }
-        return await settlementTask.value
     }
 
     @MainActor

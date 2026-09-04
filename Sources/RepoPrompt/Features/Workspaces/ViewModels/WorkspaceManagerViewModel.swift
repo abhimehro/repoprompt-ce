@@ -429,6 +429,42 @@ enum AgentAdmissionRecoveryOutcome: Equatable {
     case failed(WorkspacePersistenceFailureCategory)
 }
 
+enum AgentAdmissionCanonicalRefreshError: LocalizedError, Equatable {
+    case duplicateTabID(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case let .duplicateTabID(tabID):
+            "Canonical workspace state contains duplicate tab ID '\(tabID.uuidString)'."
+        }
+    }
+}
+
+private struct WorkspaceTabIdentityEnvelope: Decodable {
+    let composeTabs: [ComposeTabState]
+    let stashedTabs: [StashedTab]
+
+    private enum CodingKeys: String, CodingKey {
+        case composeTabs
+        case stashedTabs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        composeTabs = try container.decodeIfPresent([ComposeTabState].self, forKey: .composeTabs) ?? []
+        stashedTabs = try container.decodeIfPresent([StashedTab].self, forKey: .stashedTabs) ?? []
+    }
+}
+
+#if DEBUG
+    private struct DomainWorkspaceSnapshotEncoding: Encodable {
+        let document: DomainWorkspaceDocument
+        let revisions: DomainRevisionState
+        let health: DomainAuthorityHealth
+        let contexts: [DomainContextSnapshot]
+    }
+#endif
+
 enum WorkspacePersistenceFailureCategory: String, CaseIterable, Equatable {
     case localSavePreparationRetryExhausted = "local_save_retry_exhausted"
     case authorityRevisionConflict = "authority_revision_conflict"
@@ -659,6 +695,8 @@ class WorkspaceManagerViewModel: ObservableObject {
             (@MainActor (UUID) async -> Bool)?
         private var agentAdmissionPersistenceVerificationHandlerForTesting:
             (@MainActor (UUID) async -> Bool)?
+        private var agentAdmissionCanonicalSnapshotHandlerForTesting:
+            (@MainActor (UUID) async -> DomainWorkspaceSnapshot?)?
     #endif
 
     @MainActor
@@ -978,6 +1016,32 @@ class WorkspaceManagerViewModel: ObservableObject {
             _ handler: (@MainActor (UUID) async -> Bool)?
         ) {
             agentAdmissionPersistenceVerificationHandlerForTesting = handler
+        }
+
+        func setAgentAdmissionCanonicalSnapshotHandlerForTesting(
+            _ handler: (@MainActor (UUID) async -> DomainWorkspaceSnapshot?)?
+        ) {
+            agentAdmissionCanonicalSnapshotHandlerForTesting = handler
+        }
+
+        static func replacingWorkspaceProjectionForTesting(
+            _ workspace: WorkspaceModel,
+            in snapshot: DomainWorkspaceSnapshot
+        ) throws -> DomainWorkspaceSnapshot {
+            let documentBytes = try JSONEncoder().encode(workspace)
+            let replacement = try DomainWorkspaceSnapshotEncoding(
+                document: DomainWorkspaceDocument.decode(
+                    documentBytes: documentBytes,
+                    fileURL: snapshot.document.fileURL
+                ),
+                revisions: snapshot.revisions,
+                health: snapshot.health,
+                contexts: snapshot.contexts
+            )
+            return try JSONDecoder().decode(
+                DomainWorkspaceSnapshot.self,
+                from: JSONEncoder().encode(replacement)
+            )
         }
 
         func resetWorkspaceSaveDiagnosticsForTesting() {
@@ -7491,9 +7555,172 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
     }
 
+    private func refreshCanonicalWorkspaceForAgentAdmission(workspaceID: UUID) async throws {
+        guard let initialWorkspace = workspace(withID: workspaceID) else {
+            throw NSError(
+                domain: "RepoPrompt.AgentAdmission",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The target workspace disappeared before Agent admission."]
+            )
+        }
+        guard !initialWorkspace.isEphemeral, let domainWorkspaceAuthorityClient else { return }
+        let snapshot: DomainWorkspaceSnapshot?
+        #if DEBUG
+            if let agentAdmissionCanonicalSnapshotHandlerForTesting {
+                snapshot = await agentAdmissionCanonicalSnapshotHandlerForTesting(workspaceID)
+            } else {
+                snapshot = await domainWorkspaceAuthorityClient.canonicalWorkspaceSnapshot(workspaceID)
+            }
+        #else
+            snapshot = await domainWorkspaceAuthorityClient.canonicalWorkspaceSnapshot(workspaceID)
+        #endif
+        try Task.checkCancellation()
+        guard let snapshot,
+              snapshot.health.acceptsMutations,
+              snapshot.revisions.dirtyRevision == nil
+        else {
+            throw NSError(
+                domain: "RepoPrompt.AgentAdmission",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Canonical workspace state is not ready for Agent admission."]
+            )
+        }
+        let canonicalIdentityEnvelope = try JSONDecoder().decode(
+            WorkspaceTabIdentityEnvelope.self,
+            from: snapshot.document.documentBytes
+        )
+        var canonicalTabIDs = Set<UUID>()
+        for tabID in canonicalIdentityEnvelope.composeTabs.map(\.id)
+            + canonicalIdentityEnvelope.stashedTabs.map(\.tab.id)
+        {
+            guard canonicalTabIDs.insert(tabID).inserted else {
+                throw AgentAdmissionCanonicalRefreshError.duplicateTabID(tabID)
+            }
+        }
+        let canonical = try Self.decodeDomainWorkspaceProjection(
+            documentBytes: snapshot.document.documentBytes,
+            fileURL: snapshot.document.fileURL
+        )
+        guard canonical.id == workspaceID else {
+            throw NSError(
+                domain: "RepoPrompt.AgentAdmission",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Canonical workspace identity changed before Agent admission."]
+            )
+        }
+
+        guard let currentIndex = workspaceIndex(for: workspaceID) else {
+            throw NSError(
+                domain: "RepoPrompt.AgentAdmission",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The target workspace disappeared before Agent admission."]
+            )
+        }
+        let currentWorkspace = workspaces[currentIndex]
+        let refreshedWorkspace = try Self.refreshingAgentSessionIdentities(in: currentWorkspace, from: canonical)
+        if refreshedWorkspace != currentWorkspace {
+            var projected = workspaces
+            projected[currentIndex] = refreshedWorkspace
+            let lifecycleProjection = agentSessionProjectionReconciler?(projected, workspaces)
+            workspaces = lifecycleProjection?.workspaces ?? projected
+            if let protectedWorkspaceIDs = lifecycleProjection?.protectedWorkspaceIDs {
+                for protectedWorkspaceID in protectedWorkspaceIDs {
+                    bumpStateVersion(for: protectedWorkspaceID)
+                }
+            }
+            if activeWorkspaceID == workspaceID,
+               let refreshed = workspace(withID: workspaceID)
+            {
+                promptViewModel.loadComposeTabsFromWorkspace(refreshed)
+            }
+            WorkspaceFileDecodeCache.shared.invalidate(url: snapshot.document.fileURL)
+        }
+
+        domainWorkspaceFileURLsByID[workspaceID] = snapshot.document.fileURL
+        applyDomainAuthorityBaseline(
+            workspaceID: workspaceID,
+            revisions: snapshot.revisions,
+            digest: snapshot.document.contentDigest,
+            health: snapshot.health,
+            catalogRevision: domainWorkspaceCatalogRevision
+        )
+    }
+
+    private static func refreshingAgentSessionIdentities(
+        in local: WorkspaceModel,
+        from canonical: WorkspaceModel
+    ) throws -> WorkspaceModel {
+        let canonicalTabs = canonical.composeTabs + canonical.stashedTabs.map(\.tab)
+        var canonicalTabsByID: [UUID: ComposeTabState] = [:]
+        for tab in canonicalTabs {
+            guard canonicalTabsByID.updateValue(tab, forKey: tab.id) == nil else {
+                throw AgentAdmissionCanonicalRefreshError.duplicateTabID(tab.id)
+            }
+        }
+
+        let canonicalComposeTabIDs = Set(canonical.composeTabs.map(\.id))
+        let canonicalStashedTabIDs = Set(canonical.stashedTabs.map(\.tab.id))
+        let localTabs = local.composeTabs + local.stashedTabs.map(\.tab)
+        let localTabsByID = Dictionary(localTabs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var refreshed = local
+        refreshed.composeTabs = local.composeTabs.compactMap { localTab in
+            guard let canonicalTab = canonicalTabsByID[localTab.id] else {
+                return localTab.activeAgentSessionID == nil ? localTab : nil
+            }
+            guard canonicalComposeTabIDs.contains(localTab.id) else { return nil }
+            var merged = localTab
+            merged.activeAgentSessionID = canonicalTab.activeAgentSessionID
+            return merged
+        }
+        var refreshedComposeTabIDs = Set(refreshed.composeTabs.map(\.id))
+        for canonicalTab in canonical.composeTabs where refreshedComposeTabIDs.insert(canonicalTab.id).inserted {
+            var merged = localTabsByID[canonicalTab.id] ?? canonicalTab
+            merged.activeAgentSessionID = canonicalTab.activeAgentSessionID
+            refreshed.composeTabs.append(merged)
+        }
+
+        refreshed.stashedTabs = local.stashedTabs.compactMap { localStashed in
+            guard let canonicalTab = canonicalTabsByID[localStashed.tab.id] else {
+                return localStashed.tab.activeAgentSessionID == nil ? localStashed : nil
+            }
+            guard canonicalStashedTabIDs.contains(localStashed.tab.id) else { return nil }
+            var merged = localStashed
+            merged.tab.activeAgentSessionID = canonicalTab.activeAgentSessionID
+            return merged
+        }
+        var refreshedStashedTabIDs = Set(refreshed.stashedTabs.map(\.tab.id))
+        for canonicalStashed in canonical.stashedTabs
+            where refreshedStashedTabIDs.insert(canonicalStashed.tab.id).inserted
+        {
+            var merged = canonicalStashed
+            if let localTab = localTabsByID[canonicalStashed.tab.id] {
+                merged.tab = localTab
+                merged.tab.activeAgentSessionID = canonicalStashed.tab.activeAgentSessionID
+            }
+            refreshed.stashedTabs.append(merged)
+        }
+
+        let refreshedTabIDs = refreshed.composeTabs.map(\.id) + refreshed.stashedTabs.map(\.tab.id)
+        if let duplicateID = Dictionary(grouping: refreshedTabIDs, by: { $0 })
+            .first(where: { $0.value.count > 1 })?.key
+        {
+            throw AgentAdmissionCanonicalRefreshError.duplicateTabID(duplicateID)
+        }
+        if let localActiveTabID = local.activeComposeTabID,
+           refreshed.composeTabs.contains(where: { $0.id == localActiveTabID })
+        {
+            refreshed.activeComposeTabID = localActiveTabID
+        } else {
+            refreshed.activeComposeTabID = canonical.activeComposeTabID
+                ?? refreshed.composeTabs.first?.id
+        }
+        return refreshed
+    }
+
     func withAgentSessionAdmission<T>(
         workspaceID: UUID,
         admissionID: UUID,
+        refreshCanonicalState: Bool = false,
         operation: @MainActor () async throws -> T
     ) async throws -> T {
         let lease = try await workspaceAgentAdmissionCoordinator.acquire(
@@ -7502,7 +7729,61 @@ class WorkspaceManagerViewModel: ObservableObject {
         )
         defer { lease.release() }
         try Task.checkCancellation()
+        if refreshCanonicalState {
+            try await refreshCanonicalWorkspaceForAgentAdmission(workspaceID: workspaceID)
+        }
+        try Task.checkCancellation()
         return try await operation()
+    }
+
+    func reserveProvisionalAgentSession(
+        workspaceID: UUID,
+        sessionID: UUID,
+        ownerID: UUID
+    ) -> Bool {
+        workspaceAgentAdmissionCoordinator.reserveProvisionalSession(
+            workspaceID: workspaceID,
+            sessionID: sessionID,
+            ownerID: ownerID
+        )
+    }
+
+    func releaseProvisionalAgentSession(
+        workspaceID: UUID,
+        sessionID: UUID,
+        ownerID: UUID
+    ) {
+        workspaceAgentAdmissionCoordinator.releaseProvisionalSession(
+            workspaceID: workspaceID,
+            sessionID: sessionID,
+            ownerID: ownerID
+        )
+    }
+
+    func hasActiveProvisionalAgentSession(
+        workspaceID: UUID,
+        sessionID: UUID
+    ) -> Bool {
+        workspaceAgentAdmissionCoordinator.hasActiveProvisionalSession(
+            workspaceID: workspaceID,
+            sessionID: sessionID
+        )
+    }
+
+    func retainProvisionalAgentAdmissionRecovery(
+        recoveryID: UUID,
+        workspaceID: UUID,
+        sessionID: UUID,
+        reservationOwnerID: UUID,
+        operation: @escaping @MainActor @Sendable () async -> Void
+    ) {
+        workspaceAgentAdmissionCoordinator.retainRecovery(
+            recoveryID: recoveryID,
+            workspaceID: workspaceID,
+            sessionID: sessionID,
+            reservationOwnerID: reservationOwnerID,
+            operation: operation
+        )
     }
 
     private func recordAgentAdmissionSaveFailure(

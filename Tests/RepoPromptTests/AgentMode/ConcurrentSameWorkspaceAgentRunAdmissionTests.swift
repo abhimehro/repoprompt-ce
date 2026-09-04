@@ -6,9 +6,30 @@ import XCTest
 #if DEBUG
     @MainActor
     final class ConcurrentSameWorkspaceAgentRunAdmissionTests: XCTestCase {
+        private var cleanupOperation: (@MainActor () async -> Void)?
+
+        override func setUp() async throws {
+            try await super.setUp()
+            await AdmissionTestSuiteGate.shared.acquire()
+        }
+
+        override func tearDown() async throws {
+            if let cleanupOperation {
+                await cleanupOperation()
+                self.cleanupOperation = nil
+            }
+            await AdmissionTestSuiteGate.shared.release()
+            try await super.tearDown()
+        }
+
+        private func trackCleanup(_ operation: @escaping @MainActor () async -> Void) {
+            precondition(cleanupOperation == nil)
+            cleanupOperation = operation
+        }
+
         func testSixOverlappingAgentRunStartsPersistUniqueIdentitiesAndDispatchProvidersExactlyOnce() async throws {
             let fixture = try await DurableAgentAdmissionFixture.make()
-            addTeardownBlock { @MainActor in
+            trackCleanup {
                 await fixture.cleanup()
             }
             let workspaceID = fixture.workspaceID
@@ -209,9 +230,564 @@ import XCTest
             }
         }
 
+        func testSecondWindowRefreshesCanonicalAdmissionBeforePersistingItsOwnTarget() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup {
+                await fixture.cleanup()
+            }
+            let peer = try await fixture.makePeerWindow()
+            let stalePeerWorkspace = try XCTUnwrap(
+                peer.workspaceManager.workspace(withID: fixture.workspaceID)
+            )
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let coordinatorBaseline = coordinator.snapshot()
+            let saveGate = AdmissionSaveGate()
+            fixture.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting {
+                workspaceID,
+                _,
+                _ in
+                guard workspaceID == fixture.workspaceID,
+                      coordinator.activeCount(for: workspaceID) > 0
+                else { return }
+                await saveGate.enterFirstAndWait()
+            }
+            defer {
+                fixture.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil)
+                peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting(nil)
+            }
+            let firstRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            let firstService = makeAgentRunStartService(
+                window: fixture.window,
+                recorder: firstRecorder
+            )
+            let secondRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            let secondService = makeAgentRunStartService(window: peer, recorder: secondRecorder)
+            var peerRefreshObserved = false
+            peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting { workspaceID in
+                peerRefreshObserved = true
+                XCTAssertEqual(
+                    coordinator.snapshot().activeAdmissionCount,
+                    coordinatorBaseline.activeAdmissionCount + 1,
+                    "The peer refresh must run while its admission lease is active."
+                )
+                XCTAssertEqual(
+                    coordinator.waiterCount(for: workspaceID),
+                    0,
+                    "The peer must leave the queue before reading canonical state."
+                )
+                return await fixture.runtime.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+            }
+            let firstTask = Task { @MainActor in
+                try await firstService.execute(args: [
+                    "op": .string("start"),
+                    "message": .string("first window canonical admission"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            var secondTask: Task<Value, Error>?
+            do {
+                try await waitUntil("first window admission to hold the workspace lease") {
+                    await saveGate.hasEntered()
+                }
+                XCTAssertFalse(peerRefreshObserved)
+                peer.promptManager.loadComposeTabsFromWorkspace(stalePeerWorkspace)
+
+                let queuedTask = Task { @MainActor in
+                    try await secondService.execute(args: [
+                        "op": .string("start"),
+                        "message": .string("second window canonical admission"),
+                        "detach": .bool(true),
+                        "timeout": .int(0)
+                    ])
+                }
+                secondTask = queuedTask
+                try await waitUntil("peer admission to queue behind the first window") {
+                    coordinator.waiterCount(for: fixture.workspaceID) == 1
+                }
+                XCTAssertFalse(peerRefreshObserved)
+                let peerProviderCountWhileQueued = await secondRecorder.count()
+                XCTAssertEqual(peerProviderCountWhileQueued, 0)
+
+                await saveGate.open()
+                _ = try await firstTask.value
+                _ = try await queuedTask.value
+            } catch {
+                await saveGate.open()
+                firstTask.cancel()
+                secondTask?.cancel()
+                _ = try? await firstTask.value
+                if let secondTask {
+                    _ = try? await secondTask.value
+                }
+                throw error
+            }
+
+            XCTAssertTrue(peerRefreshObserved)
+            let firstObservations = await firstRecorder.observations()
+            let firstObservation = try XCTUnwrap(firstObservations.first)
+            let firstPair = AdmissionIdentityPair(
+                tabID: firstObservation.tabID,
+                sessionID: firstObservation.sessionID
+            )
+            let secondObservations = await secondRecorder.observations()
+            let secondObservation = try XCTUnwrap(secondObservations.first)
+            let secondPair = AdmissionIdentityPair(
+                tabID: secondObservation.tabID,
+                sessionID: secondObservation.sessionID
+            )
+
+            let firstAttemptCounts = await firstRecorder.attemptCounts()
+            let secondAttemptCounts = await secondRecorder.attemptCounts()
+            XCTAssertEqual(firstAttemptCounts[firstPair], 1)
+            XCTAssertEqual(secondAttemptCounts[secondPair], 1)
+            let canonicalSnapshotValue = await fixture.runtime.workspaceStore
+                .canonicalWorkspaceSnapshot(fixture.workspaceID)
+            let canonicalSnapshot = try XCTUnwrap(canonicalSnapshotValue)
+            let canonical = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: canonicalSnapshot.document.documentBytes
+            )
+            XCTAssertTrue(canonical.composeTabs.containsIdentity(firstPair))
+            XCTAssertTrue(canonical.composeTabs.containsIdentity(secondPair))
+            XCTAssertEqual(Set([firstPair, secondPair]).count, 2)
+        }
+
+        func testCanonicalAdmissionRefreshReResolvesWorkspaceAfterReorder() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let peer = try await fixture.makePeerWindow()
+            let staleWorkspace = try XCTUnwrap(peer.workspaceManager.workspace(withID: fixture.workspaceID))
+            let firstRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            _ = try await makeAgentRunStartService(window: fixture.window, recorder: firstRecorder).execute(args: [
+                "op": .string("start"),
+                "message": .string("canonical identity before peer reorder"),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            let firstObservations = await firstRecorder.observations()
+            let first = try XCTUnwrap(firstObservations.first)
+            let firstPair = AdmissionIdentityPair(tabID: first.tabID, sessionID: first.sessionID)
+            let peerIndex = try XCTUnwrap(peer.workspaceManager.workspaces.firstIndex { $0.id == fixture.workspaceID })
+            peer.workspaceManager.workspaces[peerIndex] = staleWorkspace
+            peer.promptManager.loadComposeTabsFromWorkspace(staleWorkspace)
+
+            let gate = AdmissionHandoffGate()
+            peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting { workspaceID in
+                let snapshot = await fixture.runtime.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+                await gate.enterAndWait()
+                return snapshot
+            }
+            defer { peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting(nil) }
+            let secondRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            let task = Task { @MainActor in
+                try await self.makeAgentRunStartService(window: peer, recorder: secondRecorder).execute(args: [
+                    "op": .string("start"),
+                    "message": .string("peer admission after reorder"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            await gate.waitUntilEntered()
+            let target = peer.workspaceManager.workspaces.remove(at: peerIndex)
+            peer.workspaceManager.workspaces.append(target)
+            let unrelatedBefore = Array(peer.workspaceManager.workspaces.dropLast())
+            await gate.open()
+            _ = try await task.value
+
+            XCTAssertEqual(Array(peer.workspaceManager.workspaces.dropLast()), unrelatedBefore)
+            let refreshed = try XCTUnwrap(peer.workspaceManager.workspace(withID: fixture.workspaceID))
+            XCTAssertTrue(refreshed.composeTabs.containsIdentity(firstPair))
+            let secondProviderCount = await secondRecorder.count()
+            XCTAssertEqual(secondProviderCount, 1)
+        }
+
+        func testCanonicalAdmissionRefreshMergesIntoReplacementWorkspaceAfterAuthorityRead() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let peer = try await fixture.makePeerWindow()
+            let staleWorkspace = try XCTUnwrap(peer.workspaceManager.workspace(withID: fixture.workspaceID))
+            let firstRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            _ = try await makeAgentRunStartService(window: fixture.window, recorder: firstRecorder).execute(args: [
+                "op": .string("start"),
+                "message": .string("canonical identity before local replacement"),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            let firstObservations = await firstRecorder.observations()
+            let first = try XCTUnwrap(firstObservations.first)
+            let firstPair = AdmissionIdentityPair(tabID: first.tabID, sessionID: first.sessionID)
+            let peerIndex = try XCTUnwrap(peer.workspaceManager.workspaces.firstIndex { $0.id == fixture.workspaceID })
+            peer.workspaceManager.workspaces[peerIndex] = staleWorkspace
+            peer.promptManager.loadComposeTabsFromWorkspace(staleWorkspace)
+
+            let gate = AdmissionHandoffGate()
+            peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting { workspaceID in
+                let snapshot = await fixture.runtime.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+                await gate.enterAndWait()
+                return snapshot
+            }
+            defer { peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting(nil) }
+            let secondRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            let task = Task { @MainActor in
+                try await self.makeAgentRunStartService(window: peer, recorder: secondRecorder).execute(args: [
+                    "op": .string("start"),
+                    "message": .string("peer admission after replacement"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            await gate.waitUntilEntered()
+            let replacementTab = ComposeTabState(name: "Replacement-local tab")
+            var replacement = staleWorkspace
+            replacement.name = "Replacement-local workspace"
+            replacement.composeTabs = [replacementTab]
+            replacement.activeComposeTabID = replacementTab.id
+            peer.workspaceManager.workspaces[peerIndex] = replacement
+            await gate.open()
+            _ = try await task.value
+
+            let refreshed = try XCTUnwrap(peer.workspaceManager.workspace(withID: fixture.workspaceID))
+            XCTAssertEqual(refreshed.name, replacement.name)
+            XCTAssertTrue(refreshed.composeTabs.contains { $0.id == replacementTab.id })
+            XCTAssertTrue(refreshed.composeTabs.containsIdentity(firstPair))
+            let secondProviderCount = await secondRecorder.count()
+            XCTAssertEqual(secondProviderCount, 1)
+        }
+
+        func testCanonicalAdmissionRefreshRejectsWorkspaceRemovedDuringAuthorityRead() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let manager = fixture.window.workspaceManager
+            let canonicalBeforeValue = await fixture.runtime.workspaceStore
+                .canonicalWorkspaceSnapshot(fixture.workspaceID)
+            let canonicalBefore = try XCTUnwrap(canonicalBeforeValue)
+            let canonicalModelBefore = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: canonicalBefore.document.documentBytes
+            )
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let provisionalCountBefore = coordinator.snapshot().provisionalSessionCount
+            let gate = AdmissionHandoffGate()
+            manager.setAgentAdmissionCanonicalSnapshotHandlerForTesting { workspaceID in
+                let snapshot = await fixture.runtime.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+                await gate.enterAndWait()
+                return snapshot
+            }
+            defer { manager.setAgentAdmissionCanonicalSnapshotHandlerForTesting(nil) }
+            let recorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            let task = Task { @MainActor in
+                try await self.makeAgentRunStartService(window: fixture.window, recorder: recorder).execute(args: [
+                    "op": .string("start"),
+                    "message": .string("removed while reading authority"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            await gate.waitUntilEntered()
+            manager.workspaces.removeAll { $0.id == fixture.workspaceID }
+            await gate.open()
+            do {
+                _ = try await task.value
+                XCTFail("A removed target must reject before provisional publication.")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("disappeared"), String(describing: error))
+            }
+
+            let providerCount = await recorder.count()
+            XCTAssertEqual(providerCount, 0)
+            XCTAssertEqual(coordinator.snapshot().provisionalSessionCount, provisionalCountBefore)
+            let canonicalAfterValue = await fixture.runtime.workspaceStore
+                .canonicalWorkspaceSnapshot(fixture.workspaceID)
+            let canonicalAfter = try XCTUnwrap(canonicalAfterValue)
+            XCTAssertEqual(
+                try JSONDecoder().decode(WorkspaceModel.self, from: canonicalAfter.document.documentBytes),
+                canonicalModelBefore
+            )
+        }
+
+        func testCanonicalAdmissionRefreshHonorsCancellationDuringAuthorityRead() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let manager = fixture.window.workspaceManager
+            let workspaceBefore = try XCTUnwrap(manager.workspace(withID: fixture.workspaceID))
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let provisionalCountBefore = coordinator.snapshot().provisionalSessionCount
+            let gate = AdmissionHandoffGate()
+            manager.setAgentAdmissionCanonicalSnapshotHandlerForTesting { workspaceID in
+                let snapshot = await fixture.runtime.workspaceStore.canonicalWorkspaceSnapshot(workspaceID)
+                await gate.enterAndWait()
+                return snapshot
+            }
+            defer { manager.setAgentAdmissionCanonicalSnapshotHandlerForTesting(nil) }
+            let recorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            let task = Task { @MainActor in
+                try await self.makeAgentRunStartService(window: fixture.window, recorder: recorder).execute(args: [
+                    "op": .string("start"),
+                    "message": .string("cancelled while reading authority"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            await gate.waitUntilEntered()
+            task.cancel()
+            await gate.open()
+            do {
+                _ = try await task.value
+                XCTFail("Cancellation during canonical refresh must prevent admission.")
+            } catch is CancellationError {}
+
+            let providerCount = await recorder.count()
+            XCTAssertEqual(providerCount, 0)
+            XCTAssertEqual(coordinator.snapshot().provisionalSessionCount, provisionalCountBefore)
+            let workspaceAfter = try XCTUnwrap(manager.workspace(withID: fixture.workspaceID))
+            XCTAssertEqual(workspaceAfter.composeTabs.map(\.id), workspaceBefore.composeTabs.map(\.id))
+            XCTAssertEqual(
+                workspaceAfter.composeTabs.map(\.activeAgentSessionID),
+                workspaceBefore.composeTabs.map(\.activeAgentSessionID)
+            )
+            XCTAssertEqual(workspaceAfter.stashedTabs, workspaceBefore.stashedTabs)
+        }
+
+        func testCanonicalAdmissionRefreshReconcilesStashedIdentityBeforeCreatingUniqueTab() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let peer = try await fixture.makePeerWindow()
+            let stalePeerWorkspace = try XCTUnwrap(peer.workspaceManager.workspace(withID: fixture.workspaceID))
+            let firstRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            _ = try await makeAgentRunStartService(window: fixture.window, recorder: firstRecorder).execute(args: [
+                "op": .string("start"),
+                "message": .string("canonical identity moved to stash"),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            let firstObservations = await firstRecorder.observations()
+            let firstObservation = try XCTUnwrap(firstObservations.first)
+            let firstPair = AdmissionIdentityPair(
+                tabID: firstObservation.tabID,
+                sessionID: firstObservation.sessionID
+            )
+            let canonicalValue = await fixture.runtime.workspaceStore
+                .canonicalWorkspaceSnapshot(fixture.workspaceID)
+            let canonicalSnapshot = try XCTUnwrap(canonicalValue)
+            var canonical = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: canonicalSnapshot.document.documentBytes
+            )
+            let movedIndex = try XCTUnwrap(canonical.composeTabs.firstIndex { $0.id == firstPair.tabID })
+            let moved = canonical.composeTabs.remove(at: movedIndex)
+            canonical.stashedTabs.append(StashedTab(tab: moved))
+            if canonical.activeComposeTabID == moved.id {
+                canonical.activeComposeTabID = canonical.composeTabs.first?.id
+            }
+            let stashedSnapshot = try WorkspaceManagerViewModel.replacingWorkspaceProjectionForTesting(
+                canonical,
+                in: canonicalSnapshot
+            )
+            let peerIndex = try XCTUnwrap(peer.workspaceManager.workspaces.firstIndex {
+                $0.id == fixture.workspaceID
+            })
+            peer.workspaceManager.workspaces[peerIndex] = stalePeerWorkspace
+            peer.promptManager.loadComposeTabsFromWorkspace(stalePeerWorkspace)
+            peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting { _ in
+                stashedSnapshot
+            }
+            defer { peer.workspaceManager.setAgentAdmissionCanonicalSnapshotHandlerForTesting(nil) }
+
+            let peerRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            _ = try await makeAgentRunStartService(window: peer, recorder: peerRecorder).execute(args: [
+                "op": .string("start"),
+                "message": .string("new tab after stashed identity refresh"),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+
+            let refreshed = try XCTUnwrap(peer.workspaceManager.workspace(withID: fixture.workspaceID))
+            XCTAssertTrue(refreshed.stashedTabs.map(\.tab).containsIdentity(firstPair))
+            XCTAssertFalse(refreshed.composeTabs.containsIdentity(firstPair))
+            let allTabIDs = refreshed.composeTabs.map(\.id) + refreshed.stashedTabs.map(\.tab.id)
+            XCTAssertEqual(Set(allTabIDs).count, allTabIDs.count)
+            let peerProviderCount = await peerRecorder.count()
+            XCTAssertEqual(peerProviderCount, 1)
+        }
+
+        func testCanonicalAdmissionRefreshRejectsDuplicateTabIDWithoutMutationOrDispatch() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let manager = fixture.window.workspaceManager
+            let workspaceBefore = try XCTUnwrap(manager.workspace(withID: fixture.workspaceID))
+            let canonicalValue = await fixture.runtime.workspaceStore
+                .canonicalWorkspaceSnapshot(fixture.workspaceID)
+            let canonicalSnapshot = try XCTUnwrap(canonicalValue)
+            var malformed = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: canonicalSnapshot.document.documentBytes
+            )
+            let duplicate = try XCTUnwrap(malformed.composeTabs.first)
+            malformed.stashedTabs.append(StashedTab(tab: duplicate))
+            let malformedSnapshot = try WorkspaceManagerViewModel.replacingWorkspaceProjectionForTesting(
+                malformed,
+                in: canonicalSnapshot
+            )
+            manager.setAgentAdmissionCanonicalSnapshotHandlerForTesting { _ in malformedSnapshot }
+            defer { manager.setAgentAdmissionCanonicalSnapshotHandlerForTesting(nil) }
+            var operationRan = false
+
+            do {
+                try await manager.withAgentSessionAdmission(
+                    workspaceID: fixture.workspaceID,
+                    admissionID: UUID(),
+                    refreshCanonicalState: true
+                ) {
+                    operationRan = true
+                }
+                XCTFail("Malformed canonical tab identity must reject admission.")
+            } catch let error as AgentAdmissionCanonicalRefreshError {
+                XCTAssertEqual(error, .duplicateTabID(duplicate.id))
+            }
+
+            XCTAssertFalse(operationRan)
+            XCTAssertEqual(manager.workspace(withID: fixture.workspaceID), workspaceBefore)
+        }
+
+        func testRetainedRecoveryKeepsPeerProvisionalFenceUntilRecoveryTerminates() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let peer = try await fixture.makePeerWindow()
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let baseline = coordinator.snapshot()
+            let workspaceID = fixture.workspaceID
+            let sessionID = UUID()
+            let initiatingOwnerID = UUID()
+            let recoveryID = UUID()
+            let gate = AdmissionHandoffGate()
+            XCTAssertTrue(coordinator.reserveProvisionalSession(
+                workspaceID: workspaceID,
+                sessionID: sessionID,
+                ownerID: initiatingOwnerID
+            ))
+            fixture.window.workspaceManager.retainProvisionalAgentAdmissionRecovery(
+                recoveryID: recoveryID,
+                workspaceID: workspaceID,
+                sessionID: sessionID,
+                reservationOwnerID: recoveryID
+            ) {
+                await gate.enterAndWait()
+            }
+            await gate.waitUntilEntered()
+
+            coordinator.releaseProvisionalSession(
+                workspaceID: workspaceID,
+                sessionID: sessionID,
+                ownerID: initiatingOwnerID
+            )
+            XCTAssertTrue(peer.workspaceManager.hasActiveProvisionalAgentSession(
+                workspaceID: workspaceID,
+                sessionID: sessionID
+            ))
+            XCTAssertEqual(coordinator.snapshot().retainedRecoveryCount, baseline.retainedRecoveryCount + 1)
+
+            await gate.open()
+            try await waitUntil("retained recovery to release the process-shared reservation") {
+                let snapshot = coordinator.snapshot()
+                return snapshot.retainedRecoveryCount == baseline.retainedRecoveryCount
+                    && snapshot.provisionalSessionCount == baseline.provisionalSessionCount
+            }
+            XCTAssertFalse(peer.workspaceManager.hasActiveProvisionalAgentSession(
+                workspaceID: workspaceID,
+                sessionID: sessionID
+            ))
+        }
+
+        func testSecondWindowCannotStartPublishedProvisionalSessionBeforeAcceptance() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup {
+                await fixture.cleanup()
+            }
+            let peer = try await fixture.makePeerWindow()
+            let providerGate = AdmissionHandoffGate()
+            let firstRecorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            var provisionalPair: AdmissionIdentityPair?
+            let firstService = makeAgentRunStartService(
+                window: fixture.window,
+                recorder: firstRecorder,
+                validateBeforeProviderDispatch: { pair in
+                    provisionalPair = pair
+                    await providerGate.enterAndWait()
+                }
+            )
+            let firstTask = Task { @MainActor in
+                try await firstService.execute(args: [
+                    "op": .string("start"),
+                    "message": .string("publish provisional cross-window target"),
+                    "detach": .bool(true),
+                    "timeout": .int(0)
+                ])
+            }
+            await providerGate.waitUntilEntered()
+            let pair = try XCTUnwrap(provisionalPair)
+
+            let publishedSnapshotValue = await fixture.runtime.workspaceStore
+                .canonicalWorkspaceSnapshot(fixture.workspaceID)
+            let publishedSnapshot = try XCTUnwrap(publishedSnapshotValue)
+            let publishedWorkspace = try JSONDecoder().decode(
+                WorkspaceModel.self,
+                from: publishedSnapshot.document.documentBytes
+            )
+            XCTAssertTrue(publishedWorkspace.composeTabs.containsIdentity(pair))
+            let peerIndex = try XCTUnwrap(peer.workspaceManager.workspaces.firstIndex {
+                $0.id == fixture.workspaceID
+            })
+            peer.workspaceManager.workspaces[peerIndex] = publishedWorkspace
+            peer.promptManager.loadComposeTabsFromWorkspace(publishedWorkspace)
+
+            XCTAssertNil(
+                try peer.agentModeViewModel.mcpSettledLiveSessionForStop(sessionID: pair.sessionID),
+                "A peer must not stop a durably published session while its shared reservation is active."
+            )
+
+            do {
+                _ = try await peer.agentModeViewModel.mcpResolveOrCreateSessionTarget(
+                    tabID: pair.tabID,
+                    sessionID: pair.sessionID,
+                    createIfNeeded: true,
+                    sessionName: nil,
+                    expectedWorkspaceID: fixture.workspaceID
+                )
+                XCTFail("A second window must not resolve another window's provisional target.")
+            } catch {
+                XCTAssertTrue(
+                    error.localizedDescription.contains("still provisional in another window"),
+                    "Unexpected provisional-fence error: \(error)"
+                )
+            }
+            let providerCountBeforeAcceptance = await firstRecorder.count()
+            XCTAssertEqual(providerCountBeforeAcceptance, 0)
+
+            await providerGate.open()
+            _ = try await firstTask.value
+            let firstAttemptCounts = await firstRecorder.attemptCounts()
+            XCTAssertEqual(firstAttemptCounts[pair], 1)
+
+            let accepted = try await peer.agentModeViewModel.mcpResolveOrCreateSessionTarget(
+                tabID: pair.tabID,
+                sessionID: pair.sessionID,
+                createIfNeeded: true,
+                sessionName: nil,
+                expectedWorkspaceID: fixture.workspaceID
+            )
+            XCTAssertEqual(accepted.tabID, pair.tabID)
+            XCTAssertEqual(accepted.sessionID, pair.sessionID)
+            XCTAssertNil(accepted.recoveryClaim)
+            let stoppable = try XCTUnwrap(
+                try peer.agentModeViewModel.mcpSettledLiveSessionForStop(sessionID: pair.sessionID)
+            )
+            XCTAssertEqual(stoppable.tabID, pair.tabID)
+        }
+
         func testAgentAdmissionsForDistinctDurableWorkspacesOverlap() async throws {
             let fixture = try await DistinctDurableAdmissionFixture.make()
-            addTeardownBlock { @MainActor in
+            trackCleanup {
                 await fixture.cleanup()
             }
             let first = fixture.first
@@ -286,7 +862,9 @@ import XCTest
                     .init(
                         activeAdmissionCount: baseline.activeAdmissionCount + 2,
                         waiterCount: baseline.waiterCount,
-                        trackedWorkspaceCount: baseline.trackedWorkspaceCount + 2
+                        trackedWorkspaceCount: baseline.trackedWorkspaceCount + 2,
+                        provisionalSessionCount: baseline.provisionalSessionCount + 2,
+                        retainedRecoveryCount: baseline.retainedRecoveryCount
                     )
                 )
 
@@ -400,7 +978,7 @@ import XCTest
 
         func testTypedAdmissionRejectionLeavesNoIdentityAcrossRestartAndDispatchesNoProvider() async throws {
             let fixture = try await DurableAgentAdmissionFixture.make()
-            addTeardownBlock { @MainActor in
+            trackCleanup {
                 await fixture.cleanup()
             }
             let workspaceID = fixture.workspaceID
@@ -537,7 +1115,7 @@ import XCTest
 
         func testQueuedAgentRunCancellationMutatesNoDurableStateAndDispatchesNoProvider() async throws {
             let fixture = try await DurableAgentAdmissionFixture.make()
-            addTeardownBlock { @MainActor in
+            trackCleanup {
                 await fixture.cleanup()
             }
             let workspaceID = fixture.workspaceID
@@ -640,7 +1218,7 @@ import XCTest
 
         func testUnexpectedQueuePhaseFailureCancelsAndJoinsAgentRunStartBeforeRethrowingOriginalError() async throws {
             let fixture = try await DurableAgentAdmissionFixture.make()
-            addTeardownBlock { @MainActor in
+            trackCleanup {
                 await fixture.cleanup()
             }
             let workspaceID = fixture.workspaceID
@@ -758,7 +1336,9 @@ import XCTest
                 WorkspaceAgentAdmissionCoordinator.Snapshot(
                     activeAdmissionCount: 0,
                     waiterCount: 0,
-                    trackedWorkspaceCount: 0
+                    trackedWorkspaceCount: 0,
+                    provisionalSessionCount: 0,
+                    retainedRecoveryCount: 0
                 )
             )
         }
@@ -829,7 +1409,9 @@ import XCTest
                 WorkspaceAgentAdmissionCoordinator.Snapshot(
                     activeAdmissionCount: 1,
                     waiterCount: 1,
-                    trackedWorkspaceCount: 1
+                    trackedWorkspaceCount: 1,
+                    provisionalSessionCount: 0,
+                    retainedRecoveryCount: 0
                 )
             )
             holder.release()
@@ -840,7 +1422,9 @@ import XCTest
                 WorkspaceAgentAdmissionCoordinator.Snapshot(
                     activeAdmissionCount: 0,
                     waiterCount: 0,
-                    trackedWorkspaceCount: 0
+                    trackedWorkspaceCount: 0,
+                    provisionalSessionCount: 0,
+                    retainedRecoveryCount: 0
                 )
             )
         }
@@ -887,7 +1471,9 @@ import XCTest
                 WorkspaceAgentAdmissionCoordinator.Snapshot(
                     activeAdmissionCount: 0,
                     waiterCount: 0,
-                    trackedWorkspaceCount: 0
+                    trackedWorkspaceCount: 0,
+                    provisionalSessionCount: 0,
+                    retainedRecoveryCount: 0
                 )
             )
         }
@@ -911,7 +1497,9 @@ import XCTest
                 WorkspaceAgentAdmissionCoordinator.Snapshot(
                     activeAdmissionCount: 2,
                     waiterCount: 0,
-                    trackedWorkspaceCount: 2
+                    trackedWorkspaceCount: 2,
+                    provisionalSessionCount: 0,
+                    retainedRecoveryCount: 0
                 )
             )
             leaseA.release()
@@ -1452,6 +2040,11 @@ import XCTest
                 source: .directUnknown
             )
             await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.flush(url: workspaceFileURL)
+            // A sibling window can publish a catalog projection while this synthetic workspace is
+            // being created, so establish the local projection from the workspace just committed.
+            if !window.workspaceManager.workspaces.contains(where: { $0.id == workspace.id }) {
+                window.workspaceManager.workspaces.append(workspace)
+            }
             let storedWorkspace = try XCTUnwrap(
                 window.workspaceManager.workspaces.first { $0.id == workspace.id }
             )
@@ -1495,6 +2088,7 @@ import XCTest
         let window: WindowState
         let workspaceID: UUID
         let workspaceFileURL: URL
+        private var peerWindows: [WindowState] = []
         private var isClosed = false
         private var isCleanedUp = false
 
@@ -1557,6 +2151,11 @@ import XCTest
                     source: .directUnknown
                 )
                 await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.flush(url: workspaceFileURL)
+                // Catalog projection and fixture creation are independent publications; the test
+                // window must expose the workspace that the authority has already committed.
+                if !window.workspaceManager.workspaces.contains(where: { $0.id == workspace.id }) {
+                    window.workspaceManager.workspaces.append(workspace)
+                }
                 let storedWorkspace = try XCTUnwrap(
                     window.workspaceManager.workspaces.first { $0.id == workspace.id }
                 )
@@ -1610,6 +2209,39 @@ import XCTest
             )
         }
 
+        func makePeerWindow() async throws -> WindowState {
+            let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+            GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+            let peer = WindowState(domainRuntime: runtime)
+            WindowStatesManager.shared.registerWindowState(peer)
+            GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+            peerWindows.append(peer)
+            await peer.workspaceManager.awaitInitialized()
+
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: .seconds(5))
+            while peer.workspaceManager.workspace(withID: workspaceID) == nil {
+                guard clock.now < deadline else {
+                    throw AdmissionTestError.timedOut("peer window workspace projection")
+                }
+                await Task.yield()
+            }
+            let workspace = try XCTUnwrap(peer.workspaceManager.workspace(withID: workspaceID))
+            let switchResult = await peer.workspaceManager.switchWorkspace(
+                to: workspace,
+                saveState: false,
+                reason: "sameWorkspacePeerAdmissionAcceptance"
+            )
+            guard switchResult.didSwitch else {
+                throw AdmissionTestError.fixtureSetup(
+                    switchResult.message ?? "peer durable workspace did not become active"
+                )
+            }
+            let activeWorkspace = try XCTUnwrap(peer.workspaceManager.activeWorkspace)
+            peer.promptManager.loadComposeTabsFromWorkspace(activeWorkspace, syncPromptText: true)
+            return peer
+        }
+
         func withFreshRuntime<T>(
             generation: UInt64,
             operation: (MCPDomainRuntime) async throws -> T
@@ -1629,6 +2261,12 @@ import XCTest
         func closeWindowAndRuntime() async {
             guard !isClosed else { return }
             isClosed = true
+            for peer in peerWindows.reversed() {
+                peer.beginClose()
+                await peer.tearDown()
+                WindowStatesManager.shared.unregisterWindowState(peer)
+            }
+            peerWindows.removeAll()
             window.beginClose()
             await window.tearDown()
             WindowStatesManager.shared.unregisterWindowState(window)
@@ -1861,6 +2499,29 @@ import XCTest
             let pendingReleaseWaiters = releaseWaiters
             releaseWaiters.removeAll()
             pendingReleaseWaiters.forEach { $0.resume() }
+        }
+    }
+
+    private actor AdmissionTestSuiteGate {
+        static let shared = AdmissionTestSuiteGate()
+
+        private var isHeld = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func acquire() async {
+            guard isHeld else {
+                isHeld = true
+                return
+            }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func release() {
+            guard !waiters.isEmpty else {
+                isHeld = false
+                return
+            }
+            waiters.removeFirst().resume()
         }
     }
 #endif

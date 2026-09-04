@@ -11,6 +11,8 @@ final class WorkspaceAgentAdmissionCoordinator: @unchecked Sendable {
         let activeAdmissionCount: Int
         let waiterCount: Int
         let trackedWorkspaceCount: Int
+        let provisionalSessionCount: Int
+        let retainedRecoveryCount: Int
     }
 
     struct Event: Equatable {
@@ -71,6 +73,22 @@ final class WorkspaceAgentAdmissionCoordinator: @unchecked Sendable {
         var waiters: [Waiter] = []
     }
 
+    private struct ProvisionalSessionKey: Hashable {
+        let workspaceID: UUID
+        let sessionID: UUID
+    }
+
+    private struct ProvisionalSessionReservation {
+        var ownerIDs: Set<UUID>
+    }
+
+    private struct RetainedRecovery {
+        let taskID: UUID
+        let task: Task<Void, Never>
+        let reservationKey: ProvisionalSessionKey
+        let reservationOwnerID: UUID
+    }
+
     private enum AdmissionLocation: Equatable {
         case waiter(workspaceID: UUID)
         case holder(workspaceID: UUID)
@@ -96,6 +114,8 @@ final class WorkspaceAgentAdmissionCoordinator: @unchecked Sendable {
     private var stateByWorkspaceID: [UUID: WorkspaceState] = [:]
     private var admissionLocationByAdmissionID: [UUID: AdmissionLocation] = [:]
     private var cancelledBeforeEnqueueAdmissionIDs: Set<UUID> = []
+    private var provisionalSessionReservations: [ProvisionalSessionKey: ProvisionalSessionReservation] = [:]
+    private var retainedRecoveries: [UUID: RetainedRecovery] = [:]
 
     #if DEBUG
         private var eventObserver: (@Sendable (Event) -> Void)?
@@ -215,8 +235,110 @@ final class WorkspaceAgentAdmissionCoordinator: @unchecked Sendable {
                 waiterCount: stateByWorkspaceID.values.reduce(0) { count, state in
                     count + state.waiters.count
                 },
-                trackedWorkspaceCount: stateByWorkspaceID.count
+                trackedWorkspaceCount: stateByWorkspaceID.count,
+                provisionalSessionCount: provisionalSessionReservations.count,
+                retainedRecoveryCount: retainedRecoveries.count
             )
+        }
+    }
+
+    /// A provider-visible session identity remains reserved from selector resolution through
+    /// acceptance or terminal recovery, including publication into another window's projection.
+    func reserveProvisionalSession(
+        workspaceID: UUID,
+        sessionID: UUID,
+        ownerID: UUID
+    ) -> Bool {
+        lock.withLock {
+            let key = ProvisionalSessionKey(workspaceID: workspaceID, sessionID: sessionID)
+            if let reservation = provisionalSessionReservations[key] {
+                return reservation.ownerIDs.contains(ownerID)
+            }
+            provisionalSessionReservations[key] = ProvisionalSessionReservation(ownerIDs: [ownerID])
+            return true
+        }
+    }
+
+    func releaseProvisionalSession(
+        workspaceID: UUID,
+        sessionID: UUID,
+        ownerID: UUID
+    ) {
+        lock.withLock {
+            let key = ProvisionalSessionKey(workspaceID: workspaceID, sessionID: sessionID)
+            guard var reservation = provisionalSessionReservations[key],
+                  reservation.ownerIDs.remove(ownerID) != nil
+            else { return }
+            if reservation.ownerIDs.isEmpty {
+                provisionalSessionReservations.removeValue(forKey: key)
+            } else {
+                provisionalSessionReservations[key] = reservation
+            }
+        }
+    }
+
+    func hasActiveProvisionalSession(
+        workspaceID: UUID,
+        sessionID: UUID
+    ) -> Bool {
+        lock.withLock {
+            provisionalSessionReservations[
+                ProvisionalSessionKey(workspaceID: workspaceID, sessionID: sessionID)
+            ] != nil
+        }
+    }
+
+    /// Retaining the task outside a window-owned view model lets durable cleanup outlive the
+    /// cancelled request that created it. The operation itself owns its bounded retry policy.
+    func retainRecovery(
+        recoveryID: UUID,
+        workspaceID: UUID,
+        sessionID: UUID,
+        reservationOwnerID: UUID,
+        operation: @escaping @MainActor @Sendable () async -> Void
+    ) {
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            await operation()
+            self?.finishRetainedRecovery(recoveryID: recoveryID, taskID: taskID)
+        }
+        let inserted = lock.withLock {
+            guard retainedRecoveries[recoveryID] == nil else { return false }
+            let reservationKey = ProvisionalSessionKey(
+                workspaceID: workspaceID,
+                sessionID: sessionID
+            )
+            var reservation = provisionalSessionReservations[reservationKey]
+                ?? ProvisionalSessionReservation(ownerIDs: [])
+            reservation.ownerIDs.insert(reservationOwnerID)
+            provisionalSessionReservations[reservationKey] = reservation
+            retainedRecoveries[recoveryID] = RetainedRecovery(
+                taskID: taskID,
+                task: task,
+                reservationKey: reservationKey,
+                reservationOwnerID: reservationOwnerID
+            )
+            return true
+        }
+        if !inserted {
+            task.cancel()
+        }
+    }
+
+    private func finishRetainedRecovery(recoveryID: UUID, taskID: UUID) {
+        lock.withLock {
+            guard let recovery = retainedRecoveries[recoveryID],
+                  recovery.taskID == taskID
+            else { return }
+            retainedRecoveries.removeValue(forKey: recoveryID)
+            guard var reservation = provisionalSessionReservations[recovery.reservationKey],
+                  reservation.ownerIDs.remove(recovery.reservationOwnerID) != nil
+            else { return }
+            if reservation.ownerIDs.isEmpty {
+                provisionalSessionReservations.removeValue(forKey: recovery.reservationKey)
+            } else {
+                provisionalSessionReservations[recovery.reservationKey] = reservation
+            }
         }
     }
 
