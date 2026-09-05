@@ -49,11 +49,12 @@ final class FileSystemServiceFSEventRecoveryGate: @unchecked Sendable {
     func installHandler(_ handler: (@Sendable () -> Void)?) -> (@Sendable () -> Void)? {
         lock.lock()
         self.handler = handler
-        let handlerToSignal: (@Sendable () -> Void)? = if required {
+        let handlerToSignal: (@Sendable () -> Void)?
+        if required {
             self.handler = nil
-            handler
+            handlerToSignal = handler
         } else {
-            nil
+            handlerToSignal = nil
         }
         lock.unlock()
         return handlerToSignal

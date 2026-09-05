@@ -648,7 +648,7 @@ extension FileSystemService {
         deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
     ) -> (@Sendable () -> Void)? {
         fseventRecoveryGate.markRequiredAndTakeHandler {
-            _ = fseventDeliveryBarrier.reset(ifCurrent: deliveryGeneration)
+            _ = self.fseventDeliveryBarrier.reset(ifCurrent: deliveryGeneration)
         }
     }
 
