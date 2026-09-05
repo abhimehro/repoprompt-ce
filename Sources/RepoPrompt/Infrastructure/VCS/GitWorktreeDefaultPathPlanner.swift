@@ -157,7 +157,7 @@ enum GitWorktreeDefaultPathPlanner {
     private static func uniqueDefaultPath(in container: URL, leaf: String, occupiedRoots: [URL]) -> URL {
         var candidate = container.appendingPathComponent(leaf, isDirectory: true).standardizedFileURL
         var suffix = 2
-        let occupiedPaths = Set(occupiedRoots.map { $0.standardizedFileURL.path })
+        let occupiedPaths = Set(occupiedRoots.map(\.standardizedFileURL.path))
         while pathExists(candidate) || occupiedPaths.contains(candidate.path) {
             candidate = container.appendingPathComponent("\(leaf)-\(suffix)", isDirectory: true).standardizedFileURL
             suffix += 1
@@ -253,9 +253,5 @@ enum GitWorktreeDefaultPathPlanner {
         let rootComponents = root.standardizedFileURL.pathComponents
         guard pathComponents.count >= rootComponents.count else { return false }
         return Array(pathComponents.prefix(rootComponents.count)) == rootComponents
-    }
-
-    private static func samePath(_ lhs: URL, _ rhs: URL) -> Bool {
-        lhs.path == rhs.path
     }
 }
