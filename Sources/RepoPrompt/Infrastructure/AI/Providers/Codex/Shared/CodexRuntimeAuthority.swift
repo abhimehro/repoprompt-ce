@@ -10,6 +10,57 @@ enum CodexRuntimeAuthority {
     static let minimumExternalVersion = bundledVersion
     static let externalExecutableOverrideEnvironmentKey = "REPOPROMPT_CODEX_EXECUTABLE"
 
+    /// The persisted preference captured for this application process. Settings writes remain
+    /// pending until the next process launch; runtime consumers never reread UserDefaults after
+    /// this snapshot has been initialized.
+    struct LaunchSnapshot: Equatable {
+        let selection: CodexRuntimePreferences.Selection
+
+        init(selection: CodexRuntimePreferences.Selection) {
+            self.selection = selection
+        }
+    }
+
+    private static let launchSnapshotLock = NSLock()
+    private static var storedLaunchSnapshot: LaunchSnapshot?
+
+    /// Builds a deterministic launch snapshot without touching process-global state. Tests inject
+    /// these values into runtime consumers instead of resetting the process snapshot.
+    static func makeLaunchSnapshot(defaults: UserDefaults = .standard) -> LaunchSnapshot {
+        LaunchSnapshot(selection: CodexRuntimePreferences.selection(defaults: defaults))
+    }
+
+    /// Captures the persisted runtime choice once, before the app creates settings or provider
+    /// clients. Repeated calls are intentionally no-ops so a settings write cannot retarget this
+    /// process; the next app launch captures the new persisted value.
+    @discardableResult
+    static func initializeLaunchSnapshot(defaults: UserDefaults = .standard) -> LaunchSnapshot {
+        let candidate = makeLaunchSnapshot(defaults: defaults)
+        launchSnapshotLock.lock()
+        if let storedLaunchSnapshot {
+            launchSnapshotLock.unlock()
+            return storedLaunchSnapshot
+        }
+        storedLaunchSnapshot = candidate
+        launchSnapshotLock.unlock()
+        return candidate
+    }
+
+    /// Returns the immutable process launch choice. Production initializes this explicitly from
+    /// `RepoPromptApplication.main`; the fallback keeps non-app callers safe without exposing a
+    /// reset API.
+    static func currentLaunchSnapshot() -> LaunchSnapshot {
+        launchSnapshotLock.lock()
+        if let storedLaunchSnapshot {
+            launchSnapshotLock.unlock()
+            return storedLaunchSnapshot
+        }
+        let snapshot = makeLaunchSnapshot()
+        storedLaunchSnapshot = snapshot
+        launchSnapshotLock.unlock()
+        return snapshot
+    }
+
     enum Source: Equatable {
         case bundled(target: String)
         case externalOverride
@@ -195,6 +246,7 @@ enum CodexRuntimeAuthority {
         let path: String
         let modificationDate: Date?
         let fileSize: UInt64?
+        let environmentFingerprint: Int
     }
 
     private struct ExternalVersionCacheEntry {
@@ -249,6 +301,7 @@ enum CodexRuntimeAuthority {
             return resolveExternalOverride(
                 configuredOverride,
                 statePaths: state,
+                environment: environment,
                 versionReader: externalVersionReader
             )
         }
@@ -325,9 +378,10 @@ enum CodexRuntimeAuthority {
     }
 
     /// Resolves the production configuration without making persistence part of the pure
-    /// validation path. A call-site override wins, followed by the Settings choice, environment,
-    /// and finally the bundled runtime. An explicitly bundled selection suppresses the legacy
-    /// environment override so the visible choice remains authoritative.
+    /// validation path. A call-site override wins, followed by the launch snapshot when supplied,
+    /// then the current Settings choice for preflight-only callers, environment, and finally the
+    /// bundled runtime. An explicitly bundled selection suppresses the legacy environment override
+    /// so the visible choice remains authoritative.
     static func resolveConfigured(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         resourcesURL: URL? = Bundle.main.resourceURL,
@@ -335,6 +389,7 @@ enum CodexRuntimeAuthority {
         applicationSupportURL: URL? = nil,
         explicitExecutableOverride: String? = nil,
         defaults: UserDefaults = .standard,
+        launchSnapshot: LaunchSnapshot? = nil,
         externalVersionReader: ((URL) -> String?)? = nil
     ) -> Result<Runtime, Failure> {
         if let explicitExecutableOverride {
@@ -350,7 +405,8 @@ enum CodexRuntimeAuthority {
 
         var configuredEnvironment = environment
         let configuredOverride: String?
-        switch CodexRuntimePreferences.selection(defaults: defaults) {
+        let selection = launchSnapshot?.selection ?? CodexRuntimePreferences.selection(defaults: defaults)
+        switch selection {
         case .inherited:
             configuredOverride = nil
         case .bundled:
@@ -373,6 +429,7 @@ enum CodexRuntimeAuthority {
     private static func resolveExternalOverride(
         _ rawPath: String,
         statePaths: StatePaths,
+        environment: [String: String],
         versionReader: ((URL) -> String?)?
     ) -> Result<Runtime, Failure> {
         let expandedPath = (rawPath as NSString).expandingTildeInPath
@@ -390,7 +447,7 @@ enum CodexRuntimeAuthority {
         let version: Version? = if let versionReader {
             versionReader(url).flatMap(Version.parse)
         } else {
-            cachedExternalVersion(executableURL: url)
+            cachedExternalVersion(executableURL: url, environment: environment)
         }
         guard let version else {
             return .failure(.externalOverrideVersionUnreadable(url.path))
@@ -408,12 +465,16 @@ enum CodexRuntimeAuthority {
         )
     }
 
-    private static func cachedExternalVersion(executableURL: URL) -> Version? {
+    private static func cachedExternalVersion(
+        executableURL: URL,
+        environment: [String: String]
+    ) -> Version? {
         let attributes = try? FileManager.default.attributesOfItem(atPath: executableURL.path)
         let key = ExternalVersionCacheKey(
             path: executableURL.path,
             modificationDate: attributes?[.modificationDate] as? Date,
-            fileSize: (attributes?[.size] as? NSNumber)?.uint64Value
+            fileSize: (attributes?[.size] as? NSNumber)?.uint64Value,
+            environmentFingerprint: environmentFingerprint(environment)
         )
         let now = Date()
 
@@ -434,7 +495,10 @@ enum CodexRuntimeAuthority {
         // Version probing may launch an invalid or hanging executable. Never hold the global
         // cache lock while waiting for that child; cache identity-bound failures briefly so
         // repeated callers do not serialize behind the same bad override.
-        let version = readExternalVersion(executableURL: executableURL).flatMap(Version.parse)
+        let version = readExternalVersion(
+            executableURL: executableURL,
+            environment: environment
+        ).flatMap(Version.parse)
 
         externalVersionCacheLock.lock()
         if let version {
@@ -449,10 +513,14 @@ enum CodexRuntimeAuthority {
         return version
     }
 
-    private static func readExternalVersion(executableURL: URL) -> String? {
+    private static func readExternalVersion(
+        executableURL: URL,
+        environment: [String: String]
+    ) -> String? {
         let process = Process()
         let output = Pipe()
         process.executableURL = executableURL
+        process.environment = environment
         process.arguments = ["--version"]
         process.standardOutput = output
         process.standardError = output
@@ -470,6 +538,15 @@ enum CodexRuntimeAuthority {
         }
         guard process.terminationStatus == 0 else { return nil }
         return String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+    }
+
+    private static func environmentFingerprint(_ environment: [String: String]) -> Int {
+        var hasher = Hasher()
+        for key in environment.keys.sorted() {
+            hasher.combine(key)
+            hasher.combine(environment[key])
+        }
+        return hasher.finalize()
     }
 
     private static func redactedStateDescription(_ paths: StatePaths) -> String {

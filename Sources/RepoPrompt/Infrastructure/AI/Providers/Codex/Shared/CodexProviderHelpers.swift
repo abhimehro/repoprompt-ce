@@ -25,8 +25,12 @@ enum CodexProviderHelpers {
     /// Returns a fresh app-server client for non-agent Codex flows.
     /// These flows should not share transport/process state across chat, health checks,
     /// and model polling because failures become sticky across otherwise unrelated work.
-    static func makeOwnedNonAgentAppServerClient() -> CodexAppServerClient {
-        CodexAppServerClient()
+    static func makeOwnedNonAgentAppServerClient(
+        launchSnapshot: CodexRuntimeAuthority.LaunchSnapshot? = nil
+    ) -> CodexAppServerClient {
+        CodexAppServerClient(
+            launchSnapshot: launchSnapshot ?? CodexRuntimeAuthority.currentLaunchSnapshot()
+        )
     }
 
     struct CodexExecutableResolution: Equatable {
@@ -69,13 +73,15 @@ enum CodexProviderHelpers {
         commandName: String = CLILaunchProfiles.codex.commandName,
         environment: [String: String],
         additionalPathHints: [String] = CLILaunchProfiles.codex.supplementalSearchPaths,
+        launchSnapshot: CodexRuntimeAuthority.LaunchSnapshot? = nil,
         logger: ((String) -> Void)? = nil
     ) -> CodexExecutableResolution {
         _ = additionalPathHints // Kept for source compatibility; PATH fallback is intentionally disabled.
         let injectedOverride = commandName == CLILaunchProfiles.codex.commandName ? nil : commandName
         switch CodexRuntimeAuthority.resolveConfigured(
             environment: environment,
-            explicitExecutableOverride: injectedOverride
+            explicitExecutableOverride: injectedOverride,
+            launchSnapshot: launchSnapshot
         ) {
         case let .success(runtime):
             let debugMessage = runtime.redactedDiagnosticSummary
@@ -121,7 +127,8 @@ enum CodexProviderHelpers {
         enableDebugLogging: Bool = false,
         logCollector: CLIProcessLogCollector? = nil,
         inheritedEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        shellEnvironmentProvider: ProcessEnvironmentBuilder.ShellEnvironmentProvider? = nil
+        shellEnvironmentProvider: ProcessEnvironmentBuilder.ShellEnvironmentProvider? = nil,
+        launchSnapshot: CodexRuntimeAuthority.LaunchSnapshot? = nil
     ) async -> CodexExecutableResolution {
         let environment = await codexPreflightEnvironment(
             enableDebugLogging: enableDebugLogging,
@@ -132,7 +139,8 @@ enum CodexProviderHelpers {
             resolveCodexExecutable(
                 commandName: commandName,
                 environment: environment,
-                additionalPathHints: additionalPathHints
+                additionalPathHints: additionalPathHints,
+                launchSnapshot: launchSnapshot
             )
         }.value
         logPreflightResolution(
