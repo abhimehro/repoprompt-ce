@@ -865,6 +865,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                       String(describing: mcpError).contains("path already exists")
                 else {
                     XCTFail("Unexpected public losing create failure while recovering from the winner-write failure: \(taskError)")
+                    throw taskError
                 }
             }
             throw error
@@ -1070,6 +1071,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
                       case .fileAlreadyExists = filesystemError
                 else {
                     XCTFail("Unexpected losing create failure while recovering from the winner-write failure: \(taskError)")
+                    throw taskError
                 }
             }
             throw error
@@ -1169,7 +1171,7 @@ final class MCPReadMutationPathContractTests: XCTestCase {
     }
 
     @MainActor
-    private func inProcessFileActionsTool(from server: MCPServerViewModel) async throws -> Tool {
+    private func inProcessFileActionsTool(from server: MCPServerViewModel) async throws -> RepoPromptApp.Tool {
         let tools = await server.windowMCPTools
         return try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.fileActions })
     }
