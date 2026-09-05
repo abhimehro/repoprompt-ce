@@ -417,8 +417,8 @@ actor GitWorkspaceMetadataMonitor {
         else { return }
         if record.targetKeysByTokenID.isEmpty {
             record.sourcesByTargetKey.values.forEach { $0.cancel() }
-            record.sourceIDsByTargetKey.values.forEach {
-                acceptedWatermarks.remove(token.repositoryKey, sourceID: $0)
+            for value in record.sourceIDsByTargetKey.values {
+                acceptedWatermarks.remove(token.repositoryKey, sourceID: value)
             }
             records.removeValue(forKey: token.repositoryKey)
         } else {
@@ -487,8 +487,8 @@ actor GitWorkspaceMetadataMonitor {
             return (created, sourceIDs)
         } catch {
             created.values.forEach { $0.cancel() }
-            sourceIDs.values.forEach {
-                acceptedWatermarks.remove(repositoryKey, sourceID: $0)
+            for value in sourceIDs.values {
+                acceptedWatermarks.remove(repositoryKey, sourceID: value)
             }
             throw error
         }

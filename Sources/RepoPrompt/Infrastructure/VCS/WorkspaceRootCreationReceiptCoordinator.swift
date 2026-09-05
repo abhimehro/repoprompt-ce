@@ -246,8 +246,8 @@ private final class ProductionWorkspaceRootCreationWitnessEventStream: @unchecke
                     id: 5
                 )
             ]))
-            return (
-                cutDelivered: await barrier.waitUntilDelivered(5, generation: generation),
+            return await (
+                cutDelivered: barrier.waitUntilDelivered(5, generation: generation),
                 generationInvalidated: barrier.currentGeneration != generation
             )
         }

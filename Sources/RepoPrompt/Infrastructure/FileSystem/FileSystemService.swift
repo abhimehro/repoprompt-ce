@@ -22,6 +22,147 @@ enum FileSystemUncancellableMutation: Equatable {
     case trash
 }
 
+/// Callback-owned invalidation that cannot be erased by a later actor stop/restart.
+/// FSEvents may report EventIdsWrapped while the actor is suspended in an activation
+/// cut; this gate records that fact synchronously on the callback side and also
+/// serializes the synchronous seeded-publication linearization point.
+final class FileSystemServiceFSEventRecoveryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var required = false
+    private var handler: (@Sendable () -> Void)?
+
+    /// Marks callback invalidation and removes the owner signal while holding the
+    /// same lock used by publication permits. `whileLocked` is synchronous and
+    /// must not perform actor hops or await work.
+    func markRequiredAndTakeHandler(
+        whileLocked: (() -> Void)? = nil
+    ) -> (@Sendable () -> Void)? {
+        lock.lock()
+        required = true
+        whileLocked?()
+        let handler = handler
+        self.handler = nil
+        lock.unlock()
+        return handler
+    }
+
+    func installHandler(_ handler: (@Sendable () -> Void)?) -> (@Sendable () -> Void)? {
+        lock.lock()
+        self.handler = handler
+        let handlerToSignal: (@Sendable () -> Void)? = if required {
+            self.handler = nil
+            handler
+        } else {
+            nil
+        }
+        lock.unlock()
+        return handlerToSignal
+    }
+
+    func clearHandler() {
+        lock.lock()
+        handler = nil
+        lock.unlock()
+    }
+
+    func takeHandler() -> (@Sendable () -> Void)? {
+        lock.lock()
+        let handler = handler
+        self.handler = nil
+        lock.unlock()
+        return handler
+    }
+
+    func acquirePublicationPermit() -> FileSystemServiceFSEventRecoveryPublicationPermit? {
+        lock.lock()
+        guard !required else {
+            lock.unlock()
+            return nil
+        }
+        return FileSystemServiceFSEventRecoveryPublicationPermit(gate: self)
+    }
+
+    fileprivate func releasePublicationPermit() {
+        lock.unlock()
+    }
+
+    /// Serializes stream-generation invalidation with publication permits.
+    /// The closure is synchronous and must not perform actor hops or await work.
+    @discardableResult
+    func withRecoveryLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    /// Starts a stream-local generation transition only if callback recovery has
+    /// not already won the service cut.
+    func withRecoveryLockIfClear<T>(_ body: () -> T) -> T? {
+        lock.lock()
+        guard !required else {
+            lock.unlock()
+            return nil
+        }
+        defer { lock.unlock() }
+        return body()
+    }
+
+    var isRequired: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return required
+    }
+}
+
+/// Owns one service's recovery lock until the synchronous publication assignment
+/// has completed. Locks are acquired by the owning store in deterministic token
+/// order and released in reverse order.
+final class FileSystemServiceFSEventRecoveryPublicationPermit: @unchecked Sendable {
+    private let gate: FileSystemServiceFSEventRecoveryGate
+    private var released = false
+
+    fileprivate init(gate: FileSystemServiceFSEventRecoveryGate) {
+        self.gate = gate
+    }
+
+    func release() {
+        guard !released else { return }
+        released = true
+        gate.releasePublicationPermit()
+    }
+
+    deinit {
+        release()
+    }
+}
+
+/// A one-shot callback-side signal for the owning store. The handler is held by
+/// the same recovery coordinator as the publication permit, so installation,
+/// callback invalidation, and clearing cannot cross the publication cut.
+final class FileSystemServiceFSEventRecoverySignal: @unchecked Sendable {
+    private let gate: FileSystemServiceFSEventRecoveryGate
+
+    init(gate: FileSystemServiceFSEventRecoveryGate) {
+        self.gate = gate
+    }
+
+    func install(_ handler: (@Sendable () -> Void)?) {
+        let handlerToSignal = gate.installHandler(handler)
+        // A handler installed after callback invalidation must not miss the
+        // sticky recovery notification. Signal only after releasing the lock.
+        handlerToSignal?()
+    }
+
+    func clear() {
+        gate.clearHandler()
+    }
+
+    func signalOnce() {
+        let handler = gate.takeHandler()
+        handler?()
+    }
+}
+
 struct FileSystemMutationWaiter {
     let continuation: CheckedContinuation<Void, any Error>
 }
@@ -124,6 +265,11 @@ actor FileSystemService {
     nonisolated let watcherIngressMailbox: FileSystemWatcherIngressMailbox
     nonisolated let watcherEarlyFilter: FileSystemWatcherEarlyFilter
     nonisolated let fseventDeliveryBarrier = FSEventAsyncDeliveryBarrier()
+    nonisolated let fseventRecoveryGate = FileSystemServiceFSEventRecoveryGate()
+    nonisolated var fseventRecoverySignal: FileSystemServiceFSEventRecoverySignal {
+        FileSystemServiceFSEventRecoverySignal(gate: fseventRecoveryGate)
+    }
+
     nonisolated let fseventCallbackQueue = DispatchQueue(
         label: "com.repoprompt.filesystem.fsevents.\(UUID().uuidString)",
         qos: .utility

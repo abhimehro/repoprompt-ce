@@ -19,6 +19,20 @@ struct FSEventCallbackPayload {
 }
 
 extension FileSystemService {
+    func watcherConfigurationForRootRecovery() -> (
+        respectRepoIgnore: Bool,
+        respectCursorignore: Bool,
+        skipSymlinks: Bool,
+        enableHierarchicalIgnores: Bool
+    ) {
+        (
+            respectRepoIgnore: respectRepoIgnore,
+            respectCursorignore: respectCursorignore,
+            skipSymlinks: skipSymlinks,
+            enableHierarchicalIgnores: enableHierarchicalIgnores
+        )
+    }
+
     // MARK: - Public watchers API
 
     /// Returns ordered publications whenever changes or watcher progress are detected.
@@ -36,7 +50,9 @@ extension FileSystemService {
         guard seedInitializationState == nil else {
             throw FileSystemSeedReplayError.initializationAlreadyActive
         }
-        guard !fseventRecoveryRequired else {
+        guard !fseventRecoveryRequired,
+              !fseventRecoveryGate.isRequired
+        else {
             throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
         }
         try startFSEventStream()
@@ -53,7 +69,7 @@ extension FileSystemService {
                 generation: deliveryGeneration
             )
             guard fseventStreamGeneration == streamGeneration else {
-                if fseventRecoveryRequired {
+                if fseventRecoveryRequired || fseventRecoveryGate.isRequired {
                     throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
                 }
                 return
@@ -72,7 +88,9 @@ extension FileSystemService {
             // flush marker visible before the accepted-ingress cut; it does not
             // impose a global event-ID watermark across roots.
             fseventCallbackQueue.sync {}
-            guard fseventDeliveryBarrier.currentGeneration == deliveryGeneration else {
+            guard fseventDeliveryBarrier.currentGeneration == deliveryGeneration,
+                  !fseventRecoveryGate.isRequired
+            else {
                 fseventRecoveryRequired = true
                 stopFSEventStream(expectedGeneration: streamGeneration)
                 throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
@@ -81,6 +99,7 @@ extension FileSystemService {
         let acceptedCut = captureAcceptedWatcherWatermark()
         _ = await flushPendingEventsNow(throughAcceptedWatcherWatermark: acceptedCut)
         guard !fseventRecoveryRequired,
+              !fseventRecoveryGate.isRequired,
               activationDeliveryGeneration.map({ fseventDeliveryBarrier.currentGeneration == $0 }) ?? true
         else {
             fseventRecoveryRequired = true
@@ -255,6 +274,25 @@ extension FileSystemService {
         return eligibility
     }
 
+    /// Restores the store-owned managed-only inventory before a replacement
+    /// service is attached. Missing paths remain installed so their deletion
+    /// callback is not discarded by the replacement's early filter.
+    func restoreExplicitlyManagedIgnoredFilePathsForRecovery(_ rawPaths: Set<String>) {
+        for rawPath in rawPaths {
+            let relativePath = (rawPath as NSString).standardizingPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !relativePath.isEmpty,
+                  relativePath != ".",
+                  relativePath != "..",
+                  !relativePath.hasPrefix("../"),
+                  !relativePath.hasPrefix("/")
+            else { continue }
+            explicitlyManagedIgnoredFilePaths.insert(relativePath)
+            visitedPaths.insert(relativePath)
+            visitedItems[relativePath] = false
+            watcherEarlyFilter.addExplicitlyManagedIgnoredFile(relativePath)
+        }
+    }
+
     func pathContainsSymlinkComponent(relativePath: String) -> Bool {
         var current = rootURL
         for component in relativePath.split(separator: "/") {
@@ -381,16 +419,21 @@ extension FileSystemService {
     // MARK: - FSEvent Setup
 
     func startFSEventStream() throws {
-        guard fseventStreamRef == nil else { return }
-        guard !fseventRecoveryRequired else {
+        guard !fseventRecoveryRequired,
+              !fseventRecoveryGate.isRequired
+        else {
             throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
         }
+        guard fseventStreamRef == nil else { return }
 
-        fseventStreamGeneration &+= 1
-        let streamGeneration = fseventStreamGeneration
         let ingressGeneration = watcherIngressGeneration
-        watcherIngressMailbox.startAccepting(for: ingressGeneration)
-        let deliveryGeneration = fseventDeliveryBarrier.reset()
+        guard let (streamGeneration, deliveryGeneration) = fseventRecoveryGate.withRecoveryLockIfClear({
+            fseventStreamGeneration &+= 1
+            watcherIngressMailbox.startAccepting(for: ingressGeneration)
+            return (fseventStreamGeneration, fseventDeliveryBarrier.reset())
+        }) else {
+            throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
+        }
         fseventCallbackContextPointer = Unmanaged.passRetained(
             FileSystemServiceFSEventCallbackContext(
                 service: self,
@@ -466,13 +509,15 @@ extension FileSystemService {
 
     @discardableResult
     func stopFSEventStream(expectedGeneration: UInt64? = nil) -> Bool {
-        if let expectedGeneration,
-           expectedGeneration != fseventStreamGeneration
-        {
-            return false
+        let didAdvanceGeneration = fseventRecoveryGate.withRecoveryLock {
+            guard expectedGeneration == nil || expectedGeneration == fseventStreamGeneration else {
+                return false
+            }
+            fseventStreamGeneration &+= 1
+            fseventDeliveryBarrier.reset()
+            return true
         }
-        fseventStreamGeneration &+= 1
-        fseventDeliveryBarrier.reset()
+        guard didAdvanceGeneration else { return false }
 
         guard let stream = fseventStreamRef else {
             releaseFSEventCallbackContext()
@@ -596,6 +641,17 @@ extension FileSystemService {
         return FSEventCallbackPayload(entries: entries)
     }
 
+    /// Invalidates the callback-owned stream cut while holding the same lock
+    /// used by seeded publication permits. The returned owner notification must
+    /// be invoked only after this method returns.
+    nonisolated func markFSEventRecoveryAtCallback(
+        deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
+    ) -> (@Sendable () -> Void)? {
+        fseventRecoveryGate.markRequiredAndTakeHandler {
+            _ = fseventDeliveryBarrier.reset(ifCurrent: deliveryGeneration)
+        }
+    }
+
     /// The static callback that FSEvents uses to report changes. We hand off to Task to enter the actor context.
     static let fseventCallback: FSEventStreamCallback = {
         _, context, numEvents, eventPaths, eventFlags, eventIds in
@@ -627,10 +683,16 @@ extension FileSystemService {
             (entry.flags & FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped)) != 0
         }
         if hasWrappedJournal {
+            // Record this before yielding to the actor. A concurrent stop/restart
+            // must not reopen from the old stream's resume cut. The sticky mark
+            // and stream-local barrier reset share the publication lock.
+            let recoveryHandler = service.markFSEventRecoveryAtCallback(
+                deliveryGeneration: callbackContext.deliveryGeneration
+            )
+            recoveryHandler?()
             // Event IDs are no longer valid as a continuation of this stream.
             // Drop the payload, invalidate all waiters/cuts, and let the actor
             // fail this service closed instead of admitting an untrusted event.
-            _ = service.fseventDeliveryBarrier.reset(ifCurrent: callbackContext.deliveryGeneration)
             Task { [weak service] in
                 await service?.handleFSEventIDsWrapped(
                     streamGeneration: callbackContext.streamGeneration,
@@ -695,11 +757,14 @@ extension FileSystemService {
         ingressGeneration: UInt64,
         deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
     ) {
+        let recoveryHandler = markFSEventRecoveryAtCallback(
+            deliveryGeneration: deliveryGeneration
+        )
+        recoveryHandler?()
         guard fseventStreamGeneration == streamGeneration,
               watcherIngressGeneration == ingressGeneration,
               fseventStreamRef != nil
         else { return }
-        _ = fseventDeliveryBarrier.reset(ifCurrent: deliveryGeneration)
         fseventRecoveryRequired = true
         // The callback already invalidated this delivery generation. Stop the
         // stream on the actor while retaining the existing callback-queue
@@ -712,6 +777,26 @@ extension FileSystemService {
             fseventRecoveryRequired
         }
 
+        func markFSEventIDsWrappedAtCallbackForTesting(
+            deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
+        ) {
+            guard fseventDeliveryBarrier.currentGeneration == deliveryGeneration else { return }
+            let recoveryHandler = markFSEventRecoveryAtCallback(
+                deliveryGeneration: deliveryGeneration
+            )
+            recoveryHandler?()
+        }
+
+        nonisolated func markFSEventIDsWrappedAtPublicationPermitForTesting(
+            deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
+        ) {
+            guard fseventDeliveryBarrier.currentGeneration == deliveryGeneration else { return }
+            let recoveryHandler = markFSEventRecoveryAtCallback(
+                deliveryGeneration: deliveryGeneration
+            )
+            recoveryHandler?()
+        }
+
         func handleFSEventIDsWrappedForTesting(
             streamGeneration: UInt64,
             ingressGeneration: UInt64,
@@ -720,8 +805,11 @@ extension FileSystemService {
             guard fseventStreamGeneration == streamGeneration,
                   watcherIngressGeneration == ingressGeneration
             else { return }
+            let recoveryHandler = markFSEventRecoveryAtCallback(
+                deliveryGeneration: deliveryGeneration
+            )
+            recoveryHandler?()
             fseventRecoveryRequired = true
-            _ = fseventDeliveryBarrier.reset(ifCurrent: deliveryGeneration)
         }
     #endif
 
