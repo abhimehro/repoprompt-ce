@@ -60,6 +60,11 @@ enum CodexProviderHelpers {
         }
     }
 
+    struct CodexRuntimeSettingsPreflight: Equatable {
+        let effectiveResolution: CodexExecutableResolution
+        let systemCandidate: CodexExecutableResolution?
+    }
+
     static func resolveCodexExecutable(
         commandName: String = CLILaunchProfiles.codex.commandName,
         environment: [String: String],
@@ -118,6 +123,69 @@ enum CodexProviderHelpers {
         inheritedEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         shellEnvironmentProvider: ProcessEnvironmentBuilder.ShellEnvironmentProvider? = nil
     ) async -> CodexExecutableResolution {
+        let environment = await codexPreflightEnvironment(
+            enableDebugLogging: enableDebugLogging,
+            inheritedEnvironment: inheritedEnvironment,
+            shellEnvironmentProvider: shellEnvironmentProvider
+        )
+        let resolution = await Task.detached(priority: .utility) {
+            resolveCodexExecutable(
+                commandName: commandName,
+                environment: environment,
+                additionalPathHints: additionalPathHints
+            )
+        }.value
+        logPreflightResolution(
+            resolution,
+            enableDebugLogging: enableDebugLogging,
+            logCollector: logCollector
+        )
+        return resolution
+    }
+
+    static func preflightCodexRuntimeSettings(
+        enableDebugLogging: Bool = false,
+        logCollector: CLIProcessLogCollector? = nil,
+        inheritedEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        shellEnvironmentProvider: ProcessEnvironmentBuilder.ShellEnvironmentProvider? = nil
+    ) async -> CodexRuntimeSettingsPreflight {
+        let environment = await codexPreflightEnvironment(
+            enableDebugLogging: enableDebugLogging,
+            inheritedEnvironment: inheritedEnvironment,
+            shellEnvironmentProvider: shellEnvironmentProvider
+        )
+        let preflight = await Task.detached(priority: .utility) {
+            let effectiveResolution = resolveCodexExecutable(environment: environment)
+            let discoveredCommand = CommandPathResolver.resolve(
+                CLILaunchProfiles.codex.commandName,
+                environment: environment,
+                additionalPaths: CLILaunchProfiles.codex.supplementalSearchPaths,
+                preferredBasenames: CLILaunchProfiles.codex.preferredBasenames,
+                shellLookupMode: .disabled
+            )
+            let systemCandidate: CodexExecutableResolution? = if CommandPathResolver.launchability(of: discoveredCommand) == .launchable {
+                resolveCodexExecutable(commandName: discoveredCommand, environment: environment)
+            } else {
+                nil
+            }
+            return CodexRuntimeSettingsPreflight(
+                effectiveResolution: effectiveResolution,
+                systemCandidate: systemCandidate?.status == .available ? systemCandidate : nil
+            )
+        }.value
+        logPreflightResolution(
+            preflight.effectiveResolution,
+            enableDebugLogging: enableDebugLogging,
+            logCollector: logCollector
+        )
+        return preflight
+    }
+
+    private static func codexPreflightEnvironment(
+        enableDebugLogging: Bool,
+        inheritedEnvironment: [String: String],
+        shellEnvironmentProvider: ProcessEnvironmentBuilder.ShellEnvironmentProvider?
+    ) async -> [String: String] {
         let request = ProcessEnvironmentRequest(
             purpose: .codexPreflight,
             inheritedEnvironment: inheritedEnvironment,
@@ -131,18 +199,18 @@ enum CodexProviderHelpers {
         } else {
             await ProcessEnvironmentBuilder.build(request)
         }
-        let logger: ((String) -> Void)? = { message in
-            logCollector?.append(message)
-            if enableDebugLogging {
-                print("[CodexPreflight] \(message)")
-            }
+        return environmentResult.environment
+    }
+
+    private static func logPreflightResolution(
+        _ resolution: CodexExecutableResolution,
+        enableDebugLogging: Bool,
+        logCollector: CLIProcessLogCollector?
+    ) {
+        logCollector?.append(resolution.debugMessage)
+        if enableDebugLogging {
+            print("[CodexPreflight] \(resolution.debugMessage)")
         }
-        return resolveCodexExecutable(
-            commandName: commandName,
-            environment: environmentResult.environment,
-            additionalPathHints: additionalPathHints,
-            logger: logger
-        )
     }
 
     static func isCodexExecutableUnavailableMessage(_ message: String) -> Bool {

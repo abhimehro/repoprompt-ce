@@ -311,6 +311,48 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
         )
     }
 
+    func testSettingsPreflightPreservesVersionManagerSymlinkAndRejectsOldSystemCodex() async throws {
+        let bin = temporaryDirectory.appendingPathComponent("bin", isDirectory: true)
+        let shim = bin.appendingPathComponent("volta-shim")
+        let codex = bin.appendingPathComponent("codex")
+        try makeExecutable(
+            at: shim,
+            content: "#!/bin/sh\n[ \"${0##*/}\" = codex ] || exit 126\necho 'codex-cli 0.153.3'\n"
+        )
+        try FileManager.default.createSymbolicLink(at: codex, withDestinationURL: shim)
+
+        let temporaryPath = temporaryDirectory.path
+        let shellEnvironmentProvider: ProcessEnvironmentBuilder.ShellEnvironmentProvider = { _, _ in
+            CLIEnvironmentSnapshot(
+                environment: ["HOME": temporaryPath, "PATH": bin.path],
+                source: .capturedLoginShell
+            )
+        }
+        let accepted = await CodexProviderHelpers.preflightCodexRuntimeSettings(
+            inheritedEnvironment: ["HOME": temporaryPath],
+            shellEnvironmentProvider: shellEnvironmentProvider
+        )
+
+        XCTAssertEqual(accepted.systemCandidate?.resolvedCommand, codex.path)
+        XCTAssertEqual(accepted.systemCandidate?.runtime?.executableURL.path, codex.path)
+        XCTAssertEqual(accepted.systemCandidate?.runtime?.source, .externalOverride)
+        XCTAssertEqual(accepted.systemCandidate?.runtime?.version, .init(major: 0, minor: 153, patch: 3))
+
+        let oldShim = bin.appendingPathComponent("volta-shim-old")
+        try makeExecutable(
+            at: oldShim,
+            content: "#!/bin/sh\n[ \"${0##*/}\" = codex ] || exit 126\necho 'codex-cli 0.142.0 (too old)'\n"
+        )
+        try FileManager.default.removeItem(at: codex)
+        try FileManager.default.createSymbolicLink(at: codex, withDestinationURL: oldShim)
+        let rejected = await CodexProviderHelpers.preflightCodexRuntimeSettings(
+            inheritedEnvironment: ["HOME": temporaryPath],
+            shellEnvironmentProvider: shellEnvironmentProvider
+        )
+
+        XCTAssertNil(rejected.systemCandidate)
+    }
+
     func testManagedAuthGuidanceUsesRepoPromptOwnedLoginFlow() {
         let guidance = CodexManagedAuthRecoveryClassifier.manualLoginGuidanceMessage
 

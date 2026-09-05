@@ -64,6 +64,8 @@ struct CLIProvidersSettingsView: View {
     @State private var isCustomCompatibleExpanded: Bool = false
     @State private var isCodexExpanded: Bool = false
     @State private var codexRuntimeSelection = CodexRuntimePreferences.selection()
+    @State private var codexRuntimePreflight: CodexProviderHelpers.CodexRuntimeSettingsPreflight?
+    @State private var isLoadingCodexRuntimePreflight = false
     @State private var isOpenCodeExpanded: Bool = false
     @State private var isCursorExpanded: Bool = false
     @State private var isGrokBuildExpanded: Bool = false
@@ -1575,6 +1577,21 @@ struct CLIProvidersSettingsView: View {
                         }
                     }
 
+                    if let systemCandidate = codexRuntimePreflight?.systemCandidate,
+                       let runtime = systemCandidate.runtime
+                    {
+                        Button {
+                            setCodexRuntimeSelection(.external(path: systemCandidate.resolvedCommand))
+                        } label: {
+                            let title = "System Codex " + runtime.version.description
+                            if codexSelectedExecutablePath == systemCandidate.resolvedCommand {
+                                Label(title, systemImage: "checkmark")
+                            } else {
+                                Text(title)
+                            }
+                        }
+                    }
+
                     Button {
                         setCodexRuntimeSelection(.inherited)
                     } label: {
@@ -1586,7 +1603,9 @@ struct CLIProvidersSettingsView: View {
                         }
                     }
 
-                    if case let .external(path) = codexRuntimeSelection {
+                    if case let .external(path) = codexRuntimeSelection,
+                       path != codexRuntimePreflight?.systemCandidate?.resolvedCommand
+                    {
                         Button {
                             setCodexRuntimeSelection(.external(path: path))
                         } label: {
@@ -1605,7 +1624,39 @@ struct CLIProvidersSettingsView: View {
                 Spacer()
             }
 
-            if let codexSelectedExecutablePath {
+            if isLoadingCodexRuntimePreflight {
+                Text("Resolving selected runtime…")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else if let resolution = codexRuntimePreflight?.effectiveResolution {
+                if resolution.status == .available,
+                   let description = resolution.displayDescription,
+                   let executablePath = resolution.runtime?.executableURL.path
+                {
+                    Text("Selection resolves to \(description)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(executablePath)
+                        .font(.caption.monospaced())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .hoverTooltip(executablePath)
+                } else {
+                    if let codexSelectedExecutablePath {
+                        Text(codexSelectedExecutablePath)
+                            .font(.caption.monospaced())
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .hoverTooltip(codexSelectedExecutablePath)
+                    }
+                    Text(resolution.userMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if let codexSelectedExecutablePath {
                 Text(codexSelectedExecutablePath)
                     .font(.caption.monospaced())
                     .foregroundColor(.secondary)
@@ -1618,6 +1669,9 @@ struct CLIProvidersSettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .task(id: codexRuntimeSelectionTaskID) {
+            await refreshCodexRuntimePreflight()
         }
     }
 
@@ -1641,9 +1695,29 @@ struct CLIProvidersSettingsView: View {
         }
     }
 
+    private var codexRuntimeSelectionTaskID: String {
+        switch codexRuntimeSelection {
+        case .inherited:
+            "inherited"
+        case .bundled:
+            "bundled"
+        case let .external(path):
+            "external:\(path)"
+        }
+    }
+
     private func setCodexRuntimeSelection(_ selection: CodexRuntimePreferences.Selection) {
         CodexRuntimePreferences.setSelection(selection)
         codexRuntimeSelection = CodexRuntimePreferences.selection()
+    }
+
+    private func refreshCodexRuntimePreflight() async {
+        let selection = codexRuntimeSelection
+        isLoadingCodexRuntimePreflight = true
+        let preflight = await CodexProviderHelpers.preflightCodexRuntimeSettings()
+        guard !Task.isCancelled, codexRuntimeSelection == selection else { return }
+        codexRuntimePreflight = preflight
+        isLoadingCodexRuntimePreflight = false
     }
 
     private var codexCard: some View {
@@ -2338,6 +2412,7 @@ struct CLIProvidersSettingsView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
+        panel.resolvesAliases = false
         if let codexSelectedExecutablePath {
             panel.directoryURL = URL(fileURLWithPath: codexSelectedExecutablePath).deletingLastPathComponent()
         }
