@@ -431,7 +431,39 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         XCTAssertEqual(retainedSession.acpModelParameterSelections.first?.valueRaw, "low")
     }
 
+    func testRollbackRestoresOnlyParametersWithoutNewerIntent() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let window = try await makeWindow(name: "Cursor independent parameter rollback", root: fixture.root)
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        let viewModel = window.agentModeViewModel
+        let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let session = await viewModel.ensureSessionReady(tabID: tabID)
+        session.selectedAgent = .cursor
+        session.selectedModelRaw = "grok-4.6"
+        let speed: (String) -> ACPModelParameterSelection = { value in
+            .init(providerID: .cursor, baseModelRaw: "grok-4.6", kind: .speed, configID: "fast", valueRaw: value)
+        }
+        try viewModel.mcpApplyModelParameterSelections(
+            tabID: tabID, selections: [selection(value: "low"), speed("false")]
+        )
+        let rollback = try XCTUnwrap(viewModel.mcpStageModelParameterSelections(
+            tabID: tabID, agentRaw: AgentProviderKind.cursor.rawValue, modelRaw: "grok-4.6",
+            selections: [selection(value: "high"), speed("true")]
+        ))
+        // The newer intent adopts the staged Speed value, leaving Effort owned by the old start.
+        try viewModel.mcpApplyModelParameterSelections(tabID: tabID, selections: [speed("true")])
+        viewModel.mcpRollbackStagedModelParameterSelections(rollback)
+        XCTAssertEqual(session.acpModelParameterSelections.first { $0.kind == .thinking }?.valueRaw, "low")
+        XCTAssertEqual(session.acpModelParameterSelections.first { $0.kind == .speed }?.valueRaw, "true")
+    }
+
     func testAgentRunFailedStartPreservesNewerCursorParameterSelection() async throws {
+        try await assertFailedStartPreservesNewerSelection("medium")
+        try await assertFailedStartPreservesNewerSelection("high")
+    }
+
+    private func assertFailedStartPreservesNewerSelection(_ newerValue: String) async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
         let window = try await makeWindow(name: "Cursor MCP Run Concurrent Selection", root: fixture.root)
@@ -454,14 +486,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         let service = makeRunService(
             window: window,
             targetTabID: tabID,
-            beforeStartFailure: { viewModel, targetTabID in
-                _ = try viewModel.mcpStageModelParameterSelections(
-                    tabID: targetTabID,
-                    agentRaw: AgentProviderKind.cursor.rawValue,
-                    modelRaw: "grok-4.6",
-                    selections: [self.selection(value: "medium")]
-                )
-            }
+            resumeValueBeforeStartFailure: newerValue
         )
 
         do {
@@ -478,7 +503,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
 
         XCTAssertEqual(
             agentModeVM.session(for: tabID).acpModelParameterSelections.first?.valueRaw,
-            "medium"
+            newerValue
         )
     }
 
@@ -537,6 +562,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         window: WindowState,
         targetTabID: UUID? = nil,
         beforeStartFailure: ((AgentModeViewModel, UUID) throws -> Void)? = nil,
+        resumeValueBeforeStartFailure: String? = nil,
         successfulStart: Bool = false,
         observeSuccessfulStart: (([ACPModelParameterSelection]) -> Void)? = nil
     ) -> AgentRunMCPToolService {
@@ -554,7 +580,28 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             resolveSpawnParentSourceTabID: { _ in nil },
             resolveSpawnParentSessionID: { _, _ in nil },
             withHeartbeat: { _, _, _, _, operation in try await operation() },
-            startRun: { target, _, _, agentModeVM, agentRaw, modelRaw, reasoningEffortRaw, _, _, _, _ in
+            startRun: { target, message, metadata, agentModeVM, agentRaw, modelRaw, reasoningEffortRaw, _, _, _, _ in
+                if let resumeValueBeforeStartFailure {
+                    // Exercise the production control activation/configuration path. A newer
+                    // resume is accepted while the old start is waiting to dispatch its prompt.
+                    return try await AgentExternalMCPRunStarter.startPreservingCallerBinding(
+                        target: target,
+                        message: message,
+                        metadata: metadata,
+                        agentModeVM: agentModeVM,
+                        agentRaw: agentRaw,
+                        modelRaw: modelRaw,
+                        reasoningEffortRaw: reasoningEffortRaw,
+                        dispatchInstruction: { sessionID, _, _, _, _ in
+                            _ = try await self.makeManageService(window: window).execute(args: [
+                                "op": .string("resume_session"),
+                                "session_id": .string(sessionID.uuidString),
+                                "model_parameters": self.request([("effort", resumeValueBeforeStartFailure)])
+                            ])
+                            throw MCPError.internalError("Injected provider start failure.")
+                        }
+                    )
+                }
                 try beforeStartFailure?(agentModeVM, target.tabID)
                 if successfulStart {
                     let session = agentModeVM.session(for: target.tabID)

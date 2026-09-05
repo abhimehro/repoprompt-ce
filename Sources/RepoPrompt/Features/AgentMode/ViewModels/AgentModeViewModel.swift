@@ -1195,6 +1195,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             configID: definition.configID,
             valueRaw: choice.rawValue
         )
+        session.recordAcceptedACPModelParameterWrite([selection])
         let updatedSelections = ACPModelParameterSelection.normalized(
             session.acpModelParameterSelections + [selection]
         )

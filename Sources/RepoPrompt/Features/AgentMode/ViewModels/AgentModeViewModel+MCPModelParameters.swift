@@ -6,10 +6,12 @@ extension AgentModeViewModel {
         fileprivate struct Change {
             let previousSelection: ACPModelParameterSelection?
             let stagedSelection: ACPModelParameterSelection
+            let selectionRevision: UInt64
         }
 
         fileprivate let session: TabSession
         fileprivate let sessionID: UUID?
+        fileprivate let persistentBinding: AgentPersistentSessionBindingIdentity?
         fileprivate let changes: [Change]
     }
 
@@ -37,12 +39,16 @@ extension AgentModeViewModel {
             schedulePersistence: false
         )
         let stagedSelections = session.acpModelParameterSelections
-        let previousByIdentity = Dictionary(uniqueKeysWithValues: previousSelections.map {
-            ($0.identity, $0)
-        })
-        let stagedByIdentity = Dictionary(uniqueKeysWithValues: stagedSelections.map {
-            ($0.identity, $0)
-        })
+        let previousByIdentity = previousSelections.reduce(
+            into: [ACPModelParameterIdentity: ACPModelParameterSelection]()
+        ) { result, selection in
+            result[selection.identity] = selection
+        }
+        let stagedByIdentity = stagedSelections.reduce(
+            into: [ACPModelParameterIdentity: ACPModelParameterSelection]()
+        ) { result, selection in
+            result[selection.identity] = selection
+        }
         let changes: [MCPModelParameterSelectionStagingRollback.Change] = ACPModelParameterSelection
             .normalized(selections).compactMap { selection in
                 guard let stagedSelection = stagedByIdentity[selection.identity],
@@ -52,12 +58,14 @@ extension AgentModeViewModel {
                 }
                 return MCPModelParameterSelectionStagingRollback.Change(
                     previousSelection: previousByIdentity[selection.identity],
-                    stagedSelection: stagedSelection
+                    stagedSelection: stagedSelection,
+                    selectionRevision: session.acpModelParameterSelectionRevision(for: selection.identity)
                 )
             }
         return MCPModelParameterSelectionStagingRollback(
             session: session,
             sessionID: session.activeAgentSessionID,
+            persistentBinding: session.persistentSessionBindingIdentity,
             changes: changes
         )
     }
@@ -67,17 +75,24 @@ extension AgentModeViewModel {
     ) {
         guard let currentSession = session(for: rollback.session.tabID, createIfNeeded: false),
               currentSession === rollback.session,
-              currentSession.activeAgentSessionID == rollback.sessionID
+              currentSession.activeAgentSessionID == rollback.sessionID,
+              currentSession.persistentSessionBindingIdentity == rollback.persistentBinding
         else {
             return
         }
 
-        var restoredSelections = currentSession.acpModelParameterSelections
+        var restoredSelections = ACPModelParameterSelection.normalized(
+            currentSession.acpModelParameterSelections
+        )
         var didRestore = false
         for change in rollback.changes {
-            guard let index = restoredSelections.firstIndex(where: {
-                $0.identity == change.stagedSelection.identity
-            }), restoredSelections[index] == change.stagedSelection
+            guard currentSession.acpModelParameterSelectionRevision(
+                for: change.stagedSelection.identity
+            ) == change.selectionRevision,
+                let index = restoredSelections.firstIndex(where: {
+                    $0.identity == change.stagedSelection.identity
+                }),
+                restoredSelections[index] == change.stagedSelection
             else {
                 continue
             }
@@ -156,6 +171,7 @@ extension AgentModeViewModel {
             selectedAgent: selectedAgent, selectedModelRaw: selectedModelRaw, selections: selections
         )
 
+        session.recordAcceptedACPModelParameterWrite(selections)
         let updatedSelections = ACPModelParameterSelection.normalized(
             session.acpModelParameterSelections + selections
         )
