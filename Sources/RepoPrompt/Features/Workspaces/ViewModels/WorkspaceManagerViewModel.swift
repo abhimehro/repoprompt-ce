@@ -427,6 +427,7 @@ enum AgentAdmissionRecoveryOutcome: Equatable {
     case ownershipChanged
     case retryablePartial(AgentAdmissionRecoveryWorkingCommit)
     case failed(WorkspacePersistenceFailureCategory)
+    case blockedManual(WorkspacePersistenceFailureCategory)
 }
 
 enum AgentAdmissionCanonicalRefreshError: LocalizedError, Equatable {
@@ -693,6 +694,8 @@ class WorkspaceManagerViewModel: ObservableObject {
             (@MainActor (UUID, UInt64) async -> DomainCommandOutcome?)?
         private var agentAdmissionRecoveryPostReplacementCanonicalReadHandlerForTesting:
             (@MainActor (UUID) async -> Bool)?
+        private var agentAdmissionRecoveryFailureCategoryHandlerForTesting:
+            (@MainActor (UUID) -> WorkspacePersistenceFailureCategory?)?
         private var agentAdmissionPersistenceVerificationHandlerForTesting:
             (@MainActor (UUID) async -> Bool)?
         private var agentAdmissionCanonicalSnapshotHandlerForTesting:
@@ -945,6 +948,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             )
         }
 
+        func debugAgentAdmissionRecoveryOwns(
+            _ identity: AgentProvisionalAdmissionIdentity
+        ) -> Bool {
+            agentAdmissionRecoveryOwners.contains(identity)
+        }
+
         func debugPublishWorkingDocumentToDomainAuthority(_ workspace: WorkspaceModel) async {
             publishWorkingDocumentToDomainAuthority(workspace)
             await debugAwaitWorkingDocumentCommitToDomainAuthority(workspaceID: workspace.id)
@@ -1010,6 +1019,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             _ handler: (@MainActor (UUID) async -> Bool)?
         ) {
             agentAdmissionRecoveryPostReplacementCanonicalReadHandlerForTesting = handler
+        }
+
+        func setAgentAdmissionRecoveryFailureCategoryHandlerForTesting(
+            _ handler: (@MainActor (UUID) -> WorkspacePersistenceFailureCategory?)?
+        ) {
+            agentAdmissionRecoveryFailureCategoryHandlerForTesting = handler
         }
 
         func setAgentAdmissionPersistenceVerificationHandlerForTesting(
@@ -2554,8 +2569,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
 
             // Capture current state (expanded folders, selected files, prompt, etc.)
-            // and persist it in one atomic call.
-            await pollAndSaveStateAsync(source: .pollTimer)
+            // and persist it in one atomic call. The timer task is itself drained by recovery,
+            // so it must not trigger a recovery that awaits this same task.
+            _ = await pollAndSaveStateWithOutcomeAsync(
+                source: .pollTimer,
+                allowRetainedAgentAdmissionRecoveryRetry: false
+            )
         }
     }
 
@@ -4865,13 +4884,19 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard let domainWorkspaceAuthorityClient else { return }
         let snapshot = await domainWorkspaceAuthorityClient.reloadExternalChanges()
         for workspace in snapshot.workspaces {
+            let workspaceID = workspace.document.workspaceID
             applyDomainAuthorityBaseline(
-                workspaceID: workspace.document.workspaceID,
+                workspaceID: workspaceID,
                 revisions: workspace.revisions,
                 digest: workspace.document.contentDigest,
                 health: workspace.health,
                 catalogRevision: snapshot.catalogRevision
             )
+            if currentDomainAuthorityIsWritableAndDecodable(workspace, workspaceID: workspaceID) {
+                await retryRetainedAgentAdmissionRecoveriesAfterWritableAuthorityRefresh(
+                    workspaceID: workspaceID
+                )
+            }
         }
         synchronizeDomainAuthorityIssueForActiveWorkspace(operation: "external_refresh")
     }
@@ -4892,11 +4917,48 @@ class WorkspaceManagerViewModel: ObservableObject {
             health: snapshot.health,
             catalogRevision: domainWorkspaceCatalogRevision
         )
+        if currentDomainAuthorityIsWritableAndDecodable(snapshot, workspaceID: workspaceID) {
+            await retryRetainedAgentAdmissionRecoveriesAfterWritableAuthorityRefresh(
+                workspaceID: workspaceID
+            )
+        }
         return authorityIssue(
             workspaceID: workspaceID,
             operation: "agent_admission",
             health: snapshot.health
         )
+    }
+
+    private func currentDomainAuthorityIsWritableAndDecodable(
+        _ snapshot: DomainWorkspaceSnapshot,
+        workspaceID: UUID
+    ) -> Bool {
+        guard snapshot.document.workspaceID == workspaceID,
+              snapshot.health.acceptsMutations,
+              let workspace = try? Self.decodeDomainWorkspaceProjection(
+                  documentBytes: snapshot.document.documentBytes,
+                  fileURL: snapshot.document.fileURL
+              )
+        else { return false }
+        return workspace.id == workspaceID
+    }
+
+    /// The existing writable-authority admission check is the production trigger for a retained
+    /// recovery. Eligibility follows the current canonical snapshot rather than the historical
+    /// failure category; the recovery body rechecks health and exact identity before mutation.
+    /// Undecodable current bytes therefore remain blocked without an overwrite, while a repaired
+    /// document becomes eligible on the next existing authority, admission, or async-save refresh.
+    private func retryRetainedAgentAdmissionRecoveriesAfterWritableAuthorityRefresh(
+        workspaceID: UUID
+    ) async {
+        let recoveryIDs = retainedProvisionalAgentAdmissionRecoveryIDs(for: workspaceID)
+            .sorted { $0.uuidString < $1.uuidString }
+        for recoveryID in recoveryIDs {
+            guard let state = retainedProvisionalAgentAdmissionRecoveryState(recoveryID: recoveryID),
+                  case .blockedManual = state
+            else { continue }
+            _ = await retryRetainedProvisionalAgentAdmissionRecovery(recoveryID: recoveryID)
+        }
     }
 
     private static func isSuccessfulDomainOutcome(_ outcome: DomainCommandOutcome) -> Bool {
@@ -6568,7 +6630,8 @@ class WorkspaceManagerViewModel: ObservableObject {
     ) async -> AgentAdmissionPersistenceReceipt {
         let outcome = await pollAndSaveStateWithOutcomeAsync(
             workspaceID: identity.workspaceID,
-            source: source
+            source: source,
+            allowRetainedAgentAdmissionRecoveryRetry: false
         )
         guard let workspace = workspace(withID: identity.workspaceID), !workspace.isEphemeral else {
             return AgentAdmissionPersistenceReceipt(outcome: outcome, commitEvidence: .none)
@@ -6662,7 +6725,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             agentAdmissionRecoveryTasks.removeValue(forKey: key)
         }
         switch outcome {
-        case .retryablePartial, .failed:
+        case .retryablePartial, .failed, .blockedManual:
             break
         case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged:
             finishProvisionalAgentAdmissionRecovery(identity)
@@ -6912,6 +6975,14 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard let domainWorkspaceAuthorityClient else {
             return await recoverLegacyProvisionalAgentAdmission(key)
         }
+
+        #if DEBUG
+            if let injectedFailure = agentAdmissionRecoveryFailureCategoryHandlerForTesting?(
+                identity.workspaceID
+            ) {
+                return .failed(injectedFailure)
+            }
+        #endif
 
         await drainWorkingCommitsForAdmissionRecovery(workspaceID: identity.workspaceID)
         var removal: InMemoryAdmissionRemoval?
@@ -7775,15 +7846,51 @@ class WorkspaceManagerViewModel: ObservableObject {
         workspaceID: UUID,
         sessionID: UUID,
         reservationOwnerID: UUID,
-        operation: @escaping @MainActor @Sendable () async -> Void
+        start: AgentAdmissionRetainedRecoveryStart = .automatic,
+        operation: @escaping @MainActor @Sendable () async -> AgentAdmissionRetainedRecoverySettlement
     ) {
         workspaceAgentAdmissionCoordinator.retainRecovery(
             recoveryID: recoveryID,
             workspaceID: workspaceID,
             sessionID: sessionID,
             reservationOwnerID: reservationOwnerID,
+            start: start,
             operation: operation
         )
+    }
+
+    func retryRetainedProvisionalAgentAdmissionRecovery(
+        recoveryID: UUID
+    ) async -> AgentAdmissionRetainedRecoverySettlement? {
+        await workspaceAgentAdmissionCoordinator.retryRetainedRecovery(recoveryID: recoveryID)
+    }
+
+    func retainedProvisionalAgentAdmissionRecoveryState(
+        recoveryID: UUID
+    ) -> AgentAdmissionRetainedRecoveryState? {
+        workspaceAgentAdmissionCoordinator.retainedRecoveryState(recoveryID: recoveryID)
+    }
+
+    func retainedProvisionalAgentAdmissionRecoveryIDs(
+        for workspaceID: UUID
+    ) -> [UUID] {
+        workspaceAgentAdmissionCoordinator.retainedRecoveryIDs(for: workspaceID)
+    }
+
+    func recordAgentAdmissionRecoveryBlocked(
+        _ identity: AgentProvisionalAdmissionIdentity,
+        category: WorkspacePersistenceFailureCategory,
+        attempts: Int
+    ) {
+        let fields = [
+            "event=agentAdmission.recovery.blockedManual",
+            "workspace=\(WorkspaceAgentAdmissionCoordinator.redactedID(identity.workspaceID))",
+            "recovery=\(WorkspaceAgentAdmissionCoordinator.redactedID(identity.recoveryID))",
+            "session=\(WorkspaceAgentAdmissionCoordinator.redactedID(identity.sessionID))",
+            "category=\(Self.sanitizedAdmissionDiagnostic(category.rawValue))",
+            "attempts=\(attempts)"
+        ].joined(separator: " ")
+        Self.agentAdmissionLogger.notice("\(fields, privacy: .public)")
     }
 
     private func recordAgentAdmissionSaveFailure(
@@ -7894,9 +8001,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         _ = await pollAndSaveStateWithOutcomeAsync(source: source)
     }
 
+    /// `allowRetainedAgentAdmissionRecoveryRetry` is false at leased admission save call sites:
+    /// a retained recovery retry acquires the same workspace lease and must run after release.
     func pollAndSaveStateWithOutcomeAsync(
         workspaceID requestedWorkspaceID: UUID? = nil,
-        source: WorkspaceSaveSource = .pollAndSaveStateAsync
+        source: WorkspaceSaveSource = .pollAndSaveStateAsync,
+        allowRetainedAgentAdmissionRecoveryRetry: Bool = true
     ) async -> WorkspacePersistenceOutcome {
         guard let wsID = requestedWorkspaceID ?? activeWorkspace?.id,
               let currentWorkspace = workspace(withID: wsID)
@@ -7904,6 +8014,11 @@ class WorkspaceManagerViewModel: ObservableObject {
             return .rejected(reason: "active_workspace_unavailable")
         }
         guard !currentWorkspace.isEphemeral else { return .notRequired(workspaceID: wsID) }
+        if allowRetainedAgentAdmissionRecoveryRetry,
+           agentAdmissionRecoveryOwnsWorkspace(wsID)
+        {
+            _ = await domainAuthorityAdmissionIssue(for: wsID)
+        }
         guard !agentAdmissionRecoveryOwnsWorkspace(wsID) else {
             return .rejected(
                 reason: "agent_admission_recovery_pending",
@@ -11317,6 +11432,9 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard !workspaces[initialIndex].isEphemeral else {
             return .success(stateVersionByWorkspaceID[workspaceID, default: 0])
         }
+        guard !agentAdmissionRecoveryOwnsWorkspace(workspaceID) else {
+            return .failure(WorkspacePersistenceFailure(category: .durabilityUncertain))
+        }
         if domainWorkspaceAuthorityClient != nil {
             do {
                 let result = try await persistWorkspaceThroughDomainAuthority(
@@ -11781,6 +11899,9 @@ class WorkspaceManagerViewModel: ObservableObject {
     ) async throws -> URL {
         let targetURL = workspaceFileURL(for: workspace)
         guard !workspace.isEphemeral else { throw WorkspaceDirectWriteError.ephemeralWorkspace }
+        guard !agentAdmissionRecoveryOwnsWorkspace(workspace.id) else {
+            throw WorkspacePersistenceFailure(category: .durabilityUncertain)
+        }
         if domainWorkspaceAuthorityClient != nil {
             let result = try await persistWorkspaceThroughDomainAuthority(
                 workspace,

@@ -20,6 +20,7 @@ final class AgentProvisionalAdmissionClaim: Equatable {
         case provisional
         case recoveringWorkspace
         case workspaceRecovered
+        case blockedManual(WorkspacePersistenceFailureCategory)
         case complete
         case accepted
     }
@@ -51,9 +52,33 @@ final class AgentProvisionalAdmissionClaim: Equatable {
         case .provisional, .recoveringWorkspace, .workspaceRecovered:
             state = .complete
             return true
-        case .complete, .accepted:
+        case .blockedManual, .complete, .accepted:
             return false
         }
+    }
+
+    @MainActor
+    @discardableResult
+    func markBlockedForManualRecovery(_ category: WorkspacePersistenceFailureCategory) -> Bool {
+        switch state {
+        case .recoveringWorkspace:
+            state = .blockedManual(category)
+            return true
+        case let .blockedManual(existing) where existing == category:
+            return true
+        case .blockedManual:
+            return false
+        case .provisional, .workspaceRecovered, .complete, .accepted:
+            return false
+        }
+    }
+
+    @MainActor
+    @discardableResult
+    func resumeBlockedWorkspaceRecovery() -> Bool {
+        guard case .blockedManual = state else { return false }
+        state = .recoveringWorkspace
+        return true
     }
 
     @MainActor

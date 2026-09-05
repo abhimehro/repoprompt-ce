@@ -8212,7 +8212,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             try Task.checkCancellation()
             let persistence = await workspaceManager.pollAndSaveStateWithOutcomeAsync(
                 workspaceID: expectedWorkspaceID,
-                source: WorkspaceSaveSource("agentSessionLifecycleExistingTabAdmission")
+                source: WorkspaceSaveSource("agentSessionLifecycleExistingTabAdmission"),
+                allowRetainedAgentAdmissionRecoveryRetry: false
             )
             #if DEBUG
                 await test_afterProvisionalExistingTabBindingInstalled?()
@@ -8761,10 +8762,13 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         case .accepted, .complete:
             releaseOutstandingProvisionalMCPSessionTarget(target)
             return .complete
-        case .provisional, .recoveringWorkspace, .workspaceRecovered:
+        case .provisional, .recoveringWorkspace, .workspaceRecovered, .blockedManual:
             break
         }
         guard mcpSessionTargetDiscardAuthorityIsCurrent(target) else {
+            if case .blockedManual = claim.state {
+                return .retainedForRetry
+            }
             claim.markComplete()
             workspaceManager?.finishProvisionalAgentAdmissionRecovery(claim.identity)
             releaseOutstandingProvisionalMCPSessionTarget(target)
@@ -8917,6 +8921,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                         target: target,
                         claim: claim
                     )
+                case .blockedManual:
+                    guard claim.resumeBlockedWorkspaceRecovery() else {
+                        return .retainedForRetry
+                    }
                 }
 
                 let outcome = if bindingOnlyMCPSessionTargetRecoveryIDs.contains(recoveryID) {
@@ -8937,6 +8945,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 case .ownershipChanged:
                     claim.markComplete()
                     return .complete
+                case let .blockedManual(category):
+                    claim.markBlockedForManualRecovery(category)
+                    return .retainedForRetry
                 case .retryablePartial, .failed:
                     return .retainedForRetry
                 }

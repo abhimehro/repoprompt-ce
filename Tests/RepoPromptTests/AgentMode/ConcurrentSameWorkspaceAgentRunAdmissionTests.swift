@@ -673,6 +673,7 @@ import XCTest
                 reservationOwnerID: recoveryID
             ) {
                 await gate.enterAndWait()
+                return .complete(.localOnly)
             }
             await gate.waitUntilEntered()
 

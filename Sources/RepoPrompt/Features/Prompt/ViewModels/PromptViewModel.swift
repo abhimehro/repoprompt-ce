@@ -3142,25 +3142,34 @@ class PromptViewModel: ObservableObject {
                 }
                 let recoveryOutcome = await settleProvisionalAgentAdmissionRecovery(
                     provisionalIdentity,
+                    claim: recoveryClaim,
+                    rollbackCheckpoint: rollbackCheckpoint,
                     manager: manager
                 )
+                let shouldRollbackLocally: Bool
                 switch recoveryOutcome {
                 case .recovered, .alreadyRecovered, .localOnly:
                     recoveryClaim.markWorkspaceRecovered()
                     recoveryClaim.markComplete()
-                case .ownershipChanged, .failed:
+                    shouldRollbackLocally = true
+                case .ownershipChanged:
                     recoveryClaim.markComplete()
+                    shouldRollbackLocally = true
                 case .retryablePartial:
-                    break
+                    shouldRollbackLocally = true
+                case .failed, .blockedManual:
+                    shouldRollbackLocally = false
                 }
                 await notifyAgentAdmissionRecoveryCompletedForTesting(
                     provisionalIdentity,
                     outcome: recoveryOutcome
                 )
-                await rollbackProvisionalAgentSessionTab(
-                    checkpoint: rollbackCheckpoint,
-                    manager: manager
-                )
+                if shouldRollbackLocally {
+                    await rollbackProvisionalAgentSessionTab(
+                        checkpoint: rollbackCheckpoint,
+                        manager: manager
+                    )
+                }
                 if isCancelled {
                     throw CancellationError()
                 }
@@ -3192,6 +3201,8 @@ class PromptViewModel: ObservableObject {
     @MainActor
     private func settleProvisionalAgentAdmissionRecovery(
         _ identity: AgentProvisionalAdmissionIdentity,
+        claim: AgentProvisionalAdmissionClaim,
+        rollbackCheckpoint: ProvisionalAgentSessionTabRollbackCheckpoint,
         manager: WorkspaceManagerViewModel
     ) async -> AgentAdmissionRecoveryOutcome {
         let outcome = await manager.recoverProvisionalAgentAdmission(identity)
@@ -3201,35 +3212,80 @@ class PromptViewModel: ObservableObject {
         case .retryablePartial:
             retainProvisionalAgentAdmissionRecovery(
                 identity,
+                claim: claim,
+                rollbackCheckpoint: rollbackCheckpoint,
                 initialOutcome: outcome,
-                manager: manager
+                manager: manager,
+                start: .automatic
             )
         case let .failed(category):
-            guard category.isRetryableAgentAdmissionRecoveryFailure else {
-                manager.finishProvisionalAgentAdmissionRecovery(identity)
-                return outcome
+            if category.isRetryableAgentAdmissionRecoveryFailure {
+                retainProvisionalAgentAdmissionRecovery(
+                    identity,
+                    claim: claim,
+                    rollbackCheckpoint: rollbackCheckpoint,
+                    initialOutcome: outcome,
+                    manager: manager,
+                    start: .automatic
+                )
+            } else {
+                let blocked = AgentAdmissionRecoveryOutcome.blockedManual(category)
+                claim.markBlockedForManualRecovery(category)
+                manager.recordAgentAdmissionRecoveryBlocked(
+                    identity,
+                    category: category,
+                    attempts: 0
+                )
+                retainProvisionalAgentAdmissionRecovery(
+                    identity,
+                    claim: claim,
+                    rollbackCheckpoint: rollbackCheckpoint,
+                    initialOutcome: blocked,
+                    manager: manager,
+                    start: .blockedManual(category)
+                )
+                return blocked
             }
+        case let .blockedManual(category):
+            claim.markBlockedForManualRecovery(category)
+            manager.recordAgentAdmissionRecoveryBlocked(
+                identity,
+                category: category,
+                attempts: 0
+            )
             retainProvisionalAgentAdmissionRecovery(
                 identity,
+                claim: claim,
+                rollbackCheckpoint: rollbackCheckpoint,
                 initialOutcome: outcome,
-                manager: manager
+                manager: manager,
+                start: .blockedManual(category)
             )
+            return outcome
         }
         return outcome
     }
 
     private func retainProvisionalAgentAdmissionRecovery(
         _ identity: AgentProvisionalAdmissionIdentity,
+        claim: AgentProvisionalAdmissionClaim,
+        rollbackCheckpoint: ProvisionalAgentSessionTabRollbackCheckpoint,
         initialOutcome: AgentAdmissionRecoveryOutcome,
-        manager: WorkspaceManagerViewModel
+        manager: WorkspaceManagerViewModel,
+        start: AgentAdmissionRetainedRecoveryStart
     ) {
         manager.retainProvisionalAgentAdmissionRecovery(
             recoveryID: identity.recoveryID,
             workspaceID: identity.workspaceID,
             sessionID: identity.sessionID,
-            reservationOwnerID: identity.recoveryID
-        ) { [self, manager] in
-            defer { manager.finishProvisionalAgentAdmissionRecovery(identity) }
+            reservationOwnerID: identity.recoveryID,
+            start: start
+        ) { [self, manager, claim] in
+            if case .blockedManual = claim.state {
+                guard claim.resumeBlockedWorkspaceRecovery() else {
+                    return .blockedManual(.durabilityUncertain)
+                }
+            }
             var priorOutcome = initialOutcome
             for attempt in 0 ..< 4 {
                 await waitForProvisionalAgentAdmissionRecoveryRetry(
@@ -3245,16 +3301,38 @@ class PromptViewModel: ObservableObject {
                         await manager.recoverProvisionalAgentAdmission(identity)
                     }
                 } catch {
+                    priorOutcome = .failed(.durabilityUncertain)
                     continue
                 }
                 switch outcome {
-                case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged:
+                case .recovered, .alreadyRecovered, .localOnly:
+                    claim.markWorkspaceRecovered()
+                    claim.markComplete()
+                    await rollbackProvisionalAgentSessionTab(
+                        checkpoint: rollbackCheckpoint,
+                        manager: manager
+                    )
                     await notifyAgentAdmissionRecoveryCompletedForTesting(
                         identity,
                         outcome: outcome
                     )
-                    return
+                    return .complete(outcome)
+                case .ownershipChanged:
+                    claim.markComplete()
+                    await rollbackProvisionalAgentSessionTab(
+                        checkpoint: rollbackCheckpoint,
+                        manager: manager
+                    )
+                    await notifyAgentAdmissionRecoveryCompletedForTesting(
+                        identity,
+                        outcome: outcome
+                    )
+                    return .complete(outcome)
                 case .retryablePartial:
+                    await rollbackProvisionalAgentSessionTab(
+                        checkpoint: rollbackCheckpoint,
+                        manager: manager
+                    )
                     priorOutcome = outcome
                     continue
                 case let .failed(category):
@@ -3262,17 +3340,54 @@ class PromptViewModel: ObservableObject {
                         priorOutcome = outcome
                         continue
                     }
+                    let blocked = AgentAdmissionRecoveryOutcome.blockedManual(category)
+                    claim.markBlockedForManualRecovery(category)
+                    manager.recordAgentAdmissionRecoveryBlocked(
+                        identity,
+                        category: category,
+                        attempts: attempt + 1
+                    )
+                    await notifyAgentAdmissionRecoveryCompletedForTesting(
+                        identity,
+                        outcome: blocked
+                    )
+                    return .blockedManual(category)
+                case let .blockedManual(category):
+                    claim.markBlockedForManualRecovery(category)
+                    manager.recordAgentAdmissionRecoveryBlocked(
+                        identity,
+                        category: category,
+                        attempts: attempt + 1
+                    )
                     await notifyAgentAdmissionRecoveryCompletedForTesting(
                         identity,
                         outcome: outcome
                     )
-                    return
+                    return .blockedManual(category)
                 }
             }
+            let blockedCategory: WorkspacePersistenceFailureCategory = switch priorOutcome {
+            case let .failed(category):
+                category
+            case .retryablePartial:
+                .durabilityUncertain
+            case let .blockedManual(category):
+                category
+            case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged:
+                .durabilityUncertain
+            }
+            let blocked = AgentAdmissionRecoveryOutcome.blockedManual(blockedCategory)
+            claim.markBlockedForManualRecovery(blockedCategory)
+            manager.recordAgentAdmissionRecoveryBlocked(
+                identity,
+                category: blockedCategory,
+                attempts: 4
+            )
             await notifyAgentAdmissionRecoveryCompletedForTesting(
                 identity,
-                outcome: priorOutcome
+                outcome: blocked
             )
+            return .blockedManual(blockedCategory)
         }
     }
 

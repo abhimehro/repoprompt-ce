@@ -335,6 +335,16 @@ import XCTest
             XCTAssertEqual(accepted.state, .accepted)
             XCTAssertFalse(accepted.beginWorkspaceRecovery())
             XCTAssertFalse(accepted.markComplete())
+
+            let blocked = AgentProvisionalAdmissionClaim(identity: identity)
+            XCTAssertTrue(blocked.beginWorkspaceRecovery())
+            XCTAssertTrue(blocked.markBlockedForManualRecovery(.unrecoverableDocument))
+            XCTAssertEqual(blocked.state, .blockedManual(.unrecoverableDocument))
+            XCTAssertFalse(blocked.markComplete())
+            XCTAssertTrue(blocked.resumeBlockedWorkspaceRecovery())
+            XCTAssertEqual(blocked.state, .recoveringWorkspace)
+            XCTAssertTrue(blocked.markWorkspaceRecovered())
+            XCTAssertTrue(blocked.markComplete())
         }
 
         func testPersistedAdmissionWithUnavailableVerificationEntersFencedRecovery() async throws {
@@ -668,7 +678,7 @@ import XCTest
                 switch outcome {
                 case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged:
                     recoveryCompleted.fulfill()
-                case .retryablePartial, .failed:
+                case .retryablePartial, .failed, .blockedManual:
                     break
                 }
             }
@@ -825,19 +835,36 @@ import XCTest
             fixture.prompt.setAgentAdmissionRecoveryCompletedHandlerForTesting(nil)
             fixture.prompt.setAgentAdmissionRecoveryRetryHandlerForTesting(nil)
             fixture.manager.setAgentAdmissionRecoveryWorkingCommitHandlerForTesting(nil)
+            let freshCanonical = try await withFreshRuntime(for: fixture) { client in
+                let snapshotValue = await client.canonicalWorkspaceSnapshot(fixture.workspaceA.id)
+                let snapshot = try XCTUnwrap(snapshotValue)
+                return try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
+                    documentBytes: snapshot.document.documentBytes,
+                    fileURL: snapshot.document.fileURL
+                )
+            }
+            XCTAssertTrue(freshCanonical.composeTabs.contains {
+                $0.id == identity.tabID && $0.activeAgentSessionID == successorSessionID
+            })
+            XCTAssertFalse(freshCanonical.composeTabs.contains {
+                $0.activeAgentSessionID == identity.sessionID
+            })
         }
 
-        func testRetainedPromptRecoveryExhaustionReleasesLeaseAndSaveSuppression() async throws {
+        func testNonRetryablePromptRecoveryRemainsBlockedUntilRepairedAuthoritySettles() async throws {
             let fixture = try await makeFixture()
             fixture.manager.activeWorkspace = fixture.workspaceA
             fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
             let persistenceFence = CancellationIgnoringReleaseFence()
-            let retainedRecoveryCompleted = expectation(description: "retained recovery exhausted")
+            let recoveryCompleted = expectation(description: "non-retryable recovery blocked")
             let coordinator = WorkspaceAgentAdmissionCoordinator.shared
             let coordinatorBaseline = coordinator.snapshot()
-            var notificationCount = 0
-            var recoveryAttemptCount = 0
-            fixture.prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting { _, receipt in
+            let failureCategory = WorkspacePersistenceFailureCategory.unrecoverableDocument
+            var admissionIdentity: AgentProvisionalAdmissionIdentity?
+            var recoveryOutcome: AgentAdmissionRecoveryOutcome?
+            var retryAttemptCount = 0
+            fixture.prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting { identity, receipt in
+                admissionIdentity = identity
                 guard case .saved = receipt.commitEvidence else {
                     XCTFail("Cancellation gate requires saved evidence: \(receipt.commitEvidence)")
                     return
@@ -845,20 +872,239 @@ import XCTest
                 await persistenceFence.enterAndWaitIgnoringCancellationUntilRelease()
             }
             fixture.prompt.setAgentAdmissionRecoveryCompletedHandlerForTesting { _, outcome in
-                guard case .retryablePartial = outcome else { return }
-                notificationCount += 1
-                if notificationCount == 2 {
-                    retainedRecoveryCompleted.fulfill()
+                recoveryOutcome = outcome
+                guard case let .blockedManual(category) = outcome,
+                      category == failureCategory
+                else {
+                    return XCTFail("Expected a typed blocked disposition, got \(outcome)")
+                }
+                recoveryCompleted.fulfill()
+            }
+            fixture.prompt.setAgentAdmissionRecoveryRetryHandlerForTesting { attempt, outcome in
+                XCTAssertEqual(attempt, 0)
+                guard case let .blockedManual(category) = outcome,
+                      category == failureCategory
+                else {
+                    return XCTFail("Expected the retained blocked disposition, got \(outcome)")
+                }
+                retryAttemptCount += 1
+            }
+            fixture.manager.setAgentAdmissionRecoveryFailureCategoryHandlerForTesting { workspaceID in
+                XCTAssertEqual(workspaceID, fixture.workspaceA.id)
+                return failureCategory
+            }
+
+            let admissionTask = Task { @MainActor in
+                try await fixture.prompt.createDurableBackgroundAgentSessionTab(
+                    name: "Persisted admission with non-retryable recovery",
+                    sessionID: UUID(),
+                    expectedWorkspaceID: fixture.workspaceA.id,
+                    lifecycleAuthority: AgentSessionLifecycleAuthority()
+                )
+            }
+            await persistenceFence.waitUntilEntered()
+            admissionTask.cancel()
+            await persistenceFence.release()
+            do {
+                _ = try await admissionTask.value
+                XCTFail("Cancellation must not return a provider-facing target")
+            } catch is CancellationError {
+            } catch {
+                XCTFail("Expected CancellationError, got \(error)")
+            }
+            await fulfillment(of: [recoveryCompleted], timeout: 5)
+            guard let identity = admissionIdentity else {
+                return XCTFail("Expected the persistence receipt to capture an admission identity")
+            }
+            XCTAssertEqual(recoveryOutcome, .blockedManual(failureCategory))
+            XCTAssertEqual(coordinator.activeCount(for: fixture.workspaceA.id), 0)
+            XCTAssertTrue(fixture.manager.debugAgentAdmissionRecoveryOwns(identity))
+            XCTAssertTrue(coordinator.hasActiveProvisionalSession(
+                workspaceID: identity.workspaceID,
+                sessionID: identity.sessionID
+            ))
+            XCTAssertEqual(
+                coordinator.snapshot().retainedRecoveryCount,
+                coordinatorBaseline.retainedRecoveryCount + 1
+            )
+
+            let leasedSave = try await fixture.manager.withAgentSessionAdmission(
+                workspaceID: fixture.workspaceA.id,
+                admissionID: UUID()
+            ) {
+                await fixture.manager.persistAgentAdmission(
+                    identity,
+                    source: WorkspaceSaveSource("agentSessionLifecycleLeasedSave")
+                )
+            }
+            XCTAssertEqual(leasedSave.outcome.normalizedFailureCategory, .durabilityUncertain)
+            XCTAssertEqual(
+                retryAttemptCount,
+                0,
+                "A leased admission save must not re-enter the retained recovery lease."
+            )
+            XCTAssertEqual(coordinator.activeCount(for: fixture.workspaceA.id), 0)
+
+            let blockedCanonicalSnapshotValue = await fixture.client.canonicalWorkspaceSnapshot(
+                fixture.workspaceA.id
+            )
+            let blockedCanonicalSnapshot = try XCTUnwrap(blockedCanonicalSnapshotValue)
+            let canonicalBytesBeforeDirectSave = blockedCanonicalSnapshot.document.documentBytes
+            let canonicalRevisionsBeforeDirectSave = blockedCanonicalSnapshot.revisions
+            let diskBeforeDirectSave = try Data(contentsOf: fixture.workspaceAURL)
+            let directWorkspace = try XCTUnwrap(
+                fixture.manager.workspace(withID: fixture.workspaceA.id)
+            )
+            let retryAttemptCountBeforeDirectSave = retryAttemptCount
+            var directSaveRejected = false
+            do {
+                _ = try await fixture.manager.saveWorkspaceToFileAsync(
+                    directWorkspace,
+                    source: WorkspaceSaveSource("directRecoverySuppressed")
+                )
+            } catch {
+                directSaveRejected = true
+            }
+            XCTAssertTrue(
+                directSaveRejected,
+                "A direct save must fail closed while admission recovery owns the workspace."
+            )
+            let afterDirectSaveValue = await fixture.client.canonicalWorkspaceSnapshot(
+                fixture.workspaceA.id
+            )
+            let afterDirectSave = try XCTUnwrap(afterDirectSaveValue)
+            XCTAssertEqual(afterDirectSave.document.documentBytes, canonicalBytesBeforeDirectSave)
+            XCTAssertEqual(afterDirectSave.revisions, canonicalRevisionsBeforeDirectSave)
+            XCTAssertEqual(try Data(contentsOf: fixture.workspaceAURL), diskBeforeDirectSave)
+            XCTAssertEqual(retryAttemptCount, retryAttemptCountBeforeDirectSave)
+            XCTAssertTrue(fixture.manager.debugAgentAdmissionRecoveryOwns(identity))
+            XCTAssertEqual(coordinator.activeCount(for: fixture.workspaceA.id), 0)
+            XCTAssertEqual(
+                coordinator.snapshot().retainedRecoveryCount,
+                coordinatorBaseline.retainedRecoveryCount + 1
+            )
+
+            fixture.prompt.setAgentAdmissionRecoveryCompletedHandlerForTesting(nil)
+            fixture.manager.setAgentAdmissionRecoveryFailureCategoryHandlerForTesting(nil)
+            let corruptBytes = Data("corrupt workspace document".utf8)
+            try corruptBytes.write(to: fixture.workspaceAURL, options: .atomic)
+            _ = await fixture.client.reloadExternalChanges()
+            let readOnlySnapshotValue = await fixture.client.canonicalWorkspaceSnapshot(
+                fixture.workspaceA.id
+            )
+            let readOnlySnapshot = try XCTUnwrap(readOnlySnapshotValue)
+            guard case .degradedReadOnly = readOnlySnapshot.health else {
+                return XCTFail(
+                    "Expected the actual external-document health gate to become read-only."
+                )
+            }
+            let suppressedSave = await fixture.manager.pollAndSaveStateWithOutcomeAsync(
+                workspaceID: fixture.workspaceA.id,
+                source: WorkspaceSaveSource("nonRetryableRecoverySuppressed")
+            )
+            XCTAssertEqual(suppressedSave.normalizedFailureCategory, .durabilityUncertain)
+            XCTAssertEqual(retryAttemptCount, retryAttemptCountBeforeDirectSave)
+            let afterReadOnlyPollValue = await fixture.client.canonicalWorkspaceSnapshot(
+                fixture.workspaceA.id
+            )
+            let afterReadOnlyPoll = try XCTUnwrap(afterReadOnlyPollValue)
+            XCTAssertEqual(afterReadOnlyPoll.document.documentBytes, canonicalBytesBeforeDirectSave)
+            XCTAssertEqual(afterReadOnlyPoll.revisions, canonicalRevisionsBeforeDirectSave)
+            XCTAssertEqual(try Data(contentsOf: fixture.workspaceAURL), corruptBytes)
+            XCTAssertTrue(fixture.manager.debugAgentAdmissionRecoveryOwns(identity))
+            XCTAssertEqual(coordinator.activeCount(for: fixture.workspaceA.id), 0)
+            XCTAssertEqual(
+                coordinator.snapshot().retainedRecoveryCount,
+                coordinatorBaseline.retainedRecoveryCount + 1
+            )
+
+            try diskBeforeDirectSave.write(to: fixture.workspaceAURL, options: .atomic)
+            _ = await fixture.client.reloadExternalChanges()
+            let repairedSnapshotValue = await fixture.client.canonicalWorkspaceSnapshot(
+                fixture.workspaceA.id
+            )
+            let repairedSnapshot = try XCTUnwrap(repairedSnapshotValue)
+            guard repairedSnapshot.health.acceptsMutations else {
+                return XCTFail(
+                    "Expected repaired authority health to re-enter the retained-recovery eligibility gate."
+                )
+            }
+            _ = try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
+                documentBytes: repairedSnapshot.document.documentBytes,
+                fileURL: repairedSnapshot.document.fileURL
+            )
+            let issueAfterRepair = await fixture.manager.domainAuthorityAdmissionIssue(
+                for: fixture.workspaceA.id
+            )
+            XCTAssertNil(issueAfterRepair)
+            XCTAssertEqual(retryAttemptCount, retryAttemptCountBeforeDirectSave + 1)
+            XCTAssertFalse(fixture.manager.debugAgentAdmissionRecoveryOwns(identity))
+            XCTAssertFalse(coordinator.hasActiveProvisionalSession(
+                workspaceID: identity.workspaceID,
+                sessionID: identity.sessionID
+            ))
+            XCTAssertEqual(
+                coordinator.snapshot().retainedRecoveryCount,
+                coordinatorBaseline.retainedRecoveryCount
+            )
+            let settledCanonical = try await canonicalModel(fixture)
+            XCTAssertFalse(settledCanonical.composeTabs.contains {
+                $0.id == identity.tabID && $0.activeAgentSessionID == identity.sessionID
+            })
+            let settledDisk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            XCTAssertFalse(settledDisk.composeTabs.contains {
+                $0.id == identity.tabID && $0.activeAgentSessionID == identity.sessionID
+            })
+
+            fixture.prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting(nil)
+            fixture.prompt.setAgentAdmissionRecoveryRetryHandlerForTesting(nil)
+        }
+
+        func testRetainedPromptRecoveryExhaustionRemainsBlockedUntilDurableSettlement() async throws {
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let persistenceFence = CancellationIgnoringReleaseFence()
+            let retainedRecoveryCompleted = expectation(description: "retained recovery exhausted")
+            let coordinator = WorkspaceAgentAdmissionCoordinator.shared
+            let coordinatorBaseline = coordinator.snapshot()
+            var admissionIdentity: AgentProvisionalAdmissionIdentity?
+            var notificationCount = 0
+            var recoveryAttemptCount = 0
+            fixture.prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting { identity, receipt in
+                admissionIdentity = identity
+                guard case .saved = receipt.commitEvidence else {
+                    XCTFail("Cancellation gate requires saved evidence: \(receipt.commitEvidence)")
+                    return
+                }
+                await persistenceFence.enterAndWaitIgnoringCancellationUntilRelease()
+            }
+            fixture.prompt.setAgentAdmissionRecoveryCompletedHandlerForTesting { _, outcome in
+                switch outcome {
+                case let .failed(category):
+                    XCTAssertEqual(category, .persistenceFailure)
+                    notificationCount += 1
+                case let .blockedManual(category):
+                    XCTAssertEqual(category, .persistenceFailure)
+                    notificationCount += 1
+                    if notificationCount == 2 {
+                        retainedRecoveryCompleted.fulfill()
+                    }
+                case .recovered, .alreadyRecovered, .localOnly, .ownershipChanged, .retryablePartial:
+                    XCTFail("Expected failed then blocked recovery, got \(outcome)")
                 }
             }
             fixture.prompt.setAgentAdmissionRecoveryRetryHandlerForTesting { attempt, outcome in
                 XCTAssertEqual(attempt, recoveryAttemptCount)
-                guard case .retryablePartial = outcome else {
-                    return XCTFail("Expected retryable retained recovery, got \(outcome)")
+                guard case .failed(.persistenceFailure) = outcome else {
+                    return XCTFail("Expected failed retained recovery, got \(outcome)")
                 }
                 recoveryAttemptCount += 1
             }
-            fixture.manager.setAgentAdmissionRecoveryWorkingCommitHandlerForTesting { _, _ in false }
+            fixture.manager.setAgentAdmissionRecoveryReplacementPreparationHandlerForTesting { _ in false }
 
             let admissionTask = Task { @MainActor in
                 try await fixture.prompt.createDurableBackgroundAgentSessionTab(
@@ -879,31 +1125,79 @@ import XCTest
                 XCTFail("Expected CancellationError, got \(error)")
             }
             await fulfillment(of: [retainedRecoveryCompleted], timeout: 5)
+            guard let identity = admissionIdentity else {
+                return XCTFail("Expected the persistence receipt to capture an admission identity")
+            }
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: .seconds(5))
-            while coordinator.snapshot().retainedRecoveryCount != coordinatorBaseline.retainedRecoveryCount {
+            let expectedBlockedState: AgentAdmissionRetainedRecoveryState? =
+                .blockedManual(.persistenceFailure)
+            while coordinator.retainedRecoveryState(recoveryID: identity.recoveryID)
+                != expectedBlockedState
+            {
                 guard clock.now < deadline else {
-                    return XCTFail("Retained recovery registry did not terminate after bounded exhaustion.")
+                    return XCTFail("Retained recovery did not preserve its blocked disposition after exhaustion.")
                 }
                 await Task.yield()
             }
             XCTAssertEqual(recoveryAttemptCount, 4)
             XCTAssertEqual(coordinator.activeCount(for: fixture.workspaceA.id), 0)
-
-            let saveOutcome = await fixture.manager.pollAndSaveStateWithOutcomeAsync(
-                workspaceID: fixture.workspaceA.id,
-                source: WorkspaceSaveSource("retainedRecoveryExhaustionRelease")
+            XCTAssertTrue(fixture.manager.debugAgentAdmissionRecoveryOwns(identity))
+            XCTAssertTrue(coordinator.hasActiveProvisionalSession(
+                workspaceID: identity.workspaceID,
+                sessionID: identity.sessionID
+            ))
+            XCTAssertEqual(
+                coordinator.snapshot().retainedRecoveryCount,
+                coordinatorBaseline.retainedRecoveryCount + 1
             )
-            XCTAssertNotEqual(
-                saveOutcome.normalizedFailureCategory,
-                .durabilityUncertain,
-                "Bounded exhaustion must release the recovery owner that suppresses ordinary saves."
-            )
+            recoveryAttemptCount = 0
 
-            fixture.prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting(nil)
+            let blockedCanonical = try await canonicalModel(fixture)
+            XCTAssertTrue(blockedCanonical.composeTabs.contains {
+                $0.id == identity.tabID && $0.activeAgentSessionID == identity.sessionID
+            })
+            let blockedDisk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            XCTAssertTrue(blockedDisk.composeTabs.contains {
+                $0.id == identity.tabID && $0.activeAgentSessionID == identity.sessionID
+            })
             fixture.prompt.setAgentAdmissionRecoveryCompletedHandlerForTesting(nil)
+            let suppressedSave = await fixture.manager.pollAndSaveStateWithOutcomeAsync(
+                workspaceID: fixture.workspaceA.id,
+                source: WorkspaceSaveSource("retainedRecoveryExhaustionSuppressed")
+            )
+            XCTAssertEqual(suppressedSave.normalizedFailureCategory, .durabilityUncertain)
+            XCTAssertEqual(recoveryAttemptCount, 4)
+
+            fixture.manager.setAgentAdmissionRecoveryReplacementPreparationHandlerForTesting(nil)
             fixture.prompt.setAgentAdmissionRecoveryRetryHandlerForTesting(nil)
-            fixture.manager.setAgentAdmissionRecoveryWorkingCommitHandlerForTesting(nil)
+            let issueAfterRepair = await fixture.manager.domainAuthorityAdmissionIssue(
+                for: fixture.workspaceA.id
+            )
+            XCTAssertNil(issueAfterRepair)
+            XCTAssertFalse(fixture.manager.debugAgentAdmissionRecoveryOwns(identity))
+            XCTAssertFalse(coordinator.hasActiveProvisionalSession(
+                workspaceID: identity.workspaceID,
+                sessionID: identity.sessionID
+            ))
+            XCTAssertEqual(
+                coordinator.snapshot().retainedRecoveryCount,
+                coordinatorBaseline.retainedRecoveryCount
+            )
+            let settledCanonical = try await canonicalModel(fixture)
+            XCTAssertFalse(settledCanonical.composeTabs.contains {
+                $0.id == identity.tabID && $0.activeAgentSessionID == identity.sessionID
+            })
+            let settledDisk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
+                at: fixture.workspaceAURL,
+                scheduleNormalizationWriteback: false
+            )
+            XCTAssertFalse(settledDisk.composeTabs.contains {
+                $0.id == identity.tabID && $0.activeAgentSessionID == identity.sessionID
+            })
         }
 
         func testLostSaveResponseConvergesThroughCanonicalReread() async throws {
@@ -2150,6 +2444,20 @@ import XCTest
             XCTAssertNil(settledLookup.recoveryClaim)
             XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
             XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
+            let freshCanonical = try await withFreshRuntime(for: fixture) { client in
+                let snapshotValue = await client.canonicalWorkspaceSnapshot(fixture.workspaceA.id)
+                let snapshot = try XCTUnwrap(snapshotValue)
+                return try WorkspaceManagerViewModel.decodeDomainWorkspaceProjection(
+                    documentBytes: snapshot.document.documentBytes,
+                    fileURL: snapshot.document.fileURL
+                )
+            }
+            XCTAssertTrue(freshCanonical.composeTabs.contains {
+                $0.id == originalTab.id && $0.activeAgentSessionID == successorSessionID
+            })
+            XCTAssertFalse(freshCanonical.composeTabs.contains {
+                $0.activeAgentSessionID == sessionID
+            })
         }
 
         func testInFlightCanonicalRecoveryRetiresBeforeSameSessionSuccessorAdmission() async throws {
@@ -2865,6 +3173,39 @@ import XCTest
                 leftTab: left,
                 rightTab: right
             )
+        }
+
+        private func withFreshRuntime<T>(
+            for fixture: Fixture,
+            operation: (DomainWorkspaceAuthorityClient) async throws -> T
+        ) async throws -> T {
+            _ = await fixture.runtime.shutdown()
+            let runtime = MCPDomainRuntime(configuration: .init(
+                mode: .app,
+                profileIdentifier: fixture.profileIdentifier,
+                storageDirectory: fixture.runtimeStorageDirectory,
+                workspaceStorageDirectory: storageRoot,
+                eventDirectory: storageRoot.appendingPathComponent(
+                    "events-fresh-\(UUID().uuidString)",
+                    isDirectory: true
+                ),
+                temporaryDirectory: storageRoot.appendingPathComponent(
+                    "tmp-fresh-\(UUID().uuidString)",
+                    isDirectory: true
+                ),
+                externalReloadInterval: nil
+            ))
+            try await runtime.start()
+            runtimes.append(runtime)
+            let client = DomainWorkspaceAuthorityClient(store: runtime.workspaceStore, windowID: -884)
+            do {
+                let result = try await operation(client)
+                _ = await runtime.shutdown()
+                return result
+            } catch {
+                _ = await runtime.shutdown()
+                throw error
+            }
         }
 
         private func makeCompetingClient(

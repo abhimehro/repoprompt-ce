@@ -2,6 +2,21 @@ import CryptoKit
 import Foundation
 import OSLog
 
+enum AgentAdmissionRetainedRecoveryStart: Equatable {
+    case automatic
+    case blockedManual(WorkspacePersistenceFailureCategory)
+}
+
+enum AgentAdmissionRetainedRecoverySettlement: Equatable {
+    case complete(AgentAdmissionRecoveryOutcome)
+    case blockedManual(WorkspacePersistenceFailureCategory)
+}
+
+enum AgentAdmissionRetainedRecoveryState: Equatable {
+    case running
+    case blockedManual(WorkspacePersistenceFailureCategory)
+}
+
 /// Serializes Agent identity mutations that target the same durable workspace.
 ///
 /// Domain workspace CAS remains authoritative across processes. This coordinator only closes
@@ -83,10 +98,12 @@ final class WorkspaceAgentAdmissionCoordinator: @unchecked Sendable {
     }
 
     private struct RetainedRecovery {
-        let taskID: UUID
-        let task: Task<Void, Never>
+        var taskID: UUID?
+        var task: Task<AgentAdmissionRetainedRecoverySettlement, Never>?
+        var state: AgentAdmissionRetainedRecoveryState
         let reservationKey: ProvisionalSessionKey
         let reservationOwnerID: UUID
+        let operation: @MainActor @Sendable () async -> AgentAdmissionRetainedRecoverySettlement
     }
 
     private enum AdmissionLocation: Equatable {
@@ -289,21 +306,18 @@ final class WorkspaceAgentAdmissionCoordinator: @unchecked Sendable {
     }
 
     /// Retaining the task outside a window-owned view model lets durable cleanup outlive the
-    /// cancelled request that created it. The operation itself owns its bounded retry policy.
+    /// cancelled request that created it. A blocked record keeps the same settlement operation and
+    /// reservation for one later bounded retry; it never retains a workspace admission lease.
     func retainRecovery(
         recoveryID: UUID,
         workspaceID: UUID,
         sessionID: UUID,
         reservationOwnerID: UUID,
-        operation: @escaping @MainActor @Sendable () async -> Void
+        start: AgentAdmissionRetainedRecoveryStart = .automatic,
+        operation: @escaping @MainActor @Sendable () async -> AgentAdmissionRetainedRecoverySettlement
     ) {
-        let taskID = UUID()
-        let task = Task { @MainActor [weak self] in
-            await operation()
-            self?.finishRetainedRecovery(recoveryID: recoveryID, taskID: taskID)
-        }
-        let inserted = lock.withLock {
-            guard retainedRecoveries[recoveryID] == nil else { return false }
+        lock.withLock {
+            guard retainedRecoveries[recoveryID] == nil else { return }
             let reservationKey = ProvisionalSessionKey(
                 workspaceID: workspaceID,
                 sessionID: sessionID
@@ -312,32 +326,118 @@ final class WorkspaceAgentAdmissionCoordinator: @unchecked Sendable {
                 ?? ProvisionalSessionReservation(ownerIDs: [])
             reservation.ownerIDs.insert(reservationOwnerID)
             provisionalSessionReservations[reservationKey] = reservation
-            retainedRecoveries[recoveryID] = RetainedRecovery(
-                taskID: taskID,
-                task: task,
-                reservationKey: reservationKey,
-                reservationOwnerID: reservationOwnerID
-            )
-            return true
-        }
-        if !inserted {
-            task.cancel()
+
+            switch start {
+            case .automatic:
+                let taskID = UUID()
+                let task = makeRetainedRecoveryTask(
+                    recoveryID: recoveryID,
+                    taskID: taskID,
+                    operation: operation
+                )
+                retainedRecoveries[recoveryID] = RetainedRecovery(
+                    taskID: taskID,
+                    task: task,
+                    state: .running,
+                    reservationKey: reservationKey,
+                    reservationOwnerID: reservationOwnerID,
+                    operation: operation
+                )
+            case let .blockedManual(category):
+                retainedRecoveries[recoveryID] = RetainedRecovery(
+                    taskID: nil,
+                    task: nil,
+                    state: .blockedManual(category),
+                    reservationKey: reservationKey,
+                    reservationOwnerID: reservationOwnerID,
+                    operation: operation
+                )
+            }
         }
     }
 
-    private func finishRetainedRecovery(recoveryID: UUID, taskID: UUID) {
+    /// Runs the retained settlement operation again as one coalesced, bounded batch.
+    func retryRetainedRecovery(
+        recoveryID: UUID
+    ) async -> AgentAdmissionRetainedRecoverySettlement? {
+        let task: Task<AgentAdmissionRetainedRecoverySettlement, Never>? = lock.withLock {
+            guard var recovery = retainedRecoveries[recoveryID] else { return nil }
+            switch recovery.state {
+            case .running:
+                return recovery.task
+            case .blockedManual:
+                let taskID = UUID()
+                let task = makeRetainedRecoveryTask(
+                    recoveryID: recoveryID,
+                    taskID: taskID,
+                    operation: recovery.operation
+                )
+                recovery.taskID = taskID
+                recovery.task = task
+                recovery.state = .running
+                retainedRecoveries[recoveryID] = recovery
+                return task
+            }
+        }
+        guard let task else { return nil }
+        return await task.value
+    }
+
+    func retainedRecoveryState(
+        recoveryID: UUID
+    ) -> AgentAdmissionRetainedRecoveryState? {
+        lock.withLock { retainedRecoveries[recoveryID]?.state }
+    }
+
+    func retainedRecoveryIDs(for workspaceID: UUID) -> [UUID] {
         lock.withLock {
-            guard let recovery = retainedRecoveries[recoveryID],
+            retainedRecoveries.compactMap { recoveryID, recovery in
+                recovery.reservationKey.workspaceID == workspaceID ? recoveryID : nil
+            }
+        }
+    }
+
+    private func makeRetainedRecoveryTask(
+        recoveryID: UUID,
+        taskID: UUID,
+        operation: @escaping @MainActor @Sendable () async -> AgentAdmissionRetainedRecoverySettlement
+    ) -> Task<AgentAdmissionRetainedRecoverySettlement, Never> {
+        Task { @MainActor [weak self] in
+            let settlement = await operation()
+            self?.finishRetainedRecovery(
+                recoveryID: recoveryID,
+                taskID: taskID,
+                settlement: settlement
+            )
+            return settlement
+        }
+    }
+
+    private func finishRetainedRecovery(
+        recoveryID: UUID,
+        taskID: UUID,
+        settlement: AgentAdmissionRetainedRecoverySettlement
+    ) {
+        lock.withLock {
+            guard var recovery = retainedRecoveries[recoveryID],
                   recovery.taskID == taskID
             else { return }
-            retainedRecoveries.removeValue(forKey: recoveryID)
-            guard var reservation = provisionalSessionReservations[recovery.reservationKey],
-                  reservation.ownerIDs.remove(recovery.reservationOwnerID) != nil
-            else { return }
-            if reservation.ownerIDs.isEmpty {
-                provisionalSessionReservations.removeValue(forKey: recovery.reservationKey)
-            } else {
-                provisionalSessionReservations[recovery.reservationKey] = reservation
+            switch settlement {
+            case .complete:
+                retainedRecoveries.removeValue(forKey: recoveryID)
+                guard var reservation = provisionalSessionReservations[recovery.reservationKey],
+                      reservation.ownerIDs.remove(recovery.reservationOwnerID) != nil
+                else { return }
+                if reservation.ownerIDs.isEmpty {
+                    provisionalSessionReservations.removeValue(forKey: recovery.reservationKey)
+                } else {
+                    provisionalSessionReservations[recovery.reservationKey] = reservation
+                }
+            case let .blockedManual(category):
+                recovery.taskID = nil
+                recovery.task = nil
+                recovery.state = .blockedManual(category)
+                retainedRecoveries[recoveryID] = recovery
             }
         }
     }
