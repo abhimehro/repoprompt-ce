@@ -107,6 +107,8 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
             let shortWaiter = Task {
                 await readiness.awaitReady(windowID: 902, timeout: 0.05)
             }
+            let survivingWaiter = longWaiters[1]
+            let cancelledWaiter = longWaiters[0]
             var lateWaiter: Task<Bool, Never>?
 
             do {
@@ -120,7 +122,10 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                 let shortResult = try await valueWithin(
                     shortWaiter,
                     timeout: .seconds(2),
-                    label: "short readiness caller deadline"
+                    label: "short readiness caller deadline",
+                    cleanup: {
+                        await queryProbe.releaseFirstQuery()
+                    }
                 )
                 XCTAssertFalse(
                     shortResult,
@@ -131,6 +136,26 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                     queryCountAfterShortDeadline,
                     1,
                     "A timed-out caller must not start a replacement query or cancel shared work."
+                )
+
+                cancelledWaiter.cancel()
+                let cancelledResult = try await valueWithin(
+                    cancelledWaiter,
+                    timeout: .seconds(2),
+                    label: "explicit readiness caller cancellation",
+                    cleanup: {
+                        await queryProbe.releaseFirstQuery()
+                    }
+                )
+                XCTAssertFalse(
+                    cancelledResult,
+                    "Cancelling one caller must resolve only that caller while the shared query remains held."
+                )
+                let queryCountAfterCancellation = await queryProbe.queryCountValue()
+                XCTAssertEqual(
+                    queryCountAfterCancellation,
+                    1,
+                    "A cancelled caller must not cancel or replace the shared readiness query."
                 )
 
                 let lateWaiterTask = Task {
@@ -148,14 +173,12 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                 )
 
                 await queryProbe.releaseFirstQuery()
-                for waiter in longWaiters {
-                    let ready = try await valueWithin(
-                        waiter,
-                        timeout: .seconds(2),
-                        label: "long readiness waiter"
-                    )
-                    XCTAssertTrue(ready)
-                }
+                let survivingReady = try await valueWithin(
+                    survivingWaiter,
+                    timeout: .seconds(2),
+                    label: "surviving readiness waiter"
+                )
+                XCTAssertTrue(survivingReady)
                 let lateReady = try await valueWithin(
                     lateWaiterTask,
                     timeout: .seconds(2),
@@ -211,6 +234,14 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
             let retiredCounter = MCPReadinessTestCounter()
             let settledCounter = MCPReadinessTestCounter()
             let queryProbe = MCPReadinessScopePresenceProbe(holdSecondQuery: true)
+            // The first query intentionally ignores cancellation so late physical settlement
+            // remains observable; cleanup opens its gate before draining waiter tasks.
+            let releaseAllFixtures: @Sendable () async -> Void = {
+                await queryProbe.releaseFirstQuery()
+                await queryProbe.releaseSecondQuery()
+                await ownerRetirementProbe.releaseFirst()
+                await ownerRetirementProbe.releaseLater()
+            }
             let readiness = MCPToolCatalogReadiness(
                 scopePresenceOperation: { requiredNames, scope in
                     await queryProbe.query(requiredNames: requiredNames, scope: scope)
@@ -238,6 +269,9 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
             let firstWaiter = Task {
                 await readiness.awaitReady(windowID: 903, timeout: 0.05)
             }
+            let survivingFirstWaiter = Task {
+                await readiness.awaitReady(windowID: 903, timeout: 5)
+            }
             var lateWaiter: Task<Bool, Never>?
             var thirdWaiter: Task<Bool, Never>?
 
@@ -248,14 +282,15 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                 guard await ownerRetirementProbe.waitUntilFirstEntered(timeout: .seconds(2)) else {
                     throw MCPReadinessTestTimeout(label: "first shared-check retirement owner")
                 }
-                guard await joinedCounter.waitUntilAtLeast(1, timeout: .seconds(2)) else {
-                    throw MCPReadinessTestTimeout(label: "first readiness caller joining the shared check")
+                guard await joinedCounter.waitUntilAtLeast(2, timeout: .seconds(2)) else {
+                    throw MCPReadinessTestTimeout(label: "generation-one readiness callers joining the shared check")
                 }
 
                 let firstResult = try await valueWithin(
                     firstWaiter,
                     timeout: .seconds(2),
-                    label: "first caller deadline"
+                    label: "first caller deadline",
+                    cleanup: releaseAllFixtures
                 )
                 XCTAssertFalse(
                     firstResult,
@@ -272,6 +307,16 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                 guard await retiredCounter.waitUntilAtLeast(1, timeout: .seconds(2)) else {
                     throw MCPReadinessTestTimeout(label: "owner retirement of the first generation")
                 }
+                let survivingFirstResult = try await valueWithin(
+                    survivingFirstWaiter,
+                    timeout: .seconds(2),
+                    label: "surviving generation-one waiter retirement",
+                    cleanup: releaseAllFixtures
+                )
+                XCTAssertFalse(
+                    survivingFirstResult,
+                    "Owner retirement must release a generation-one waiter that has not reached its own deadline."
+                )
 
                 let lateWaiterTask = Task {
                     await readiness.awaitReady(windowID: 903, timeout: 5)
@@ -280,7 +325,7 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                 guard await queryProbe.waitUntilQueryEntered(2, timeout: .seconds(2)) else {
                     throw MCPReadinessTestTimeout(label: "second-generation readiness query")
                 }
-                guard await joinedCounter.waitUntilAtLeast(2, timeout: .seconds(2)) else {
+                guard await joinedCounter.waitUntilAtLeast(3, timeout: .seconds(2)) else {
                     throw MCPReadinessTestTimeout(label: "late readiness caller joining the second generation")
                 }
 
@@ -299,7 +344,7 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                     await readiness.awaitReady(windowID: 903, timeout: 5)
                 }
                 thirdWaiter = thirdWaiterTask
-                guard await joinedCounter.waitUntilAtLeast(3, timeout: .seconds(2)) else {
+                guard await joinedCounter.waitUntilAtLeast(4, timeout: .seconds(2)) else {
                     throw MCPReadinessTestTimeout(label: "third readiness caller joining the second generation")
                 }
                 let queryCountAfterThirdJoin = await queryProbe.queryCountValue()
@@ -332,6 +377,7 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                 )
             } catch {
                 firstWaiter.cancel()
+                survivingFirstWaiter.cancel()
                 lateWaiter?.cancel()
                 thirdWaiter?.cancel()
                 await queryProbe.releaseFirstQuery()
@@ -342,6 +388,11 @@ final class MCPToolCatalogReadinessTests: XCTestCase {
                     firstWaiter,
                     timeout: .seconds(2),
                     label: "retirement cleanup first waiter"
+                )
+                _ = try? await valueWithin(
+                    survivingFirstWaiter,
+                    timeout: .seconds(2),
+                    label: "retirement cleanup surviving first waiter"
                 )
                 if let lateWaiter {
                     _ = try? await valueWithin(
@@ -383,13 +434,14 @@ private struct MCPReadinessTestTimeout: Error, CustomStringConvertible {
     }
 }
 
-private func valueWithin<Value: Sendable>(
-    _ task: Task<Value, Never>,
+private func valueWithin(
+    _ task: Task<Bool, Never>,
     timeout: Duration,
-    label: String
-) async throws -> Value {
-    let resultBox = MCPReadinessTestResultBox<Value>()
-    let valueTask = Task {
+    label: String,
+    cleanup: @escaping @Sendable () async -> Void = {}
+) async throws -> Bool {
+    let resultBox = MCPReadinessTestResultBox()
+    let observerTask = Task {
         let value = await task.value
         await resultBox.resolve(value)
     }
@@ -403,20 +455,30 @@ private func valueWithin<Value: Sendable>(
         await resultBox.timeout()
     }
     let result = await resultBox.wait()
-    valueTask.cancel()
     timeoutTask.cancel()
+    _ = await timeoutTask.value
+
+    // Timeout teardown owns the input: cancel it, then drain it and its observer.
+    // The cleanup hook releases any cancellation-ignoring fixture gates before the input is drained.
+    if result == nil {
+        task.cancel()
+        await cleanup()
+    }
+    _ = await task.value
+    _ = await observerTask.value
+
     guard let result else {
         throw MCPReadinessTestTimeout(label: label)
     }
     return result
 }
 
-private actor MCPReadinessTestResultBox<Value: Sendable> {
+private actor MCPReadinessTestResultBox {
     private var resolved = false
-    private var result: Value?
-    private var continuation: CheckedContinuation<Value?, Never>?
+    private var result: Bool?
+    private var continuation: CheckedContinuation<Bool?, Never>?
 
-    func wait() async -> Value? {
+    func wait() async -> Bool? {
         if resolved {
             return result
         }
@@ -429,7 +491,7 @@ private actor MCPReadinessTestResultBox<Value: Sendable> {
         }
     }
 
-    func resolve(_ result: Value) {
+    func resolve(_ result: Bool) {
         guard !resolved else { return }
         resolved = true
         self.result = result
@@ -445,17 +507,44 @@ private actor MCPReadinessTestResultBox<Value: Sendable> {
     }
 }
 
+private func makeReadinessWatchdog(
+    timeout: Duration,
+    onTimeout: @escaping @Sendable () async -> Void
+) -> Task<Void, Never> {
+    Task {
+        do {
+            try await ContinuousClock().sleep(for: timeout)
+        } catch {
+            return
+        }
+        await onTimeout()
+    }
+}
+
+private func cancelAndDrainReadinessWatchdogs(_ watchdogs: [Task<Void, Never>]) async {
+    watchdogs.forEach { $0.cancel() }
+    for watchdog in watchdogs {
+        _ = await watchdog.value
+    }
+}
+
 private actor MCPReadinessTestGate {
+    private struct EntryWaiter {
+        let continuation: CheckedContinuation<Bool, Never>
+        let watchdog: Task<Void, Never>
+    }
+
     private var hasEntered = false
     private var isOpen = false
-    private var entryWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var entryWaiters: [UUID: EntryWaiter] = [:]
     private var openWaiters: [CheckedContinuation<Void, Never>] = []
 
     func arriveAndWait() async {
         hasEntered = true
-        let entryWaiters = self.entryWaiters.values
-        self.entryWaiters.removeAll()
-        entryWaiters.forEach { $0.resume(returning: true) }
+        let enteredWaiters = Array(entryWaiters.values)
+        entryWaiters.removeAll()
+        await cancelAndDrainReadinessWatchdogs(enteredWaiters.map(\.watchdog))
+        enteredWaiters.forEach { $0.continuation.resume(returning: true) }
 
         guard !isOpen else { return }
         await withCheckedContinuation { continuation in
@@ -478,19 +567,17 @@ private actor MCPReadinessTestGate {
                     continuation.resume(returning: hasEntered)
                     return
                 }
-                entryWaiters[waiterID] = continuation
-                Task { [weak self] in
-                    do {
-                        try await ContinuousClock().sleep(for: timeout)
-                    } catch {
-                        return
-                    }
+                let watchdog = makeReadinessWatchdog(timeout: timeout) { [weak self] in
                     await self?.expireEntryWaiter(waiterID)
                 }
+                entryWaiters[waiterID] = EntryWaiter(
+                    continuation: continuation,
+                    watchdog: watchdog
+                )
             }
         } onCancel: {
             Task { [weak self] in
-                await self?.expireEntryWaiter(waiterID)
+                await self?.cancelEntryWaiter(waiterID)
             }
         }
     }
@@ -498,14 +585,21 @@ private actor MCPReadinessTestGate {
     func release() {
         guard !isOpen else { return }
         isOpen = true
-        let openWaiters = self.openWaiters
+        let openWaiters = openWaiters
         self.openWaiters.removeAll()
         openWaiters.forEach { $0.resume() }
     }
 
     private func expireEntryWaiter(_ waiterID: UUID) {
-        guard let continuation = entryWaiters.removeValue(forKey: waiterID) else { return }
-        continuation.resume(returning: false)
+        guard let waiter = entryWaiters.removeValue(forKey: waiterID) else { return }
+        waiter.continuation.resume(returning: false)
+    }
+
+    private func cancelEntryWaiter(_ waiterID: UUID) async {
+        guard let waiter = entryWaiters.removeValue(forKey: waiterID) else { return }
+        waiter.watchdog.cancel()
+        _ = await waiter.watchdog.value
+        waiter.continuation.resume(returning: false)
     }
 }
 
@@ -513,16 +607,18 @@ private actor MCPReadinessTestCounter {
     private struct Waiter {
         let minimum: Int
         let continuation: CheckedContinuation<Bool, Never>
+        let watchdog: Task<Void, Never>
     }
 
     private var count = 0
     private var waiters: [UUID: Waiter] = [:]
 
-    func increment() {
+    func increment() async {
         count += 1
         let readyWaiters = waiters.filter { $0.value.minimum <= count }
-        readyWaiters.values.forEach { $0.continuation.resume(returning: true) }
         readyWaiters.keys.forEach { waiters.removeValue(forKey: $0) }
+        await cancelAndDrainReadinessWatchdogs(readyWaiters.values.map(\.watchdog))
+        readyWaiters.values.forEach { $0.continuation.resume(returning: true) }
     }
 
     func countValue() -> Int {
@@ -538,25 +634,31 @@ private actor MCPReadinessTestCounter {
                     continuation.resume(returning: count >= minimum)
                     return
                 }
-                waiters[waiterID] = Waiter(minimum: minimum, continuation: continuation)
-                Task { [weak self] in
-                    do {
-                        try await ContinuousClock().sleep(for: timeout)
-                    } catch {
-                        return
-                    }
+                let watchdog = makeReadinessWatchdog(timeout: timeout) { [weak self] in
                     await self?.expire(waiterID)
                 }
+                waiters[waiterID] = Waiter(
+                    minimum: minimum,
+                    continuation: continuation,
+                    watchdog: watchdog
+                )
             }
         } onCancel: {
             Task { [weak self] in
-                await self?.expire(waiterID)
+                await self?.cancelWaiter(waiterID)
             }
         }
     }
 
     private func expire(_ waiterID: UUID) {
         guard let waiter = waiters.removeValue(forKey: waiterID) else { return }
+        waiter.continuation.resume(returning: false)
+    }
+
+    private func cancelWaiter(_ waiterID: UUID) async {
+        guard let waiter = waiters.removeValue(forKey: waiterID) else { return }
+        waiter.watchdog.cancel()
+        _ = await waiter.watchdog.value
         waiter.continuation.resume(returning: false)
     }
 }
@@ -592,11 +694,11 @@ private actor MCPReadinessScopePresenceProbe {
     func waitUntilQueryEntered(_ queryNumber: Int, timeout: Duration) async -> Bool {
         switch queryNumber {
         case 1:
-            return await firstQueryGate.waitUntilEntered(timeout: timeout)
+            await firstQueryGate.waitUntilEntered(timeout: timeout)
         case 2:
-            return await secondQueryGate.waitUntilEntered(timeout: timeout)
+            await secondQueryGate.waitUntilEntered(timeout: timeout)
         default:
-            return false
+            false
         }
     }
 
