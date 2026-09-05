@@ -55,7 +55,7 @@ enum CodexProviderHelpers {
             case let .bundled(target):
                 "Bundled Codex \(runtime.version) (\(target))"
             case .externalOverride:
-                "External Codex override \(runtime.version) (\(runtime.executableURL.lastPathComponent))"
+                "Local Codex \(runtime.version) (\(runtime.executableURL.lastPathComponent))"
             }
         }
     }
@@ -68,7 +68,7 @@ enum CodexProviderHelpers {
     ) -> CodexExecutableResolution {
         _ = additionalPathHints // Kept for source compatibility; PATH fallback is intentionally disabled.
         let injectedOverride = commandName == CLILaunchProfiles.codex.commandName ? nil : commandName
-        switch CodexRuntimeAuthority.resolve(
+        switch CodexRuntimeAuthority.resolveConfigured(
             environment: environment,
             explicitExecutableOverride: injectedOverride
         ) {

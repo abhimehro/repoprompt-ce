@@ -96,8 +96,9 @@ notarization remains enforced by the protected release workflow; if Apple ever
 rejects this policy, stop rather than silently re-signing the upstream payload.
 
 The bundled package is RepoPrompt's default Codex runtime authority; runtime
-selection never falls through to the user's shell `PATH`. Advanced users may set
-one explicit absolute external override with `REPOPROMPT_CODEX_EXECUTABLE`.
+selection never falls through to the user's shell `PATH`. Advanced users may select
+one explicit local executable in Settings or set an absolute override with
+`REPOPROMPT_CODEX_EXECUTABLE`; the Settings choice takes precedence.
 RepoPrompt rejects overrides older than 0.149.0, matching the bundled runtime and
 the documented app-server contract floor. Bundled and external runtimes both use
 RepoPrompt-owned `CODEX_HOME` and `CODEX_SQLITE_HOME` directories under

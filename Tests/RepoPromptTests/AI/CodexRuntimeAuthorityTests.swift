@@ -221,6 +221,52 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
         XCTAssertEqual(runtime.source, .externalOverride)
     }
 
+    func testConfiguredRuntimePrefersAndClearsPersistedExecutable() throws {
+        let suiteName = "CodexRuntimePreferencesTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let selected = temporaryDirectory.appendingPathComponent("selected/codex")
+        let environment = temporaryDirectory.appendingPathComponent("environment/codex")
+        try makeExecutable(at: selected)
+        try makeExecutable(at: environment)
+
+        CodexRuntimePreferences.setSelection(.external(path: "   "), defaults: defaults)
+        XCTAssertEqual(CodexRuntimePreferences.selection(defaults: defaults), .inherited)
+        CodexRuntimePreferences.setSelection(.external(path: "  \(selected.path)  "), defaults: defaults)
+
+        let configured = try CodexRuntimeAuthority.resolveConfigured(
+            environment: [CodexRuntimeAuthority.externalExecutableOverrideEnvironmentKey: environment.path],
+            resourcesURL: nil,
+            applicationSupportURL: temporaryDirectory,
+            defaults: defaults,
+            externalVersionReader: { _ in "codex 0.153.3" }
+        ).get()
+        XCTAssertEqual(configured.executableURL, selected)
+
+        CodexRuntimePreferences.setSelection(.bundled, defaults: defaults)
+        let resources = temporaryDirectory.appendingPathComponent("Resources", isDirectory: true)
+        let bundledExecutable = try makePackage(in: resources, target: "aarch64-apple-darwin")
+        let bundled = try CodexRuntimeAuthority.resolveConfigured(
+            environment: [CodexRuntimeAuthority.externalExecutableOverrideEnvironmentKey: environment.path],
+            resourcesURL: resources,
+            architectureTarget: "aarch64-apple-darwin",
+            applicationSupportURL: temporaryDirectory,
+            defaults: defaults,
+            externalVersionReader: { _ in "codex 0.153.3" }
+        ).get()
+        XCTAssertEqual(bundled.executableURL, bundledExecutable)
+
+        CodexRuntimePreferences.setSelection(.inherited, defaults: defaults)
+        let fallback = try CodexRuntimeAuthority.resolveConfigured(
+            environment: [CodexRuntimeAuthority.externalExecutableOverrideEnvironmentKey: environment.path],
+            resourcesURL: nil,
+            applicationSupportURL: temporaryDirectory,
+            defaults: defaults,
+            externalVersionReader: { _ in "codex 0.153.3" }
+        ).get()
+        XCTAssertEqual(fallback.executableURL, environment)
+    }
+
     func testCodexPreflightUsesCapturedLoginShellOverrideInsteadOfInheritedAppEnvironment() async throws {
         let inheritedOverride = temporaryDirectory.appendingPathComponent("inherited/codex")
         let loginShellOverride = temporaryDirectory.appendingPathComponent("login-shell/codex")
@@ -248,7 +294,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
         XCTAssertEqual(resolution.resolvedCommand, loginShellOverride.path)
         XCTAssertEqual(resolution.runtime?.source, .externalOverride)
         XCTAssertEqual(resolution.runtime?.version, .init(major: 0, minor: 149, patch: 0))
-        XCTAssertEqual(resolution.displayDescription, "External Codex override 0.149.0 (codex)")
+        XCTAssertEqual(resolution.displayDescription, "Local Codex 0.149.0 (codex)")
         XCTAssertFalse(resolution.displayDescription?.contains(temporaryDirectory.path) == true)
 
         let execProcessConfiguration = CodexExecAgentProvider.processConfiguration(

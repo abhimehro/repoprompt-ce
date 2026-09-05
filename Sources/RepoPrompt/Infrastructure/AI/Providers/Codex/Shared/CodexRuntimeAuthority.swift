@@ -2,8 +2,8 @@ import Foundation
 
 /// The single source of truth for RepoPrompt-managed Codex runtime selection and state.
 ///
-/// Production defaults to the verified bundled package for the running architecture. The
-/// only user-configurable external fallback is an absolute path supplied through
+/// Production defaults to the verified bundled package for the running architecture. Advanced
+/// users may explicitly select an absolute executable in Settings or supply one through
 /// `REPOPROMPT_CODEX_EXECUTABLE`; ordinary PATH lookup is intentionally not consulted.
 enum CodexRuntimeAuthority {
     static let bundledVersion = Version(major: 0, minor: 149, patch: 0)
@@ -87,15 +87,15 @@ enum CodexRuntimeAuthority {
             case let .bundledLayoutIncomplete(target, component):
                 "RepoPrompt could not start Codex: the bundled \(target) package is incomplete at `\(component)`. Reinstall RepoPrompt CE."
             case .externalOverrideMustBeAbsolute:
-                "RepoPrompt could not start Codex: \(externalExecutableOverrideEnvironmentKey) must be an absolute executable path. PATH lookup is not used."
+                "RepoPrompt could not start Codex: the local executable configured in Settings or \(externalExecutableOverrideEnvironmentKey) must use an absolute path. PATH lookup is not used."
             case let .externalOverrideMissing(path):
-                "RepoPrompt could not start Codex: the configured external override does not exist at `\(path)`. Fix or remove \(externalExecutableOverrideEnvironmentKey)."
+                "RepoPrompt could not start Codex: the configured local executable does not exist at `\(path)`. Choose another in Settings, or fix/remove \(externalExecutableOverrideEnvironmentKey)."
             case let .externalOverrideNotExecutable(path):
-                "RepoPrompt could not start Codex: the configured external override is not an executable file at `\(path)`. Fix or remove \(externalExecutableOverrideEnvironmentKey)."
+                "RepoPrompt could not start Codex: the configured local executable is not executable at `\(path)`. Choose another in Settings, or fix/remove \(externalExecutableOverrideEnvironmentKey)."
             case let .externalOverrideVersionUnreadable(path):
-                "RepoPrompt could not start Codex: the external override at `\(path)` did not report a compatible Codex version. Version \(minimumExternalVersion) or newer is required by RepoPrompt's app-server contract."
+                "RepoPrompt could not start Codex: the local executable at `\(path)` did not report a compatible Codex version. Version \(minimumExternalVersion) or newer is required by RepoPrompt's app-server contract."
             case let .externalOverrideTooOld(actual, minimum):
-                "RepoPrompt could not start Codex: external override version \(actual) is too old. Version \(minimum) or newer is required by RepoPrompt's app-server contract; update the explicit override or remove \(externalExecutableOverrideEnvironmentKey) to use bundled Codex \(bundledVersion)."
+                "RepoPrompt could not start Codex: local version \(actual) is too old. Version \(minimum) or newer is required by RepoPrompt's app-server contract; update the configured executable or remove it to use bundled Codex \(bundledVersion)."
             }
         }
     }
@@ -321,6 +321,52 @@ enum CodexRuntimeAuthority {
                 source: .bundled(target: architectureTarget),
                 statePaths: state
             )
+        )
+    }
+
+    /// Resolves the production configuration without making persistence part of the pure
+    /// validation path. A call-site override wins, followed by the Settings choice, environment,
+    /// and finally the bundled runtime. An explicitly bundled selection suppresses the legacy
+    /// environment override so the visible choice remains authoritative.
+    static func resolveConfigured(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        resourcesURL: URL? = Bundle.main.resourceURL,
+        architectureTarget: String? = currentArchitectureTarget,
+        applicationSupportURL: URL? = nil,
+        explicitExecutableOverride: String? = nil,
+        defaults: UserDefaults = .standard,
+        externalVersionReader: ((URL) -> String?)? = nil
+    ) -> Result<Runtime, Failure> {
+        if let explicitExecutableOverride {
+            return resolve(
+                environment: environment,
+                resourcesURL: resourcesURL,
+                architectureTarget: architectureTarget,
+                applicationSupportURL: applicationSupportURL,
+                explicitExecutableOverride: explicitExecutableOverride,
+                externalVersionReader: externalVersionReader
+            )
+        }
+
+        var configuredEnvironment = environment
+        let configuredOverride: String?
+        switch CodexRuntimePreferences.selection(defaults: defaults) {
+        case .inherited:
+            configuredOverride = nil
+        case .bundled:
+            configuredEnvironment.removeValue(forKey: externalExecutableOverrideEnvironmentKey)
+            configuredOverride = nil
+        case let .external(path):
+            configuredOverride = path
+        }
+
+        return resolve(
+            environment: configuredEnvironment,
+            resourcesURL: resourcesURL,
+            architectureTarget: architectureTarget,
+            applicationSupportURL: applicationSupportURL,
+            explicitExecutableOverride: configuredOverride,
+            externalVersionReader: externalVersionReader
         )
     }
 

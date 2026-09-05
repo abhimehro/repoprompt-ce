@@ -63,6 +63,7 @@ struct CLIProvidersSettingsView: View {
     @State private var isKimiCodeExpanded: Bool = false
     @State private var isCustomCompatibleExpanded: Bool = false
     @State private var isCodexExpanded: Bool = false
+    @State private var codexRuntimeSelection = CodexRuntimePreferences.selection()
     @State private var isOpenCodeExpanded: Bool = false
     @State private var isCursorExpanded: Bool = false
     @State private var isGrokBuildExpanded: Bool = false
@@ -1556,6 +1557,95 @@ struct CLIProvidersSettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    private var codexRuntimeSelectionControl: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text("Runtime")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Menu {
+                    Button {
+                        setCodexRuntimeSelection(.bundled)
+                    } label: {
+                        if codexRuntimeSelection == .bundled {
+                            Label("Bundled Codex \(CodexRuntimeAuthority.bundledVersion)", systemImage: "checkmark")
+                        } else {
+                            Text("Bundled Codex \(CodexRuntimeAuthority.bundledVersion)")
+                        }
+                    }
+
+                    Button {
+                        setCodexRuntimeSelection(.inherited)
+                    } label: {
+                        let title = "Environment override, otherwise bundled"
+                        if codexRuntimeSelection == .inherited {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
+                    }
+
+                    if case let .external(path) = codexRuntimeSelection {
+                        Button {
+                            setCodexRuntimeSelection(.external(path: path))
+                        } label: {
+                            Label("Local Codex (\(URL(fileURLWithPath: path).lastPathComponent))", systemImage: "checkmark")
+                        }
+                    }
+
+                    Divider()
+
+                    Button("Choose Local Executable…", action: chooseLocalCodexExecutable)
+                } label: {
+                    Text(codexRuntimeSelectionLabel)
+                }
+                .fixedSize()
+
+                Spacer()
+            }
+
+            if let codexSelectedExecutablePath {
+                Text(codexSelectedExecutablePath)
+                    .font(.caption.monospaced())
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .hoverTooltip(codexSelectedExecutablePath)
+            }
+
+            Text("Restart RepoPrompt to apply this choice everywhere; no rebuild is required.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var codexRuntimeSelectionLabel: String {
+        switch codexRuntimeSelection {
+        case .bundled:
+            "Bundled Codex \(CodexRuntimeAuthority.bundledVersion)"
+        case let .external(path):
+            "Local Codex (\(URL(fileURLWithPath: path).lastPathComponent))"
+        case .inherited:
+            "Environment override, otherwise bundled"
+        }
+    }
+
+    private var codexSelectedExecutablePath: String? {
+        switch codexRuntimeSelection {
+        case let .external(path):
+            path
+        case .inherited, .bundled:
+            nil
+        }
+    }
+
+    private func setCodexRuntimeSelection(_ selection: CodexRuntimePreferences.Selection) {
+        CodexRuntimePreferences.setSelection(selection)
+        codexRuntimeSelection = CodexRuntimePreferences.selection()
+    }
+
     private var codexCard: some View {
         providerCard(
             title: "Codex CLI",
@@ -1577,6 +1667,9 @@ struct CLIProvidersSettingsView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                 }
+
+                Divider()
+                codexRuntimeSelectionControl
 
                 if viewModel.isCodexConnected {
                     Divider()
@@ -1722,7 +1815,7 @@ struct CLIProvidersSettingsView: View {
                             .foregroundColor(.red)
                             .fixedSize(horizontal: false, vertical: true)
                         if viewModel.isCodexExecutableUnavailable {
-                            Text("Reinstall RepoPrompt CE, or fix/remove REPOPROMPT_CODEX_EXECUTABLE, then click Connect to check again.")
+                            Text("Choose another runtime above, or fix/remove REPOPROMPT_CODEX_EXECUTABLE, then click Connect to check again.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -2235,6 +2328,21 @@ struct CLIProvidersSettingsView: View {
                 }
             }
         }
+    }
+
+    private func chooseLocalCodexExecutable() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Codex Executable"
+        panel.message = "Select an installed Codex CLI executable. RepoPrompt validates its version before use."
+        panel.prompt = "Choose"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let codexSelectedExecutablePath {
+            panel.directoryURL = URL(fileURLWithPath: codexSelectedExecutablePath).deletingLastPathComponent()
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        setCodexRuntimeSelection(.external(path: url.path))
     }
 
     private func startCodexManagedChatgptLogin() {
