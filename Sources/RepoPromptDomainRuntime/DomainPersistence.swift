@@ -160,6 +160,7 @@ struct DomainPersistenceSavedCommit {
 struct DomainPersistenceDeleteCommit {
     let catalogRevision: UInt64
     let tombstone: DomainDeletionTombstone
+    let artifactCleanupWarnings: [String]
 }
 
 enum DomainPersistenceError: Error, Equatable {
@@ -650,6 +651,8 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
+        requiresMatchingConsolidationLifecycle: Bool = false,
+        requiresMatchingSavedDigest: Bool = true,
         now: Date
     ) async throws -> DomainPersistenceWorkingCommit {
         try await DomainBlockingIO.run { cancellation in
@@ -660,6 +663,8 @@ package struct DomainPersistenceCoordinator {
                 contextRevisions: contextRevisions,
                 contextTombstones: contextTombstones,
                 operations: operations,
+                requiresMatchingConsolidationLifecycle: requiresMatchingConsolidationLifecycle,
+                requiresMatchingSavedDigest: requiresMatchingSavedDigest,
                 now: now
             )
         }
@@ -712,7 +717,8 @@ package struct DomainPersistenceCoordinator {
     func persistConflictRebase(
         document: DomainWorkspaceDocument,
         externalSavedDigest: String,
-        expectedRevision: UInt64,
+        expectedRevisions: DomainRevisionState,
+        newRevisions: DomainRevisionState,
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
@@ -722,7 +728,8 @@ package struct DomainPersistenceCoordinator {
             try blockingWorker(cancellation).persistConflictRebaseBlocking(
                 document: document,
                 externalSavedDigest: externalSavedDigest,
-                expectedRevision: expectedRevision,
+                expectedRevisions: expectedRevisions,
+                newRevisions: newRevisions,
                 contextRevisions: contextRevisions,
                 contextTombstones: contextTombstones,
                 operations: operations,
@@ -908,8 +915,11 @@ package struct DomainPersistenceCoordinator {
             else { return nil }
             return tombstone
         }
+        // The catalog remains deletion authority. When both records exist, prefer the
+        // sidecar's operation outcome because cleanup status is recorded there after the
+        // authoritative catalog tombstone is committed.
         let deletionTombstones = Dictionary(
-            (sidecarTombstones + (catalog?.deletions ?? [])).map { ($0.workspaceID, $0) },
+            ((catalog?.deletions ?? []) + sidecarTombstones).map { ($0.workspaceID, $0) },
             uniquingKeysWith: { _, latest in latest }
         ).values.sorted { $0.workspaceID.uuidString < $1.workspaceID.uuidString }
         let deletedIDs = Set(deletionTombstones.map(\.workspaceID))
@@ -1320,6 +1330,8 @@ package struct DomainPersistenceCoordinator {
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
+        requiresMatchingConsolidationLifecycle: Bool,
+        requiresMatchingSavedDigest: Bool,
         now: Date
     ) throws -> DomainPersistenceWorkingCommit {
         try ensureLazyMigration(now: now)
@@ -1329,6 +1341,13 @@ package struct DomainPersistenceCoordinator {
                 throw DomainPersistenceError.stateConflict(
                     expected: expectedRevision,
                     actual: durable.revisions.workingRevision
+                )
+            }
+            if requiresMatchingConsolidationLifecycle {
+                try requireConsolidationLifecycleMatch(
+                    document: document,
+                    durable: durable,
+                    requiresMatchingSavedDigest: requiresMatchingSavedDigest
                 )
             }
             let journal = DomainWorkingJournal(
@@ -1347,6 +1366,36 @@ package struct DomainPersistenceCoordinator {
             )
             try DomainPersistenceLock.atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
             return DomainPersistenceWorkingCommit(journal: journal, catalogRevision: catalogRevision)
+        }
+    }
+
+    private func requireConsolidationLifecycleMatch(
+        document: DomainWorkspaceDocument,
+        durable: DomainWorkingJournal,
+        requiresMatchingSavedDigest: Bool
+    ) throws {
+        guard let savedBytes = try? Data(contentsOf: document.fileURL),
+              !requiresMatchingSavedDigest
+              || DomainContentDigest.sha256(savedBytes) == durable.savedDigest,
+              let savedDocument = try? DomainWorkspaceDocument.decode(
+                  documentBytes: savedBytes,
+                  fileURL: document.fileURL
+              ),
+              let workingDocument = try? DomainWorkspaceDocument.decode(
+                  documentBytes: durable.workingDocument ?? savedBytes,
+                  fileURL: document.fileURL
+              ),
+              savedDocument.workspaceID == document.workspaceID,
+              workingDocument.workspaceID == document.workspaceID,
+              savedDocument.metadata.consolidatedIntoWorkspaceID
+              == document.metadata.consolidatedIntoWorkspaceID,
+              workingDocument.metadata.consolidatedIntoWorkspaceID
+              == document.metadata.consolidatedIntoWorkspaceID
+        else {
+            throw DomainPersistenceError.stateConflict(
+                expected: durable.revisions.workingRevision,
+                actual: durable.revisions.workingRevision
+            )
         }
     }
 
@@ -1506,7 +1555,8 @@ package struct DomainPersistenceCoordinator {
     private func persistConflictRebaseBlocking(
         document: DomainWorkspaceDocument,
         externalSavedDigest: String,
-        expectedRevision: UInt64,
+        expectedRevisions: DomainRevisionState,
+        newRevisions: DomainRevisionState,
         contextRevisions: [UUID: DomainRevisionState],
         contextTombstones: [UUID: UInt64],
         operations: [DomainRecordedOperation],
@@ -1515,18 +1565,30 @@ package struct DomainPersistenceCoordinator {
         try ensureLazyMigration(now: now)
         return try withExistingWorkspaceLocks(document: document, now: now) { catalogRevision in
             let current = try readCurrentJournalOrSeed(document: document)
-            guard current.revisions.workingRevision == expectedRevision else {
+            guard current.revisions == expectedRevisions else {
                 throw DomainPersistenceError.stateConflict(
-                    expected: expectedRevision,
+                    expected: expectedRevisions.workingRevision,
                     actual: current.revisions.workingRevision
                 )
+            }
+            let keepsRevision = newRevisions == current.revisions
+            let advancesRevision = newRevisions.workingRevision == current.revisions.workingRevision &+ 1
+                && newRevisions.savedRevision == current.revisions.savedRevision
+                && newRevisions.dirtyRevision == newRevisions.workingRevision
+            guard keepsRevision || advancesRevision else {
+                throw DomainPersistenceError.invalidWorkspaceDocument
+            }
+            guard let externalBytes = try? Data(contentsOf: document.fileURL),
+                  DomainContentDigest.sha256(externalBytes) == externalSavedDigest
+            else {
+                throw DomainPersistenceError.externalDocumentConflict
             }
             let journal = DomainWorkingJournal(
                 workspaceID: document.workspaceID,
                 fileURL: document.fileURL,
-                revisions: current.revisions,
+                revisions: newRevisions,
                 savedDigest: externalSavedDigest,
-                workingDocument: document.documentBytes,
+                workingDocument: newRevisions.dirtyRevision == nil ? nil : document.documentBytes,
                 contextRevisions: contextRevisions,
                 contextDigests: Dictionary(uniqueKeysWithValues: document.metadata.contexts.map {
                     ($0.identity.contextID, $0.contentDigest)
@@ -1589,41 +1651,122 @@ package struct DomainPersistenceCoordinator {
                 // Catalog deletion is the crash-safe authority point. The sidecar and artifact
                 // cleanup follow while both identity and workspace locks remain held.
                 try DomainPersistenceLock.atomicWrite(encoder.encode(next), to: catalogURL)
+                var artifactCleanupWarnings = [String]()
                 // The catalog embeds the full tombstone. Its sidecar is a recoverable
                 // convenience and cannot turn an already-authoritative delete into failure.
-                try? DomainPersistenceLock.atomicWrite(
-                    try encoder.encode(tombstone),
-                    to: deletionURL(document.workspaceID)
-                )
-                try? fileManager.removeItem(at: journalURL(document.workspaceID))
-                try? fileManager.removeItem(at: revisionURL(document.workspaceID))
-                try? fileManager.removeItem(at: document.fileURL)
-                finalizeDeletedWorkspaceArtifacts(document)
+                do {
+                    try DomainPersistenceLock.atomicWrite(
+                        encoder.encode(tombstone),
+                        to: deletionURL(document.workspaceID)
+                    )
+                } catch {
+                    artifactCleanupWarnings.append("deletion sidecar: \(error.localizedDescription)")
+                }
+                if let warning = removeDeletedArtifact(
+                    at: journalURL(document.workspaceID),
+                    label: "working journal"
+                ) {
+                    artifactCleanupWarnings.append(warning)
+                }
+                if let warning = removeDeletedArtifact(
+                    at: revisionURL(document.workspaceID),
+                    label: "revision sidecar"
+                ) {
+                    artifactCleanupWarnings.append(warning)
+                }
+                if let warning = removeDeletedArtifact(
+                    at: document.fileURL,
+                    label: "workspace document"
+                ) {
+                    artifactCleanupWarnings.append(warning)
+                }
+                artifactCleanupWarnings.append(contentsOf: finalizeDeletedWorkspaceArtifacts(document))
+
+                var recordedTombstone = tombstone
+                if !artifactCleanupWarnings.isEmpty {
+                    recordedTombstone = tombstoneRecordingCleanupWarnings(
+                        tombstone,
+                        warnings: artifactCleanupWarnings
+                    )
+                    do {
+                        try DomainPersistenceLock.atomicWrite(
+                            encoder.encode(recordedTombstone),
+                            to: deletionURL(document.workspaceID)
+                        )
+                    } catch {
+                        artifactCleanupWarnings.append("cleanup status sidecar: \(error.localizedDescription)")
+                        recordedTombstone = tombstoneRecordingCleanupWarnings(
+                            tombstone,
+                            warnings: artifactCleanupWarnings
+                        )
+                    }
+                }
                 return DomainPersistenceDeleteCommit(
                     catalogRevision: next.revision,
-                    tombstone: tombstone
+                    tombstone: recordedTombstone,
+                    artifactCleanupWarnings: artifactCleanupWarnings
                 )
             }
         }
     }
 
-    private func finalizeDeletedWorkspaceArtifacts(_ document: DomainWorkspaceDocument) {
+    private func tombstoneRecordingCleanupWarnings(
+        _ tombstone: DomainDeletionTombstone,
+        warnings: [String]
+    ) -> DomainDeletionTombstone {
+        let operation = tombstone.operation
+        let outcome = DomainCommandOutcome(
+            operationID: operation.operationID,
+            disposition: operation.disposition,
+            before: operation.before,
+            after: operation.after,
+            catalogRevision: operation.catalogRevision,
+            resultingDigest: operation.resultingDigest,
+            errorCode: operation.errorCode,
+            diagnostic: "artifact_cleanup_incomplete: \(warnings.joined(separator: "; "))"
+        )
+        return DomainDeletionTombstone(
+            workspaceID: tombstone.workspaceID,
+            fileURL: tombstone.fileURL,
+            operation: DomainRecordedOperation(
+                fingerprint: operation.fingerprint,
+                recordedAt: operation.recordedAt,
+                outcome: outcome
+            ),
+            deletedAt: tombstone.deletedAt
+        )
+    }
+
+    private func finalizeDeletedWorkspaceArtifacts(_ document: DomainWorkspaceDocument) -> [String] {
         let fileURL = document.fileURL.standardizedFileURL
-        guard fileURL.lastPathComponent == "workspace.json" else { return }
+        guard fileURL.lastPathComponent == "workspace.json" else { return [] }
         let workspaceDirectory = fileURL.deletingLastPathComponent()
         if document.metadata.customStoragePath != nil {
-            try? fileManager.removeItem(
-                at: workspaceDirectory.appendingPathComponent("_git_data", isDirectory: true)
-            )
-            return
+            return removeDeletedArtifact(
+                at: workspaceDirectory.appendingPathComponent("_git_data", isDirectory: true),
+                label: "workspace git-data directory"
+            ).map { [$0] } ?? []
         }
 
         let expectedParent = workspaceRoot.standardizedFileURL
         let identitySuffix = "-\(document.workspaceID.uuidString)"
         guard workspaceDirectory.deletingLastPathComponent().standardizedFileURL == expectedParent,
               workspaceDirectory.lastPathComponent.hasSuffix(identitySuffix)
-        else { return }
-        try? fileManager.removeItem(at: workspaceDirectory)
+        else { return [] }
+        return removeDeletedArtifact(
+            at: workspaceDirectory,
+            label: "workspace artifact directory"
+        ).map { [$0] } ?? []
+    }
+
+    private func removeDeletedArtifact(at url: URL, label: String) -> String? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        do {
+            try fileManager.removeItem(at: url)
+            return nil
+        } catch {
+            return "\(label): \(error.localizedDescription)"
+        }
     }
 
     private func externalDocumentBlocking(

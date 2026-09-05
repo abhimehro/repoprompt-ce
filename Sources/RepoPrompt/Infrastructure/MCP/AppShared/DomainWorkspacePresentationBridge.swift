@@ -11,6 +11,19 @@ struct DomainWorkspaceSaveOperationIDs {
     }
 }
 
+struct DomainWorkspaceFailClosedSaveOutcome {
+    let working: DomainCommandOutcome?
+    let saved: DomainCommandOutcome?
+
+    var finalOutcome: DomainCommandOutcome? {
+        saved ?? working
+    }
+
+    var workingCommitted: Bool {
+        working?.isSuccessfulDomainMutation == true
+    }
+}
+
 /// Revisioned app-process client for the runtime-owned workspace/context authority.
 /// It is the only production persistence dependency injected into a workspace manager.
 struct DomainWorkspaceAuthorityClient {
@@ -19,6 +32,10 @@ struct DomainWorkspaceAuthorityClient {
 
     func snapshot() async -> DomainWorkspaceCatalogSnapshot {
         await store.snapshot()
+    }
+
+    func canonicalWorkspaceSnapshot(_ workspaceID: UUID) async -> DomainWorkspaceSnapshot? {
+        await store.canonicalWorkspaceSnapshot(workspaceID)
     }
 
     /// Awaited read-registration seam for current app state. Unlike create/replace/save, this is
@@ -98,6 +115,50 @@ struct DomainWorkspaceAuthorityClient {
         ))
     }
 
+    /// Saves one exact captured document without replaying or rebasing it after any durable or
+    /// external conflict. Used by operations whose preflight authority must remain their authority.
+    func saveFailClosed(
+        _ workspace: WorkspaceModel,
+        fileURL: URL,
+        expectedWorkspaceRevision: UInt64,
+        expectedContentDigest: String,
+        operationIDs: DomainWorkspaceSaveOperationIDs = .init()
+    ) async throws -> DomainWorkspaceFailClosedSaveOutcome {
+        let document = try document(for: workspace, fileURL: fileURL)
+        var saveRevision = expectedWorkspaceRevision
+        var workingOutcome: DomainCommandOutcome?
+        if document.contentDigest != expectedContentDigest {
+            let working = await executeStable(.init(
+                operationID: operationIDs.working,
+                expectedWorkspaceRevision: expectedWorkspaceRevision,
+                conflictRecoveryPolicy: .failClosed,
+                origin: .appPresentation(windowID: windowID),
+                command: .replaceWorkingDocument(document)
+            ))
+            workingOutcome = working
+            guard working.isSuccessfulDomainMutation else {
+                return DomainWorkspaceFailClosedSaveOutcome(
+                    working: working,
+                    saved: nil
+                )
+            }
+            saveRevision = working.after?.workingRevision
+                ?? working.workspace?.revisions.workingRevision
+                ?? saveRevision
+        }
+        let saved = await executeStable(.init(
+            operationID: operationIDs.saved,
+            expectedWorkspaceRevision: saveRevision,
+            conflictRecoveryPolicy: .failClosed,
+            origin: .appPresentation(windowID: windowID),
+            command: .saveWorkspaceDocument(workspaceID: workspace.id)
+        ))
+        return DomainWorkspaceFailClosedSaveOutcome(
+            working: workingOutcome,
+            saved: saved
+        )
+    }
+
     func delete(
         workspaceID: UUID,
         expectedCatalogRevision: UInt64?,
@@ -110,23 +171,6 @@ struct DomainWorkspaceAuthorityClient {
             expectedWorkspaceRevision: expectedWorkspaceRevision,
             origin: .appPresentation(windowID: windowID),
             command: .deleteWorkspace(workspaceID: workspaceID)
-        ))
-    }
-
-    func resolveConflict(
-        workspaceID: UUID,
-        acceptExternal: Bool,
-        expectedWorkspaceRevision: UInt64?,
-        operationID: UUID = UUID()
-    ) async -> DomainCommandOutcome {
-        await executeStable(.init(
-            operationID: operationID,
-            expectedWorkspaceRevision: expectedWorkspaceRevision,
-            origin: .appPresentation(windowID: windowID),
-            command: .resolveExternalConflict(
-                workspaceID: workspaceID,
-                acceptExternal: acceptExternal
-            )
         ))
     }
 
@@ -170,6 +214,7 @@ final class DomainWorkspacePresentationBridge {
     private var subscriptionTask: Task<Void, Never>?
     private var lastPublicationSequence: UInt64 = 0
     private var projectedDigests: [UUID: String] = [:]
+    private var projectedHealth: [UUID: DomainAuthorityHealth] = [:]
     private var projectedModels: [UUID: WorkspaceModel] = [:]
 
     init(workspaceManager: WorkspaceManagerViewModel, client: DomainWorkspaceAuthorityClient) {
@@ -185,6 +230,7 @@ final class DomainWorkspacePresentationBridge {
         subscriptionTask?.cancel()
         subscriptionTask = nil
         projectedDigests.removeAll(keepingCapacity: false)
+        projectedHealth.removeAll(keepingCapacity: false)
         projectedModels.removeAll(keepingCapacity: false)
     }
 
@@ -208,6 +254,10 @@ final class DomainWorkspacePresentationBridge {
                 }
             } while clock.now < deadline
             return lastPublicationSequence >= publicationSequence
+        }
+
+        func suppressSelfEchoForTesting(_ event: DomainWorkspaceEvent) async -> Bool {
+            await suppressSelfEcho(for: event)
         }
     #endif
 
@@ -258,7 +308,7 @@ final class DomainWorkspacePresentationBridge {
         let snapshot = await client.snapshot()
         project(
             snapshot,
-            force: gap || event.kind == .externalReloaded || event.kind == .degraded
+            force: gap || event.kind == .externalReloaded
         )
     }
 
@@ -276,16 +326,23 @@ final class DomainWorkspacePresentationBridge {
               let workspaceID = event.workspaceID,
               projectedModels[workspaceID] != nil
         else { return false }
-        guard let workspace = await client.store.workspaceSnapshot(workspaceID),
+        guard let workspace = await client.canonicalWorkspaceSnapshot(workspaceID),
               workspace.health.acceptsMutations,
               let model = workspaceManager?.workspace(withID: workspaceID)
         else { return false }
+        // A same-window commit can be accepted just before a newer local edit is captured. Keep the
+        // local model in both the manager and bridge cache: advancing the baseline below lets the
+        // newer edit commit from the accepted revision, and explicit failed-save reconciliation
+        // remains responsible for authoritative replacement when a two-phase cleanup save does not
+        // complete. The outcome does not depend on re-encoding the model to compare digests.
         projectedModels[workspaceID] = model
         projectedDigests[workspaceID] = workspace.document.contentDigest
+        projectedHealth[workspaceID] = workspace.health
         workspaceManager?.applyDomainAuthorityBaseline(
             workspaceID: workspaceID,
             revisions: workspace.revisions,
             digest: workspace.document.contentDigest,
+            health: workspace.health,
             catalogRevision: event.catalogRevision
         )
         lastPublicationSequence = event.sequence
@@ -299,22 +356,32 @@ final class DomainWorkspacePresentationBridge {
         let nextDigests = Dictionary(uniqueKeysWithValues: snapshot.workspaces.map {
             ($0.document.workspaceID, $0.document.contentDigest)
         })
+        let nextHealth = Dictionary(uniqueKeysWithValues: snapshot.workspaces.map {
+            ($0.document.workspaceID, $0.health)
+        })
+        let revisions = Dictionary(uniqueKeysWithValues: snapshot.workspaces.map {
+            ($0.document.workspaceID, $0.revisions)
+        })
         let changedIDs = Set(snapshot.workspaces.compactMap { workspace -> UUID? in
             projectedDigests[workspace.document.workspaceID] == workspace.document.contentDigest
                 ? nil
                 : workspace.document.workspaceID
         })
         let removedIDs = Set(projectedModels.keys).subtracting(nextDigests.keys)
-        guard force || !changedIDs.isEmpty || !removedIDs.isEmpty else {
-            for workspace in snapshot.workspaces {
-                workspaceManager?.applyDomainAuthorityBaseline(
-                    workspaceID: workspace.document.workspaceID,
-                    revisions: workspace.revisions,
-                    digest: workspace.document.contentDigest,
-                    catalogRevision: snapshot.catalogRevision
-                )
-            }
+        let requiresModelProjection = !changedIDs.isEmpty
+            || !removedIDs.isEmpty
+            || (force && projectedModels.isEmpty && !snapshot.workspaces.isEmpty)
+        guard requiresModelProjection else {
+            projectedDigests = nextDigests
+            projectedHealth = nextHealth
             lastPublicationSequence = snapshot.publicationSequence
+            workspaceManager?.applyDomainAuthorityMetadataProjection(
+                revisionsByWorkspaceID: revisions,
+                digestsByWorkspaceID: nextDigests,
+                healthByWorkspaceID: nextHealth,
+                catalogRevision: snapshot.catalogRevision,
+                publicationSequence: snapshot.publicationSequence
+            )
             return
         }
 
@@ -343,16 +410,16 @@ final class DomainWorkspacePresentationBridge {
         }
         projectedModels = nextModels
         projectedDigests = nextDigests
+        projectedHealth = nextHealth
         lastPublicationSequence = snapshot.publicationSequence
         workspaceManager?.applyDomainWorkspaceProjection(
             decoded,
             fileURLsByWorkspaceID: Dictionary(uniqueKeysWithValues: snapshot.workspaces.map {
                 ($0.document.workspaceID, $0.document.fileURL)
             }),
-            revisionsByWorkspaceID: Dictionary(uniqueKeysWithValues: snapshot.workspaces.map {
-                ($0.document.workspaceID, $0.revisions)
-            }),
+            revisionsByWorkspaceID: revisions,
             digestsByWorkspaceID: nextDigests,
+            healthByWorkspaceID: nextHealth,
             catalogRevision: snapshot.catalogRevision,
             preferredActiveWorkspaceID: workspaceManager?.activeWorkspaceID,
             publicationSequence: snapshot.publicationSequence
