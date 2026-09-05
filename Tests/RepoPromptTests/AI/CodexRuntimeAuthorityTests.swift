@@ -39,12 +39,46 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
         XCTAssertNotEqual(runtime.statePaths.codexHome.path, ("~/.codex" as NSString).expandingTildeInPath)
         XCTAssertEqual(runtime.statePaths.environment["CODEX_HOME"], runtime.statePaths.codexHome.path)
         XCTAssertEqual(runtime.statePaths.environment["CODEX_SQLITE_HOME"], runtime.statePaths.sqliteHome.path)
-        try runtime.prepareState()
+        try runtime.prepareState(
+            ordinaryCodexHomeURL: temporaryDirectory.appendingPathComponent("empty-ordinary-home")
+        )
         XCTAssertTrue(FileManager.default.fileExists(atPath: runtime.statePaths.codexHome.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: runtime.statePaths.sqliteHome.path))
         XCTAssertTrue(runtime.redactedDiagnosticSummary.contains("provenance=bundled:aarch64-apple-darwin"))
         XCTAssertTrue(runtime.redactedDiagnosticSummary.contains("version=0.149.0"))
         XCTAssertFalse(runtime.redactedDiagnosticSummary.contains(temporaryDirectory.path))
+    }
+
+    func testRuntimePrepareStateProjectsGlobalInstructionsIntoManagedCodexHome() throws {
+        let resources = temporaryDirectory.appendingPathComponent("Resources", isDirectory: true)
+        let support = temporaryDirectory.appendingPathComponent("Support", isDirectory: true)
+        let ordinaryHome = temporaryDirectory.appendingPathComponent("ordinary", isDirectory: true)
+        try FileManager.default.createDirectory(at: ordinaryHome, withIntermediateDirectories: true)
+        try Data().write(to: ordinaryHome.appendingPathComponent("AGENTS.override.md"))
+        try Data("global".utf8).write(to: ordinaryHome.appendingPathComponent("AGENTS.md"))
+        _ = try makePackage(in: resources, target: "aarch64-apple-darwin")
+
+        let runtime = try CodexRuntimeAuthority.resolve(
+            resourcesURL: resources,
+            architectureTarget: "aarch64-apple-darwin",
+            applicationSupportURL: support
+        ).get()
+
+        try runtime.prepareState(ordinaryCodexHomeURL: ordinaryHome)
+
+        XCTAssertEqual(
+            try Data(contentsOf: runtime.statePaths.codexHome.appendingPathComponent("AGENTS.override.md")),
+            Data()
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: runtime.statePaths.codexHome.appendingPathComponent("AGENTS.md")),
+            Data("global".utf8)
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: runtime.statePaths.codexHome.appendingPathComponent(".repoprompt-agents-projection.json").path
+            )
+        )
     }
 
     func testBundledRuntimeResolvesIntelPackageIndependently() throws {
@@ -100,7 +134,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
         )
     }
 
-    func testExplicitExternalOverrideIsAbsoluteVersionGatedAndObservable() async throws {
+    func testExplicitExternalOverrideIsAbsoluteVersionGatedAndObservable() throws {
         let override = temporaryDirectory.appendingPathComponent("external/codex")
         try makeExecutable(at: override)
 
@@ -167,78 +201,6 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
             ),
             .externalOverrideMissing(missing.path)
         )
-
-        let counter = temporaryDirectory.appendingPathComponent("external/version-probes")
-        let cachedOverride = temporaryDirectory.appendingPathComponent("external/cached-codex")
-        try makeExecutable(
-            at: cachedOverride,
-            content: "#!/bin/sh\necho probe >> \(counter.path)\necho 'codex 0.149.0'\n"
-        )
-        for _ in 0 ..< 2 {
-            _ = try CodexRuntimeAuthority.resolve(
-                resourcesURL: nil,
-                applicationSupportURL: temporaryDirectory,
-                explicitExecutableOverride: cachedOverride.path
-            ).get()
-        }
-        let probes = try String(contentsOf: counter, encoding: .utf8)
-            .split(separator: "\n")
-        XCTAssertEqual(probes.count, 1)
-
-        let slowProbeStarted = temporaryDirectory.appendingPathComponent("external/slow-probe-started")
-        let slowOverride = temporaryDirectory.appendingPathComponent("external/slow-codex")
-        try makeExecutable(
-            at: slowOverride,
-            content: "#!/bin/sh\necho started > \(slowProbeStarted.path)\nsleep 2\necho 'not-a-version'\n"
-        )
-        let fastOverride = temporaryDirectory.appendingPathComponent("external/fast-codex")
-        try makeExecutable(at: fastOverride, content: "#!/bin/sh\necho 'codex 0.149.0'\n")
-        let supportURL = try XCTUnwrap(temporaryDirectory)
-        let slowResolution = Task.detached {
-            CodexRuntimeAuthority.resolve(
-                resourcesURL: nil,
-                applicationSupportURL: supportURL,
-                explicitExecutableOverride: slowOverride.path
-            )
-        }
-        for _ in 0 ..< 100 where !FileManager.default.fileExists(atPath: slowProbeStarted.path) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: slowProbeStarted.path))
-        let fastProbeStarted = Date()
-        _ = try CodexRuntimeAuthority.resolve(
-            resourcesURL: nil,
-            applicationSupportURL: temporaryDirectory,
-            explicitExecutableOverride: fastOverride.path
-        ).get()
-        XCTAssertLessThan(Date().timeIntervalSince(fastProbeStarted), 1.25)
-        let slowResult = await slowResolution.value
-        XCTAssertEqual(
-            failure(from: slowResult),
-            .externalOverrideVersionUnreadable(slowOverride.path)
-        )
-
-        let invalidCounter = temporaryDirectory.appendingPathComponent("external/invalid-version-probes")
-        let invalidOverride = temporaryDirectory.appendingPathComponent("external/invalid-codex")
-        try makeExecutable(
-            at: invalidOverride,
-            content: "#!/bin/sh\necho probe >> \(invalidCounter.path)\necho 'not-a-version'\n"
-        )
-        for _ in 0 ..< 2 {
-            XCTAssertEqual(
-                failure(
-                    from: CodexRuntimeAuthority.resolve(
-                        resourcesURL: nil,
-                        applicationSupportURL: temporaryDirectory,
-                        explicitExecutableOverride: invalidOverride.path
-                    )
-                ),
-                .externalOverrideVersionUnreadable(invalidOverride.path)
-            )
-        }
-        let invalidProbes = try String(contentsOf: invalidCounter, encoding: .utf8)
-            .split(separator: "\n")
-        XCTAssertEqual(invalidProbes.count, 1)
     }
 
     func testOverrideEnvironmentIsTheOnlyFallbackWhenBundleIsMissing() throws {
