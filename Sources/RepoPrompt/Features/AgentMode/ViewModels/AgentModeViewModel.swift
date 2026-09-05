@@ -271,6 +271,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     @Published var pendingTaggedFileAttachments: [AgentTaggedFileAttachment] = []
     @Published var draftRestorationEvent: DraftRestorationEvent? = nil
     @Published private(set) var codexDynamicModels: [CodexAppServerClient.RemoteModel] = []
+    /// Pre-computed collapsed Codex model options. Rebuilt whenever `codexDynamicModels`
+    /// changes so the expensive collapse/regex work never runs on the SwiftUI render path.
+    private(set) var cachedCollapsedCodexOptions: [AgentModelOption] = []
     @Published private(set) var acpDynamicModelRevision: Int = 0
     @Published private(set) var availableAgents: [AgentProviderKind] = AgentModelCatalog.selectableAgents(availability: .none)
 
@@ -707,7 +710,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         var test_sidebarListProjectionBuildCount = 0
         private var test_afterMCPStoreEpochBegan: (@MainActor () async -> Void)?
         private var test_afterDurableChildTabCreation: (@MainActor () async -> Void)?
-        private var test_composeTabRemovalTeardownObserver: (@MainActor (UUID) -> Void)?
+        private var test_composeTabRemovalTeardownObserver: (@MainActor (UUID) async -> Void)?
         private var test_terminalPublicationOverride: ((
             AgentRunTerminalCommitRevision,
             AgentRunEpochTransitionKind?,
@@ -757,7 +760,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             }
         }
 
-        func test_setComposeTabRemovalTeardownObserver(_ observer: @escaping @MainActor (UUID) -> Void) {
+        func test_setComposeTabRemovalTeardownObserver(_ observer: @escaping @MainActor (UUID) async -> Void) {
             test_composeTabRemovalTeardownObserver = observer
         }
 
@@ -1216,12 +1219,22 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     func reasoningEffortOptionsForCurrentSelection() -> [CodexReasoningEffort] {
-        codexCoordinator.reasoningEffortOptions(forModelRaw: selectedModelRaw, agentKind: selectedAgent)
+        codexCoordinator.reasoningEffortOptions(
+            forModelRaw: selectedModelRaw,
+            agentKind: selectedAgent,
+            precomputedOptions: cachedCollapsedCodexOptions.isEmpty ? nil : cachedCollapsedCodexOptions
+        )
     }
 
     func updateCodexDynamicModels(_ models: [CodexAppServerClient.RemoteModel]) {
         if codexDynamicModels != models {
             codexDynamicModels = models
+            // Rebuild the collapsed option cache eagerly (off the render path) so
+            // that reasoningEffortOptionsForCurrentSelection() is cheap in SwiftUI bodies.
+            cachedCollapsedCodexOptions = codexCoordinator.modelOptions(
+                for: .codexExec,
+                codexDynamicModels: models
+            )
             syncComposerUIState()
         }
         // Note: Registry updates are owned exclusively by CodexModelPollingService.
@@ -1649,7 +1662,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             }
             return FileManager.default.temporaryDirectory
         }
-        let codexControllerFactory: CodexAgentModeCoordinator.CodexControllerFactory = { runID, tabID, windowID, workspacePaths, permissionProfile, _, computerUseEnabled in
+        let providerBindingService = AgentModeProviderBindingService()
+        let codexControllerFactory: CodexAgentModeCoordinator.CodexControllerFactory = { runID, tabID, windowID, workspacePaths, permissionProfile, _, computerUseEnabled, capabilities in
             let client = CodexAppServerClient(provisionsRepoPromptMCPOnStart: false)
             let options = CodexNativeSessionController.Options.agentModeDefault(
                 approvalPolicyProvider: { permissionProfile.codexApprovalPolicy },
@@ -1657,6 +1671,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 approvalReviewerProvider: { permissionProfile.codexApprovalReviewer },
                 shellToolEnabled: permissionProfile.codexBashToolEnabled(),
                 suppressThirdPartyMCPServers: permissionProfile.codexSuppressesThirdPartyMCPServers,
+                capabilitiesProvider: { capabilities },
                 goalSupportEnabledProvider: { CodexGoalSupport.isEnabled },
                 reasoningSummariesEnabledProvider: { CodexReasoningSummaries.isEnabled },
                 memoriesEnabledProvider: { CodexMemories.isEnabled },
@@ -1720,6 +1735,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             codexControllerFactory: codexControllerFactory,
             connectionPolicyInstaller: connectionPolicyInstaller,
             shouldManageCodexTooling: true,
+            codexCapabilitiesForLaunch: { isMCPRelated in
+                providerBindingService.codexCapabilitiesForLaunch(isMCPRelated: isMCPRelated)
+            },
+            codexHookApprovalSettings: GlobalSettingsStore.shared,
             activeToolQuery: { [weak mcpServer] runID in
                 mcpServer?.hasActiveToolExecutions(runID: runID) ?? false
             },
@@ -1753,7 +1772,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             codexCoordinator: codexCoordinator,
             claudeCoordinator: claudeCoordinator
         )
-        providerBindingService = AgentModeProviderBindingService()
+        self.providerBindingService = providerBindingService
         codexCoordinator.setActiveAgentRunWaitDrain { [weak self] runID, runAttemptID, source, steeringMessage in
             guard let self, let mcpServer = self.mcpServer else { return true }
             return await mcpServer.wakeAndDrainAgentRunWaitersOwnedByActiveRun(
@@ -1855,6 +1874,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             testMCPServer: MCPServerViewModel? = nil,
             testWorkspaceFileContextStore: WorkspaceFileContextStore? = nil,
             testCodexActiveToolQuery: CodexActiveToolQuery? = nil,
+            testCodexManagedAuthRecovery: (any CodexManagedAuthRecovering)? = nil,
+            testCodexHookApprovalSettingsProvider: (any CodexHookApprovalSettingsProviding)? = nil,
+            testCodexCapabilitiesForLaunch: @escaping (_ isMCPRelated: Bool) -> CodexCapabilitySettings = { _ in .disabled },
             testCodexActiveAgentRunWaitQuery: CodexAgentRunWaitQuery? = nil,
             testCodexActiveAgentRunWaitDrain: CodexAgentRunWaitDrain? = nil,
             testCodexLeaseRoutingTimeoutMs: Int? = nil,
@@ -1884,7 +1906,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 Self.makeSessionWorkspaceProviders(fallbackWorkspacePath: codexWorkspacePathProvider)
             workspacePathProvider = codexWorkspacePathProvider
             let codexControllerFactory: CodexAgentModeCoordinator.CodexControllerFactory = codexControllerFactoryWithComputerUse
-                ?? { runID, tabID, windowID, workspacePaths, permissionProfile, taskLabelKind, _ in
+                ?? { runID, tabID, windowID, workspacePaths, permissionProfile, taskLabelKind, _, _ in
                     codexControllerFactory(runID, tabID, windowID, workspacePaths, permissionProfile, taskLabelKind)
                 }
             self.headlessProviderFactory = headlessProviderFactory
@@ -1915,6 +1937,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 codexControllerFactory: codexControllerFactory,
                 connectionPolicyInstaller: connectionPolicyInstaller,
                 shouldManageCodexTooling: shouldManageCodexTooling,
+                codexCapabilitiesForLaunch: testCodexCapabilitiesForLaunch,
+                authRecovery: testCodexManagedAuthRecovery ?? CodexManagedAuthRecoveryService.shared,
+                codexHookApprovalSettings: testCodexHookApprovalSettingsProvider ?? GlobalSettingsStore.shared,
                 activeToolQuery: testCodexActiveToolQuery
                     ?? { [weak testMCPServer] runID in
                         testMCPServer?.hasActiveToolExecutions(runID: runID) ?? false
@@ -2934,6 +2959,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         if session.mcpControlContext != nil { return true }
         if session.hasPendingQuestionUI { return true }
         if session.pendingApproval != nil { return true }
+        if session.hasPendingCodexHookReviewWait { return true }
         if session.pendingPermissionsRequest != nil { return true }
         if session.pendingMCPElicitationRequest != nil { return true }
         if session.pendingApplyEditsReview != nil { return true }
@@ -4007,7 +4033,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     func reconcileInteractiveRunState(_ session: TabSession) {
-        let nextState: AgentSessionRunState? = if session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.pendingApproval != nil || session.pendingPermissionsRequest != nil || session.pendingMCPElicitationRequest != nil {
+        let nextState: AgentSessionRunState? = if session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.pendingApproval != nil || session.hasPendingCodexHookReviewRequest || session.pendingPermissionsRequest != nil || session.pendingMCPElicitationRequest != nil {
             .waitingForApproval
         } else if session.hasPendingQuestionUI {
             .waitingForQuestion
@@ -5110,6 +5136,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         session.pendingAskUser = nil
         session.pendingUserInputRequest = nil
         session.pendingApproval = nil
+        if session.hasActiveCodexHookGateOperation {
+            session.resetCodexHookGateBinding()
+        }
         session.pendingPermissionsRequest = nil
         session.pendingMCPElicitationRequest = nil
         session.pendingApplyEditsReview = nil
@@ -5149,6 +5178,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             session.$pendingAskUser.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingUserInputRequest.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingApproval.map { _ in () }.eraseToAnyPublisher(),
+            session.$pendingCodexHookReview.map { _ in () }.eraseToAnyPublisher(),
+            session.$codexHookGateAudit.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingPermissionsRequest.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingMCPElicitationRequest.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingApplyEditsReview.map { _ in () }.eraseToAnyPublisher(),
@@ -5869,6 +5900,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             statusText: resolvedStatusText,
             latestAssistantPreview: mcpResolvedAssistantPreview(session: session, status: status),
             interaction: interaction,
+            hookGate: session.codexHookGateAudit.map { AgentRunMCPSnapshot.HookGate(audit: $0) },
             transcriptItemCount: transcriptItemCount,
             updatedAt: Date(),
             parentSessionID: session.parentSessionID,
@@ -5912,7 +5944,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     private func mcpCanonicalApprovalResponse(from payload: MCPInteractionResponsePayload) throws -> String {
-        if payload.containsDecisionArgument {
+        if payload.containsArgument("decision") {
             throw MCPError.invalidParams(
                 "decision is not a supported field for agent_run op=respond. For approval interactions, use the top-level scalar response field, for example response=\"accept\". No response was applied."
             )
@@ -5938,7 +5970,152 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
     }
 
+    private enum MCPCodexHookAction: String {
+        case approveSelected = "approve_selected"
+        case trustAll = "trust_all"
+        case continueWithoutHooks = "continue_without_hooks"
+        case retry
+
+        var option: AgentRunMCPSnapshot.Interaction.Option {
+            switch self {
+            case .approveSelected:
+                .init(label: rawValue, description: "Trust only the hook_keys answer and continue")
+            case .trustAll:
+                .init(label: rawValue, description: "Trust every hook shown and continue")
+            case .continueWithoutHooks:
+                .init(
+                    label: rawValue,
+                    description: "Continue this Codex session without enabling the shown project hooks"
+                )
+            case .retry:
+                .init(label: rawValue, description: "Retry project-hook discovery")
+            }
+        }
+    }
+
+    private func mcpCodexHookDecisionOptions(
+        for request: AgentCodexHookReviewRequest,
+        strictModeEnabled: Bool
+    ) -> [AgentRunMCPSnapshot.Interaction.Option] {
+        var actions = [MCPCodexHookAction]()
+        if request.phase.allowsTrustDecision {
+            actions.append(contentsOf: [.approveSelected, .trustAll])
+        }
+        if request.phase.allowsDiscoveryRetry {
+            actions.append(.retry)
+        }
+        if request.phase.allowsContinueWithoutHooks, !strictModeEnabled {
+            actions.append(.continueWithoutHooks)
+        }
+        return actions.map(\.option)
+    }
+
+    private func mcpCodexHookInteraction(
+        for request: AgentCodexHookReviewRequest,
+        strictModeEnabled: Bool
+    ) -> AgentRunMCPSnapshot.Interaction {
+        var details: [AgentRunMCPSnapshot.Interaction.Detail] = [
+            .init(label: "Execution Directory", value: request.executionCWD, isCode: true),
+            .init(label: "Phase", value: request.phase.rawValue, isCode: false)
+        ]
+        if let errorMessage = request.errorMessage, !errorMessage.isEmpty {
+            details.append(.init(label: "Error", value: errorMessage, isCode: false))
+        }
+        for warning in request.warnings {
+            details.append(.init(label: "Warning", value: warning, isCode: false))
+        }
+        for (index, hook) in request.hooks.enumerated() {
+            let prefix = "Hook \(index + 1)"
+            details.append(.init(label: "\(prefix) Key", value: hook.key, isCode: true))
+            details.append(.init(label: "\(prefix) Event", value: hook.eventName, isCode: false))
+            details.append(.init(label: "\(prefix) Source", value: hook.sourcePath, isCode: true))
+            details.append(.init(label: "\(prefix) Enabled", value: hook.enabled ? "true" : "false", isCode: false))
+            details.append(.init(label: "\(prefix) Trust", value: hook.trustStatus.rawValue, isCode: false))
+            details.append(.init(label: "\(prefix) Current Hash", value: hook.currentHash, isCode: true))
+            if let command = hook.commandOrHandler, !command.isEmpty {
+                details.append(.init(label: "\(prefix) Command / Handler", value: command, isCode: true))
+            }
+        }
+        let fields: [AgentRunMCPSnapshot.Interaction.Field] = if request.hooks.isEmpty {
+            []
+        } else {
+            [
+                .init(
+                    id: "hook_keys",
+                    prompt: "Hooks to approve",
+                    context: "Provide exact hook keys only when response is approve_selected.",
+                    isSecret: false,
+                    allowsOther: false,
+                    allowsMultiple: true,
+                    allowsCustom: false,
+                    emitAllowsOther: false,
+                    options: request.hooks.map { hook in
+                        .init(
+                            label: hook.key,
+                            description: "\(hook.eventName) · \(hook.sourcePath) · \(hook.trustStatus.rawValue)"
+                        )
+                    }
+                )
+            ]
+        }
+        return .init(
+            id: request.id,
+            kind: .hookApproval,
+            responseType: .decision,
+            title: "Project Hook Approval",
+            prompt: "The initial Codex turn is blocked pending project-hook trust.",
+            context: "Execution directory: \(request.executionCWD)",
+            allowsMultiple: nil,
+            options: mcpCodexHookDecisionOptions(for: request, strictModeEnabled: strictModeEnabled),
+            fields: fields,
+            details: details
+        )
+    }
+
+    private func mcpCanonicalCodexHookResponse(from payload: MCPInteractionResponsePayload) throws -> String {
+        if payload.containsArgument("decision")
+            || payload.containsArgument("skip")
+            || payload.containsArgument("amendment")
+            || payload.containsArgument("content")
+            || payload.containsArgument("meta")
+            || payload.containsArgument("_meta")
+        {
+            throw MCPError.invalidParams(
+                "Hook approval accepts only response and flat string-array answers. decision, skip, amendment, content, and _meta are not supported. No response was applied."
+            )
+        }
+        if payload.hasStructuredAnswerObjects {
+            throw MCPError.invalidParams(
+                "Hook approval answers must use flat string arrays; structured answer objects are not supported. No response was applied."
+            )
+        }
+        switch payload.responseArgument {
+        case .missing:
+            throw MCPError.invalidParams(
+                "response is required for hook approval interactions. No response was applied."
+            )
+        case .nonScalar:
+            throw MCPError.invalidParams(
+                "response must be a non-empty top-level scalar string for hook approval interactions. No response was applied."
+            )
+        case let .scalar(response):
+            let canonical = response.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !canonical.isEmpty else {
+                throw MCPError.invalidParams(
+                    "response must be a non-empty top-level scalar string for hook approval interactions. No response was applied."
+                )
+            }
+            return canonical
+        }
+    }
+
     private func mcpPendingInteraction(for session: TabSession) -> AgentRunMCPSnapshot.Interaction? {
+        if let request = session.pendingCodexHookReview {
+            return mcpCodexHookInteraction(
+                for: request,
+                strictModeEnabled: codexCoordinator.isCodexHookApprovalStrictModeEnabled()
+            )
+        }
         if let review = session.pendingWorktreeMergeReview {
             var details: [AgentRunMCPSnapshot.Interaction.Detail] = [
                 .init(label: "Operation ID", value: review.operationID, isCode: false),
@@ -8462,6 +8639,97 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             }
             let response = AgentRequestUserInputResponse(answersByQuestionID: answers)
             submitUserInputResponse(tabID: session.tabID, requestID: request.requestID, response: response)
+            handleObservedMCPStateChange(for: session)
+            return nil
+        case .hookApproval:
+            guard let request = session.pendingCodexHookReview,
+                  request.id == interactionID
+            else {
+                throw MCPError.invalidParams("The pending hook approval no longer matches interaction_id.")
+            }
+            guard !request.phase.isResolving else {
+                throw MCPError.invalidParams(AgentCodexHookReviewResolutionError.busy.localizedDescription)
+            }
+            let rawDecision = try mcpCanonicalCodexHookResponse(from: payload)
+            guard let action = MCPCodexHookAction(rawValue: rawDecision) else {
+                throw MCPError.invalidParams(
+                    "response must use one of the canonical decisions advertised by the current hook_approval interaction."
+                )
+            }
+            var allowedArgumentNames = Set(["response"])
+            if action == .approveSelected {
+                allowedArgumentNames.insert("answers")
+            }
+            guard payload.suppliedArgumentNames.isSubset(of: allowedArgumentNames) else {
+                throw MCPError.invalidParams(
+                    "Hook approval received an unsupported top-level argument. No response was applied."
+                )
+            }
+            let decision: AgentCodexHookReviewDecision
+            switch action {
+            case .approveSelected:
+                guard request.phase.allowsTrustDecision else {
+                    throw MCPError.invalidParams(AgentCodexHookReviewResolutionError.invalidDecision.localizedDescription)
+                }
+                guard payload.containsArgument("answers"),
+                      !payload.hasNormalizedAnswerFieldNames,
+                      payload.answerValueShapesByQuestionID == ["hook_keys": .stringArray],
+                      let hookKeys = payload.answersByQuestionID["hook_keys"],
+                      !hookKeys.isEmpty,
+                      Set(hookKeys.map(CodexHookUTF8Identity.init)).count == hookKeys.count
+                else {
+                    throw MCPError.invalidParams(
+                        "approve_selected requires exactly answers={\"hook_keys\": [\"<exact key>\", ...]} with one or more unique hook keys."
+                    )
+                }
+                let availableKeys = Set(request.hooks.map { CodexHookUTF8Identity($0.key) })
+                guard hookKeys.allSatisfy({ availableKeys.contains(CodexHookUTF8Identity($0)) }) else {
+                    throw MCPError.invalidParams(
+                        "approve_selected contains a hook key that is not part of the current interaction. Poll for the latest hook approval snapshot."
+                    )
+                }
+                decision = .approveSelected(hookKeys: hookKeys)
+            case .trustAll:
+                guard request.phase.allowsTrustDecision else {
+                    throw MCPError.invalidParams(AgentCodexHookReviewResolutionError.invalidDecision.localizedDescription)
+                }
+                guard !payload.containsArgument("answers") else {
+                    throw MCPError.invalidParams("trust_all requires the answers argument to be absent.")
+                }
+                decision = .approveAll
+            case .continueWithoutHooks:
+                guard request.phase.allowsContinueWithoutHooks else {
+                    throw MCPError.invalidParams(AgentCodexHookReviewResolutionError.invalidDecision.localizedDescription)
+                }
+                guard !payload.containsArgument("answers") else {
+                    throw MCPError.invalidParams("continue_without_hooks requires the answers argument to be absent.")
+                }
+                guard !codexCoordinator.isCodexHookApprovalStrictModeEnabled() else {
+                    throw MCPError.invalidParams(
+                        AgentCodexHookReviewResolutionError.strictModeRequiresApproval.localizedDescription
+                    )
+                }
+                decision = .continueWithoutHooks
+            case .retry:
+                guard request.phase.allowsDiscoveryRetry else {
+                    throw MCPError.invalidParams(AgentCodexHookReviewResolutionError.invalidDecision.localizedDescription)
+                }
+                guard !payload.containsArgument("answers") else {
+                    throw MCPError.invalidParams("retry requires the answers argument to be absent.")
+                }
+                decision = .retryDiscovery
+            }
+            do {
+                try await codexCoordinator.resolveCodexHookReview(
+                    session: session,
+                    requestID: request.id,
+                    decision: decision
+                )
+            } catch let error as AgentCodexHookReviewResolutionError {
+                throw MCPError.invalidParams(error.localizedDescription)
+            } catch {
+                throw MCPError.invalidParams("The hook approval operation could not be completed. Review the current interaction and retry.")
+            }
             handleObservedMCPStateChange(for: session)
             return nil
         case .approval:
@@ -12203,7 +12471,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
         for tabID in orderedRuntimeCleanupTabIDs {
             #if DEBUG
-                test_composeTabRemovalTeardownObserver?(tabID)
+                if let test_composeTabRemovalTeardownObserver {
+                    await test_composeTabRemovalTeardownObserver(tabID)
+                }
             #endif
             let capturedSession = capturedSessionsByTabID[tabID] ?? nil
             let boundID = capturedBoundSessionIDByTabID[tabID] ?? nil
@@ -12481,7 +12751,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return .failed(.init(operation: .save, tabID: tabID, message: "Active workspace is unavailable."))
         }
 
-        let hasConversationContent = !session.items.isEmpty || !session.transcript.turns.isEmpty || session.runState.isActive || session.hasPendingQuestionUI || session.pendingApproval != nil || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.worktreeMergeOperations.contains { $0.status.isActive }
+        let hasConversationContent = !session.items.isEmpty || !session.transcript.turns.isEmpty || session.runState.isActive || session.hasPendingQuestionUI || session.pendingApproval != nil || session.hasPendingCodexHookReviewWait || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil || session.worktreeMergeOperations.contains { $0.status.isActive }
         if session.activeAgentSessionID == nil, !hasConversationContent {
             return .notRequired
         }
@@ -13943,7 +14213,15 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                         )
                     }
                 }
-                if case let .preDispatchRejected(message)? = sendOutcome,
+                let rejectedManualSubmissionMessage: String? = switch sendOutcome {
+                case let .preDispatchRejected(message)?:
+                    message
+                case .cancelled?:
+                    "Codex send was cancelled before provider dispatch."
+                default:
+                    nil
+                }
+                if let rejectedManualSubmissionMessage,
                    codexAttemptID == nil
                 {
                     // The dispatch ticket remains held through this synchronous
@@ -13965,7 +14243,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                             taggedFiles: taggedFilesToSend,
                             selectedWorkflow: restorationSelectedWorkflow,
                             selectedWorkflowMutationGeneration: restorationSelectedWorkflowMutationGeneration,
-                            message: message
+                            message: rejectedManualSubmissionMessage
                         )
                     }
                 } else {
@@ -16813,7 +17091,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         if session.pendingAskUser != nil {
             throw MCPError.invalidParams("ask_user is already waiting for a response in this session.")
         }
-        if session.pendingApproval != nil || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil {
+        if session.pendingApproval != nil || session.hasPendingCodexHookReviewWait || session.pendingPermissionsRequest != nil || session.pendingApplyEditsReview != nil || session.pendingWorktreeMergeReview != nil {
             throw MCPError.invalidParams("ask_user cannot be shown while an approval is pending.")
         }
         if session.pendingMCPElicitationRequest != nil || !session.queuedMCPElicitationRequests.isEmpty {
@@ -17047,6 +17325,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
     private func cancelPendingApproval(for session: TabSession) {
         session.pendingApproval = nil
+        if session.hasActiveCodexHookGateOperation {
+            session.resetCodexHookGateBinding()
+        }
         session.pendingPermissionsRequest = nil
         session.pendingMCPElicitationRequest = nil
         session.queuedMCPElicitationRequests.removeAll()
@@ -17388,6 +17669,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     func pendingApproval(for tabID: UUID?) -> AgentApprovalRequest? {
         guard let tabID, let session = sessions[tabID] else { return nil }
         return session.uiPendingApproval
+    }
+
+    func pendingCodexHookReview(for tabID: UUID?) -> AgentCodexHookReviewRequest? {
+        guard let tabID, let session = sessions[tabID] else { return nil }
+        return session.uiPendingCodexHookReview
     }
 
     func pendingPermissionsRequest(for tabID: UUID?) -> AgentPermissionsRequest? {
@@ -17914,6 +18200,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         let hasPendingInteraction = session.runState == .waitingForUser
             || session.hasPendingQuestionUI
             || session.pendingApproval != nil
+            || session.hasPendingCodexHookReviewWait
             || session.pendingPermissionsRequest != nil
             || session.pendingApplyEditsReview != nil
         let hasActiveRun = session.runState.isActive

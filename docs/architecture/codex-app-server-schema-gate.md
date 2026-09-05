@@ -21,9 +21,9 @@ consumes at its current integration boundary.
 
 ## Version contract
 
-- The contract floor is **Codex CLI 0.147.0**.
-- Local validation accepts 0.147.0 or newer so a developer can detect drift before CI moves.
-- CI installs exactly `@openai/codex@0.147.0`, making the required check deterministic.
+- The contract floor is **Codex CLI 0.149.0**.
+- Local validation accepts 0.149.0 or newer so a developer can detect drift before CI moves.
+- CI installs exactly `@openai/codex@0.149.0`, making the required check deterministic.
 - The gate fails before generation when the installed CLI is older than the floor.
 
 When advancing Codex, install the intended version, run the gate, reconcile RPCE with the generated
@@ -35,8 +35,9 @@ requirement.
 
 The initial projection covers:
 
-- the client requests RPCE sends for initialization, model discovery, thread lifecycle, goals,
-  turns, interruption, steering, compaction, and the optional memory-mode setting;
+- the client requests RPCE sends for initialization, model discovery, hook discovery, hook-trust
+  config writes, thread lifecycle, goals, turns, interruption, steering, compaction, and the optional
+  memory-mode setting;
 - request fields RPCE always or conditionally emits, including nested initialize metadata, turn-input
   variants, sandbox-policy variants, and detection of newly required upstream fields;
 - incoming parameter and response paths RPCE reads, with explicit required, optional, conditional,
@@ -52,7 +53,14 @@ The versioned contract is fail-closed: missing or unknown keys are errors. Metho
 local `$ref`, `allOf`, `oneOf`, and `anyOf` composition and accepts both single-value `enum`
 and `const` discriminators, so upstream organizational refactors do not create false removals.
 
-The hardened 0.147.0 baseline checks 42 methods, 186 parameter paths, and 78 response paths. A failure names
+For `config/batchWrite`, the generated `ConfigEdit.value` schema is unconstrained (`true`), so the
+gate declares the closest available projection, `edits[].value`; the dynamic
+hook-key → `{trusted_hash}` object shape cannot be expressed by the current checker.
+
+After a trust write, the post-write `hooks/list` result is the semantic success authority;
+`config/batchWrite.status` alone is not.
+
+The hardened 0.149.0 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
 the union, method, and exact missing field, required field, response path, or enum value.
 
 This is intentionally not a complete protocol mirror. New upstream methods do not fail the gate
@@ -73,7 +81,7 @@ differences:
    eligibility, but resume config does not reconcile an existing stored thread's persisted mode. RPCE
    therefore calls experimental `thread/memoryMode/set` with `enabled` or `disabled` before
    `thread/resume` so resumed startup observes the requested mode. It does not issue a redundant
-   post-start request. The 0.147.0 runtime floor and `experimentalApi` initialization capability make
+   post-start request. The 0.149.0 runtime floor and `experimentalApi` initialization capability make
    resume reconciliation a required contract rather than an optional compatibility fallback.
 6. The generated `goal.status` enum includes `blocked` and `usageLimited`, while RPCE previously
    rejected both as invalid responses. The same six-value enum is also declared for
@@ -133,6 +141,22 @@ The bounded comparison also recorded these explicit gaps rather than hiding them
 - `item/tool/call` is recognized but deliberately rejected with a JSON-RPC error because RPCE does
   not implement dynamic client-side tool execution; therefore the success response is not part of
   this contract.
+
+## 0.149.0 rotation findings (2026-08-21)
+
+The repository candidate flow verified both official `rust-v0.149.0` macOS packages, including
+their complete layouts, architectures, OpenAI signing identities, and trusted timestamps. The
+pinned CLI passes the bounded app-server projection. Upstream changed a hook `command` from
+optional and nullable to conditionally present but non-null when present; RepoPrompt's decoder
+already accepts that bounded shape.
+
+Codex 0.149.0 also changes upstream app and plugin availability. RepoPrompt does not inherit those
+runtime defaults: `features.apps`, `features.plugins`, `features.tool_call_mcp_elicitation`, and
+`features.tool_suggest` are explicitly false on every Codex launch/config surface by default. Four
+independent, human-owned settings can enable these capabilities separately for directly started
+native Agent Mode app-server sessions. Each setting is absent/default false and is intentionally
+absent from the MCP `app_settings` catalog. Standard chat, headless exec, and every MCP-related
+Agent Mode session force all four false for the session lifetime, including after live control ends.
 
 ## Files and tests
 
