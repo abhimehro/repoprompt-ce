@@ -163,7 +163,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
             )
         )
         XCTAssertTrue(
-            failure(from: old)?.localizedDescription?.contains("update the configured executable") == true
+            failure(from: old)?.localizedDescription.contains("update the configured executable") == true
         )
 
         let prerelease = CodexRuntimeAuthority.resolve(
@@ -201,7 +201,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
         )
         XCTAssertEqual(failure(from: missingResult), .externalOverrideMissing(missing.path))
         XCTAssertTrue(
-            failure(from: missingResult)?.localizedDescription?.contains("Choose another in Settings") == true
+            failure(from: missingResult)?.localizedDescription.contains("Choose another in Settings") == true
         )
     }
 
@@ -232,7 +232,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
                 environment: environmentValues,
                 resourcesURL: resources,
                 architectureTarget: "aarch64-apple-darwin",
-                applicationSupportURL: temporaryDirectory,
+                applicationSupportURL: self.temporaryDirectory,
                 defaults: defaults,
                 launchSnapshot: snapshot,
                 externalVersionReader: { url in
