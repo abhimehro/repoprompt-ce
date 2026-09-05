@@ -18,9 +18,11 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         let config = CursorAgentConfig(additionalPathHints: [], includeRepoPromptMCPServer: false)
 
         let support = try await resolver.probeSupport(for: config)
+        guard support == .supported else {
+            return XCTFail("Expected supported Cursor entrypoint: \(support)")
+        }
         let launch = try resolver.resolvedLaunch(for: config)
 
-        XCTAssertEqual(support, .supported)
         XCTAssertEqual(launch.command, try canonicalExecutablePath(cursorExecutable))
     }
 
@@ -102,9 +104,11 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         let config = CursorAgentConfig(additionalPathHints: [])
 
         let support = try await resolver.probeSupport(for: config)
+        guard support == .supported else {
+            return XCTFail("Expected supported Cursor entrypoint: \(support)")
+        }
         let launch = try resolver.resolvedLaunch(for: config)
 
-        XCTAssertEqual(support, .supported)
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacyProbeMarker.path))
         XCTAssertEqual(launch.command, try canonicalExecutablePath(currentExecutable))
     }
@@ -157,6 +161,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
             withDestinationURL: currentExecutable
         )
         let timeline = CursorProbeTimeline(nowValues: [0, 1, 10])
+        let deadline = CursorProbeDeadlineBarrier()
         let resolver = CursorACPLaunchResolver(
             environmentProvider: { _ in ["PATH": binDirectory.path, "SHELL": "/bin/false"] },
             supplementalPathProvider: { $0 },
@@ -165,6 +170,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
                 return CLIProcessRunner.Result(stdout: Data(), stderr: Data(), status: 2, timedOut: false)
             },
             nowProvider: { timeline.nextNow() },
+            deadlineWaiter: { _ in await deadline.wait() },
             aggregateProbeTimeout: 10
         )
 
@@ -175,6 +181,193 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         }
         XCTAssertEqual(timeline.recordedTimeouts(), [6])
         XCTAssertEqual(timeline.recordedCleanupAllowances(), [3])
+    }
+
+    func testCapabilityProbeDoesNotCacheSuccessAfterClockDeadlineBeforeTimerFires() async throws {
+        let directory = try makeTemporaryDirectory()
+        _ = try makeExecutable(named: "cursor-agent", in: directory)
+        let timeline = CursorProbeTimeline(nowValues: [0, 0, 10])
+        let deadline = CursorProbeDeadlineBarrier()
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": directory.path, "SHELL": "/bin/false"] },
+            supplementalPathProvider: { $0 },
+            probeRunner: { _, _, _, _ in
+                CLIProcessRunner.Result(
+                    stdout: Data("Cursor Agent ACP support".utf8),
+                    stderr: Data(),
+                    status: 0,
+                    timedOut: false
+                )
+            },
+            nowProvider: { timeline.nextNow() },
+            deadlineWaiter: { _ in await deadline.wait() },
+            aggregateProbeTimeout: 10
+        )
+        let config = CursorAgentConfig(commandName: "cursor-agent", additionalPathHints: [])
+
+        let support = try await resolver.probeSupport(for: config)
+
+        guard case let .unsupported(reason) = support else {
+            return XCTFail("Expected an expired clock to reject the successful producer result")
+        }
+        XCTAssertTrue(reason.contains("aggregate timeout"))
+        let timerWasSignaled = await deadline.wasSignaled()
+        XCTAssertFalse(timerWasSignaled)
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config))
+    }
+
+    func testCapabilityProbeTimeoutRejectsNewResolverUntilLateProducerSettles() async throws {
+        let directory = try makeTemporaryDirectory()
+        let executable = try makeExecutable(named: "cursor-agent", in: directory)
+        let producer = CursorProbeProducerBarrier()
+        let firstCalls = CursorProbeCallCounter()
+        let secondCalls = CursorProbeCallCounter()
+        let firstDeadline = CursorProbeDeadlineBarrier()
+        let secondDeadline = CursorProbeDeadlineBarrier()
+        let firstResolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": directory.path, "SHELL": "/bin/false"] },
+            supplementalPathProvider: { $0 },
+            probeRunner: { _, _, _, _ in
+                let call = await firstCalls.nextCall()
+                if call == 1 {
+                    await producer.enter()
+                    await withTaskCancellationHandler(operation: {
+                        await producer.waitForRelease()
+                    }, onCancel: {
+                        Task { await producer.recordCancellation() }
+                    })
+                    await producer.recordReturned()
+                }
+                return CLIProcessRunner.Result(
+                    stdout: Data("Cursor Agent ACP support".utf8),
+                    stderr: Data(),
+                    status: 0,
+                    timedOut: false
+                )
+            },
+            nowProvider: { 0 },
+            deadlineWaiter: { _ in await firstDeadline.wait() },
+            aggregateProbeTimeout: 10
+        )
+        let secondResolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": directory.path, "SHELL": "/bin/false"] },
+            supplementalPathProvider: { $0 },
+            probeRunner: { _, _, _, _ in
+                await secondCalls.nextCall()
+                return CLIProcessRunner.Result(
+                    stdout: Data("Cursor Agent ACP support".utf8),
+                    stderr: Data(),
+                    status: 0,
+                    timedOut: false
+                )
+            },
+            nowProvider: { 0 },
+            deadlineWaiter: { _ in await secondDeadline.wait() },
+            aggregateProbeTimeout: 10,
+            sharingProbeOwnershipWith: firstResolver
+        )
+        let config = CursorAgentConfig(commandName: "cursor-agent", additionalPathHints: [])
+        let firstProbe = Task { try await firstResolver.probeSupport(for: config) }
+
+        await producer.waitUntilEntered()
+        await firstDeadline.waitUntilEntered()
+        await firstDeadline.signal()
+
+        let firstSupport = try await firstProbe.value
+        guard case let .unsupported(reason) = firstSupport else {
+            return XCTFail("Expected the aggregate deadline to retire the logical probe")
+        }
+        XCTAssertTrue(reason.contains("aggregate timeout"))
+        await producer.waitUntilCancellation()
+
+        let pendingSupport = try await secondResolver.probeSupport(for: config)
+        guard case let .unsupported(pendingReason) = pendingSupport else {
+            return XCTFail("Expected a retry to be rejected while the producer drains")
+        }
+        XCTAssertTrue(pendingReason.contains("cleanup is still pending"))
+        let firstCallCount = await firstCalls.count()
+        XCTAssertEqual(firstCallCount, 1)
+        let pendingCallCount = await secondCalls.count()
+        XCTAssertEqual(pendingCallCount, 0)
+
+        await producer.release()
+        await producer.waitUntilReturned()
+        await firstResolver.waitForProbeAttemptSettlementForTesting()
+        XCTAssertThrowsError(try secondResolver.resolvedLaunch(for: config))
+
+        let recoveredSupport = try await secondResolver.probeSupport(for: config)
+        XCTAssertEqual(recoveredSupport, .supported)
+        let recoveredCallCount = await secondCalls.count()
+        XCTAssertEqual(recoveredCallCount, 1)
+        let recoveredLaunch = try secondResolver.resolvedLaunch(for: config)
+        XCTAssertEqual(recoveredLaunch.command, try canonicalExecutablePath(executable))
+    }
+
+    func testCapabilityProbeCancellationDrainsProducerBeforeRecovery() async throws {
+        let directory = try makeTemporaryDirectory()
+        let executable = try makeExecutable(named: "cursor-agent", in: directory)
+        let producer = CursorProbeProducerBarrier()
+        let calls = CursorProbeCallCounter()
+        let firstDeadline = CursorProbeDeadlineBarrier()
+        let secondDeadline = CursorProbeDeadlineBarrier()
+        let deadlines = CursorProbeDeadlineRouter([firstDeadline, secondDeadline])
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": directory.path, "SHELL": "/bin/false"] },
+            supplementalPathProvider: { $0 },
+            probeRunner: { _, _, _, _ in
+                let call = await calls.nextCall()
+                if call == 1 {
+                    await producer.enter()
+                    await withTaskCancellationHandler(operation: {
+                        await producer.waitForRelease()
+                    }, onCancel: {
+                        Task { await producer.recordCancellation() }
+                    })
+                    await producer.recordReturned()
+                }
+                return CLIProcessRunner.Result(
+                    stdout: Data("Cursor Agent ACP support".utf8),
+                    stderr: Data(),
+                    status: 0,
+                    timedOut: false
+                )
+            },
+            nowProvider: { 0 },
+            deadlineWaiter: { _ in await deadlines.wait() },
+            aggregateProbeTimeout: 10
+        )
+        let config = CursorAgentConfig(commandName: "cursor-agent", additionalPathHints: [])
+        let firstProbe = Task { try await resolver.probeSupport(for: config) }
+
+        await producer.waitUntilEntered()
+        firstProbe.cancel()
+        do {
+            _ = try await firstProbe.value
+            XCTFail("Expected cancellation to propagate from the logical probe")
+        } catch is CancellationError {
+            // Expected: the producer remains owned independently of this task.
+        }
+        await producer.waitUntilCancellation()
+
+        let pendingSupport = try await resolver.probeSupport(for: config)
+        guard case let .unsupported(pendingReason) = pendingSupport else {
+            return XCTFail("Expected a retry to be rejected while the canceled producer drains")
+        }
+        XCTAssertTrue(pendingReason.contains("cleanup is still pending"))
+        let pendingCallCount = await calls.count()
+        XCTAssertEqual(pendingCallCount, 1)
+
+        await producer.release()
+        await producer.waitUntilReturned()
+        await resolver.waitForProbeAttemptSettlementForTesting()
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config))
+
+        let recoveredSupport = try await resolver.probeSupport(for: config)
+        XCTAssertEqual(recoveredSupport, .supported)
+        let recoveredCallCount = await calls.count()
+        XCTAssertEqual(recoveredCallCount, 2)
+        let recoveredLaunch = try resolver.resolvedLaunch(for: config)
+        XCTAssertEqual(recoveredLaunch.command, try canonicalExecutablePath(executable))
     }
 
     private func makeResolver(path: String) -> CursorACPLaunchResolver {
@@ -244,5 +437,169 @@ private final class CursorProbeTimeline: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return cleanupAllowances
+    }
+}
+
+private actor CursorProbeCallCounter {
+    private var callCount = 0
+
+    func nextCall() -> Int {
+        callCount += 1
+        return callCount
+    }
+
+    func count() -> Int {
+        callCount
+    }
+}
+
+private actor CursorProbeProducerBarrier {
+    private var enteredContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var cancellationContinuation: CheckedContinuation<Void, Never>?
+    private var returnedContinuation: CheckedContinuation<Void, Never>?
+    private var hasEntered = false
+    private var isReleased = false
+    private var cancellationRequested = false
+    private var hasReturned = false
+
+    func enter() {
+        guard !hasEntered else { return }
+        hasEntered = true
+        enteredContinuation?.resume()
+        enteredContinuation = nil
+    }
+
+    func waitUntilEntered() async {
+        guard !hasEntered else { return }
+        await withCheckedContinuation { continuation in
+            if hasEntered {
+                continuation.resume()
+            } else {
+                enteredContinuation = continuation
+            }
+        }
+    }
+
+    func waitForRelease() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            if isReleased {
+                continuation.resume()
+            } else {
+                releaseContinuation = continuation
+            }
+        }
+    }
+
+    func release() {
+        guard !isReleased else { return }
+        isReleased = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    func recordCancellation() {
+        guard !cancellationRequested else { return }
+        cancellationRequested = true
+        cancellationContinuation?.resume()
+        cancellationContinuation = nil
+    }
+
+    func waitUntilCancellation() async {
+        guard !cancellationRequested else { return }
+        await withCheckedContinuation { continuation in
+            if cancellationRequested {
+                continuation.resume()
+            } else {
+                cancellationContinuation = continuation
+            }
+        }
+    }
+
+    func recordReturned() {
+        guard !hasReturned else { return }
+        hasReturned = true
+        returnedContinuation?.resume()
+        returnedContinuation = nil
+    }
+
+    func waitUntilReturned() async {
+        guard !hasReturned else { return }
+        await withCheckedContinuation { continuation in
+            if hasReturned {
+                continuation.resume()
+            } else {
+                returnedContinuation = continuation
+            }
+        }
+    }
+}
+
+private actor CursorProbeDeadlineBarrier {
+    private var enteredContinuation: CheckedContinuation<Void, Never>?
+    private var waitContinuation: CheckedContinuation<Void, Never>?
+    private var hasEntered = false
+    private var isOpen = false
+
+    func wait() async {
+        if !hasEntered {
+            hasEntered = true
+            enteredContinuation?.resume()
+            enteredContinuation = nil
+        }
+        guard !isOpen else { return }
+        await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                if isOpen || Task.isCancelled {
+                    continuation.resume()
+                } else {
+                    waitContinuation = continuation
+                }
+            }
+        }, onCancel: {
+            Task { await self.cancelWaiter() }
+        })
+    }
+
+    func waitUntilEntered() async {
+        guard !hasEntered else { return }
+        await withCheckedContinuation { continuation in
+            if hasEntered {
+                continuation.resume()
+            } else {
+                enteredContinuation = continuation
+            }
+        }
+    }
+
+    func signal() {
+        guard !isOpen else { return }
+        isOpen = true
+        waitContinuation?.resume()
+        waitContinuation = nil
+    }
+
+    func wasSignaled() -> Bool {
+        isOpen
+    }
+
+    private func cancelWaiter() {
+        waitContinuation?.resume()
+        waitContinuation = nil
+    }
+}
+
+private actor CursorProbeDeadlineRouter {
+    private var barriers: [CursorProbeDeadlineBarrier]
+
+    init(_ barriers: [CursorProbeDeadlineBarrier]) {
+        self.barriers = barriers
+    }
+
+    func wait() async {
+        guard !barriers.isEmpty else { return }
+        let barrier = barriers.removeFirst()
+        await barrier.wait()
     }
 }
