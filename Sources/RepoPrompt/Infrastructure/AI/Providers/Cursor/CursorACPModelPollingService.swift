@@ -64,8 +64,7 @@ struct CursorACPControllerModelDiscoveryClient: CursorACPModelDiscoveryClient {
         let controller = try controllerFactory(provider, request)
         do {
             _ = try await controller.bootstrap()
-            try? await controller.setSessionModel(preferredModel)
-            let snapshot = AgentACPModelRegistry.shared.currentSnapshot(for: .cursor)
+            let snapshot = try await controller.cursorAvailableModelCatalog()
             await controller.shutdown()
             return snapshot
         } catch {
