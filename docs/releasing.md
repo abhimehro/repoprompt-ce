@@ -100,7 +100,10 @@ selection never falls through to the user's shell `PATH`. Settings shows the
 effective executable and version, and offers a compatible `codex` found in the
 captured login-shell `PATH` as a one-click local selection. Advanced users may also
 select one explicit local executable or set an absolute override with
-`REPOPROMPT_CODEX_EXECUTABLE`; the Settings choice takes precedence.
+`REPOPROMPT_CODEX_EXECUTABLE`; the Settings choice takes precedence. Settings saves
+the next-launch choice while all runtime consumers retain the process-wide active
+selection until relaunch. Version validation uses the captured launch environment,
+including its interpreter search path.
 RepoPrompt rejects overrides older than 0.149.0, matching the bundled runtime and
 the documented app-server contract floor. Bundled and external runtimes both use
 RepoPrompt-owned `CODEX_HOME` and `CODEX_SQLITE_HOME` directories under

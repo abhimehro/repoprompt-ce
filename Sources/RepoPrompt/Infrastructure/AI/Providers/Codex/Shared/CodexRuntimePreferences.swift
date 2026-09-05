@@ -11,6 +11,12 @@ enum CodexRuntimePreferences {
         case external(path: String)
     }
 
+    /// Returns the process-active choice from the single runtime authority. Pending choices only
+    /// become active in the next process, including when Settings opens before any client.
+    static var activeSelection: Selection {
+        CodexRuntimeAuthority.currentLaunchSnapshot().selection
+    }
+
     private static let selectionModeKey = "codexRuntimeSelectionMode"
     private static let executablePathKey = "codexRuntimeExecutablePath"
 

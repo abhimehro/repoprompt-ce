@@ -378,18 +378,19 @@ enum CodexRuntimeAuthority {
     }
 
     /// Resolves the production configuration without making persistence part of the pure
-    /// validation path. A call-site override wins, followed by the launch snapshot when supplied,
-    /// then the current Settings choice for preflight-only callers, environment, and finally the
-    /// bundled runtime. An explicitly bundled selection suppresses the legacy environment override
-    /// so the visible choice remains authoritative.
+    /// validation path. A call-site override wins, followed by the supplied launch snapshot,
+    /// an explicit selection or injected defaults for preflight/tests, and finally the process
+    /// launch snapshot. An explicitly bundled selection suppresses the legacy environment
+    /// override so the visible choice remains authoritative.
     static func resolveConfigured(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         resourcesURL: URL? = Bundle.main.resourceURL,
         architectureTarget: String? = currentArchitectureTarget,
         applicationSupportURL: URL? = nil,
         explicitExecutableOverride: String? = nil,
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults? = nil,
         launchSnapshot: LaunchSnapshot? = nil,
+        selection: CodexRuntimePreferences.Selection? = nil,
         externalVersionReader: ((URL) -> String?)? = nil
     ) -> Result<Runtime, Failure> {
         if let explicitExecutableOverride {
@@ -405,8 +406,11 @@ enum CodexRuntimeAuthority {
 
         var configuredEnvironment = environment
         let configuredOverride: String?
-        let selection = launchSnapshot?.selection ?? CodexRuntimePreferences.selection(defaults: defaults)
-        switch selection {
+        let effectiveSelection = launchSnapshot?.selection
+            ?? selection
+            ?? defaults.map { CodexRuntimePreferences.selection(defaults: $0) }
+            ?? currentLaunchSnapshot().selection
+        switch effectiveSelection {
         case .inherited:
             configuredOverride = nil
         case .bundled:
