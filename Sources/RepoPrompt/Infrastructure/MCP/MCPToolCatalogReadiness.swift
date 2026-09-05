@@ -167,7 +167,7 @@ actor MCPToolCatalogReadiness {
             scopePresenceOperation: @escaping ScopePresenceOperation,
             windowStateOperation: @escaping WindowStateOperation,
             checkJoinedOperation: @escaping @Sendable (Int?) async -> Void = { _ in },
-            sharedCheckRetirementDuration: Duration = Self.defaultSharedCheckRetirementDuration,
+            sharedCheckRetirementDuration: Duration = MCPToolCatalogReadiness.defaultSharedCheckRetirementDuration,
             sharedCheckRetirementSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
                 try await ContinuousClock().sleep(for: duration)
             },
