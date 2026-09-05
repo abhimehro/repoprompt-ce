@@ -36,23 +36,59 @@ extension FileSystemService {
         guard seedInitializationState == nil else {
             throw FileSystemSeedReplayError.initializationAlreadyActive
         }
+        guard !fseventRecoveryRequired else {
+            throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
+        }
         try startFSEventStream()
+        var activationStreamGeneration: UInt64?
+        var activationDeliveryGeneration: FSEventAsyncDeliveryBarrier.Generation?
         if let stream = fseventStreamRef {
             let streamGeneration = fseventStreamGeneration
+            activationStreamGeneration = streamGeneration
             let deliveryGeneration = fseventDeliveryBarrier.currentGeneration
+            activationDeliveryGeneration = deliveryGeneration
             let flushTarget = FSEventStreamFlushAsync(stream)
             let delivered = await fseventDeliveryBarrier.waitUntilDelivered(
                 flushTarget,
                 generation: deliveryGeneration
             )
-            guard fseventStreamGeneration == streamGeneration else { return }
+            guard fseventStreamGeneration == streamGeneration else {
+                if fseventRecoveryRequired {
+                    throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
+                }
+                return
+            }
             guard delivered else {
+                if fseventDeliveryBarrier.currentGeneration != deliveryGeneration {
+                    fseventRecoveryRequired = true
+                    stopFSEventStream(expectedGeneration: streamGeneration)
+                    throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
+                }
                 stopFSEventStream(expectedGeneration: streamGeneration)
                 throw FileSystemWatcherActivationError.deliveryBarrierTimedOut(path: path)
+            }
+            // FSEventStreamFlushAsync is scoped to this stream. Crossing the
+            // same stream's dispatch queue makes callbacks queued before the
+            // flush marker visible before the accepted-ingress cut; it does not
+            // impose a global event-ID watermark across roots.
+            fseventCallbackQueue.sync {}
+            guard fseventDeliveryBarrier.currentGeneration == deliveryGeneration else {
+                fseventRecoveryRequired = true
+                stopFSEventStream(expectedGeneration: streamGeneration)
+                throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
             }
         }
         let acceptedCut = captureAcceptedWatcherWatermark()
         _ = await flushPendingEventsNow(throughAcceptedWatcherWatermark: acceptedCut)
+        guard !fseventRecoveryRequired,
+              activationDeliveryGeneration.map({ fseventDeliveryBarrier.currentGeneration == $0 }) ?? true
+        else {
+            fseventRecoveryRequired = true
+            if let activationStreamGeneration {
+                _ = stopFSEventStream(expectedGeneration: activationStreamGeneration)
+            }
+            throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
+        }
     }
 
     public func fileExistsOnDisk(relativePath: String) -> Bool {
@@ -346,14 +382,21 @@ extension FileSystemService {
 
     func startFSEventStream() throws {
         guard fseventStreamRef == nil else { return }
+        guard !fseventRecoveryRequired else {
+            throw FileSystemWatcherActivationError.eventIDsWrapped(path: path)
+        }
 
-        watcherIngressMailbox.startAccepting()
         fseventStreamGeneration &+= 1
+        let streamGeneration = fseventStreamGeneration
+        let ingressGeneration = watcherIngressGeneration
+        watcherIngressMailbox.startAccepting(for: ingressGeneration)
         let deliveryGeneration = fseventDeliveryBarrier.reset()
         fseventCallbackContextPointer = Unmanaged.passRetained(
             FileSystemServiceFSEventCallbackContext(
                 service: self,
-                deliveryGeneration: deliveryGeneration
+                deliveryGeneration: deliveryGeneration,
+                streamGeneration: streamGeneration,
+                ingressGeneration: ingressGeneration
             )
         ).toOpaque()
 
@@ -571,6 +614,9 @@ extension FileSystemService {
         if Int(bitPattern: eventFlags) == 0 { return }
         if Int(bitPattern: eventIds) == 0 { return }
 
+        guard service.fseventDeliveryBarrier.currentGeneration == callbackContext.deliveryGeneration else {
+            return
+        }
         guard let payload = buildOwnedFSEventPayload(
             numEvents: count,
             eventPaths: eventPaths,
@@ -580,15 +626,25 @@ extension FileSystemService {
         let hasWrappedJournal = payload.entries.contains { entry in
             (entry.flags & FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped)) != 0
         }
-        defer {
-            if hasWrappedJournal {
-                service.fseventDeliveryBarrier.reset(ifCurrent: callbackContext.deliveryGeneration)
-            } else {
-                service.fseventDeliveryBarrier.recordDelivered(
-                    eventIDs: payload.entries.map(\.id),
-                    generation: callbackContext.deliveryGeneration
+        if hasWrappedJournal {
+            // Event IDs are no longer valid as a continuation of this stream.
+            // Drop the payload, invalidate all waiters/cuts, and let the actor
+            // fail this service closed instead of admitting an untrusted event.
+            _ = service.fseventDeliveryBarrier.reset(ifCurrent: callbackContext.deliveryGeneration)
+            Task { [weak service] in
+                await service?.handleFSEventIDsWrapped(
+                    streamGeneration: callbackContext.streamGeneration,
+                    ingressGeneration: callbackContext.ingressGeneration,
+                    deliveryGeneration: callbackContext.deliveryGeneration
                 )
             }
+            return
+        }
+        defer {
+            service.fseventDeliveryBarrier.recordDelivered(
+                eventIDs: payload.entries.map(\.id),
+                generation: callbackContext.deliveryGeneration
+            )
         }
 
         #if DEBUG
@@ -609,19 +665,13 @@ extension FileSystemService {
             }
         #endif
 
-        // A wrapped journal can never be proven safe by path filtering. Preserve
-        // the signal so strict seeded replay rejects it even when its path would
-        // otherwise be ignored by the immutable early-filter snapshot.
-        let filterResult = if hasWrappedJournal {
-            FileSystemWatcherEarlyFilter.Result(payload: payload, filteredEntryCount: 0)
-        } else {
-            service.watcherEarlyFilter.filter(payload)
-        }
+        let filterResult = service.watcherEarlyFilter.filter(payload)
         guard let retainedPayload = filterResult.payload else { return }
 
         let lifecycleCorrelation = EditFlowPerf.makeLifecycleCorrelationIfActive()
         let acceptedWatermark = service.watcherIngressMailbox.accept(
             retainedPayload,
+            ingressGeneration: callbackContext.ingressGeneration,
             lifecycleCorrelation: lifecycleCorrelation
         ) { [weak service] in
             await service?.drainAcceptedWatcherIngressMailbox()
@@ -640,6 +690,41 @@ extension FileSystemService {
         )
     }
 
+    func handleFSEventIDsWrapped(
+        streamGeneration: UInt64,
+        ingressGeneration: UInt64,
+        deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
+    ) {
+        guard fseventStreamGeneration == streamGeneration,
+              watcherIngressGeneration == ingressGeneration,
+              fseventStreamRef != nil
+        else { return }
+        _ = fseventDeliveryBarrier.reset(ifCurrent: deliveryGeneration)
+        fseventRecoveryRequired = true
+        // The callback already invalidated this delivery generation. Stop the
+        // stream on the actor while retaining the existing callback-queue
+        // teardown, which keeps callback ownership/liveness unchanged.
+        _ = stopFSEventStream(expectedGeneration: streamGeneration)
+    }
+
+    #if DEBUG
+        func fseventRecoveryRequiredForTesting() -> Bool {
+            fseventRecoveryRequired
+        }
+
+        func handleFSEventIDsWrappedForTesting(
+            streamGeneration: UInt64,
+            ingressGeneration: UInt64,
+            deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
+        ) {
+            guard fseventStreamGeneration == streamGeneration,
+                  watcherIngressGeneration == ingressGeneration
+            else { return }
+            fseventRecoveryRequired = true
+            _ = fseventDeliveryBarrier.reset(ifCurrent: deliveryGeneration)
+        }
+    #endif
+
     // MARK: - Core event coalescing & handling
 
     func drainAcceptedWatcherIngressMailbox() async {
@@ -655,6 +740,7 @@ extension FileSystemService {
     }
 
     func enqueueAcceptedWatcherPayload(_ payload: FileSystemWatcherIngressMailbox.AcceptedPayload) {
+        guard payload.ingressGeneration == watcherIngressGeneration else { return }
         EditFlowPerf.lifecycleEvent(
             EditFlowPerf.Lifecycle.FileSystem.serviceEnqueueEntered,
             correlation: payload.lifecycleCorrelation,

@@ -15,6 +15,8 @@ protocol SettingsManaging {
     func chatSettings(for workspaceID: UUID) -> ChatGlobalSettings
     func updateCopySettings(_ settings: CopyGlobalSettings, commit: Bool?)
     func updateChatSettings(_ settings: ChatGlobalSettings, commit: Bool?)
+    func contextBuilderBehaviorSettings() -> ContextBuilderBehaviorSettings
+    func setContextBuilderBehaviorSettings(_ settings: ContextBuilderBehaviorSettings, commit: Bool)
     func globalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?)
     func persistedGlobalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?)
     func setGlobalContextBuilderAgentSelection(agentRaw: String, modelRaw: String, markUserDefined: Bool)
@@ -56,7 +58,6 @@ protocol SettingsManaging {
     func effectiveAgentModelsProfile(workspaceID: UUID?) -> AgentModelsSettingsProfile
     func setAgentModelsMCPAgentRoleOverrides(_ overrides: [String: String]?, scope: AgentModelsEditingScope)
     func copyAgentModelsProfile(from source: AgentModelsEditingScope, to destination: AgentModelsEditingScope)
-    func maxBackgroundAgentComposeTabs() -> Int
     func commitWorkspace(_ workspaceID: UUID)
     func discardWindowOverrides(for workspaceID: UUID)
     func commitAllVisitedWorkspaces()
@@ -181,6 +182,17 @@ final class WindowSettingsManager: ObservableObject, SettingsManaging {
         if commit ?? autoPersistWindowSettings {
             store.updateChatSettings(settings)
         }
+    }
+
+    func contextBuilderBehaviorSettings() -> ContextBuilderBehaviorSettings {
+        store.contextBuilderBehaviorSettings()
+    }
+
+    func setContextBuilderBehaviorSettings(
+        _ settings: ContextBuilderBehaviorSettings,
+        commit: Bool = true
+    ) {
+        store.setContextBuilderBehaviorSettings(settings, commit: commit)
     }
 
     func globalContextBuilderAgentSelection() -> (agentRaw: String?, modelRaw: String?) {
@@ -357,10 +369,6 @@ final class WindowSettingsManager: ObservableObject, SettingsManaging {
 
     func copyAgentModelsProfile(from source: AgentModelsEditingScope, to destination: AgentModelsEditingScope) {
         store.copyAgentModelsProfile(from: source, to: destination)
-    }
-
-    func maxBackgroundAgentComposeTabs() -> Int {
-        store.maxBackgroundAgentComposeTabs()
     }
 
     // MARK: - Lifecycle helpers

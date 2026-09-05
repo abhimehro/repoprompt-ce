@@ -11,6 +11,7 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
 
     private var runner: CLIProcessRunner?
     private let config: CodexExecAgentConfig
+    private let runtimeStatePreparer: @Sendable (CodexRuntimeAuthority.Runtime) throws -> Void
     private let configService = MCPConfigExportService.shared
     private let toolTracking = AgentToolTrackingController()
     private var streamTask: Task<Void, Never>?
@@ -20,8 +21,14 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
         config.enableDebugLogging
     }
 
-    init(config: CodexExecAgentConfig) {
+    init(
+        config: CodexExecAgentConfig,
+        runtimeStatePreparer: @escaping @Sendable (CodexRuntimeAuthority.Runtime) throws -> Void = {
+            try $0.prepareState()
+        }
+    ) {
         self.config = config
+        self.runtimeStatePreparer = runtimeStatePreparer
         if enableDebugLogging {
             print("[DEBUG] CodexExec: Initialized provider with model: \(config.modelString ?? "default")")
         }
@@ -41,7 +48,8 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
     static func buildCodexExecArguments(
         selectedModelString: String?,
         serverEntries: [MCPIntegrationHelper.CodexServerEntry],
-        brokenServers: Set<String>
+        brokenServers: Set<String>,
+        fullAccess: Bool = false
     ) -> (args: [String], modelSpecifier: CodexModelSpecifier) {
         var args: [String] = []
         let modelCLIArgs = codexModelCLIArgs(selectedModelString: selectedModelString)
@@ -73,11 +81,12 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
         args.append(contentsOf: modelCLIArgs.configArgs)
         args.append(contentsOf: toolOverrideArgs)
         args.append(contentsOf: serverOverrideArgs)
-        args.append(contentsOf: [
-            "--json",
-            "--skip-git-repo-check",
-            "--full-auto"
-        ])
+        args.append(contentsOf: ["--json", "--skip-git-repo-check"])
+        if fullAccess {
+            args.append("--dangerously-bypass-approvals-and-sandbox")
+        } else {
+            args.append(contentsOf: ["--sandbox", "workspace-write"])
+        }
 
         return (args, modelSpecifier)
     }
@@ -117,10 +126,10 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
             throw AIProviderError.invalidConfiguration(detail: resolution.userMessage)
         }
         do {
-            try runtime.prepareState()
+            try runtimeStatePreparer(runtime)
         } catch {
             throw AIProviderError.invalidConfiguration(
-                detail: "RepoPrompt could not start Codex: unable to prepare its isolated state directories (\(error.localizedDescription))."
+                detail: "RepoPrompt could not start Codex: unable to prepare its isolated Codex state (\(error.localizedDescription))."
             )
         }
 
@@ -219,7 +228,8 @@ final class CodexExecAgentProvider: HeadlessAgentProvider {
                                 let command = Self.buildCodexExecArguments(
                                     selectedModelString: selectedModelString,
                                     serverEntries: serverEntries,
-                                    brokenServers: brokenServers
+                                    brokenServers: brokenServers,
+                                    fullAccess: config.fullAccess
                                 )
                                 let args = command.args
                                 let modelSpecifier = command.modelSpecifier

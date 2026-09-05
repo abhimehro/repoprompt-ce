@@ -463,6 +463,16 @@ final class MCPServerViewModel: ObservableObject {
             try await oracleToolService.executeAskOracle(args: args)
         }
 
+        func resolveAgentSessionLifecycleMutationTargetForTesting(
+            connectionID: UUID?
+        ) async throws -> AgentSessionLifecycleAuthority.MutationTarget {
+            try await resolveAgentSessionLifecycleMutationTarget(
+                args: [:],
+                connectionID: connectionID,
+                intent: .setStatus
+            )
+        }
+
         func setOracleReviewPackagingTraceObserverForTesting(
             _ observer: OracleReviewPackagingTraceContext.Observer?
         ) {
@@ -1117,9 +1127,13 @@ final class MCPServerViewModel: ObservableObject {
             }
             return connectionID
         },
-        resolveAgentModeTabID: { [weak self] args, connectionID in
+        resolveAgentModeTabID: { [weak self] args, connectionID, intent in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving agent mode tab") }
-            return try await resolveTabIDForAgentMode(args: args, connectionID: connectionID)
+            return try await resolveAgentSessionLifecycleMutationTarget(
+                args: args,
+                connectionID: connectionID,
+                intent: intent
+            )
         },
         resolveContextBuilderTab: { [weak self] args, targetWindow, connectionID in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving context_builder tab") }
@@ -1533,27 +1547,32 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else { throw MCPError.internalError("Window deallocated while building file tree") }
             return try await buildStoreBackedFileTreeResult(mode: mode, maxDepth: maxDepth, startPath: startPath, lookupContext: lookupContext)
         },
-        readSelectedAuthorizedGitArtifact: { [weak self] requestedPath, resolvedPath, startLine1Based, lineCount, metadata, lookupContext in
+        readSelectedAuthorizedGitArtifact: { [weak self] requestedPath, translatedLookupPath, startLine1Based, lineCount, metadata, lookupContext in
             guard let self else { throw MCPError.internalError("Window deallocated while reading selected Git artifact") }
             return try await readSelectedAuthorizedGitArtifact(
                 requestedPath: requestedPath,
-                resolvedPath: resolvedPath,
+                translatedLookupPath: translatedLookupPath,
                 startLine1Based: startLine1Based,
                 lineCount: lineCount,
                 metadata: metadata,
                 lookupContext: lookupContext
             )
         },
-        readFile: { [weak self] path, startLine1Based, lineCount, lookupRootScope in
+        readFile: { [weak self] input, startLine1Based, lineCount, lookupContext in
             guard let self else { throw MCPError.internalError("Window deallocated while reading file") }
-            return try await readFile(path: path, startLine1Based: startLine1Based, lineCount: lineCount, lookupRootScope: lookupRootScope)
+            return try await readFile(
+                input: input,
+                startLine1Based: startLine1Based,
+                lineCount: lineCount,
+                lookupContext: lookupContext
+            )
         },
-        enqueueReadFileAutoSelection: { [weak self] reply, requestedPath, resolvedPhysicalPath, metadata in
+        enqueueReadFileAutoSelection: { [weak self] reply, requestedPath, absolutePhysicalPath, metadata in
             guard let self else { throw MCPError.internalError("Window deallocated while enqueuing read_file auto-selection") }
             try await enqueueReadFileAutoSelection(
                 reply: reply,
                 requestedPath: requestedPath,
-                resolvedPhysicalPath: resolvedPhysicalPath,
+                absolutePhysicalPath: absolutePhysicalPath,
                 metadata: metadata
             )
         },
@@ -3609,7 +3628,8 @@ final class MCPServerViewModel: ObservableObject {
         args: [String: Value],
         connectionID: UUID?
     ) async throws -> UUID {
-        // 1) Explicit _tabID override (hidden param), validated against real tabs.
+        // Oracle tools use this only to anchor context packaging to a compose tab;
+        // they do not mutate or start the tab's Agent session identity.
         let explicitRaw = rawExplicitTabID(args: args)
         let workspaceTabIDs = Set(workspaceManager?.activeWorkspace?.composeTabs.map(\.id) ?? [])
         let availableTabIDs = workspaceTabIDs.isEmpty
@@ -3622,7 +3642,6 @@ final class MCPServerViewModel: ObservableObject {
             return explicitUUID
         }
 
-        // 2) Try to get tab from MCP connection context (bound tab)
         let resolvedConnectionID: UUID? = if let connectionID {
             connectionID
         } else {
@@ -3635,14 +3654,12 @@ final class MCPServerViewModel: ObservableObject {
             return boundTab
         }
 
-        // 3) Fallback to active compose tab in the window
         if let activeTab = promptVM.activeComposeTabID,
            composeTabExists(activeTab)
         {
             return activeTab
         }
 
-        // 4) Create a blank tab as a last resort
         if let newTab = await promptVM.ensureActiveComposeTab(
             nil,
             creationStrategy: .blank,
@@ -3654,10 +3671,113 @@ final class MCPServerViewModel: ObservableObject {
         throw MCPError.invalidParams("No active compose tab available; open or create a tab first.")
     }
 
+    private func resolveAgentSessionLifecycleMutationTarget(
+        args: [String: Value],
+        connectionID: UUID?,
+        intent: AgentSessionLifecycleAuthority.Intent
+    ) async throws -> AgentSessionLifecycleAuthority.MutationTarget {
+        // 1) Explicit _tabID override (hidden param), validated against real tabs.
+        let explicitRaw = rawExplicitTabID(args: args)
+        let workspaceTabIDs = Set(workspaceManager?.activeWorkspace?.composeTabs.map(\.id) ?? [])
+        let availableTabIDs = workspaceTabIDs.isEmpty
+            ? Set(promptVM.currentComposeTabs.map(\.id))
+            : workspaceTabIDs
+        if let explicitUUID = try Self.resolveExplicitTabIDForAgentMode(
+            rawTabID: explicitRaw,
+            availableTabIDs: availableTabIDs
+        ) {
+            let expectedSessionID = workspaceManager?.composeTab(with: explicitUUID)?.activeAgentSessionID
+            return try requireTargetWindow().agentModeViewModel
+                .resolveAgentSessionLifecycleMutationTarget(
+                    tabID: explicitUUID,
+                    expectedSessionID: expectedSessionID,
+                    intent: intent
+                )
+        }
+
+        // 2) Try to get tab from MCP connection context (bound tab)
+        let resolvedConnectionID: UUID? = if let connectionID {
+            connectionID
+        } else {
+            await service.currentRequestConnectionID()
+        }
+        let requiresBoundAgentSessionContext = switch intent {
+        case .setStatus, .shareThoughts, .waitForInstruction, .askUser:
+            true
+        case .createOrContinue, .applyProjection, .providerStart:
+            false
+        }
+        if requiresBoundAgentSessionContext,
+           let resolvedConnectionID
+        {
+            guard let boundContext = tabContextByConnectionID[resolvedConnectionID],
+                  boundContext.windowID == windowID
+            else {
+                throw MCPError.invalidParams(
+                    "The Agent session connection no longer has its bound tab; the operation was not retargeted. Bind the current context again."
+                )
+            }
+            guard composeTabExists(boundContext.tabID) else {
+                throw MCPError.invalidParams(
+                    "The Agent session's bound tab no longer exists; the operation was not retargeted. Bind the current context again."
+                )
+            }
+            return try requireTargetWindow().agentModeViewModel
+                .resolveAgentSessionLifecycleMutationTarget(
+                    tabID: boundContext.tabID,
+                    expectedSessionID: boundContext.activeAgentSessionID,
+                    intent: intent
+                )
+        }
+        if let resolvedConnectionID,
+           let boundContext = tabContextByConnectionID[resolvedConnectionID],
+           boundContext.windowID == windowID
+        {
+            guard composeTabExists(boundContext.tabID) else {
+                throw MCPError.invalidParams(
+                    "The Agent session's bound tab no longer exists; the operation was not retargeted. Bind the current context again."
+                )
+            }
+            return try requireTargetWindow().agentModeViewModel
+                .resolveAgentSessionLifecycleMutationTarget(
+                    tabID: boundContext.tabID,
+                    expectedSessionID: boundContext.activeAgentSessionID,
+                    intent: intent
+                )
+        }
+
+        // 3) Fallback to active compose tab in the window
+        if let activeTab = promptVM.activeComposeTabID,
+           composeTabExists(activeTab)
+        {
+            return try requireTargetWindow().agentModeViewModel
+                .resolveAgentSessionLifecycleMutationTarget(
+                    tabID: activeTab,
+                    expectedSessionID: nil,
+                    intent: intent
+                )
+        }
+
+        // 4) Create a blank tab as a last resort
+        if let newTab = await promptVM.ensureActiveComposeTab(
+            nil,
+            creationStrategy: .blank,
+            name: nil
+        ) {
+            return try requireTargetWindow().agentModeViewModel
+                .resolveAgentSessionLifecycleMutationTarget(
+                    tabID: newTab.id,
+                    expectedSessionID: newTab.activeAgentSessionID,
+                    intent: intent
+                )
+        }
+
+        throw MCPError.invalidParams("No active compose tab available; open or create a tab first.")
+    }
+
     /// Resolves an explicit `_tabID` from the args, returning nil when not provided.
-    /// Unlike `resolveExistingTabIDForAgentControl`, this does NOT fall back to the
-    /// connection-bound tab or active tab. This ensures run-starting operations
-    /// (agent_run.start) creates a fresh session by default.
+    /// This does not fall back to the connection-bound or active tab. Run-starting
+    /// operations therefore create a fresh session by default.
     private func resolveRequestedTabIDForAgentControl(
         args: [String: Value]
     ) throws -> UUID? {
@@ -3669,34 +3789,6 @@ final class MCPServerViewModel: ObservableObject {
             rawTabID: rawExplicitTabID(args: args),
             availableTabIDs: availableTabIDs
         )
-    }
-
-    private func resolveExistingTabIDForAgentControl(
-        args: [String: Value],
-        metadata: RequestMetadata
-    ) async throws -> UUID? {
-        let workspaceTabIDs = Set(workspaceManager?.activeWorkspace?.composeTabs.map(\.id) ?? [])
-        let availableTabIDs = workspaceTabIDs.isEmpty
-            ? Set(promptVM.currentComposeTabs.map(\.id))
-            : workspaceTabIDs
-        if let explicitUUID = try Self.resolveExplicitTabIDForAgentMode(
-            rawTabID: rawExplicitTabID(args: args),
-            availableTabIDs: availableTabIDs
-        ) {
-            return explicitUUID
-        }
-        if let connectionID = metadata.connectionID,
-           let boundTabID = boundTabID(forConnection: connectionID),
-           composeTabExists(boundTabID)
-        {
-            return boundTabID
-        }
-        if let activeTabID = promptVM.activeComposeTabID,
-           composeTabExists(activeTabID)
-        {
-            return activeTabID
-        }
-        return nil
     }
 
     func bindCurrentRequestToTabIfPossible(
@@ -4212,7 +4304,7 @@ final class MCPServerViewModel: ObservableObject {
     private func enqueueReadFileAutoSelection(
         reply: ToolResultDTOs.ReadFileReply,
         requestedPath: String,
-        resolvedPhysicalPath: String,
+        absolutePhysicalPath: String,
         metadata: RequestMetadata
     ) async throws {
         #if DEBUG || EDIT_FLOW_PERF
@@ -4269,10 +4361,16 @@ final class MCPServerViewModel: ObservableObject {
             return
         }
         let intent: MCPReadFileAutoSelectionCoordinator.Intent = switch selection {
-        case let .full(path):
-            .full(paths: [path])
+        case .full:
+            .full(
+                paths: [absolutePhysicalPath],
+                automaticCodemapDisposition: .disableAutomaticPreservingManual
+            )
         case let .slice(entry):
-            .slices(entries: [WorkspaceSelectionSliceInput(path: entry.path, ranges: entry.ranges)])
+            .slices(
+                entries: [WorkspaceSelectionSliceInput(path: absolutePhysicalPath, ranges: entry.ranges)],
+                automaticCodemapDisposition: .disableAutomaticPreservingManual
+            )
         }
         EditFlowPerf.end(
             EditFlowPerf.Stage.ReadFile.AutoSelect.selectionProjection,
@@ -4286,7 +4384,7 @@ final class MCPServerViewModel: ObservableObject {
         )
         let coverageIdentity = MCPReadFileAutoSelectionCoordinator.CoverageIdentity(
             intent: intent,
-            resolvedPaths: [resolvedPhysicalPath]
+            resolvedPaths: [absolutePhysicalPath]
         )
         let key = try readFileAutoSelectionContextKey(resolvedContext: resolvedContext, metadata: metadata)
         let accepted = readFileAutoSelectionCoordinator.enqueue(
@@ -4794,12 +4892,12 @@ final class MCPServerViewModel: ObservableObject {
 
     @MainActor
     private func authoritativeReadFileAutoSelectionResult(
-        mirrorKey: MCPReadFileAutoSelectionCoordinator.TabMirrorKey?,
         changed: Bool,
+        key: MCPReadFileAutoSelectionCoordinator.ContextKey,
         missReason: ReadFileAutoSelectionCoverageCertificateMissReason
     ) -> MCPReadFileAutoSelectionCoordinator.CanonicalApplyResult {
         MCPReadFileAutoSelectionCoordinator.CanonicalApplyResult(
-            mirrorKey: mirrorKey,
+            mirrorKey: changed ? key.mirrorKey : nil,
             disposition: changed ? .changed : .semanticNoOp,
             coverageCertificateOutcome: .authoritativeFallback(missReason)
         )
@@ -4814,7 +4912,17 @@ final class MCPServerViewModel: ObservableObject {
         // The bound tab context is a routable working snapshot, not canonical selection authority.
         // Handoffs and delayed mirrors can leave it behind the stored compose-tab selection, so
         // every additive read/search batch must rebase on the latest canonical value.
-        var selection = base
+        var selection = switch batch.automaticCodemapDisposition {
+        case .preserve:
+            base
+        case .disableAutomaticPreservingManual:
+            StoredSelection(
+                selectedPaths: base.selectedPaths,
+                manualCodemapPaths: base.manualCodemapPaths,
+                slices: base.slices,
+                codemapAutoEnabled: false
+            )
+        }
 
         if !batch.fullPaths.isEmpty {
             let addResult = await addStoredSelectionPaths(
@@ -4889,8 +4997,8 @@ final class MCPServerViewModel: ObservableObject {
         guard case let .miss(missReason) = certificateLookup else { return .unchanged }
         guard isReadFileAutoSelectionContextCurrent(key), readFileAutoSelectionContext(for: key) != nil else {
             return authoritativeReadFileAutoSelectionResult(
-                mirrorKey: nil,
                 changed: false,
+                key: key,
                 missReason: missReason
             )
         }
@@ -4920,7 +5028,7 @@ final class MCPServerViewModel: ObservableObject {
         } else {
             sliceRebaseCandidates = batch.sliceEntries.map(\.path)
         }
-        var observedCanonicalChange = false
+        var verifiedCanonicalChange = false
 
         // A file projection can register its slice-rebase task after the first wait. Each bounded
         // attempt revalidates path quiescence, the canonical base, and the full persisted result so
@@ -4947,7 +5055,8 @@ final class MCPServerViewModel: ObservableObject {
             )
             if !MCPReadFileAutoSelectionCoordinator.authoritativeSelection(
                 initialSelection,
-                isPreservedBy: authoritativeLookupContext.logicalizeSelection(selection)
+                isPreservedBy: authoritativeLookupContext.logicalizeSelection(selection),
+                automaticCodemapDisposition: batch.automaticCodemapDisposition
             ) {
                 guard let batchIdentity,
                       batchIdentity.isCovered(
@@ -4967,10 +5076,11 @@ final class MCPServerViewModel: ObservableObject {
                 selection: selection,
                 lookupContext: authoritativeLookupContext,
                 contextKey: key,
-                expectedBaseSelection: initialSelection
+                expectedBaseSelection: initialSelection,
+                automaticCodemapDisposition: batch.automaticCodemapDisposition
             ) else { continue }
 
-            observedCanonicalChange = observedCanonicalChange || !authoritativeResult.canonicalUnchanged
+            verifiedCanonicalChange = verifiedCanonicalChange || !authoritativeResult.canonicalUnchanged
             let minted = await mintReadFileAutoSelectionCoverageCertificate(
                 batch: batch,
                 authoritativeResult: authoritativeResult,
@@ -4980,8 +5090,8 @@ final class MCPServerViewModel: ObservableObject {
             )
             if minted {
                 return authoritativeReadFileAutoSelectionResult(
-                    mirrorKey: observedCanonicalChange ? key.mirrorKey : nil,
-                    changed: observedCanonicalChange,
+                    changed: verifiedCanonicalChange,
+                    key: key,
                     missReason: missReason
                 )
             }
@@ -5005,10 +5115,10 @@ final class MCPServerViewModel: ObservableObject {
             if let batchIdentity,
                batchIdentity.isCovered(by: authoritativeLookupContext.physicalizeSelection(finalSelection))
             {
-                let changed = observedCanonicalChange || finalSelection != initialSelection
+                let changed = verifiedCanonicalChange || finalSelection != initialSelection
                 return authoritativeReadFileAutoSelectionResult(
-                    mirrorKey: changed ? key.mirrorKey : nil,
                     changed: changed,
+                    key: key,
                     missReason: missReason
                 )
             }
@@ -5016,8 +5126,8 @@ final class MCPServerViewModel: ObservableObject {
 
         evictReadFileAutoSelectionCoverageCertificate(for: key)
         return authoritativeReadFileAutoSelectionResult(
-            mirrorKey: nil,
-            changed: false,
+            changed: verifiedCanonicalChange,
+            key: key,
             missReason: missReason
         )
     }
@@ -5142,7 +5252,10 @@ final class MCPServerViewModel: ObservableObject {
             )
             return
         }
-        let intent = MCPReadFileAutoSelectionCoordinator.Intent.slices(entries: entries)
+        let intent = MCPReadFileAutoSelectionCoordinator.Intent.slices(
+            entries: entries,
+            automaticCodemapDisposition: .preserve
+        )
         let coverageIdentity = MCPReadFileAutoSelectionCoordinator.CoverageIdentity(
             intent: intent,
             resolvedPaths: resolvedPhysicalPaths
@@ -5953,12 +6066,12 @@ final class MCPServerViewModel: ObservableObject {
     /// Returns both the content slice and metadata about the shown range.
     private func readSelectedAuthorizedGitArtifact(
         requestedPath: String,
-        resolvedPath: String,
+        translatedLookupPath: String,
         startLine1Based: Int?,
         lineCount: Int?,
         metadata: RequestMetadata,
         lookupContext: WorkspaceLookupContext
-    ) async throws -> (reply: ToolResultDTOs.ReadFileReply, shouldAutoSelect: Bool)? {
+    ) async throws -> ToolResultDTOs.ReadFileReply? {
         guard var resolvedContext = try? resolveTabContextSnapshot(
             from: metadata,
             toolName: MCPWindowToolName.readFile
@@ -5975,7 +6088,7 @@ final class MCPServerViewModel: ObservableObject {
         )
         let targetsGitData = isGitDataArtifactRequest(
             requestedPath,
-            resolvedPath: resolvedPath,
+            resolvedPath: translatedLookupPath,
             capability: reviewGitContext.artifactCapability
         )
         guard let capability = reviewGitContext.artifactCapability else {
@@ -5995,7 +6108,7 @@ final class MCPServerViewModel: ObservableObject {
                 store: promptVM.workspaceFileContextStore
             )
         )
-        let requestedCandidates = Set([requestedPath, resolvedPath].map {
+        let requestedCandidates = Set([requestedPath, translatedLookupPath].map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
         })
         guard let entry = authorization.entries.first(where: { entry in
@@ -6023,7 +6136,7 @@ final class MCPServerViewModel: ObservableObject {
                 lineCount: lineCount,
                 displayPath: displayPath
             )
-            return (preparedReply.reply, false)
+            return preparedReply.reply
         } catch WorkspaceInteractiveReadRangeError.limitWithNegativeStart {
             throw MCPError.invalidParams("limit parameter is not allowed with negative start_line. Use start_line=-N to read the last N lines.")
         } catch WorkspaceInteractiveReadRangeError.zeroStart {
@@ -6053,113 +6166,101 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     private func readFile(
-        path: String,
+        input: WorkspaceExactFileInput,
         startLine1Based: Int? = nil,
         lineCount: Int? = nil,
-        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace
-    ) async throws -> (reply: ToolResultDTOs.ReadFileReply, shouldAutoSelect: Bool) {
+        lookupContext: WorkspaceLookupContext = .visibleWorkspace
+    ) async throws -> MCPAppFileReadResult {
         try await MCPToolWorkCountDiagnostics.withReadFileInvocation { [self] in
             try await readFileBody(
-                path: path,
+                input: input,
                 startLine1Based: startLine1Based,
                 lineCount: lineCount,
-                lookupRootScope: lookupRootScope
+                lookupContext: lookupContext
             )
         }
     }
 
     private func readFileBody(
-        path: String,
+        input: WorkspaceExactFileInput,
         startLine1Based: Int? = nil,
         lineCount: Int? = nil,
-        lookupRootScope: WorkspaceLookupRootScope = .visibleWorkspace
-    ) async throws -> (reply: ToolResultDTOs.ReadFileReply, shouldAutoSelect: Bool) {
+        lookupContext: WorkspaceLookupContext = .visibleWorkspace
+    ) async throws -> MCPAppFileReadResult {
         try Task.checkCancellation()
         let store = promptVM.workspaceFileContextStore
         let readableService = WorkspaceReadableFileService(store: store)
-
-        let rootRefsLookup = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.rootRefsLookup)
-        let roots = await store.rootRefs(scope: lookupRootScope)
-        try Task.checkCancellation()
-        EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.rootRefsLookup, rootRefsLookup)
+        let roots = await store.rootRefs(scope: lookupContext.rootScope)
+        let namespace = lookupContext.exactFileNamespace(storeRoots: roots)
+        let requestedPath = input.renderedPath
+        let freshnessPath = switch input {
+        case let .absolute(path): lookupContext.translateInputPath(path)
+        case .explicitRoot, .relative: requestedPath
+        }
 
         try await readableService.awaitFreshnessForExplicitRequest(
-            path,
+            freshnessPath,
             rootRefs: roots,
             timeout: MCPTimeoutPolicy.workspaceFreshnessWaitTimeout
         )
         try Task.checkCancellation()
 
-        let resolution = await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.resolveReadableFile) {
-            await readableService.resolveReadFileRequest(
-                path,
-                profile: .mcpRead,
-                rootScope: lookupRootScope,
-                rootRefs: roots
+        let resolution = try await EditFlowPerf.measure(EditFlowPerf.Stage.ReadFile.resolveReadableFile) {
+            try await readableService.resolveReadFileRequest(
+                input,
+                rootScope: lookupContext.rootScope,
+                rootRefs: roots,
+                namespace: namespace
             )
         }
         try Task.checkCancellation()
 
         let readableFile: WorkspaceReadableFileHandle
+        let displayPath: String
         switch resolution {
-        case let .readable(handle):
-            readableFile = handle
-        case let .folder(displayPath):
-            throw MCPError.invalidParams("'\(displayPath)' is a folder; read_file requires a file path. Use get_file_tree or file_search to find specific files.")
+        case let .workspace(match):
+            readableFile = .workspace(match.file)
+            displayPath = match.canonicalPath
+        case let .external(file):
+            readableFile = .external(file)
+            displayPath = file.displayPath
+        case let .folder(folderDisplayPath):
+            throw MCPError.invalidParams("'\(folderDisplayPath)' is a folder; read_file requires a file path. Use get_file_tree or file_search to find specific files.")
         case let .issue(issue):
             throw MCPError.invalidParams(PathResolutionIssueRenderer.message(for: issue))
         case .noCandidate:
-            if readableService.isAlwaysReadableExternalPath(path) {
-                throw MCPError.invalidParams("File not found: '\(readableService.displayPath(forExternalPath: path))'.")
+            if readableService.isAlwaysReadableExternalPath(requestedPath) {
+                throw MCPError.invalidParams("File not found: '\(readableService.displayPath(forExternalPath: requestedPath))'.")
             }
-            let msg = await workspaceContextMessage(forOperation: "read file", path: path)
-            throw MCPError.invalidParams("Cannot read '\(path)'. \(msg)")
+            let msg = await workspaceContextMessage(forOperation: "read file", path: requestedPath)
+            throw MCPError.invalidParams("Cannot read '\(requestedPath)'. \(msg)")
         }
 
         let preparedContent: WorkspaceInteractiveReadPreparedContent
-        let displayPath: String
-        let shouldAutoSelect: Bool
         let cacheHit: Bool
         switch readableFile {
         case let .workspace(file):
             guard let snapshot = try await EditFlowPerf.measure(
                 EditFlowPerf.Stage.ReadFile.workspaceContentLoad,
-                operation: {
-                    try await store.interactiveReadSnapshot(for: file)
-                }
-            ) else {
-                throw MCPError.internalError("content unavailable")
-            }
-            try Task.checkCancellation()
+                operation: { try await store.interactiveReadSnapshot(for: file) }
+            ) else { throw MCPError.internalError("content unavailable") }
             preparedContent = snapshot.preparedContent
             cacheHit = snapshot.cacheHit
-            displayPath = ClientPathFormatter.displayAbsolutePath(
-                fullPath: file.standardizedFullPath,
-                visibleRoots: roots
-            )
-            shouldAutoSelect = true
         case let .external(externalFile):
             do {
                 let full = try await readableService.readAlwaysReadableExternalFile(externalFile)
-                try Task.checkCancellation()
-                let splitState = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.splitPreservingLineEndings)
                 preparedContent = await WorkspaceInteractiveReadProcessor.prepareOffActor(full)
-                EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.splitPreservingLineEndings, splitState)
-                try Task.checkCancellation()
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 throw MCPError.invalidParams("Cannot read '\(externalFile.displayPath)': \(error.localizedDescription)")
             }
             cacheHit = false
-            displayPath = externalFile.displayPath
-            shouldAutoSelect = false
         }
+        try Task.checkCancellation()
 
         let preparedReply: MCPReadFileToolProjection.PreparedReply
         do {
-            let sliceState = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.buildSlice)
-            defer { EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.buildSlice, sliceState) }
             preparedReply = try await MCPReadFileToolProjection.makeBaseReply(
                 preparedContent: preparedContent,
                 startLine1Based: startLine1Based,
@@ -6171,14 +6272,18 @@ final class MCPServerViewModel: ObservableObject {
         } catch WorkspaceInteractiveReadRangeError.zeroStart {
             throw MCPError.invalidParams("start_line must be positive (1-based) or negative (tail-like behavior)")
         }
-        try Task.checkCancellation()
 
         MCPToolWorkCountDiagnostics.recordReadFileResult(
             returnedBytes: preparedReply.reply.content.utf8.count,
             returnedLines: preparedReply.returnedLineCount,
             cacheHit: cacheHit
         )
-        return (preparedReply.reply, shouldAutoSelect)
+        switch readableFile {
+        case let .workspace(file):
+            return .workspace(reply: preparedReply.reply, absolutePhysicalPath: file.standardizedFullPath)
+        case .external:
+            return .nonSelecting(reply: preparedReply.reply)
+        }
     }
 
     /// Performs a file action (create, delete, or move/rename)
@@ -6363,8 +6468,18 @@ final class MCPServerViewModel: ObservableObject {
     ) async throws {
         do {
             let store = promptVM.workspaceFileContextStore
+            let mutationService = WorkspaceFileMutationService(store: store)
+            let target: WorkspaceFileEditHost.Target = if let existing = await mutationService.exactExistingFile(
+                path,
+                rootScope: lookupRootScope
+            ) {
+                .existing(existing)
+            } else {
+                .create(path: path)
+            }
             let host = WorkspaceFileEditHost(
                 store: store,
+                target: target,
                 selectionCoordinator: selectionCoordinator,
                 lookupRootScope: lookupRootScope,
                 createPathResolutionPolicy: .literalPreferredIfStronger,

@@ -456,6 +456,80 @@ struct WorkspaceFileRecord: Identifiable, Equatable, Hashable {
     }
 }
 
+struct WorkspaceExactFileNamespace: Equatable {
+    struct RootBinding: Equatable {
+        enum LookupRole: Equatable {
+            case canonical
+            case projectedPhysical
+        }
+
+        let lookupRoot: WorkspaceRootRef
+        let lookupRole: LookupRole
+        let clientRoots: [WorkspaceRootRef]
+        let preferredClientRoot: WorkspaceRootRef
+    }
+
+    let rootBindings: [RootBinding]
+    let explicitAliasByClientRootID: [UUID: String]
+
+    init(rootBindings: [RootBinding]) {
+        self.rootBindings = rootBindings
+        let clientRoots = rootBindings.flatMap(\.clientRoots)
+        explicitAliasByClientRootID = ClientPathFormatter.exactRootAliases(visibleRoots: clientRoots)
+    }
+
+    static func identity(roots: [WorkspaceRootRef]) -> WorkspaceExactFileNamespace {
+        WorkspaceExactFileNamespace(
+            rootBindings: roots.map {
+                RootBinding(
+                    lookupRoot: $0,
+                    lookupRole: .canonical,
+                    clientRoots: [$0],
+                    preferredClientRoot: $0
+                )
+            }
+        )
+    }
+
+    var lookupRoots: [WorkspaceRootRef] {
+        rootBindings.map(\.lookupRoot)
+    }
+
+    var clientRoots: [WorkspaceRootRef] {
+        var seenPaths: Set<String> = []
+        return rootBindings.flatMap(\.clientRoots).filter {
+            seenPaths.insert($0.standardizedFullPath).inserted
+        }
+    }
+
+    func binding(lookupRootID: UUID) -> RootBinding? {
+        rootBindings.first { $0.lookupRoot.id == lookupRootID }
+    }
+
+    func explicitAlias(clientRootID: UUID) -> String? {
+        explicitAliasByClientRootID[clientRootID]
+    }
+}
+
+struct WorkspaceExactExistingFileMatch: Equatable {
+    let file: WorkspaceFileRecord
+    let canonicalPath: String
+}
+
+struct WorkspaceExactDirectoryMatch: Equatable {
+    let lookupRoot: WorkspaceRootRef
+    let relativePath: String
+    let displayPath: String
+}
+
+enum WorkspaceExactExistingFileResolution: Equatable {
+    case matched(WorkspaceExactExistingFileMatch)
+    case directory(WorkspaceExactDirectoryMatch)
+    case issue(PathResolutionIssue)
+    case claimedMissing
+    case noCandidate
+}
+
 struct ResolvedWorkspaceSelection: Equatable {
     let files: [WorkspaceFileRecord]
     let folders: [WorkspaceFolderRecord]
@@ -571,6 +645,51 @@ struct WorkspaceSliceRebaseSourceSnapshot: Equatable {
     let fullPath: String
     let text: String
     let modificationTime: Double
+}
+
+enum WorkspaceSearchCatalogChangeKind: Equatable {
+    case rootLoaded
+    case rootUnloaded
+    case appliedIndex
+
+    /// The catalog generation advanced without changing the discoverable search projection.
+    case generationAdvancedWithoutProjectionChange
+}
+
+struct WorkspaceSearchCatalogChangeEvent: Equatable {
+    let rootID: UUID
+    let rootPath: String
+    let rootLifetimeID: UUID?
+    let rootAppliedIndexGeneration: UInt64?
+    let catalogGeneration: UInt64?
+    let kind: WorkspaceSearchCatalogChangeKind
+
+    init(
+        rootID: UUID,
+        rootPath: String,
+        rootLifetimeID: UUID?,
+        rootAppliedIndexGeneration: UInt64?,
+        catalogGeneration: UInt64? = nil,
+        kind: WorkspaceSearchCatalogChangeKind
+    ) {
+        self.rootID = rootID
+        self.rootPath = rootPath
+        self.rootLifetimeID = rootLifetimeID
+        self.rootAppliedIndexGeneration = rootAppliedIndexGeneration
+        self.catalogGeneration = catalogGeneration
+        self.kind = kind
+    }
+
+    func stamped(catalogGeneration: UInt64) -> Self {
+        Self(
+            rootID: rootID,
+            rootPath: rootPath,
+            rootLifetimeID: rootLifetimeID,
+            rootAppliedIndexGeneration: rootAppliedIndexGeneration,
+            catalogGeneration: catalogGeneration,
+            kind: kind
+        )
+    }
 }
 
 struct WorkspaceAppliedIndexBatchEvent: Equatable {

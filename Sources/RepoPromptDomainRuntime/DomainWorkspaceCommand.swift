@@ -23,7 +23,17 @@ package enum DomainWorkspaceCommand: Codable, Equatable, Sendable {
     case replaceWorkingDocument(DomainWorkspaceDocument)
     case saveWorkspaceDocument(workspaceID: UUID)
     case deleteWorkspace(workspaceID: UUID)
-    case resolveExternalConflict(workspaceID: UUID, acceptExternal: Bool)
+    case resolveExternalConflict(
+        workspaceID: UUID,
+        acceptExternal: Bool,
+        protectedAgentIdentities: [DomainProtectedAgentIdentity]
+    )
+}
+
+/// Opt-in command behavior for mutations that must never replay their captured bytes over a
+/// concurrent durable winner.
+package enum DomainWorkspaceConflictRecoveryPolicy: String, Codable, Equatable, Sendable {
+    case failClosed
 }
 
 package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
@@ -31,6 +41,7 @@ package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
     package let expectedCatalogRevision: UInt64?
     package let expectedWorkspaceRevision: UInt64?
     package let expectedContextRevision: UInt64?
+    package let conflictRecoveryPolicy: DomainWorkspaceConflictRecoveryPolicy?
     package let origin: DomainCommandOrigin
     package let command: DomainWorkspaceCommand
 
@@ -39,6 +50,7 @@ package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
         expectedCatalogRevision: UInt64? = nil,
         expectedWorkspaceRevision: UInt64? = nil,
         expectedContextRevision: UInt64? = nil,
+        conflictRecoveryPolicy: DomainWorkspaceConflictRecoveryPolicy? = nil,
         origin: DomainCommandOrigin,
         command: DomainWorkspaceCommand
     ) {
@@ -46,6 +58,7 @@ package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
         self.expectedCatalogRevision = expectedCatalogRevision
         self.expectedWorkspaceRevision = expectedWorkspaceRevision
         self.expectedContextRevision = expectedContextRevision
+        self.conflictRecoveryPolicy = conflictRecoveryPolicy
         self.origin = origin
         self.command = command
     }
@@ -58,6 +71,9 @@ package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
             expectedContextRevision.map(String.init) ?? "nil",
             origin.fingerprintComponent
         ]
+        if let conflictRecoveryPolicy {
+            components.append("conflict-recovery:\(conflictRecoveryPolicy.rawValue)")
+        }
         switch command {
         case let .createWorkspace(document):
             components += ["create", document.workspaceID.uuidString, document.fileURL.absoluteString, document.contentDigest]
@@ -67,8 +83,23 @@ package struct DomainWorkspaceCommandEnvelope: Codable, Equatable, Sendable {
             components += ["save", workspaceID.uuidString]
         case let .deleteWorkspace(workspaceID):
             components += ["delete", workspaceID.uuidString]
-        case let .resolveExternalConflict(workspaceID, acceptExternal):
+        case let .resolveExternalConflict(workspaceID, acceptExternal, protectedAgentIdentities):
             components += ["resolve", workspaceID.uuidString, acceptExternal ? "external" : "local"]
+            components += protectedAgentIdentities
+                .sorted {
+                    if $0.location.rawValue != $1.location.rawValue {
+                        return $0.location.rawValue < $1.location.rawValue
+                    }
+                    return $0.tabID.uuidString < $1.tabID.uuidString
+                }
+                .flatMap {
+                    [
+                        $0.location.rawValue,
+                        $0.tabID.uuidString,
+                        $0.activeAgentSessionID?.uuidString ?? "nil",
+                        $0.isPinned ? "pinned" : "unpinned"
+                    ]
+                }
         }
         let canonical = components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
         return DomainContentDigest.sha256(Data(canonical.utf8))
@@ -88,6 +119,9 @@ package enum DomainCommandDisposition: String, Codable, Sendable {
 package enum DomainCommandErrorCode: String, Codable, Sendable {
     case stateConflict = "state_conflict"
     case runtimeReadOnlyDegraded = "runtime_read_only_degraded"
+    case workspaceExternalConflict = "workspace_external_conflict"
+    case workspaceReadOnlyDegraded = "workspace_read_only_degraded"
+    case protectedAgentIdentityConflict = "protected_agent_identity_conflict"
     case operationIDCollision = "operation_id_collision"
     case workspaceUnavailable = "workspace_unavailable"
     case invalidDocument = "invalid_document"

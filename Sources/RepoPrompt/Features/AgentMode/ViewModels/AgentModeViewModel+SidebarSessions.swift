@@ -25,6 +25,7 @@ extension AgentModeViewModel {
         let filteredTabs: [StashedTab]
         let sortedTabs: [StashedTab]
         let dateInfoByStashedTabID: [UUID: SidebarSessionDateInfo]
+        let sessionIDByStashedTabID: [UUID: UUID]
     }
 
     struct ArchivedHUDSessionDescriptor {
@@ -32,6 +33,11 @@ extension AgentModeViewModel {
         let entry: AgentSessionIndexEntry?
         let dateInfo: SidebarSessionDateInfo
         let searchFields: AgentSessionSearchFields
+    }
+
+    private struct ArchivedSidebarSessionMetadata {
+        let dateInfoByStashedTabID: [UUID: SidebarSessionDateInfo]
+        let sessionIDByStashedTabID: [UUID: UUID]
     }
 
     private struct ArchivedSidebarSessionLookup {
@@ -172,12 +178,40 @@ extension AgentModeViewModel {
         for stashedTab: StashedTab,
         lookup: ArchivedSidebarSessionLookup
     ) -> SidebarSessionDateInfo {
-        let entry = lookup.explicitEntry(for: stashedTab.tab.activeAgentSessionID)
-            ?? preferredArchivedSidebarEntry(for: stashedTab.tab.id, tabName: stashedTab.tab.name, lookup: lookup)
+        archivedSessionDateInfo(
+            for: stashedTab,
+            entry: archivedSidebarEntry(for: stashedTab, lookup: lookup)
+        )
+    }
 
-        return SidebarSessionDateInfo(
+    private func archivedSessionDateInfo(
+        for stashedTab: StashedTab,
+        entry: AgentSessionIndexEntry?
+    ) -> SidebarSessionDateInfo {
+        SidebarSessionDateInfo(
             lastEngagementAt: entry?.lastUserMessageAt,
             activityDate: entry.map(AgentSessionRestoreSupport.sidebarActivityDate(for:)) ?? stashedTab.tab.lastModified
+        )
+    }
+
+    private func archivedSidebarSessionMetadata(
+        for stashedTabs: [StashedTab],
+        lookup: ArchivedSidebarSessionLookup
+    ) -> ArchivedSidebarSessionMetadata {
+        var dateInfoByStashedTabID: [UUID: SidebarSessionDateInfo] = [:]
+        var sessionIDByStashedTabID: [UUID: UUID] = [:]
+        dateInfoByStashedTabID.reserveCapacity(stashedTabs.count)
+        sessionIDByStashedTabID.reserveCapacity(stashedTabs.count)
+
+        for stashedTab in stashedTabs {
+            let entry = archivedSidebarEntry(for: stashedTab, lookup: lookup)
+            dateInfoByStashedTabID[stashedTab.id] = archivedSessionDateInfo(for: stashedTab, entry: entry)
+            sessionIDByStashedTabID[stashedTab.id] = stashedTab.tab.activeAgentSessionID ?? entry?.id
+        }
+
+        return ArchivedSidebarSessionMetadata(
+            dateInfoByStashedTabID: dateInfoByStashedTabID,
+            sessionIDByStashedTabID: sessionIDByStashedTabID
         )
     }
 
@@ -197,20 +231,22 @@ extension AgentModeViewModel {
             return ArchivedSidebarSessionTabsSnapshot(
                 filteredTabs: filteredTabs,
                 sortedTabs: [],
-                dateInfoByStashedTabID: [:]
+                dateInfoByStashedTabID: [:],
+                sessionIDByStashedTabID: [:]
             )
         }
-        let dateInfoByID = archivedSessionDateInfoByID(for: filteredTabs, lookup: lookup)
+        let metadata = archivedSidebarSessionMetadata(for: filteredTabs, lookup: lookup)
         let sortedTabs = sortedFilteredArchivedSessionTabs(
             filteredTabs,
             diagnosticInputStashedCount: stashedTabs.count,
             diagnosticSearchActive: !trimmedSearch.isEmpty,
-            dateInfoByID: dateInfoByID
+            dateInfoByID: metadata.dateInfoByStashedTabID
         )
         return ArchivedSidebarSessionTabsSnapshot(
             filteredTabs: filteredTabs,
             sortedTabs: sortedTabs,
-            dateInfoByStashedTabID: dateInfoByID
+            dateInfoByStashedTabID: metadata.dateInfoByStashedTabID,
+            sessionIDByStashedTabID: metadata.sessionIDByStashedTabID
         )
     }
 
@@ -382,47 +418,77 @@ extension AgentModeViewModel {
         }
     }
 
-    /// Session-linked sidebar data source.
-    /// Blank compose tabs stay hidden until they are explicitly linked to an agent session.
+    /// Session-linked sidebar data source for runtime behavior and navigation.
+    /// Compose tabs stay hidden until they are explicitly linked to an Agent session.
     func sidebarSessions(for tabs: [ComposeTabState]) -> [SidebarSession] {
-        let cacheKey = SidebarSessionRowsCacheKey(
+        buildSidebarSessions(
+            for: tabs,
             workspaceID: workspaceManager?.activeWorkspaceID,
-            sidebarRevision: ui.sessionSidebar.snapshot.revision,
+            includeComposeTabsWithoutAgentSessions: false
+        )
+    }
+
+    /// Presentation data source for the active Agent Chats list.
+    func agentChatsSidebarSessions(for tabs: [ComposeTabState]) -> [SidebarSession] {
+        buildSidebarSessions(
+            for: tabs,
+            workspaceID: workspaceManager?.activeWorkspaceID,
+            includeComposeTabsWithoutAgentSessions: true
+        )
+    }
+
+    private func buildSidebarSessions(
+        for tabs: [ComposeTabState],
+        workspaceID: UUID?,
+        includeComposeTabsWithoutAgentSessions: Bool
+    ) -> [SidebarSession] {
+        let cacheKey = SidebarSessionRowsCacheKey(
+            workspaceID: workspaceID,
+            rowContentRevision: ui.sessionSidebar.snapshot.rowContentRevision,
             tabMetadataSignatures: makeSessionSidebarTabMetadataSignatures(for: tabs)
         )
-        if let cached = sidebarSessionRowsCache, cached.key == cacheKey {
-            return cached.rows
+        let cachedRows = includeComposeTabsWithoutAgentSessions
+            ? agentChatsSidebarRowsCache
+            : sidebarSessionRowsCache
+        if let cachedRows, cachedRows.key == cacheKey {
+            return cachedRows.rows
         }
 
         let currentIndex = ownerValidatedSessionIndex
-        let indexEntriesByTabID = Dictionary(grouping: currentIndex.values, by: \.tabID)
         let authoritativeSessionIDByTabID = Dictionary(
             uniqueKeysWithValues: tabs.compactMap { tab in
                 authoritativeSessionID(for: tab).map { (tab.id, $0) }
             }
         )
-        let explicitTabIDBySessionID = Dictionary(
-            authoritativeSessionIDByTabID.map { ($0.value, $0.key) },
-            uniquingKeysWith: { _, latest in latest }
-        )
-        let linkedTabs = tabs.filter { tab in
-            if authoritativeSessionIDByTabID[tab.id] != nil {
-                return true
+        let rowTabs: [ComposeTabState]
+        if includeComposeTabsWithoutAgentSessions {
+            rowTabs = tabs
+        } else {
+            let indexEntriesByTabID = Dictionary(grouping: currentIndex.values, by: \.tabID)
+            let explicitTabIDBySessionID = Dictionary(
+                authoritativeSessionIDByTabID.map { ($0.value, $0.key) },
+                uniquingKeysWith: { _, latest in latest }
+            )
+            rowTabs = tabs.filter { tab in
+                if authoritativeSessionIDByTabID[tab.id] != nil {
+                    return true
+                }
+                let candidateEntries = (indexEntriesByTabID[tab.id] ?? []).filter { entry in
+                    guard let explicitTabID = explicitTabIDBySessionID[entry.id] else { return true }
+                    return explicitTabID == tab.id
+                }
+                return AgentModeSidebarSessionBuilder.preferredSidebarEntry(
+                    for: tab.id,
+                    tabName: tab.name,
+                    entries: candidateEntries
+                ) != nil
             }
-            let candidateEntries = (indexEntriesByTabID[tab.id] ?? []).filter { entry in
-                guard let explicitTabID = explicitTabIDBySessionID[entry.id] else { return true }
-                return explicitTabID == tab.id
-            }
-            return AgentModeSidebarSessionBuilder.preferredSidebarEntry(
-                for: tab.id,
-                tabName: tab.name,
-                entries: candidateEntries
-            ) != nil
         }
+        let liveSessions = sidebarRuntimeWorkspaceID == workspaceID ? sessions : [:]
         let rows = AgentModeSidebarSessionBuilder(
             allTabs: tabs,
-            linkedTabs: linkedTabs,
-            sessions: sessions,
+            rowTabs: rowTabs,
+            sessions: liveSessions,
             authoritativeSessionIDByTabID: authoritativeSessionIDByTabID,
             sessionIndex: currentIndex,
             sessionListSortDates: ownerValidatedSessionListSortDates,
@@ -430,7 +496,11 @@ extension AgentModeViewModel {
             sidebarRestoreFrozenOrderByTabID: ownerValidatedSidebarRestoreFrozenOrderByTabID,
             mcpControlledTabIDs: mcpControlledTabIDs
         ).build()
-        sidebarSessionRowsCache = (cacheKey, rows)
+        if includeComposeTabsWithoutAgentSessions {
+            agentChatsSidebarRowsCache = (cacheKey, rows)
+        } else {
+            sidebarSessionRowsCache = (cacheKey, rows)
+        }
         #if DEBUG
             test_sidebarSessionRowsBuildCount &+= 1
         #endif
@@ -473,8 +543,17 @@ extension AgentModeViewModel {
         for tabs: [ComposeTabState],
         searchText: String
     ) -> [AgentSidebarThreadKey] {
+        defaultCollapsedSidebarThreadKeys(
+            in: sidebarSessions(for: tabs),
+            searchText: searchText
+        )
+    }
+
+    private func defaultCollapsedSidebarThreadKeys(
+        in rows: [SidebarSession],
+        searchText: String
+    ) -> [AgentSidebarThreadKey] {
         guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-        let rows = sidebarSessions(for: tabs)
         return rows.indices.compactMap { index -> AgentSidebarThreadKey? in
             let nextIndex = rows.index(after: index)
             guard rows[index].depth > 0,
@@ -490,26 +569,41 @@ extension AgentModeViewModel {
     /// search/collapse/attention state, pagination, selection, workspace identity,
     /// compose/stashed tab state, and archive expansion.
     func sidebarListProjection(
+        workspaceID: UUID?,
         composeTabs: [ComposeTabState],
         stashedTabs: [StashedTab],
         currentTabID: UUID?,
         sidebarSnapshot: AgentSessionSidebarSnapshot,
-        archivedSessionsExpanded: Bool
+        archivedSessionsExpanded: Bool,
+        showComposeTabsWithoutAgentSessions: Bool
     ) -> SidebarListProjection {
         let key = SidebarListProjectionCacheKey(
-            workspaceID: workspaceManager?.activeWorkspaceID,
+            workspaceID: workspaceID,
             sidebarSnapshot: sidebarSnapshot,
             currentTabID: currentTabID,
             composeTabMetadataSignatures: makeSessionSidebarTabMetadataSignatures(for: composeTabs),
             stashedTabSignatures: makeSessionSidebarStashedTabSignatures(for: stashedTabs),
-            archivedSessionsExpanded: archivedSessionsExpanded
+            archivedSessionsExpanded: archivedSessionsExpanded,
+            showComposeTabsWithoutAgentSessions: showComposeTabsWithoutAgentSessions
         )
         if let cached = sidebarListProjectionCache, cached.key == key {
             return cached.projection
         }
 
-        let filteredSessions = displaySidebarSessions(
+        let existingSelectionIdentities = Set(
+            composeTabs.map { AgentSidebarSelectionIdentity.active(tabID: $0.id) }
+                + stashedTabs.map {
+                    AgentSidebarSelectionIdentity.archived(stashedTabID: $0.id, tabID: $0.tab.id)
+                }
+        )
+        let canonicalRows = buildSidebarSessions(
             for: composeTabs,
+            workspaceID: workspaceID,
+            includeComposeTabsWithoutAgentSessions: showComposeTabsWithoutAgentSessions
+        )
+        let filteredSessions = filteredSidebarSessions(
+            canonicalRows,
+            inputTabCount: composeTabs.count,
             currentTabID: currentTabID,
             searchText: sidebarSnapshot.searchText,
             diagnosticSource: "listProjection"
@@ -529,23 +623,81 @@ extension AgentModeViewModel {
             searchText: sidebarSnapshot.searchText,
             prepareSortedRows: archivedSessionsExpanded
         )
+        let searchActive = !sidebarSnapshot.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let pagedArchivedTabs = searchActive
+            ? archivedSessionTabs.sortedTabs
+            : Array(archivedSessionTabs.sortedTabs.prefix(sidebarSnapshot.archivedVisibleSessionCount))
+        let renderedSelectionOrder = pagedSessions.map {
+            AgentSidebarSelectionIdentity.active(tabID: $0.tabID)
+        } + pagedArchivedTabs.map {
+            AgentSidebarSelectionIdentity.archived(stashedTabID: $0.id, tabID: $0.tab.id)
+        }
+        assert(Set(renderedSelectionOrder).count == renderedSelectionOrder.count)
         let projection = SidebarListProjection(
+            workspaceID: workspaceID,
             filteredSessions: filteredSessions,
             pagedSessions: pagedSessions,
             effectiveVisibleSessionCount: effectiveVisibleSessionCount,
             archivedSessionTabsForHeader: archivedSessionTabs.filteredTabs,
-            sortedArchivedSessionTabsForRows: archivedSessionTabs.sortedTabs,
+            pagedArchivedSessionTabsForRows: pagedArchivedTabs,
             archivedDateInfoByStashedTabID: archivedSessionTabs.dateInfoByStashedTabID,
+            archivedSessionIDByStashedTabID: archivedSessionTabs.sessionIDByStashedTabID,
             defaultCollapseSeedKeys: defaultCollapsedSidebarThreadKeys(
-                for: composeTabs,
+                in: canonicalRows,
                 searchText: sidebarSnapshot.searchText
-            )
+            ),
+            existingSelectionIdentities: existingSelectionIdentities,
+            renderedSelectionOrder: renderedSelectionOrder
         )
         sidebarListProjectionCache = (key, projection)
         #if DEBUG
             test_sidebarListProjectionBuildCount &+= 1
         #endif
         return projection
+    }
+
+    func sidebarBulkMutationTargets(
+        selection: Set<AgentSidebarSelectionIdentity>,
+        selectionWorkspaceID: UUID?,
+        projection: SidebarListProjection,
+        composeTabs: [ComposeTabState],
+        stashedTabs: [StashedTab]
+    ) -> SidebarBulkMutationTargets? {
+        guard let workspaceID = projection.workspaceID,
+              selectionWorkspaceID == workspaceID
+        else { return nil }
+        let validSelection = selection.intersection(projection.renderedSelectionOrder)
+        guard validSelection == selection else { return nil }
+        let activeRowsByID = Dictionary(uniqueKeysWithValues: projection.pagedSessions.map { ($0.tabID, $0) })
+        let composeTabsByID = Dictionary(uniqueKeysWithValues: composeTabs.map { ($0.id, $0) })
+        let archivedTabsByID = Dictionary(uniqueKeysWithValues: stashedTabs.map { ($0.id, $0) })
+        var activeIDs: Set<UUID> = []
+        var archivedTargets: Set<PromptViewModel.ArchivedTabMutationTarget> = []
+        var stashIDs: Set<UUID> = []
+        var pinIDs: Set<UUID> = []
+        var unpinIDs: Set<UUID> = []
+
+        for identity in validSelection {
+            switch identity {
+            case let .active(tabID):
+                guard let row = activeRowsByID[tabID], let tab = composeTabsByID[tabID] else { return nil }
+                activeIDs.insert(tabID)
+                if row.canStash { stashIDs.insert(tabID) }
+                if tab.isPinned { unpinIDs.insert(tabID) } else { pinIDs.insert(tabID) }
+            case let .archived(stashedTabID, tabID):
+                guard archivedTabsByID[stashedTabID]?.tab.id == tabID else { return nil }
+                archivedTargets.insert(.init(stashedTabID: stashedTabID, tabID: tabID))
+            }
+        }
+
+        return SidebarBulkMutationTargets(
+            workspaceID: workspaceID,
+            activeDeleteTabIDs: activeIDs,
+            archivedDeleteTargets: archivedTargets,
+            stashTabIDs: stashIDs,
+            pinTabIDs: pinIDs,
+            unpinTabIDs: unpinIDs
+        )
     }
 
     func seedDefaultCollapsedSidebarThreads(_ eligibleKeys: [AgentSidebarThreadKey]) {
@@ -558,12 +710,27 @@ extension AgentModeViewModel {
         searchText: String? = nil,
         diagnosticSource: String? = nil
     ) -> [SidebarSession] {
+        filteredSidebarSessions(
+            sidebarSessions(for: tabs),
+            inputTabCount: tabs.count,
+            currentTabID: currentTabID,
+            searchText: searchText ?? sessionSidebarSearchText,
+            diagnosticSource: diagnosticSource ?? "unknown"
+        )
+    }
+
+    private func filteredSidebarSessions(
+        _ sortedSessions: [SidebarSession],
+        inputTabCount: Int,
+        currentTabID: UUID?,
+        searchText: String,
+        diagnosticSource: String
+    ) -> [SidebarSession] {
         #if DEBUG
             let startMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
         #endif
-        let source = diagnosticSource ?? "unknown"
-        let sortedSessions = sidebarSessions(for: tabs)
-        let effectiveSearchText = searchText ?? sessionSidebarSearchText
+        let source = diagnosticSource.isEmpty ? "unknown" : diagnosticSource
+        let effectiveSearchText = searchText
         let searchTrimmed = effectiveSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let result: [SidebarSession]
         if searchTrimmed.isEmpty {
@@ -621,7 +788,7 @@ extension AgentModeViewModel {
                     "canonicalCount": String(sortedSessions.count),
                     "currentTabID": AgentModePerfDiagnostics.shortID(currentTabID),
                     "filteredCount": String(result.count),
-                    "inputTabCount": String(tabs.count),
+                    "inputTabCount": String(inputTabCount),
                     "searchActive": String(!searchTrimmed.isEmpty),
                     "source": source
                 ]
@@ -782,6 +949,7 @@ extension AgentModeViewModel {
             activityDate: row.activityDate,
             isPinned: row.isPinned,
             sessionID: row.sessionID,
+            canStash: row.canStash,
             parentSessionID: row.parentSessionID,
             depth: row.depth,
             isMCPControlled: row.isMCPControlled,
@@ -1056,10 +1224,15 @@ extension AgentModeViewModel {
     }
 
     private func worktreeBindingSummaries(forTabID tabID: UUID) -> [AgentSessionWorktreeBindingSummary] {
-        if let liveSession = sessions[tabID], !liveSession.worktreeBindings.isEmpty {
+        guard let sessionID = boundSessionID(for: tabID) else { return [] }
+        if let liveSession = sessions[tabID],
+           liveSession.activeAgentSessionID == sessionID,
+           !liveSession.worktreeBindings.isEmpty
+        {
             return liveSession.worktreeBindings.worktreeBindingSummaries
         }
-        return preferredSidebarEntry(for: tabID)?.worktreeBindingSummaries ?? []
+        guard let entry = preferredSidebarEntry(for: tabID), entry.id == sessionID else { return [] }
+        return entry.worktreeBindingSummaries
     }
 
     /// Worktree merge attentions for `tabID` keyed by logical workspace-root
@@ -1088,9 +1261,10 @@ extension AgentModeViewModel {
     }
 
     private func worktreeMergeOperations(forTabID tabID: UUID) -> [AgentSessionWorktreeMergeOperation] {
-        if let liveSession = sessions[tabID], !liveSession.worktreeMergeOperations.isEmpty {
-            return liveSession.worktreeMergeOperations
-        }
-        return []
+        guard let sessionID = boundSessionID(for: tabID),
+              let liveSession = sessions[tabID],
+              liveSession.activeAgentSessionID == sessionID
+        else { return [] }
+        return liveSession.worktreeMergeOperations
     }
 }

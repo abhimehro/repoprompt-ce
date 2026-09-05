@@ -48,6 +48,7 @@ enum FileSystemWatcherActivationError: LocalizedError, Equatable {
     case streamCreationFailed(path: String)
     case streamStartFailed(path: String)
     case deliveryBarrierTimedOut(path: String)
+    case eventIDsWrapped(path: String)
 
     var errorDescription: String? {
         switch self {
@@ -57,6 +58,8 @@ enum FileSystemWatcherActivationError: LocalizedError, Equatable {
             "Failed to start FSEvent stream for \(path)"
         case let .deliveryBarrierTimedOut(path):
             "Timed out waiting for FSEvent stream delivery for \(path)"
+        case let .eventIDsWrapped(path):
+            "FSEvent stream event IDs wrapped; watcher recovery is required for \(path)"
         }
     }
 }
@@ -258,6 +261,7 @@ enum FileSystemError: Error {
     case failedToCreateDirectory(Error)
     case invalidRelativePath
     case mutationInProgress
+    case fileContentChanged
 }
 
 extension FileSystemError: LocalizedError {
@@ -267,6 +271,8 @@ extension FileSystemError: LocalizedError {
             "Unsafe workspace mutation path: target escapes the loaded root, contains traversal, or uses a symbolic-link component."
         case .mutationInProgress:
             "A conflicting filesystem mutation is still completing. The operation was not started."
+        case .fileContentChanged:
+            "The file changed after review. Retry apply_edits to review the current content."
         default:
             nil
         }

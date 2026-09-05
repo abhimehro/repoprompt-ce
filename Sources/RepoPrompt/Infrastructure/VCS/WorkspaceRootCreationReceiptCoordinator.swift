@@ -77,6 +77,28 @@ private final class ProductionWorkspaceRootCreationWitnessEventStream: @unchecke
             self.deliveryBarrier = deliveryBarrier
             self.deliveryGeneration = deliveryGeneration
         }
+
+        func accept(_ payload: FSEventCallbackPayload) {
+            guard deliveryBarrier.currentGeneration == deliveryGeneration else { return }
+            let events = payload.entries.map {
+                WorkspaceRootCreationFSEvent(path: $0.path, flags: $0.flags, eventID: $0.id)
+            }
+            let hasWrappedJournal = payload.entries.contains {
+                $0.flags & FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped) != 0
+            }
+            if hasWrappedJournal {
+                // The callback still records the discontinuity for receipt
+                // classification, but its numeric cut is invalidated before
+                // any later flush can reuse the old high watermark.
+                _ = deliveryBarrier.reset(ifCurrent: deliveryGeneration)
+            }
+            onEvents(events)
+            guard !hasWrappedJournal else { return }
+            deliveryBarrier.recordDelivered(
+                eventIDs: payload.entries.map(\.id),
+                generation: deliveryGeneration
+            )
+        }
     }
 
     private let lock = NSLock()
@@ -121,13 +143,7 @@ private final class ProductionWorkspaceRootCreationWitnessEventStream: @unchecke
                   )
             else { return }
             let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
-            box.onEvents(payload.entries.map {
-                WorkspaceRootCreationFSEvent(path: $0.path, flags: $0.flags, eventID: $0.id)
-            })
-            box.deliveryBarrier.recordDelivered(
-                eventIDs: payload.entries.map(\.id),
-                generation: box.deliveryGeneration
-            )
+            box.accept(payload)
         }
         let createFlags = FSEventStreamCreateFlags(
             kFSEventStreamCreateFlagUseCFTypes
@@ -161,10 +177,11 @@ private final class ProductionWorkspaceRootCreationWitnessEventStream: @unchecke
         guard let flushTarget = lock.withLock({
             stream.map(FSEventStreamFlushAsync)
         }) else { return false }
-        return await deliveryBarrier.waitUntilDelivered(
+        let delivered = await deliveryBarrier.waitUntilDelivered(
             flushTarget,
             generation: deliveryGeneration
         )
+        return delivered && deliveryBarrier.currentGeneration == deliveryGeneration
     }
 
     func synchronizeCallbacks(
@@ -172,7 +189,7 @@ private final class ProductionWorkspaceRootCreationWitnessEventStream: @unchecke
         _ body: @escaping @Sendable () -> Void
     ) -> Bool {
         queue.sync(execute: body)
-        return true
+        return deliveryBarrier.currentGeneration == deliveryGeneration
     }
 
     func stop() {
@@ -206,6 +223,35 @@ private final class ProductionWorkspaceRootCreationWitnessEventStream: @unchecke
             self.stream = nil
         }
     }
+
+    #if DEBUG
+        static func wrappedCallbackCutForTesting() async -> (
+            cutDelivered: Bool,
+            generationInvalidated: Bool
+        ) {
+            let barrier = FSEventAsyncDeliveryBarrier(
+                scheduleDeadline: { _, action in action() }
+            )
+            let generation = barrier.currentGeneration
+            let callbackBox = CallbackBox(
+                onEvents: { _ in },
+                deliveryBarrier: barrier,
+                deliveryGeneration: generation
+            )
+            barrier.recordDelivered(eventIDs: [100], generation: generation)
+            callbackBox.accept(FSEventCallbackPayload(entries: [
+                FSEventCallbackEntry(
+                    path: "/temporary-worktree/child",
+                    flags: FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped),
+                    id: 5
+                )
+            ]))
+            return (
+                cutDelivered: await barrier.waitUntilDelivered(5, generation: generation),
+                generationInvalidated: barrier.currentGeneration != generation
+            )
+        }
+    #endif
 }
 
 final class WorkspaceRootCreationReceiptCoordinator: @unchecked Sendable {
@@ -455,6 +501,15 @@ final class WorkspaceRootCreationReceiptCoordinator: @unchecked Sendable {
 
     private let backend: any WorkspaceRootCreationWitnessFSEventsBackend
 
+    #if DEBUG
+        static func wrappedCallbackCutForTesting() async -> (
+            cutDelivered: Bool,
+            generationInvalidated: Bool
+        ) {
+            await ProductionWorkspaceRootCreationWitnessEventStream.wrappedCallbackCutForTesting()
+        }
+    #endif
+
     init(
         backend: any WorkspaceRootCreationWitnessFSEventsBackend =
             ProductionWorkspaceRootCreationWitnessFSEventsBackend()
@@ -681,7 +736,7 @@ final class WorkspaceRootCreationReceiptCoordinator: @unchecked Sendable {
         guard lstat(url.path, &value) == 0,
               value.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR)
         else { return nil }
-        return StableWatchRootIdentity(device: UInt64(value.st_dev), inode: UInt64(value.st_ino))
+        return StableWatchRootIdentity(device: safeDeviceID(value.st_dev), inode: UInt64(value.st_ino))
     }
 
     private static func canonicalURL(_ url: URL) -> URL {

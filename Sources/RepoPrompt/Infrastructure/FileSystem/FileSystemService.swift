@@ -51,16 +51,22 @@ enum FileSystemMutationCompletion {
 
 final class FileSystemServiceFSEventCallbackContext: @unchecked Sendable {
     let deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
+    let streamGeneration: UInt64
+    let ingressGeneration: UInt64
 
     private let lock = NSLock()
     private weak var storedService: FileSystemService?
 
     init(
         service: FileSystemService,
-        deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation
+        deliveryGeneration: FSEventAsyncDeliveryBarrier.Generation,
+        streamGeneration: UInt64,
+        ingressGeneration: UInt64
     ) {
         storedService = service
         self.deliveryGeneration = deliveryGeneration
+        self.streamGeneration = streamGeneration
+        self.ingressGeneration = ingressGeneration
     }
 
     var service: FileSystemService? {
@@ -388,6 +394,10 @@ actor FileSystemService {
     var watcherBatchProcessingToken: UInt64?
     var nextWatcherBatchProcessingToken: UInt64 = 0
     var watcherIngressGeneration: UInt64 = 0
+    /// Once FSEvents reports EventIdsWrapped, this service cannot establish a
+    /// valid continuation of its existing stream. Keep it unavailable until a
+    /// fresh service/root activation establishes a new stream-scoped cut.
+    var fseventRecoveryRequired = false
     let coalescingDelay: TimeInterval = 0.2
 
     // MARK: - Event ID-based scan coalescing (prevents dropped events while deduping bursts)
