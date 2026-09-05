@@ -40,18 +40,24 @@ actor MCPToolCatalogReadiness {
         let completion: CheckCompletion
     }
 
+    private enum CheckOutcome {
+        case ready
+        case notReady
+        case finished
+    }
+
     private actor CheckCompletion {
         private struct Waiter {
-            let continuation: CheckedContinuation<Bool, Never>
+            let continuation: CheckedContinuation<CheckOutcome, Never>
             let deadlineTask: Task<Void, Never>
         }
 
-        private var result: Bool?
+        private var result: CheckOutcome?
         private var waiters: [UUID: Waiter] = [:]
 
-        func wait(until deadline: ContinuousClock.Instant) async -> Bool {
+        func wait(until deadline: ContinuousClock.Instant) async -> CheckOutcome {
             if let result { return result }
-            if Task.isCancelled { return false }
+            if Task.isCancelled { return .finished }
 
             let waiterID = UUID()
             return await withTaskCancellationHandler {
@@ -61,7 +67,7 @@ actor MCPToolCatalogReadiness {
                         return
                     }
                     if Task.isCancelled {
-                        continuation.resume(returning: false)
+                        continuation.resume(returning: .finished)
                         return
                     }
 
@@ -85,7 +91,7 @@ actor MCPToolCatalogReadiness {
             }
         }
 
-        func resolve(_ result: Bool) {
+        func resolve(_ result: CheckOutcome) {
             guard self.result == nil else { return }
             self.result = result
             let resolvedWaiters = waiters.values
@@ -98,13 +104,13 @@ actor MCPToolCatalogReadiness {
 
         private func expire(_ waiterID: UUID) {
             guard let waiter = waiters.removeValue(forKey: waiterID) else { return }
-            waiter.continuation.resume(returning: false)
+            waiter.continuation.resume(returning: .finished)
         }
 
         private func cancel(_ waiterID: UUID) {
             guard let waiter = waiters.removeValue(forKey: waiterID) else { return }
             waiter.deadlineTask.cancel()
-            waiter.continuation.resume(returning: false)
+            waiter.continuation.resume(returning: .finished)
         }
     }
 
@@ -194,10 +200,11 @@ actor MCPToolCatalogReadiness {
             if Task.isCancelled { return false }
             guard clock.now < deadline else { break }
 
-            let isReady = await checkServicesReady(windowID: windowID, deadline: deadline)
+            let outcome = await checkServicesReady(windowID: windowID, deadline: deadline)
             if Task.isCancelled { return false }
             guard clock.now <= deadline else { break }
-            if isReady {
+            if case .finished = outcome { return false }
+            if case .ready = outcome {
                 mcpToolCatalogReadinessLog("Tool catalog ready for window \(windowID.map(String.init) ?? "nil")")
                 return true
             }
@@ -220,7 +227,7 @@ actor MCPToolCatalogReadiness {
     private func checkServicesReady(
         windowID: Int?,
         deadline: ContinuousClock.Instant
-    ) async -> Bool {
+    ) async -> CheckOutcome {
         let key = windowID.map(CheckKey.window) ?? .application
         let attempt: CheckAttempt
         if let activeCheck = activeChecks[key] {
@@ -300,7 +307,7 @@ actor MCPToolCatalogReadiness {
             return
         }
         removeActiveCheck(key: key, id: id)
-        await completion.resolve(result)
+        await completion.resolve(result ? .ready : .notReady)
         #if DEBUG
             await checkSettledOperation(windowID)
         #endif
@@ -316,7 +323,7 @@ actor MCPToolCatalogReadiness {
         guard activeChecks[key]?.id == id else { return }
         removeActiveCheck(key: key, id: id)
         task.cancel()
-        await completion.resolve(false)
+        await completion.resolve(.finished)
         #if DEBUG
             await checkRetiredOperation(windowID)
         #endif
