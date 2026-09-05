@@ -362,7 +362,7 @@ enum ClaudeCompatibleModelCatalogAdapter {
             .kimi
         case .customClaudeCompatible:
             .custom
-        case .claudeCode, .codexExec, .openCode, .cursor:
+        case .claudeCode, .codexExec, .openCode, .cursor, .grokBuild:
             nil
         }
     }
@@ -384,6 +384,8 @@ enum ClaudeCompatibleModelCatalogAdapter {
 
     /// Base model raw values (lowercased) that support the XHigh effort tier.
     private static let claudeXHighEligibleBaseRaws: Set<String> = [
+        AgentModel.claudeFable.rawValue.lowercased(),
+        AgentModel.claudeFable51.rawValue.lowercased(),
         AgentModel.claudeFable5.rawValue.lowercased(),
         AgentModel.claudeSonnet5.rawValue.lowercased(),
         AgentModel.claudeOpus.rawValue.lowercased(),

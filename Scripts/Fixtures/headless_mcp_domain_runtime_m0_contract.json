@@ -302,7 +302,8 @@
       "agent_mode_claude_engineer": "canonical",
       "agent_mode_codex_engineer": "suppress_read_only_hint",
       "agent_mode_open_code_engineer": "canonical",
-      "agent_mode_cursor_engineer": "canonical"
+      "agent_mode_cursor_engineer": "canonical",
+      "agent_mode_grok_build_engineer": "canonical"
     },
     "resolved_tool_policy_projection_classification": "production_policy_projection_not_runtime_registry_evidence",
     "resolved_tool_policy_projection": {
@@ -314,7 +315,8 @@
       "agent_mode_claude_engineer": ["app_settings", "manage_selection", "file_actions", "get_code_structure", "get_file_tree", "read_file", "file_search", "workspace_context", "prompt", "apply_edits", "ask_oracle", "oracle_chat_log", "git", "manage_worktree", "context_builder", "ask_user", "agent_explore", "set_status", "history"],
       "agent_mode_codex_engineer": ["app_settings", "manage_selection", "file_actions", "get_code_structure", "get_file_tree", "read_file", "file_search", "workspace_context", "prompt", "apply_edits", "ask_oracle", "oracle_chat_log", "git", "manage_worktree", "context_builder", "ask_user", "agent_explore", "set_status", "history"],
       "agent_mode_open_code_engineer": ["app_settings", "manage_selection", "file_actions", "get_code_structure", "get_file_tree", "read_file", "file_search", "workspace_context", "prompt", "apply_edits", "ask_oracle", "oracle_chat_log", "git", "manage_worktree", "context_builder", "ask_user", "agent_explore", "set_status", "history"],
-      "agent_mode_cursor_engineer": ["app_settings", "manage_selection", "file_actions", "get_code_structure", "get_file_tree", "read_file", "file_search", "workspace_context", "prompt", "apply_edits", "ask_oracle", "oracle_chat_log", "git", "manage_worktree", "context_builder", "ask_user", "agent_explore", "set_status", "history"]
+      "agent_mode_cursor_engineer": ["app_settings", "manage_selection", "file_actions", "get_code_structure", "get_file_tree", "read_file", "file_search", "workspace_context", "prompt", "apply_edits", "ask_oracle", "oracle_chat_log", "git", "manage_worktree", "context_builder", "ask_user", "agent_explore", "set_status", "history"],
+      "agent_mode_grok_build_engineer": ["app_settings", "manage_selection", "file_actions", "get_code_structure", "get_file_tree", "read_file", "file_search", "workspace_context", "prompt", "apply_edits", "ask_oracle", "oracle_chat_log", "git", "manage_worktree", "context_builder", "ask_user", "agent_explore", "set_status", "history"]
     }
   },
   "dependencies": {
@@ -331,12 +333,7 @@
     "presenter": "WorkspaceApprovalManager",
     "ordering": "single_fifo_active_request",
     "late_response": "ignored",
-    "presenter_loss": "default_deny",
-    "existing_test": {
-      "citation": "RepoPromptTests.WorkspaceApprovalCancellationTests/testCancellingAwaitedApprovalResolvesDeniedAndClearsOverlay",
-      "source_file": "Tests/RepoPromptTests/MCP/WorkspaceApprovalCancellationTests.swift"
-    },
-    "m4_owner_test": "RepoPromptDomainRuntimeTests.DomainMutationApprovalBrokerTests/testRequestsArePresentedAndSettledInFIFOOrder"
+    "presenter_loss": "default_deny"
   },
   "main_actor": {
     "mcp_local_declaration_count": 42,
@@ -611,10 +608,6 @@
       "post_drain_refresh": "bound_workspace_tab_selection_and_revision_only"
     },
     "request_hops": ["main_actor_scheduled", "main_actor_entered", "main_actor_exited"],
-    "existing_test": {
-      "citation": "RepoPromptTests.MCPReadSearchLatencyDiagnosticsGuardTests/testCorrelatedRequestTimelineJoinsAllWI2StagesAndWorkloadMatrices",
-      "source_file": "Tests/RepoPromptTests/MCP/MCPReadSearchLatencyDiagnosticsGuardTests.swift"
-    },
     "per_tool_source_guarded_hops": {
       "app_settings": ["GlobalSettingsStore"],
       "bind_context": ["WindowRoutingService"],
@@ -682,10 +675,6 @@
       {
         "citation": "RepoPromptTests.JSONRPCBridgeLedgerTests/testCleanEOFAndEOFWithOutstandingWorkAreDistinguished",
         "source_file": "Tests/RepoPromptTests/MCP/Control/JSONRPCBridgeLedgerTests.swift"
-      },
-      {
-        "citation": "RepoPromptTests.ProcessLauncherDescriptorInheritanceTests/testActiveUnixSocketTransportIsNotInheritedAndObservesEOFWhileSpawnedChildRemainsAlive",
-        "source_file": "Tests/RepoPromptTests/MCP/Control/ProcessLauncherDescriptorInheritanceTests.swift"
       }
     ]
   },
@@ -695,7 +684,7 @@
     "reason": "The preserved record says authorization-UI behavior was not probed and startup_scan_approved is false.",
     "prohibited_claim": "Direct packaged-child Keychain access works.",
     "prescribed_fallback": "Parent-owned secure storage and a minimum-scope in-memory credential handoff; debug alternate-in-memory storage remains nonpersistent.",
-    "secure_account_catalog_count": 23,
+    "secure_account_catalog_count": 24,
     "observation_status": "not_observed_approval_required",
     "record_classification": "unresolved_procedure_record_not_empirical_evidence",
     "prescribed_measurement_milestone": "before_M5_credential_transport"

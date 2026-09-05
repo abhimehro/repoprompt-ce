@@ -886,6 +886,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     private var codexModelsSubscriptionTask: Task<Void, Never>?
     private var openCodeModelsSubscriptionTask: Task<Void, Never>?
     private var cursorModelsSubscriptionTask: Task<Void, Never>?
+    private var grokBuildModelsSubscriptionTask: Task<Void, Never>?
     private let codexModelPollingService: CodexModelPollingService
     private var hasPreparedForWindowClose = false
 
@@ -1092,6 +1093,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         updateCodexModelPolling()
         updateOpenCodeModelPolling()
         updateCursorModelPolling(startPolling: startCursorPolling)
+        updateGrokBuildModelPolling(startPolling: startCursorPolling)
     }
 
     private func updateCodexModelPolling() {
@@ -1208,7 +1210,46 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         cursorModelsSubscriptionTask = nil
     }
 
+    private func updateGrokBuildModelPolling(startPolling: Bool = true) {
+        guard selectedAgent == .grokBuild else {
+            stopGrokBuildModelsSubscription()
+            return
+        }
+        guard startPolling,
+              AgentModelCatalog.isAgentAvailable(.grokBuild, availability: agentAvailabilityContext)
+        else {
+            return
+        }
+        startGrokBuildModelsSubscriptionIfNeeded()
+    }
+
+    private func startGrokBuildModelsSubscriptionIfNeeded() {
+        guard !hasPreparedForWindowClose else { return }
+        guard grokBuildModelsSubscriptionTask == nil else { return }
+        let workspacePath = currentWorkspacePath
+        grokBuildModelsSubscriptionTask = Task { [weak self, workspacePath] in
+            let stream = await GrokBuildACPModelPollingService.shared.subscribe(workspacePath: workspacePath)
+            for await _ in stream {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    acpDynamicModelRevision &+= 1
+                    handleAgentProviderAvailabilityChanged()
+                    syncSelectedACPModelFromRegistryIfNeeded(for: .grokBuild)
+                }
+            }
+        }
+    }
+
+    private func stopGrokBuildModelsSubscription() {
+        grokBuildModelsSubscriptionTask?.cancel()
+        grokBuildModelsSubscriptionTask = nil
+    }
+
     private func syncSelectedACPModelFromRegistryIfNeeded(for agent: AgentProviderKind) {
+        // Grok's "default" selection must stick: a discovered session's current model is
+        // never auto-adopted as an explicit selection (default sends no model mutation).
+        guard agent != .grokBuild else { return }
         guard selectedAgent == agent,
               let providerID = agent.acpProviderID,
               let snapshot = AgentACPModelRegistry.shared.resolvedSnapshot(for: providerID),
@@ -3089,7 +3130,30 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         _ snapshot: MCPServerViewModel.ContextBuilderCommittedTabSnapshot,
         on record: ContextBuilderRunRecord
     ) async -> Bool {
-        guard record.installCommittedTabSnapshot(snapshot) else { return false }
+        guard record.installCommittedTabSnapshot(snapshot) else {
+            #if DEBUG
+                let recordWorkspaceName = workspaceManager?.workspaces.first(where: {
+                    $0.composeTabs.contains(where: { $0.id == record.tabID })
+                })?.name ?? "unknown"
+                let snapshotWorkspaceName = workspaceManager?.workspaces.first(where: {
+                    $0.composeTabs.contains(where: { $0.id == snapshot.identity.tabID })
+                })?.name ?? "unknown"
+                await ServerNetworkManager.shared.debugRecordRunRoutingEvent(
+                    runID: record.runID,
+                    event: "context_builder.commit_retain_rejected",
+                    fields: [
+                        "snapshot_nested_run_id": snapshot.nestedRunID.uuidString,
+                        "snapshot_identity_tab_id": snapshot.identity.tabID.uuidString,
+                        "snapshot_identity_workspace_id": snapshot.identity.workspaceID.uuidString,
+                        "snapshot_workspace_name": snapshotWorkspaceName,
+                        "record_tab_id": record.tabID.uuidString,
+                        "record_workspace_name": recordWorkspaceName,
+                        "already_installed": String(record.committedTabSnapshot != nil)
+                    ]
+                )
+            #endif
+            return false
+        }
         #if DEBUG
             runTestHooks?.committedTabSnapshotCaptured?(record.runID, snapshot)
             await runTestHooks?.afterCommittedTabSnapshotCaptured?(record.runID, snapshot)

@@ -2622,6 +2622,38 @@ actor WorkspaceFileContextStore {
             self.pathSearchIndex = pathSearchIndex
             self.appliedIndexGeneration = appliedIndexGeneration
         }
+
+        init(
+            projectionNeutralRetagging source: RootCatalogShard,
+            key: RootCatalogShardKey,
+            root: WorkspaceRootRecord
+        ) {
+            precondition(key.rootID == source.key.rootID)
+            precondition(key.lifetimeID == source.key.lifetimeID)
+            precondition(key.canonicalConfigurationIdentity == source.key.canonicalConfigurationIdentity)
+            precondition(source.key.topologyGeneration != UInt64.max)
+            precondition(key.topologyGeneration == source.key.topologyGeneration + 1)
+            precondition(root.id == key.rootID)
+            precondition(root.standardizedFullPath == key.canonicalConfigurationIdentity.canonicalPath)
+
+            self.key = key
+            self.root = root
+            files = source.files
+            projectionFiles = source.projectionFiles
+            projectionFileIndexByID = source.projectionFileIndexByID
+            folders = source.folders
+            entries = source.entries
+            pathSearchIndex = source.pathSearchIndex?.applyingPatch(
+                identity: WorkspaceSearchRootPathIndexIdentity(
+                    rootID: key.rootID,
+                    lifetimeID: key.lifetimeID,
+                    topologyGeneration: key.topologyGeneration
+                ),
+                entries: source.entries,
+                changedFileIDs: []
+            )
+            appliedIndexGeneration = source.appliedIndexGeneration
+        }
     }
 
     private struct CodemapGraphIndexCatalogShardBuildSnapshot: @unchecked Sendable {
@@ -2887,6 +2919,12 @@ actor WorkspaceFileContextStore {
     ] = [:]
     private var fileSystemDeltaContinuations: [UUID: AsyncStream<WorkspaceFileSystemDeltaEvent>.Continuation] = [:]
     private var appliedIndexContinuations: [UUID: AsyncStream<WorkspaceAppliedIndexBatchEvent>.Continuation] = [:]
+    private var searchCatalogChangeContinuations: [
+        UUID: (
+            rootScope: WorkspaceLookupRootScope,
+            continuation: AsyncStream<WorkspaceSearchCatalogChangeEvent>.Continuation
+        )
+    ] = [:]
     private var appliedIndexGenerationsByRootID: [UUID: UInt64] = [:]
     private var sliceRebaseSourceEntries: [SliceRebaseSourceCacheKey: SliceRebaseSourceCacheEntry] = [:]
     private var sliceRebaseSourceEstimatedBytes = 0
@@ -3116,6 +3154,9 @@ actor WorkspaceFileContextStore {
         for continuation in appliedIndexContinuations.values {
             continuation.finish()
         }
+        for subscription in searchCatalogChangeContinuations.values {
+            subscription.continuation.finish()
+        }
     }
 
     func roots() -> [WorkspaceRootRecord] {
@@ -3162,6 +3203,22 @@ actor WorkspaceFileContextStore {
 
     private func removeAppliedIndexContinuation(id: UUID) {
         appliedIndexContinuations.removeValue(forKey: id)
+    }
+
+    func searchCatalogChangeEvents(
+        rootScope: WorkspaceLookupRootScope = .visibleWorkspace
+    ) -> AsyncStream<WorkspaceSearchCatalogChangeEvent> {
+        let streamID = UUID()
+        return AsyncStream { continuation in
+            searchCatalogChangeContinuations[streamID] = (rootScope, continuation)
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeSearchCatalogChangeContinuation(id: streamID) }
+            }
+        }
+    }
+
+    private func removeSearchCatalogChangeContinuation(id: UUID) {
+        searchCatalogChangeContinuations.removeValue(forKey: id)
     }
 
     func startWatchingRoot(id rootID: UUID) async throws {
@@ -6184,12 +6241,39 @@ actor WorkspaceFileContextStore {
         // Canonical batches are the only delta authority for search shards. Raw FSEvents first
         // mutate the store indexes and can never patch a published shard directly.
         applyAppliedIndexEventToRootCatalogShard(event)
+        if !event.isRootUnload {
+            publishSearchCatalogChangeEvent(WorkspaceSearchCatalogChangeEvent(
+                rootID: event.rootID,
+                rootPath: event.rootPath,
+                rootLifetimeID: event.rootLifetimeID,
+                rootAppliedIndexGeneration: event.generation,
+                kind: .appliedIndex
+            ))
+        }
         #if DEBUG
             Self.activePublicationInvalidationRecorder?.appliedIndexEventYieldCount += 1
         #endif
         for continuation in appliedIndexContinuations.values {
             continuation.yield(event)
         }
+    }
+
+    private func publishSearchCatalogChangeEvent(_ event: WorkspaceSearchCatalogChangeEvent) {
+        for subscription in searchCatalogChangeContinuations.values {
+            subscription.continuation.yield(event.stamped(
+                catalogGeneration: scopedSnapshotGeneration(scope: subscription.rootScope)
+            ))
+        }
+    }
+
+    private func publishProjectionNeutralCatalogGenerationChange(root: WorkspaceRootRecord) {
+        publishSearchCatalogChangeEvent(WorkspaceSearchCatalogChangeEvent(
+            rootID: root.id,
+            rootPath: root.standardizedFullPath,
+            rootLifetimeID: rootStatesByID[root.id]?.lifetimeID,
+            rootAppliedIndexGeneration: nil,
+            kind: .generationAdvancedWithoutProjectionChange
+        ))
     }
 
     private func nextAppliedIndexGeneration(forRootID rootID: UUID) -> UInt64 {
@@ -7585,12 +7669,23 @@ actor WorkspaceFileContextStore {
         rootSeedSearchShadowsByRootID.removeValue(forKey: rootID)?.control.invalidate()
     }
 
+    private func retainPublishedRootCatalogShard(_ shard: RootCatalogShard) {
+        rootCatalogShardWeakReferencesByRootID[shard.key.rootID, default: []]
+            .append(WeakRootCatalogShardReference(shard))
+        #if DEBUG
+            let liveCount = liveRootCatalogShards(rootID: shard.key.rootID).count
+            rootCatalogShardMaxLiveGenerationCountsByRootID[shard.key.rootID] = max(
+                rootCatalogShardMaxLiveGenerationCountsByRootID[shard.key.rootID] ?? 0,
+                liveCount
+            )
+        #endif
+    }
+
     private func registerPublishedRootCatalogShard(
         _ shard: RootCatalogShard,
         kind: RootCatalogShardBuildKind
     ) {
-        rootCatalogShardWeakReferencesByRootID[shard.key.rootID, default: []]
-            .append(WeakRootCatalogShardReference(shard))
+        retainPublishedRootCatalogShard(shard)
         #if DEBUG
             rootCatalogShardBuildCountsByRootID[shard.key.rootID, default: 0] += 1
             switch kind {
@@ -7611,11 +7706,6 @@ actor WorkspaceFileContextStore {
             case .reused, nil:
                 break
             }
-            let liveCount = liveRootCatalogShards(rootID: shard.key.rootID).count
-            rootCatalogShardMaxLiveGenerationCountsByRootID[shard.key.rootID] = max(
-                rootCatalogShardMaxLiveGenerationCountsByRootID[shard.key.rootID] ?? 0,
-                liveCount
-            )
         #endif
     }
 
@@ -7642,6 +7732,48 @@ actor WorkspaceFileContextStore {
             return false
         }
         return true
+    }
+
+    private func retagPublishedRootCatalogShardForProjectionNeutralGeneration(
+        root: WorkspaceRootRecord,
+        materializedFileID: UUID
+    ) {
+        // The topology authority advanced, so any one-shot seeded shadow is no longer current.
+        invalidateRootSeedSearchShadow(rootID: root.id)
+
+        guard managedOnlyFileIDs.contains(materializedFileID),
+              let state = rootStatesByID[root.id],
+              state.root.standardizedFullPath == root.standardizedFullPath,
+              let currentKey = rootCatalogShardKey(for: state.root),
+              let previousShard = publishedRootCatalogShardsByRootID[root.id],
+              let deltaState = rootCatalogShardDeltaStatesByRootID[root.id],
+              deltaState.lifetimeID == state.lifetimeID,
+              !deltaState.isDirty,
+              previousShard.key.rootID == root.id,
+              previousShard.key.lifetimeID == state.lifetimeID,
+              previousShard.root.id == root.id,
+              previousShard.root.standardizedFullPath == root.standardizedFullPath,
+              previousShard.key.canonicalConfigurationIdentity == currentKey.canonicalConfigurationIdentity,
+              previousShard.key.topologyGeneration != UInt64.max,
+              currentKey.topologyGeneration == previousShard.key.topologyGeneration + 1,
+              previousShard.appliedIndexGeneration == deltaState.lastAppliedIndexGeneration,
+              appliedIndexGenerationsByRootID[root.id] == deltaState.lastAppliedIndexGeneration,
+              canPublishAnotherRootCatalogShard(rootID: root.id)
+        else {
+            // Leave the stale publication intact. The next snapshot or applied batch will
+            // conservatively replace it from current authority.
+            return
+        }
+
+        let retaggedShard = RootCatalogShard(
+            projectionNeutralRetagging: previousShard,
+            key: currentKey,
+            root: state.root
+        )
+        var publication = publishedRootCatalogShardsByRootID
+        publication[root.id] = retaggedShard
+        publishedRootCatalogShardsByRootID = publication
+        retainPublishedRootCatalogShard(retaggedShard)
     }
 
     private func applyAppliedIndexEventToRootCatalogShard(_ event: WorkspaceAppliedIndexBatchEvent) {
@@ -10507,6 +10639,13 @@ actor WorkspaceFileContextStore {
             reason: .rootLoad,
             affectedRootIDs: [root.id]
         )
+        publishSearchCatalogChangeEvent(WorkspaceSearchCatalogChangeEvent(
+            rootID: root.id,
+            rootPath: root.standardizedFullPath,
+            rootLifetimeID: state.lifetimeID,
+            rootAppliedIndexGeneration: appliedIndexGenerationsByRootID[root.id],
+            kind: .rootLoaded
+        ))
         if root.kind == .sessionWorktree,
            WorktreeStartupFeatureFlags.current().observeDiffSeededWorktreeStartup
         {
@@ -10831,6 +10970,15 @@ actor WorkspaceFileContextStore {
         for entry in statesToUnload {
             rootIDsByStandardizedPath.removeValue(forKey: entry.state.root.standardizedFullPath)
             rootLoadConfigurationsByPath.removeValue(forKey: entry.state.root.standardizedFullPath)
+        }
+        for entry in statesToUnload {
+            publishSearchCatalogChangeEvent(WorkspaceSearchCatalogChangeEvent(
+                rootID: entry.rootID,
+                rootPath: entry.state.root.standardizedFullPath,
+                rootLifetimeID: entry.state.lifetimeID,
+                rootAppliedIndexGeneration: appliedIndexGenerationsByRootID[entry.rootID],
+                kind: .rootUnloaded
+            ))
         }
         #if DEBUG
             WorkspaceRestorePerfLog.event(
@@ -16359,7 +16507,12 @@ actor WorkspaceFileContextStore {
     }
 
     @discardableResult
-    func editFile(rootID: UUID, relativePath: String, newContent: String) async throws -> WorkspaceFileCatalogMaterializationResult? {
+    func editFile(
+        rootID: UUID,
+        relativePath: String,
+        newContent: String,
+        expectedOriginalContent: String? = nil
+    ) async throws -> WorkspaceFileCatalogMaterializationResult? {
         let state = try state(for: rootID)
         let expectedLifetimeID = state.lifetimeID
         let standardizedRelativePath = StandardizedPath.relative(relativePath)
@@ -16379,11 +16532,21 @@ actor WorkspaceFileContextStore {
         }
         let deferredPublicationToken: FileSystemDeferredEditPublicationToken
         do {
-            guard let token = try await state.service.editFile(
-                atRelativePath: standardizedRelativePath,
-                newContent: newContent,
-                modificationPublicationPolicy: .deferSyntheticModificationToSuccessfulCaller
-            ) else {
+            let token = if let expectedOriginalContent {
+                try await state.service.editFileIfUnchanged(
+                    atRelativePath: standardizedRelativePath,
+                    newContent: newContent,
+                    expectedOriginalContent: expectedOriginalContent,
+                    modificationPublicationPolicy: .deferSyntheticModificationToSuccessfulCaller
+                )
+            } else {
+                try await state.service.editFile(
+                    atRelativePath: standardizedRelativePath,
+                    newContent: newContent,
+                    modificationPublicationPolicy: .deferSyntheticModificationToSuccessfulCaller
+                )
+            }
+            guard let token else {
                 throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
                     "store-owned edit completed without a deferred modification publication token"
                 )
@@ -16853,6 +17016,357 @@ actor WorkspaceFileContextStore {
         return .matched(match)
     }
 
+    func resolveExactExistingWorkspaceFile(
+        _ input: WorkspaceExactFileInput,
+        namespace: WorkspaceExactFileNamespace
+    ) async throws -> WorkspaceExactExistingFileResolution {
+        switch input {
+        case let .absolute(path):
+            guard let target = exactAbsoluteTarget(path, namespace: namespace) else { return .noCandidate }
+            if target.relativePath.isEmpty {
+                guard rootStatesByID[target.binding.lookupRoot.id] != nil else { return .claimedMissing }
+                return try .directory(exactDirectoryMatch(
+                    binding: target.binding,
+                    relativePath: target.relativePath,
+                    namespace: namespace
+                ))
+            }
+            let candidates = await exactFileCandidates(
+                relativePath: target.relativePath,
+                bindings: [target.binding]
+            )
+            if let directoryBinding = candidates.directoryBindings.first {
+                return try .directory(exactDirectoryMatch(
+                    binding: directoryBinding,
+                    relativePath: target.relativePath,
+                    namespace: namespace
+                ))
+            }
+            switch try await materializeSingleExactFile(
+                from: candidates,
+                relativePath: target.relativePath
+            ) {
+            case let .materialized(file):
+                return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+            case .blocked:
+                return .issue(.unresolved(input: path))
+            case .noCandidate:
+                return .claimedMissing
+            case .ambiguous:
+                throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                    "An exact absolute path produced multiple candidates: \(path)."
+                )
+            }
+
+        case let .explicitRoot(alias, relativePath):
+            switch exactAliasBinding(alias: alias, namespace: namespace) {
+            case let .success(binding):
+                let candidates = await exactFileCandidates(
+                    relativePath: relativePath,
+                    bindings: [binding]
+                )
+                if let directoryBinding = candidates.directoryBindings.first {
+                    return try .directory(exactDirectoryMatch(
+                        binding: directoryBinding,
+                        relativePath: relativePath,
+                        namespace: namespace
+                    ))
+                }
+                switch try await materializeSingleExactFile(from: candidates, relativePath: relativePath) {
+                case let .materialized(file):
+                    return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+                case .blocked:
+                    return .issue(.unresolved(input: input.renderedPath))
+                case .noCandidate:
+                    return .claimedMissing
+                case .ambiguous:
+                    throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                        "An explicit root path produced multiple candidates: \(input.renderedPath)."
+                    )
+                }
+            case let .failure(issue):
+                return .issue(issue)
+            }
+
+        case let .relative(relativePath):
+            let literalCandidates = await exactFileCandidates(
+                relativePath: relativePath,
+                bindings: namespace.rootBindings
+            )
+            if literalCandidates.matches.count > 1 {
+                return .issue(.ambiguousRootMatch(
+                    input: relativePath,
+                    candidateRoots: literalCandidates.matches.map(\.binding.preferredClientRoot)
+                ))
+            }
+            if literalCandidates.blocked || literalCandidates.hasUnavailableBinding {
+                return .issue(.unresolved(input: relativePath))
+            }
+            if let literalCandidate = literalCandidates.matches.first {
+                switch try await materializeSingleExactFile(
+                    from: literalCandidates,
+                    relativePath: relativePath
+                ) {
+                case let .materialized(file):
+                    return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+                case .blocked:
+                    return .issue(.unresolved(input: relativePath))
+                case .noCandidate:
+                    return .noCandidate
+                case .ambiguous:
+                    throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                        "A single literal candidate became ambiguous: \(literalCandidate.binding.lookupRoot.fullPath)."
+                    )
+                }
+            }
+            if literalCandidates.directoryBindings.count > 1 {
+                return .issue(.ambiguousRootMatch(
+                    input: relativePath,
+                    candidateRoots: literalCandidates.directoryBindings.map(\.preferredClientRoot)
+                ))
+            }
+            if let directoryBinding = literalCandidates.directoryBindings.first {
+                return try .directory(exactDirectoryMatch(
+                    binding: directoryBinding,
+                    relativePath: relativePath,
+                    namespace: namespace
+                ))
+            }
+            if literalCandidates.blocked {
+                return .issue(.unresolved(input: relativePath))
+            }
+
+            switch WorkspaceAliasResolver.resolve(
+                userPath: relativePath,
+                roots: namespace.clientRoots,
+                options: RootAliasOptions(requireRemainder: true)
+            ) {
+            case let .prefixed(clientRoot, _, remainder):
+                guard let binding = namespace.rootBindings.first(where: {
+                    $0.clientRoots.contains(where: { $0.id == clientRoot.id })
+                }) else { return .noCandidate }
+                let aliasCandidates = await exactFileCandidates(
+                    relativePath: remainder,
+                    bindings: [binding]
+                )
+                if let directoryBinding = aliasCandidates.directoryBindings.first {
+                    return try .directory(exactDirectoryMatch(
+                        binding: directoryBinding,
+                        relativePath: remainder,
+                        namespace: namespace
+                    ))
+                }
+                switch try await materializeSingleExactFile(from: aliasCandidates, relativePath: remainder) {
+                case let .materialized(file):
+                    return try await .matched(exactExistingFileMatch(file, namespace: namespace))
+                case .blocked:
+                    return .issue(.unresolved(input: relativePath))
+                case .noCandidate:
+                    return .noCandidate
+                case .ambiguous:
+                    throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                        "One alias binding produced multiple exact candidates: \(binding.lookupRoot.fullPath)."
+                    )
+                }
+            case let .ambiguous(alias, matchingRoots):
+                return .issue(.ambiguousAlias(alias: alias, matchingRoots: matchingRoots))
+            case .bareRoot, .notAliasPrefixed:
+                return .noCandidate
+            }
+        }
+    }
+
+    private func exactAbsoluteTarget(
+        _ path: String,
+        namespace: WorkspaceExactFileNamespace
+    ) -> (binding: WorkspaceExactFileNamespace.RootBinding, relativePath: String)? {
+        let standardized = StandardizedPath.absolute(path)
+        let physicalMatch = namespace.rootBindings
+            .filter {
+                $0.lookupRole == .projectedPhysical
+                    && StandardizedPath.isDescendant(standardized, of: $0.lookupRoot.standardizedFullPath)
+            }
+            .max { $0.lookupRoot.standardizedFullPath.count < $1.lookupRoot.standardizedFullPath.count }
+        if let physicalMatch {
+            return (
+                physicalMatch,
+                relativePath(for: standardized, rootPath: physicalMatch.lookupRoot.standardizedFullPath)
+            )
+        }
+
+        let clientMatch = namespace.rootBindings.flatMap { binding in
+            binding.clientRoots.map { (clientRoot: $0, binding: binding) }
+        }
+        .filter { StandardizedPath.isDescendant(standardized, of: $0.clientRoot.standardizedFullPath) }
+        .max { $0.clientRoot.standardizedFullPath.count < $1.clientRoot.standardizedFullPath.count }
+        guard let clientMatch else { return nil }
+        return (
+            clientMatch.binding,
+            relativePath(for: standardized, rootPath: clientMatch.clientRoot.standardizedFullPath)
+        )
+    }
+
+    private func exactAliasBinding(
+        alias: String,
+        namespace: WorkspaceExactFileNamespace
+    ) -> Result<WorkspaceExactFileNamespace.RootBinding, PathResolutionIssue> {
+        let matches = namespace.rootBindings.compactMap { binding -> (
+            binding: WorkspaceExactFileNamespace.RootBinding,
+            roots: [WorkspaceRootRef]
+        )? in
+            let roots = binding.clientRoots.filter {
+                namespace.explicitAlias(clientRootID: $0.id)?.caseInsensitiveCompare(alias) == .orderedSame
+            }
+            return roots.isEmpty ? nil : (binding, roots)
+        }
+        guard matches.count <= 1 else {
+            return .failure(.ambiguousAlias(
+                alias: alias,
+                matchingRoots: matches.flatMap(\.roots)
+            ))
+        }
+        guard let match = matches.first else { return .failure(.unresolved(input: alias)) }
+        return .success(match.binding)
+    }
+
+    private func exactDirectoryMatch(
+        binding: WorkspaceExactFileNamespace.RootBinding,
+        relativePath: String,
+        namespace: WorkspaceExactFileNamespace
+    ) throws -> WorkspaceExactDirectoryMatch {
+        let displayPath: String
+        if relativePath.isEmpty {
+            displayPath = binding.preferredClientRoot.name
+        } else if namespace.clientRoots.count == 1 {
+            displayPath = relativePath
+        } else {
+            guard let alias = namespace.explicitAlias(clientRootID: binding.preferredClientRoot.id) else {
+                throw WorkspaceFileContextStoreError.exactFileNamespaceMissingAlias(binding.preferredClientRoot.id)
+            }
+            displayPath = "\(alias)//\(relativePath)"
+        }
+        return WorkspaceExactDirectoryMatch(
+            lookupRoot: binding.lookupRoot,
+            relativePath: relativePath,
+            displayPath: displayPath
+        )
+    }
+
+    private struct ExactFileCandidate {
+        let binding: WorkspaceExactFileNamespace.RootBinding
+        let file: WorkspaceFileRecord?
+    }
+
+    private struct ExactFileCandidates {
+        let matches: [ExactFileCandidate]
+        let blocked: Bool
+        let hasUnavailableBinding: Bool
+        let directoryBindings: [WorkspaceExactFileNamespace.RootBinding]
+    }
+
+    private func exactFileCandidates(
+        relativePath: String,
+        bindings: [WorkspaceExactFileNamespace.RootBinding]
+    ) async -> ExactFileCandidates {
+        var matches: [ExactFileCandidate] = []
+        var blocked = false
+        var hasUnavailableBinding = false
+        var directoryBindings: [WorkspaceExactFileNamespace.RootBinding] = []
+        for binding in bindings {
+            if let candidate = file(rootID: binding.lookupRoot.id, relativePath: relativePath),
+               let current = await validateCatalogFileStillPresent(candidate)
+            {
+                matches.append(ExactFileCandidate(binding: binding, file: current))
+                continue
+            }
+            guard let state = rootStatesByID[binding.lookupRoot.id] else {
+                hasUnavailableBinding = true
+                continue
+            }
+            switch await state.service.catalogRegularFileEligibility(relativePath: relativePath) {
+            case .eligible, .ineligible(.ignored):
+                matches.append(ExactFileCandidate(binding: binding, file: nil))
+            case .ineligible(.missingOrDirectory):
+                if directoryAppearsPresentOnDisk(root: state.root, relativePath: relativePath) {
+                    directoryBindings.append(binding)
+                }
+                _ = await fenceAndPruneCatalogFileMissingOnDisk(
+                    rootID: binding.lookupRoot.id,
+                    relativePath: relativePath,
+                    publishDelta: true
+                )
+            case .ineligible:
+                blocked = true
+            }
+        }
+        return ExactFileCandidates(
+            matches: matches,
+            blocked: blocked,
+            hasUnavailableBinding: hasUnavailableBinding,
+            directoryBindings: directoryBindings
+        )
+    }
+
+    private func materializeSingleExactFile(
+        from candidates: ExactFileCandidates,
+        relativePath: String
+    ) async throws -> WorkspaceExplicitFileMaterializationResult {
+        guard candidates.matches.count <= 1 else { return .ambiguous }
+        guard let candidate = candidates.matches.first else {
+            return candidates.blocked ? .blocked : .noCandidate
+        }
+        if let file = candidate.file { return .materialized(file) }
+        let physicalPath = StandardizedPath.join(
+            standardizedRoot: candidate.binding.lookupRoot.standardizedFullPath,
+            standardizedRelativePath: relativePath
+        )
+        return try await materializeExplicitlyRequestedFile(
+            physicalPath,
+            rootRefs: [candidate.binding.lookupRoot]
+        )
+    }
+
+    private func exactExistingFileMatch(
+        _ file: WorkspaceFileRecord,
+        namespace: WorkspaceExactFileNamespace
+    ) async throws -> WorkspaceExactExistingFileMatch {
+        let candidates = await exactFileCandidates(
+            relativePath: file.standardizedRelativePath,
+            bindings: namespace.rootBindings
+        )
+        let relativePathUsesAliasFallback = switch WorkspaceAliasResolver.resolve(
+            userPath: file.standardizedRelativePath,
+            roots: namespace.clientRoots,
+            options: RootAliasOptions(requireRemainder: true)
+        ) {
+        case .prefixed:
+            true
+        case .ambiguous, .bareRoot, .notAliasPrefixed:
+            false
+        }
+        let relativePathRoundTrips = try? WorkspaceExactFileInput.parse(file.standardizedRelativePath)
+            == .relative(file.standardizedRelativePath)
+        if candidates.matches.count == 1,
+           candidates.matches[0].file?.id == file.id,
+           !candidates.blocked,
+           !candidates.hasUnavailableBinding,
+           !relativePathUsesAliasFallback,
+           relativePathRoundTrips == true
+        {
+            return WorkspaceExactExistingFileMatch(file: file, canonicalPath: file.standardizedRelativePath)
+        }
+        guard let binding = namespace.binding(lookupRootID: file.rootID) else {
+            throw WorkspaceFileContextStoreError.exactFileNamespaceMissingRoot(file.rootID)
+        }
+        guard let alias = namespace.explicitAlias(clientRootID: binding.preferredClientRoot.id) else {
+            throw WorkspaceFileContextStoreError.exactFileNamespaceMissingAlias(binding.preferredClientRoot.id)
+        }
+        return WorkspaceExactExistingFileMatch(
+            file: file,
+            canonicalPath: "\(alias)//\(file.standardizedRelativePath)"
+        )
+    }
+
     /// Resolves an exact file path that the caller explicitly requested, even when
     /// discovery policy hides it. Ignore rules remain discovery filters: background scans,
     /// replay, tree rendering, search, and fuzzy matching still skip managed-only files.
@@ -17233,7 +17747,13 @@ actor WorkspaceFileContextStore {
                 "eligible file exists on disk but the workspace catalog did not return a record: \(standardizedRelativePath)"
             )
         }
-        if !managedOnly {
+        if managedOnly {
+            retagPublishedRootCatalogShardForProjectionNeutralGeneration(
+                root: state.root,
+                materializedFileID: file.id
+            )
+            publishProjectionNeutralCatalogGenerationChange(root: state.root)
+        } else {
             publishAppliedIndexEvent(
                 root: state.root,
                 upsertedFiles: [file],
@@ -19735,6 +20255,8 @@ extension WorkspaceAppliedIngressWaitError: LocalizedError {
 
 enum WorkspaceFileContextStoreError: Error, Equatable {
     case rootNotLoaded(UUID)
+    case exactFileNamespaceMissingRoot(UUID)
+    case exactFileNamespaceMissingAlias(UUID)
     case storeDeallocated
     case rootAlreadyLoadedWithDifferentConfiguration(String)
     case rootLoadInFlightWithDifferentConfiguration(String)
@@ -19746,6 +20268,10 @@ extension WorkspaceFileContextStoreError: LocalizedError {
         switch self {
         case let .rootNotLoaded(id):
             "Workspace root is not loaded: \(id)."
+        case let .exactFileNamespaceMissingRoot(id):
+            "Exact file namespace does not contain workspace root: \(id)."
+        case let .exactFileNamespaceMissingAlias(id):
+            "Exact file namespace does not contain a canonical alias for client root: \(id)."
         case .storeDeallocated:
             "Workspace file context store was deallocated."
         case let .rootAlreadyLoadedWithDifferentConfiguration(path):
