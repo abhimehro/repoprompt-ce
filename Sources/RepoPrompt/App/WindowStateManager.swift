@@ -400,9 +400,13 @@ class WindowStatesManager: ObservableObject {
         fileURL: WindowSessionStore.sessionFileURL()
     )
     private var explicitlyClosingWindowIDs: Set<Int> = []
-    // A closing window may leave `allWindows` before app termination starts. Weak retention
-    // lets termination join any still-live teardown without extending the window's lifetime.
+    /// A closing window may leave `allWindows` before app termination starts. Weak retention
+    /// lets termination join any still-live teardown without extending the window's lifetime.
     private var closingWindowReferences: [WeakWindowState] = []
+    // AppKit can unregister and release windows before the asynchronous termination task starts.
+    // Capture participants at the synchronous termination fence so their process owners survive
+    // until Context Builder and Agent Mode teardown have both joined.
+    private var terminationWindowSnapshot: [WindowState] = []
     private var restoreQueue: [WindowSessionEntry] = []
     private var hasLoadedRestoreSession = false
     private var restorePersistenceGate = WindowSessionRestorePersistenceGate()
@@ -1011,6 +1015,12 @@ class WindowStatesManager: ObservableObject {
         // Use MainActor.assumeIsolated since this is called from applicationWillTerminate
         // which runs on the main thread, but Swift doesn't know that statically.
         MainActor.assumeIsolated {
+            self.closingWindowReferences.removeAll { $0.value == nil }
+            self.terminationWindowSnapshot = self.deduplicatedWindows(
+                self.terminationWindowSnapshot +
+                    self.allWindows +
+                    self.closingWindowReferences.compactMap(\.value)
+            )
             self.isTerminating = true
             // Cancel any pending focus/workspace change notifications that might trigger updates
             self.cancellablesDuringTermination()
@@ -1020,6 +1030,9 @@ class WindowStatesManager: ObservableObject {
     #if DEBUG
         func setTerminatingForTesting(_ isTerminating: Bool) {
             self.isTerminating = isTerminating
+            if !isTerminating {
+                terminationWindowSnapshot.removeAll()
+            }
         }
     #endif
 
@@ -1067,10 +1080,10 @@ class WindowStatesManager: ObservableObject {
     /// teardown before MCP servers stop.
     func shutdownAllAgentSessions() async {
         closingWindowReferences.removeAll { $0.value == nil }
-        var seenWindowIdentities: Set<ObjectIdentifier> = []
-        let windows = (allWindows + closingWindowReferences.compactMap(\.value)).filter { window in
-            seenWindowIdentities.insert(ObjectIdentifier(window)).inserted
-        }
+        let windows = deduplicatedWindows(
+            terminationWindowSnapshot + allWindows + closingWindowReferences.compactMap(\.value)
+        )
+        defer { terminationWindowSnapshot.removeAll() }
         let participatingWindowIdentities = Set(windows.map(ObjectIdentifier.init))
 
         // The strong snapshot owns every participant until both shutdown paths have joined.
@@ -1091,6 +1104,13 @@ class WindowStatesManager: ObservableObject {
         await OpenCodeACPModelPollingService.shared.shutdown()
         await CursorACPModelPollingService.shared.shutdown()
         await GrokBuildACPModelPollingService.shared.shutdown()
+    }
+
+    private func deduplicatedWindows(_ windows: [WindowState]) -> [WindowState] {
+        var seenWindowIdentities: Set<ObjectIdentifier> = []
+        return windows.filter { window in
+            seenWindowIdentities.insert(ObjectIdentifier(window)).inserted
+        }
     }
 
     // MARK: - Instance Number Management

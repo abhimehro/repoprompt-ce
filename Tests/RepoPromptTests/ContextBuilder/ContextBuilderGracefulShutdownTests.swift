@@ -152,6 +152,55 @@ final class ContextBuilderGracefulShutdownTests: XCTestCase {
         await pendingTearDown.value
     }
 
+    func testTerminationSignalRetainsMCPRunOwnerUntilManagerShutdownJoinsProvider() async {
+        let manager = WindowStatesManager.shared
+        defer { manager.setTerminatingForTesting(false) }
+        var window: WindowState? = makeWindow()
+        weak var weakWindow: WindowState?
+        weakWindow = window
+        let firstEvent = ContextBuilderTestFirstEvent()
+        let provider = GatedHeadlessAgentProvider {
+            await firstEvent.signal(.providerDisposalStarted)
+        }
+        let record = makeRecord(origin: .mcp(controlToken: UUID()))
+        XCTAssertTrue(record.installProvider(provider))
+        // The strong binding must stay scoped to this block: once `window` is cleared, the
+        // manager's termination retention is the only thing keeping the window alive, which is
+        // exactly what the deallocation assertion measures.
+        if let registeredWindow = window {
+            XCTAssertTrue(registeredWindow.contextBuilderAgentViewModel.registerRunRecordForTesting(
+                record,
+                makeCurrent: true
+            ))
+            manager.registerWindowState(registeredWindow)
+            manager.signalTermination()
+            manager.unregisterWindowState(registeredWindow)
+        } else {
+            XCTFail("Expected test window")
+            return
+        }
+        window = nil
+
+        let shutdown = Task {
+            await manager.shutdownAllAgentSessions()
+            await firstEvent.signal(.managerShutdownFinished)
+        }
+        let observedFirstEvent = await firstEvent.wait()
+        guard observedFirstEvent == .providerDisposalStarted else {
+            XCTFail("Expected provider disposal before manager shutdown finished, got \(observedFirstEvent)")
+            await shutdown.value
+            return
+        }
+
+        await provider.allowDispose()
+        await shutdown.value
+
+        let disposeCallCount = await provider.disposeCallCount()
+        XCTAssertEqual(disposeCallCount, 1)
+        XCTAssertNotNil(record.teardownFinishedAt)
+        XCTAssertNil(weakWindow)
+    }
+
     func testAppShutdownJoinsAlreadyStartedTeardownWithoutDuplicateDisposal() async {
         let window = makeWindow()
         let viewModel = window.contextBuilderAgentViewModel
@@ -333,7 +382,8 @@ final class ContextBuilderGracefulShutdownTests: XCTestCase {
     }
 
     private func makeRecord(
-        continuation: CheckedContinuation<ContextBuilderAgentViewModel.MCPContextBuilderRunCompletion, Error>? = nil
+        continuation: CheckedContinuation<ContextBuilderAgentViewModel.MCPContextBuilderRunCompletion, Error>? = nil,
+        origin: ContextBuilderRunOrigin = .ui
     ) -> ContextBuilderRunRecord {
         let tabID = UUID()
         let session = ContextBuilderAgentViewModel.TabSession(tabID: tabID)
@@ -342,7 +392,7 @@ final class ContextBuilderGracefulShutdownTests: XCTestCase {
             tabID: tabID,
             session: session,
             ownership: session.beginRunAttempt(source: "graceful-shutdown-test"),
-            origin: .ui,
+            origin: origin,
             agentKind: .claudeCode,
             modelRaw: AgentModel.defaultModel.rawValue,
             continuation: continuation
