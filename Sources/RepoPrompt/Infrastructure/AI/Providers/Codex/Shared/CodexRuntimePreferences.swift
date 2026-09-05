@@ -11,6 +11,10 @@ enum CodexRuntimePreferences {
         case external(path: String)
     }
 
+    /// Capture before the first runtime resolution or Settings write. Pending choices only
+    /// become active in the next process, including when Settings opens before any client.
+    static let activeSelection = selection()
+
     private static let selectionModeKey = "codexRuntimeSelectionMode"
     private static let executablePathKey = "codexRuntimeExecutablePath"
 
@@ -27,6 +31,7 @@ enum CodexRuntimePreferences {
     }
 
     static func setSelection(_ selection: Selection, defaults: UserDefaults = .standard) {
+        _ = activeSelection
         switch selection {
         case .inherited:
             defaults.removeObject(forKey: selectionModeKey)

@@ -193,6 +193,7 @@ enum CodexRuntimeAuthority {
 
     private struct ExternalVersionCacheKey: Hashable {
         let path: String
+        let environment: [String: String]
         let modificationDate: Date?
         let fileSize: UInt64?
     }
@@ -249,6 +250,7 @@ enum CodexRuntimeAuthority {
             return resolveExternalOverride(
                 configuredOverride,
                 statePaths: state,
+                environment: environment,
                 versionReader: externalVersionReader
             )
         }
@@ -334,7 +336,7 @@ enum CodexRuntimeAuthority {
         architectureTarget: String? = currentArchitectureTarget,
         applicationSupportURL: URL? = nil,
         explicitExecutableOverride: String? = nil,
-        defaults: UserDefaults = .standard,
+        selection: CodexRuntimePreferences.Selection = CodexRuntimePreferences.activeSelection,
         externalVersionReader: ((URL) -> String?)? = nil
     ) -> Result<Runtime, Failure> {
         if let explicitExecutableOverride {
@@ -350,7 +352,7 @@ enum CodexRuntimeAuthority {
 
         var configuredEnvironment = environment
         let configuredOverride: String?
-        switch CodexRuntimePreferences.selection(defaults: defaults) {
+        switch selection {
         case .inherited:
             configuredOverride = nil
         case .bundled:
@@ -373,6 +375,7 @@ enum CodexRuntimeAuthority {
     private static func resolveExternalOverride(
         _ rawPath: String,
         statePaths: StatePaths,
+        environment: [String: String],
         versionReader: ((URL) -> String?)?
     ) -> Result<Runtime, Failure> {
         let expandedPath = (rawPath as NSString).expandingTildeInPath
@@ -390,7 +393,7 @@ enum CodexRuntimeAuthority {
         let version: Version? = if let versionReader {
             versionReader(url).flatMap(Version.parse)
         } else {
-            cachedExternalVersion(executableURL: url)
+            cachedExternalVersion(executableURL: url, environment: environment)
         }
         guard let version else {
             return .failure(.externalOverrideVersionUnreadable(url.path))
@@ -408,10 +411,11 @@ enum CodexRuntimeAuthority {
         )
     }
 
-    private static func cachedExternalVersion(executableURL: URL) -> Version? {
+    private static func cachedExternalVersion(executableURL: URL, environment: [String: String]) -> Version? {
         let attributes = try? FileManager.default.attributesOfItem(atPath: executableURL.path)
         let key = ExternalVersionCacheKey(
             path: executableURL.path,
+            environment: environment,
             modificationDate: attributes?[.modificationDate] as? Date,
             fileSize: (attributes?[.size] as? NSNumber)?.uint64Value
         )
@@ -434,7 +438,7 @@ enum CodexRuntimeAuthority {
         // Version probing may launch an invalid or hanging executable. Never hold the global
         // cache lock while waiting for that child; cache identity-bound failures briefly so
         // repeated callers do not serialize behind the same bad override.
-        let version = readExternalVersion(executableURL: executableURL).flatMap(Version.parse)
+        let version = readExternalVersion(executableURL: executableURL, environment: environment).flatMap(Version.parse)
 
         externalVersionCacheLock.lock()
         if let version {
@@ -449,11 +453,12 @@ enum CodexRuntimeAuthority {
         return version
     }
 
-    private static func readExternalVersion(executableURL: URL) -> String? {
+    private static func readExternalVersion(executableURL: URL, environment: [String: String]) -> String? {
         let process = Process()
         let output = Pipe()
         process.executableURL = executableURL
         process.arguments = ["--version"]
+        process.environment = environment
         process.standardOutput = output
         process.standardError = output
         let completed = DispatchSemaphore(value: 0)

@@ -69,13 +69,15 @@ enum CodexProviderHelpers {
         commandName: String = CLILaunchProfiles.codex.commandName,
         environment: [String: String],
         additionalPathHints: [String] = CLILaunchProfiles.codex.supplementalSearchPaths,
-        logger: ((String) -> Void)? = nil
+        logger: ((String) -> Void)? = nil,
+        selection: CodexRuntimePreferences.Selection = CodexRuntimePreferences.activeSelection
     ) -> CodexExecutableResolution {
         _ = additionalPathHints // Kept for source compatibility; PATH fallback is intentionally disabled.
         let injectedOverride = commandName == CLILaunchProfiles.codex.commandName ? nil : commandName
         switch CodexRuntimeAuthority.resolveConfigured(
             environment: environment,
-            explicitExecutableOverride: injectedOverride
+            explicitExecutableOverride: injectedOverride,
+            selection: selection
         ) {
         case let .success(runtime):
             let debugMessage = runtime.redactedDiagnosticSummary
@@ -154,8 +156,9 @@ enum CodexProviderHelpers {
             inheritedEnvironment: inheritedEnvironment,
             shellEnvironmentProvider: shellEnvironmentProvider
         )
+        let selection = CodexRuntimePreferences.selection()
         let preflight = await Task.detached(priority: .utility) {
-            let effectiveResolution = resolveCodexExecutable(environment: environment)
+            let effectiveResolution = resolveCodexExecutable(environment: environment, selection: selection)
             let discoveredCommand = CommandPathResolver.resolve(
                 CLILaunchProfiles.codex.commandName,
                 environment: environment,

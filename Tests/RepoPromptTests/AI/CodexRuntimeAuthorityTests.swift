@@ -238,7 +238,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
             environment: [CodexRuntimeAuthority.externalExecutableOverrideEnvironmentKey: environment.path],
             resourcesURL: nil,
             applicationSupportURL: temporaryDirectory,
-            defaults: defaults,
+            selection: CodexRuntimePreferences.selection(defaults: defaults),
             externalVersionReader: { _ in "codex 0.153.3" }
         ).get()
         XCTAssertEqual(configured.executableURL, selected)
@@ -251,7 +251,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
             resourcesURL: resources,
             architectureTarget: "aarch64-apple-darwin",
             applicationSupportURL: temporaryDirectory,
-            defaults: defaults,
+            selection: CodexRuntimePreferences.selection(defaults: defaults),
             externalVersionReader: { _ in "codex 0.153.3" }
         ).get()
         XCTAssertEqual(bundled.executableURL, bundledExecutable)
@@ -261,7 +261,7 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
             environment: [CodexRuntimeAuthority.externalExecutableOverrideEnvironmentKey: environment.path],
             resourcesURL: nil,
             applicationSupportURL: temporaryDirectory,
-            defaults: defaults,
+            selection: CodexRuntimePreferences.selection(defaults: defaults),
             externalVersionReader: { _ in "codex 0.153.3" }
         ).get()
         XCTAssertEqual(fallback.executableURL, environment)
@@ -351,6 +351,51 @@ final class CodexRuntimeAuthorityTests: XCTestCase {
         )
 
         XCTAssertNil(rejected.systemCandidate)
+    }
+
+    func testExternalVersionProbeUsesEnvironmentAndSeparatesCachedResults() throws {
+        let bin = temporaryDirectory.appendingPathComponent("interpreter-bin", isDirectory: true)
+        let interpreter = bin.appendingPathComponent("rpce-test-codex-interpreter")
+        let codex = temporaryDirectory.appendingPathComponent("launcher/codex")
+        try makeExecutable(at: interpreter, content: "#!/bin/sh\necho codex-cli 0.153.3\n")
+        try makeExecutable(at: codex, content: "#!/usr/bin/env rpce-test-codex-interpreter\n")
+        let absentEnvironment = ["PATH": "/usr/bin:/bin"]
+        let capturedEnvironment = ["PATH": bin.path + ":/usr/bin:/bin"]
+
+        func resolve(_ environment: [String: String]) -> Result<CodexRuntimeAuthority.Runtime, CodexRuntimeAuthority.Failure> {
+            CodexRuntimeAuthority.resolve(
+                environment: environment,
+                applicationSupportURL: temporaryDirectory,
+                explicitExecutableOverride: codex.path
+            )
+        }
+
+        XCTAssertEqual(failure(from: resolve(absentEnvironment)), .externalOverrideVersionUnreadable(codex.path))
+        XCTAssertEqual(try resolve(capturedEnvironment).get().version, .init(major: 0, minor: 153, patch: 3))
+        XCTAssertEqual(failure(from: resolve(absentEnvironment)), .externalOverrideVersionUnreadable(codex.path))
+    }
+
+    func testPendingSelectionDoesNotChangeRuntimeUntilNextProcess() throws {
+        let original = CodexRuntimePreferences.selection()
+        defer { CodexRuntimePreferences.setSelection(original) }
+        let pending = temporaryDirectory.appendingPathComponent("pending/codex")
+        try makeExecutable(at: pending)
+        let active = CodexRuntimePreferences.activeSelection
+        let before = CodexRuntimeAuthority.resolveConfigured(externalVersionReader: { _ in "codex-cli 0.153.3" })
+
+        CodexRuntimePreferences.setSelection(.external(path: pending.path))
+
+        XCTAssertEqual(CodexRuntimePreferences.selection(), .external(path: pending.path))
+        XCTAssertEqual(CodexRuntimePreferences.activeSelection, active)
+        XCTAssertEqual(
+            CodexRuntimeAuthority.resolveConfigured(externalVersionReader: { _ in "codex-cli 0.153.3" }),
+            before
+        )
+        let preview = try CodexRuntimeAuthority.resolveConfigured(
+            selection: CodexRuntimePreferences.selection(),
+            externalVersionReader: { _ in "codex-cli 0.153.3" }
+        ).get()
+        XCTAssertEqual(preview.executableURL.path, pending.path)
     }
 
     func testManagedAuthGuidanceUsesRepoPromptOwnedLoginFlow() {
