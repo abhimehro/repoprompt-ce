@@ -1665,7 +1665,7 @@ struct CLIProvidersSettingsView: View {
                     .hoverTooltip(codexSelectedExecutablePath)
             }
 
-            Text("Restart RepoPrompt to apply this choice everywhere; no rebuild is required.")
+            Text("Restart RepoPrompt to apply this choice and refresh the model list.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
