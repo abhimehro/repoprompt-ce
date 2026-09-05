@@ -81,15 +81,314 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         _ timeoutCleanupPolicy: ProcessTermination.TimeoutCleanupPolicy
     ) async throws -> CLIProcessRunner.Result
     typealias NowProvider = @Sendable () -> TimeInterval
+    typealias DeadlineWaiter = @Sendable (_ deadline: TimeInterval) async -> Void
+
+    private enum ProbeProducerOutcome: @unchecked Sendable {
+        case success(CLIProcessRunner.Result)
+        case failure(Error)
+        case cancelled
+    }
+
+    private enum ProbeLogicalOutcome: @unchecked Sendable {
+        case producer(ProbeProducerOutcome)
+        case deadline
+        case cancelled
+    }
+
+    /// Owns one physical probe independently of the logical waiter's lifetime.
+    ///
+    /// A timeout or cancellation retires the logical result immediately, but the producer task
+    /// remains retained here until its existing cancellation/child-cleanup path settles. A late
+    /// producer result can therefore never be mistaken for the current logical attempt.
+    private final class ProbeAttempt: @unchecked Sendable {
+        private enum State: Equatable {
+            case active
+            case draining
+            case settled
+        }
+
+        private let lock = NSLock()
+        private let onSettled: @Sendable (ProbeAttempt) -> Void
+        private var state: State = .active
+        private var producerTask: Task<ProbeProducerOutcome, Never>?
+        private var deadlineTask: Task<Void, Never>?
+        private var producerOutcome: ProbeProducerOutcome?
+        private var logicalOutcome: ProbeLogicalOutcome?
+        private var logicalContinuation: CheckedContinuation<ProbeLogicalOutcome, Never>?
+
+        init(onSettled: @escaping @Sendable (ProbeAttempt) -> Void) {
+            self.onSettled = onSettled
+        }
+
+        var isSettled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return state == .settled
+        }
+
+        func installProducer(_ task: Task<ProbeProducerOutcome, Never>) {
+            let shouldCancel: Bool
+            lock.lock()
+            guard state != .settled else {
+                lock.unlock()
+                return
+            }
+            producerTask = task
+            shouldCancel = state == .draining
+            lock.unlock()
+            if shouldCancel {
+                task.cancel()
+            }
+        }
+
+        func installDeadlineTask(_ task: Task<Void, Never>) {
+            lock.lock()
+            guard state == .active, logicalOutcome == nil else {
+                lock.unlock()
+                task.cancel()
+                return
+            }
+            deadlineTask = task
+            lock.unlock()
+        }
+
+        func wait() async -> ProbeLogicalOutcome {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<ProbeLogicalOutcome, Never>) in
+                    var immediateOutcome: ProbeLogicalOutcome?
+                    lock.lock()
+                    if let logicalOutcome {
+                        immediateOutcome = logicalOutcome
+                    } else {
+                        logicalContinuation = continuation
+                    }
+                    lock.unlock()
+                    if let immediateOutcome {
+                        continuation.resume(returning: immediateOutcome)
+                    }
+                }
+            } onCancel: { [weak self] in
+                self?.cancelForLogicalCancellation()
+            }
+        }
+
+        func deadlineReached() {
+            finishLogical(.deadline)
+        }
+
+        func producerDidSettle(_ outcome: ProbeProducerOutcome) {
+            var continuation: CheckedContinuation<ProbeLogicalOutcome, Never>?
+            var shouldNotifySettled = false
+            var deadlineTaskToCancel: Task<Void, Never>?
+            lock.lock()
+            guard producerOutcome == nil else {
+                lock.unlock()
+                return
+            }
+            producerOutcome = outcome
+            if state != .settled {
+                state = .settled
+                shouldNotifySettled = true
+                producerTask = nil
+            }
+            if logicalOutcome == nil {
+                let completed = ProbeLogicalOutcome.producer(outcome)
+                logicalOutcome = completed
+                continuation = logicalContinuation
+                logicalContinuation = nil
+            }
+            deadlineTaskToCancel = deadlineTask
+            deadlineTask = nil
+            lock.unlock()
+
+            deadlineTaskToCancel?.cancel()
+            if shouldNotifySettled {
+                onSettled(self)
+            }
+            if let continuation {
+                continuation.resume(returning: .producer(outcome))
+            }
+        }
+
+        private func cancelForLogicalCancellation() {
+            finishLogical(.cancelled)
+        }
+
+        private func finishLogical(_ outcome: ProbeLogicalOutcome) {
+            var continuation: CheckedContinuation<ProbeLogicalOutcome, Never>?
+            var producerTaskToCancel: Task<ProbeProducerOutcome, Never>?
+            var deadlineTaskToCancel: Task<Void, Never>?
+            lock.lock()
+            guard logicalOutcome == nil else {
+                lock.unlock()
+                return
+            }
+            logicalOutcome = outcome
+            if state == .active {
+                state = .draining
+                producerTaskToCancel = producerTask
+            }
+            deadlineTaskToCancel = deadlineTask
+            deadlineTask = nil
+            continuation = logicalContinuation
+            logicalContinuation = nil
+            lock.unlock()
+
+            producerTaskToCancel?.cancel()
+            deadlineTaskToCancel?.cancel()
+            continuation?.resume(returning: outcome)
+        }
+    }
+
+    private static let maximumAggregateProbeDuration: TimeInterval = 24 * 60 * 60
+
+    private static func defaultDeadlineWaiter(_ deadline: TimeInterval) async {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now.isFinite, deadline.isFinite else { return }
+        let remaining = deadline - now
+        guard remaining.isFinite, remaining > 0 else { return }
+        let cappedRemaining = min(remaining, maximumAggregateProbeDuration)
+        let nanoseconds = max(UInt64(1), UInt64(cappedRemaining * 1_000_000_000))
+        try? await Task.sleep(nanoseconds: nanoseconds)
+    }
+
+    private final class ProbeOwnership: @unchecked Sendable {
+        let probeMutex = AsyncMutex()
+        private let lock = NSLock()
+        private var ownedProbeAttempt: ProbeAttempt?
+        #if DEBUG
+            private var settlementWaiters: [(ProbeAttempt, CheckedContinuation<Void, Never>)] = []
+        #endif
+
+        func beginProbeAttempt() -> ProbeAttempt? {
+            lock.lock()
+            if let existing = ownedProbeAttempt {
+                guard existing.isSettled else {
+                    lock.unlock()
+                    return nil
+                }
+                ownedProbeAttempt = nil
+            }
+
+            let attempt = ProbeAttempt(onSettled: { [weak self] attempt in
+                self?.probeAttemptDidSettle(attempt)
+            })
+            ownedProbeAttempt = attempt
+            lock.unlock()
+            return attempt
+        }
+
+        func hasPendingProbeAttempt() -> Bool {
+            lock.lock()
+            let attempt = ownedProbeAttempt
+            lock.unlock()
+            guard let attempt else { return false }
+            if attempt.isSettled {
+                probeAttemptDidSettle(attempt)
+                return false
+            }
+            return true
+        }
+
+        private func probeAttemptDidSettle(_ attempt: ProbeAttempt) {
+            var readyWaiters: [CheckedContinuation<Void, Never>] = []
+            lock.lock()
+            if ownedProbeAttempt === attempt {
+                ownedProbeAttempt = nil
+            }
+            #if DEBUG
+                var remainingWaiters: [(ProbeAttempt, CheckedContinuation<Void, Never>)] = []
+                for (waitingAttempt, continuation) in settlementWaiters {
+                    if waitingAttempt === attempt {
+                        readyWaiters.append(continuation)
+                    } else {
+                        remainingWaiters.append((waitingAttempt, continuation))
+                    }
+                }
+                settlementWaiters = remainingWaiters
+            #endif
+            lock.unlock()
+            readyWaiters.forEach { $0.resume() }
+        }
+
+        #if DEBUG
+            func waitForProbeAttemptSettlementForTesting() async {
+                await withCheckedContinuation { continuation in
+                    lock.lock()
+                    guard let attempt = ownedProbeAttempt, !attempt.isSettled else {
+                        lock.unlock()
+                        continuation.resume()
+                        return
+                    }
+                    settlementWaiters.append((attempt, continuation))
+                    lock.unlock()
+                }
+            }
+        #endif
+    }
 
     private let environmentProvider: EnvironmentProvider
     private let supplementalPathProvider: SupplementalPathProvider
     private let probeRunner: ProbeRunner
     private let nowProvider: NowProvider
+    private let deadlineWaiter: DeadlineWaiter
     private let aggregateProbeTimeout: TimeInterval
-    private let probeMutex = AsyncMutex()
     private let lock = NSLock()
     private var cachedLaunchByKey: [String: CursorACPResolvedLaunch] = [:]
+    private let probeOwnership: ProbeOwnership
+    /// Provider factories may create a fresh resolver for each discovery; only physical probe
+    /// ownership is shared across those default instances. Launch caches stay resolver-local.
+    private static let sharedDefaultProbeOwnership = ProbeOwnership()
+
+    private init(
+        launchEnvironmentProvider: @escaping EnvironmentProvider,
+        supplementalPathProvider: @escaping SupplementalPathProvider,
+        probeRunner: @escaping ProbeRunner,
+        nowProvider: @escaping NowProvider,
+        deadlineWaiter: @escaping DeadlineWaiter,
+        aggregateProbeTimeout: TimeInterval,
+        probeOwnership: ProbeOwnership
+    ) {
+        environmentProvider = launchEnvironmentProvider
+        self.supplementalPathProvider = supplementalPathProvider
+        self.probeRunner = probeRunner
+        self.nowProvider = nowProvider
+        self.deadlineWaiter = deadlineWaiter
+        self.aggregateProbeTimeout = aggregateProbeTimeout
+        self.probeOwnership = probeOwnership
+    }
+
+    convenience init() {
+        self.init(
+            launchEnvironmentProvider: { enableDebugLogging in
+                let result = await ProcessEnvironmentBuilder.build(
+                    ProcessEnvironmentRequest(
+                        purpose: .acpAgent(providerID: ACPProviderID.cursor.rawValue),
+                        enableDebugLogging: enableDebugLogging
+                    )
+                )
+                return ACPLaunchEnvironment(
+                    environment: result.environment,
+                    shellEnvironmentSource: result.shellEnvironmentSource
+                )
+            },
+            supplementalPathProvider: {
+                CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults($0)
+            },
+            probeRunner: { launch, config, timeout, timeoutCleanupPolicy in
+                try await CursorACPLaunchResolver.runProbe(
+                    launch: launch,
+                    config: config,
+                    timeout: timeout,
+                    timeoutCleanupPolicy: timeoutCleanupPolicy
+                )
+            },
+            nowProvider: { ProcessInfo.processInfo.systemUptime },
+            deadlineWaiter: CursorACPLaunchResolver.defaultDeadlineWaiter,
+            aggregateProbeTimeout: 10,
+            probeOwnership: Self.sharedDefaultProbeOwnership
+        )
+    }
 
     convenience init(
         environmentProvider: @escaping @Sendable (_ enableDebugLogging: Bool) async -> [String: String],
@@ -105,6 +404,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             )
         },
         nowProvider: @escaping NowProvider = { ProcessInfo.processInfo.systemUptime },
+        deadlineWaiter: @escaping DeadlineWaiter = CursorACPLaunchResolver.defaultDeadlineWaiter,
         aggregateProbeTimeout: TimeInterval = 10
     ) {
         self.init(
@@ -114,23 +414,14 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             supplementalPathProvider: supplementalPathProvider,
             probeRunner: probeRunner,
             nowProvider: nowProvider,
-            aggregateProbeTimeout: aggregateProbeTimeout
+            deadlineWaiter: deadlineWaiter,
+            aggregateProbeTimeout: aggregateProbeTimeout,
+            probeOwnership: ProbeOwnership()
         )
     }
 
-    init(
-        launchEnvironmentProvider: @escaping EnvironmentProvider = { enableDebugLogging in
-            let result = await ProcessEnvironmentBuilder.build(
-                ProcessEnvironmentRequest(
-                    purpose: .acpAgent(providerID: ACPProviderID.cursor.rawValue),
-                    enableDebugLogging: enableDebugLogging
-                )
-            )
-            return ACPLaunchEnvironment(
-                environment: result.environment,
-                shellEnvironmentSource: result.shellEnvironmentSource
-            )
-        },
+    convenience init(
+        launchEnvironmentProvider: @escaping EnvironmentProvider,
         supplementalPathProvider: @escaping SupplementalPathProvider = {
             CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults($0)
         },
@@ -143,14 +434,43 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             )
         },
         nowProvider: @escaping NowProvider = { ProcessInfo.processInfo.systemUptime },
+        deadlineWaiter: @escaping DeadlineWaiter = CursorACPLaunchResolver.defaultDeadlineWaiter,
         aggregateProbeTimeout: TimeInterval = 10
     ) {
-        environmentProvider = launchEnvironmentProvider
-        self.supplementalPathProvider = supplementalPathProvider
-        self.probeRunner = probeRunner
-        self.nowProvider = nowProvider
-        self.aggregateProbeTimeout = aggregateProbeTimeout
+        self.init(
+            launchEnvironmentProvider: launchEnvironmentProvider,
+            supplementalPathProvider: supplementalPathProvider,
+            probeRunner: probeRunner,
+            nowProvider: nowProvider,
+            deadlineWaiter: deadlineWaiter,
+            aggregateProbeTimeout: aggregateProbeTimeout,
+            probeOwnership: ProbeOwnership()
+        )
     }
+
+    #if DEBUG
+        convenience init(
+            environmentProvider: @escaping @Sendable (_ enableDebugLogging: Bool) async -> [String: String],
+            supplementalPathProvider: @escaping SupplementalPathProvider,
+            probeRunner: @escaping ProbeRunner,
+            nowProvider: @escaping NowProvider,
+            deadlineWaiter: @escaping DeadlineWaiter,
+            aggregateProbeTimeout: TimeInterval = 10,
+            sharingProbeOwnershipWith resolver: CursorACPLaunchResolver
+        ) {
+            self.init(
+                launchEnvironmentProvider: { enableDebugLogging in
+                    await ACPLaunchEnvironment(environment: environmentProvider(enableDebugLogging))
+                },
+                supplementalPathProvider: supplementalPathProvider,
+                probeRunner: probeRunner,
+                nowProvider: nowProvider,
+                deadlineWaiter: deadlineWaiter,
+                aggregateProbeTimeout: aggregateProbeTimeout,
+                probeOwnership: resolver.probeOwnership
+            )
+        }
+    #endif
 
     func resolvedLaunch(for config: CursorAgentConfig) throws -> CursorACPResolvedLaunch {
         let key = cacheKey(for: config)
@@ -180,7 +500,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
     }
 
     func probeSupport(for config: CursorAgentConfig) async throws -> ACPSupportResult {
-        try await probeMutex.withLock { [self] in
+        try await probeOwnership.probeMutex.withLock { [self] in
             try await probeSupportSerially(for: config)
         }
     }
@@ -189,33 +509,85 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         let key = cacheKey(for: config)
         invalidate(key: key)
         do {
+            try Task.checkCancellation()
+            guard !probeOwnership.hasPendingProbeAttempt() else {
+                return .unsupported(reason: "Cursor Agent CLI ACP preflight cleanup is still pending.")
+            }
+
             // Resolve from the current effective environment on every support check. The cache only
             // bridges this successful probe to the immediately following launch configuration.
             let launches = try await resolveLaunchesForProbe(for: config)
             var failures: [String] = []
-            let deadline = nowProvider() + aggregateProbeTimeout
+            guard let deadline = aggregateProbeDeadline() else {
+                return .unsupported(reason: "Cursor Agent CLI ACP preflight could not establish a valid aggregate deadline.")
+            }
             let timeoutCleanupPolicy = ProcessTermination.currentTimeoutCleanupPolicy()
-            for launch in launches {
+            let cleanupAllowance = timeoutCleanupPolicy.maximumDuration
+            guard cleanupAllowance.isFinite, cleanupAllowance >= 0 else {
+                return .unsupported(reason: "Cursor Agent CLI ACP preflight has an invalid timeout cleanup policy.")
+            }
+
+            probeLoop: for launch in launches {
                 try Task.checkCancellation()
-                let remainingExecutionTimeout = deadline - nowProvider() - timeoutCleanupPolicy.maximumDuration
-                guard remainingExecutionTimeout > 0 else {
+                let now = nowProvider()
+                let remainingExecutionTimeout = deadline - now - cleanupAllowance
+                guard now.isFinite, remainingExecutionTimeout.isFinite, remainingExecutionTimeout > 0 else {
                     failures.append("Cursor Agent CLI ACP preflight exceeded its aggregate timeout.")
                     break
                 }
+
+                guard let attempt = probeOwnership.beginProbeAttempt() else {
+                    failures.append("Cursor Agent CLI ACP preflight cleanup is still pending.")
+                    break
+                }
+
+                let probeRunner = probeRunner
+                let producerTask = Task<ProbeProducerOutcome, Never> {
+                    let outcome: ProbeProducerOutcome
+                    do {
+                        outcome = try await .success(probeRunner(
+                            launch,
+                            config,
+                            remainingExecutionTimeout,
+                            timeoutCleanupPolicy
+                        ))
+                    } catch is CancellationError {
+                        outcome = .cancelled
+                    } catch {
+                        outcome = .failure(error)
+                    }
+                    attempt.producerDidSettle(outcome)
+                    return outcome
+                }
+                attempt.installProducer(producerTask)
+
+                let deadlineTask = Task { [deadlineWaiter, deadline, attempt] in
+                    await deadlineWaiter(deadline)
+                    guard !Task.isCancelled else { return }
+                    attempt.deadlineReached()
+                }
+                attempt.installDeadlineTask(deadlineTask)
+
+                let logicalOutcome = await attempt.wait()
                 let result: CLIProcessRunner.Result
-                do {
-                    result = try await probeRunner(
-                        launch,
-                        config,
-                        remainingExecutionTimeout,
-                        timeoutCleanupPolicy
-                    )
-                } catch is CancellationError {
+                switch logicalOutcome {
+                case .cancelled:
+                    invalidate(key: key)
                     throw CancellationError()
-                } catch {
+                case .deadline:
+                    failures.append(
+                        "Cursor Agent CLI ACP preflight exceeded its aggregate timeout while probe cleanup remains pending."
+                    )
+                    break probeLoop
+                case let .producer(.cancelled):
+                    throw CancellationError()
+                case let .producer(.failure(error)):
                     failures.append("\(launch.command): \(error.localizedDescription)")
                     continue
+                case let .producer(.success(producerResult)):
+                    result = producerResult
                 }
+
                 guard !result.timedOut, result.status == 0 else {
                     failures.append(
                         result.timedOut
@@ -241,6 +613,12 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                     failures.append("\(launch.command): \(error.localizedDescription)")
                     continue
                 }
+                try Task.checkCancellation()
+                let cacheNow = nowProvider()
+                guard cacheNow.isFinite, cacheNow < deadline else {
+                    failures.append("Cursor Agent CLI ACP preflight exceeded its aggregate timeout.")
+                    break probeLoop
+                }
                 cache(launch, key: key)
                 return .supported
             }
@@ -256,6 +634,21 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             return .unsupported(reason: error.localizedDescription)
         }
     }
+
+    private func aggregateProbeDeadline() -> TimeInterval? {
+        let now = nowProvider()
+        guard now.isFinite, aggregateProbeTimeout.isFinite else { return nil }
+        let duration = min(max(aggregateProbeTimeout, 0), Self.maximumAggregateProbeDuration)
+        let deadline = now + duration
+        guard deadline.isFinite else { return nil }
+        return deadline
+    }
+
+    #if DEBUG
+        func waitForProbeAttemptSettlementForTesting() async {
+            await probeOwnership.waitForProbeAttemptSettlementForTesting()
+        }
+    #endif
 
     private func resolveLaunchesForProbe(for config: CursorAgentConfig) async throws -> [CursorACPResolvedLaunch] {
         let configuredCommand = try validatedConfiguredCommand(config)
