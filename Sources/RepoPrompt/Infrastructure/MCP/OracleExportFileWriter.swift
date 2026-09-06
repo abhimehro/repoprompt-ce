@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import RepoPromptDomainRuntime
 
 struct GeneratedOracleExportFileWriter {
     let store: WorkspaceFileContextStore
@@ -36,7 +37,13 @@ struct GeneratedOracleExportFileWriter {
                 userPath: physicalPath,
                 content: content,
                 rootScope: destination.lookupContext.rootScope,
-                pathResolutionPolicy: .literalPreferredIfStronger
+                pathResolutionPolicy: .literalPreferredIfStronger,
+                mutationRootMappings: [
+                    DomainMutationPhysicalRootMapping(
+                        canonicalRoot: physicalRootPath,
+                        physicalRoot: physicalRootPath
+                    )
+                ]
             )
 
             if let reason = writeResult.catalogIneligibility {
@@ -111,6 +118,13 @@ struct GeneratedOracleExportFileWriter {
         root: WorkspaceRootRef,
         rootScope: WorkspaceLookupRootScope
     ) async {
+        let capability: DomainMutationPhysicalCapability?
+        do {
+            capability = try await MCPDomainMutationCommitContext.physicalMutationCapability()
+        } catch {
+            return
+        }
+        if capability != nil { return }
         guard FileManager.default.fileExists(atPath: physicalPath) else { return }
         try? FileManager.default.removeItem(atPath: physicalPath)
         let rootPrefix = root.standardizedFullPath.hasSuffix("/") ? root.standardizedFullPath : root.standardizedFullPath + "/"

@@ -100,6 +100,75 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
         XCTAssertEqual(runCallCount, 1)
     }
 
+    func testUnsupportedProtectedPhysicalMutationFinishesBeforeCommitWithoutCreatingParent() async throws {
+        let fixture = try RuntimeFixture(mode: .standalone)
+        let fileManager = FileManager.default
+        let container = fileManager.temporaryDirectory
+            .appendingPathComponent("m4-physical-denial-" + UUID().uuidString, isDirectory: true)
+        let root = container.appendingPathComponent("authorized-root", isDirectory: true)
+        let materializationRoot = root.appendingPathComponent("new", isDirectory: true)
+        let parent = materializationRoot.appendingPathComponent("parent", isDirectory: true)
+        let target = parent.appendingPathComponent("file.txt")
+        defer { try? fileManager.removeItem(at: container) }
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let calls = CallCounter()
+        let binding = MCPDomainToolBinding(
+            definition: MCPDomainToolDefinition(
+                name: "file_actions",
+                description: "fixture",
+                inputSchema: .object(["type": .string("object")]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true)
+            ),
+            operation: { _ in
+                try await MCPDomainMutationCommitContext.admitPhysicalTargets(
+                    [target.path],
+                    rootMappings: [
+                        DomainMutationPhysicalRootMapping(
+                            canonicalRoot: root.path,
+                            physicalRoot: root.path
+                        )
+                    ]
+                )
+                try await MCPDomainMutationCommitContext.willCommit()
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                await calls.increment()
+                return .string("unexpected")
+            }
+        )
+        let protectedBinding = fixture.runtime.protectedMutationProvider.protectedBinding(binding)
+        let context = fixture.context(
+            kind: .runScoped,
+            assurance: .hostLaunchToken,
+            authorizedCanonicalRoots: [root.path],
+            ephemeralGrantedToolNames: ["file_actions"]
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try MCPDomainInvocationSecurityContext.$current.withValue(context) {
+                try await protectedBinding([
+                    "action": .string("delete"),
+                    "path": .string(target.path)
+                ])
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? DomainMutationPhysicalCapabilityError,
+                .unsupportedOperation("file_actions.delete")
+            )
+        }
+
+        XCTAssertFalse(fileManager.fileExists(atPath: materializationRoot.path))
+        XCTAssertFalse(fileManager.fileExists(atPath: parent.path))
+        let callCount = await calls.value
+        XCTAssertEqual(callCount, 0)
+        let journal = try await fixture.runtime.mutationJournal.snapshot()
+        let record = try XCTUnwrap(journal.recordSnapshots.first)
+        XCTAssertEqual(record.toolName, "file_actions")
+        XCTAssertEqual(record.action, "delete")
+        XCTAssertEqual(record.status, .failedBeforeCommit)
+    }
+
     func testExactRunScopedOperationGrantAllowsNamedActionAndDeniesSiblingAction() async throws {
         let fixture = try RuntimeFixture(mode: .standalone)
         let calls = CallCounter()
@@ -115,7 +184,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             try await binding(["op": .string("set")])
         }
         await XCTAssertThrowsErrorAsync(
-            try await MCPDomainInvocationSecurityContext.$current.withValue(exactOperation) {
+            try MCPDomainInvocationSecurityContext.$current.withValue(exactOperation) {
                 try await binding(["op": .string("append")])
             }
         ) { error in
@@ -225,7 +294,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             ephemeralGrantedToolNames: []
         )
         await XCTAssertThrowsErrorAsync(
-            try await MCPDomainInvocationSecurityContext.$current.withValue(spoofed) {
+            try MCPDomainInvocationSecurityContext.$current.withValue(spoofed) {
                 try await binding(["op": .string("set")])
             }
         ) { error in
@@ -266,7 +335,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             try await binding(["action": .string("add_folder"), "folder_path": .string(inside)])
         }
         await XCTAssertThrowsErrorAsync(
-            try await MCPDomainInvocationSecurityContext.$current.withValue(allowed) {
+            try MCPDomainInvocationSecurityContext.$current.withValue(allowed) {
                 try await binding(["action": .string("add_folder"), "folder_path": .string(outside)])
             }
         ) { error in
@@ -281,7 +350,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             ephemeralGrantedToolNames: ["manage_workspaces"]
         )
         await XCTAssertThrowsErrorAsync(
-            try await MCPDomainInvocationSecurityContext.$current.withValue(staleRouting) {
+            try MCPDomainInvocationSecurityContext.$current.withValue(staleRouting) {
                 try await binding(["action": .string("add_folder"), "folder_path": .string(inside)])
             }
         ) { error in
@@ -327,7 +396,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
         )
 
         await XCTAssertThrowsErrorAsync(
-            try await MCPDomainInvocationSecurityContext.$current.withValue(context) {
+            try MCPDomainInvocationSecurityContext.$current.withValue(context) {
                 try await binding(["op": .string("set")])
             }
         ) { error in
@@ -481,8 +550,8 @@ private final class RuntimeFixture: @unchecked Sendable {
     }
 }
 
-private func XCTAssertThrowsErrorAsync<T>(
-    _ expression: @autoclosure () async throws -> T,
+private func XCTAssertThrowsErrorAsync(
+    _ expression: @autoclosure () async throws -> some Any,
     _ verify: (Error) -> Void = { _ in }
 ) async {
     do {
