@@ -724,7 +724,8 @@ enum ProcessTermination {
 
     /// Detailed variant of `waitForTermination` that preserves exited-vs-signaled
     /// semantics. Identical waiting, cancellation, timeout, and escalation
-    /// behavior; only the result representation differs.
+    /// behavior; only the result representation differs. ECHILD without a status
+    /// reaped by this owner is reported as ownership loss rather than decoded.
     static func waitForTerminationStatus(
         pid: pid_t,
         processGroupID: pid_t?,
@@ -780,7 +781,9 @@ enum ProcessTermination {
                     continue
                 }
                 if r == -1, errno == EINTR { continue }
-                if r == -1, errno == ECHILD { return (decodeWaitStatus(status), false) }
+                if r == -1, errno == ECHILD {
+                    throw ProcessTerminationError.childOwnershipLost(pid: pid)
+                }
                 if r == -1 {
                     let message = String(cString: strerror(errno))
                     throw ProcessTerminationError.waitFailed(message)
@@ -810,7 +813,9 @@ enum ProcessTermination {
                 continue
             }
             if r == -1, errno == EINTR { continue }
-            if r == -1, errno == ECHILD { return (decodeWaitStatus(status), false) }
+            if r == -1, errno == ECHILD {
+                throw ProcessTerminationError.childOwnershipLost(pid: pid)
+            }
             if r == -1 {
                 let message = String(cString: strerror(errno))
                 throw ProcessTerminationError.waitFailed(message)
