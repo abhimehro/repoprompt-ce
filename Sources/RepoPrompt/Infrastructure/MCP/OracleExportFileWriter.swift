@@ -65,6 +65,10 @@ struct GeneratedOracleExportFileWriter {
             throw MCPError.invalidParams(
                 "Cannot create generated Oracle export at '\(logicalPath)': path already exists."
             )
+        } catch is FileManagerError {
+            throw MCPError.invalidParams(
+                "Cannot create generated Oracle export at '\(logicalPath)': filesystem operation failed."
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch {
