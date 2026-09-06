@@ -3589,6 +3589,15 @@ public class APISettingsViewModel: ObservableObject {
             )
             if let snapshot {
                 collector.append("Discovered \(snapshot.models.options.count) Cursor model option(s)")
+                let reconciliationIssues = CursorAIModelCatalog.reconciliationIssues(comparedTo: snapshot.models)
+                if reconciliationIssues.isEmpty {
+                    collector.append("Release-gated Cursor model metadata matches the live catalog")
+                } else {
+                    collector.append("Release-gated Cursor model metadata has \(reconciliationIssues.count) live difference(s)")
+                    for issue in reconciliationIssues {
+                        collector.append("Cursor metadata difference: \(issue)")
+                    }
+                }
                 availableCursorModelOptions = cursorOptions
             } else {
                 collector.append("Cursor ACP preflight completed without dynamic model metadata; using Auto fallback")
