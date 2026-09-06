@@ -516,19 +516,59 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
 
             // Resolve from the current effective environment on every support check. The cache only
             // bridges this successful probe to the immediately following launch configuration.
-            let launches = try await resolveLaunchesForProbe(for: config)
+            let configuredCommand = try validatedConfiguredCommand(config)
+            let launchEnvironment = await environmentProvider(config.enableDebugLogging)
+            try Task.checkCancellation()
+            let effectiveHints = supplementalPathProvider(config.additionalPathHints)
+            var stages = launchStages(configuredCommand: configuredCommand, commandSelection: config.commandSelection).makeIterator()
+            var launches: [CursorACPResolvedLaunch] = []
+            var seenCanonicalPaths = Set<String>()
             var failures: [String] = []
-            guard let deadline = aggregateProbeDeadline() else {
-                return .unsupported(reason: "Cursor Agent CLI ACP preflight could not establish a valid aggregate deadline.")
-            }
+            var aggregateDeadline: TimeInterval?
             let timeoutCleanupPolicy = ProcessTermination.currentTimeoutCleanupPolicy()
             let cleanupAllowance = timeoutCleanupPolicy.maximumDuration
             guard cleanupAllowance.isFinite, cleanupAllowance >= 0 else {
                 return .unsupported(reason: "Cursor Agent CLI ACP preflight has an invalid timeout cleanup policy.")
             }
 
-            probeLoop: for launch in launches {
+            probeLoop: while true {
                 try Task.checkCancellation()
+                if launches.isEmpty {
+                    // Discover the secondary name only after every primary candidate has failed.
+                    guard let stage = stages.next() else { break }
+                    let discoveryStarted = aggregateDeadline.map { _ in nowProvider() }
+                    do {
+                        launches = try resolveLaunchesForProbe(
+                            for: config,
+                            configuredCommand: configuredCommand,
+                            stage: stage,
+                            launchEnvironment: launchEnvironment,
+                            effectiveHints: effectiveHints
+                        )
+                    } catch {
+                        failures.append(error.localizedDescription)
+                    }
+                    // Discovery was outside the capability budget before staged lookup. Keep it
+                    // outside, without replenishing time already spent on failed probes.
+                    if let discoveryStarted, let deadline = aggregateDeadline {
+                        let discoveryDuration = nowProvider() - discoveryStarted
+                        let adjustedDeadline = deadline + discoveryDuration
+                        guard discoveryStarted.isFinite, discoveryDuration.isFinite,
+                              discoveryDuration >= 0, adjustedDeadline.isFinite
+                        else {
+                            return .unsupported(reason: "Cursor Agent CLI ACP preflight could not account for discovery duration.")
+                        }
+                        aggregateDeadline = adjustedDeadline
+                    }
+                    if launches.isEmpty { continue }
+                }
+                try Task.checkCancellation()
+                let launch = launches.removeFirst()
+                guard seenCanonicalPaths.insert(launch.command).inserted else { continue }
+                guard let deadline = aggregateDeadline ?? aggregateProbeDeadline() else {
+                    return .unsupported(reason: "Cursor Agent CLI ACP preflight could not establish a valid aggregate deadline.")
+                }
+                aggregateDeadline = deadline
                 let now = nowProvider()
                 let remainingExecutionTimeout = deadline - now - cleanupAllowance
                 guard now.isFinite, remainingExecutionTimeout.isFinite, remainingExecutionTimeout > 0 else {
@@ -650,11 +690,14 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         }
     #endif
 
-    private func resolveLaunchesForProbe(for config: CursorAgentConfig) async throws -> [CursorACPResolvedLaunch] {
-        let configuredCommand = try validatedConfiguredCommand(config)
-        let launchEnvironment = await environmentProvider(config.enableDebugLogging)
+    private func resolveLaunchesForProbe(
+        for config: CursorAgentConfig,
+        configuredCommand: String,
+        stage: CursorACPLaunchCandidate,
+        launchEnvironment: ACPLaunchEnvironment,
+        effectiveHints: [String]
+    ) throws -> [CursorACPResolvedLaunch] {
         let environment = launchEnvironment.environment
-        try Task.checkCancellation()
         if configuredCommand.contains("/") {
             return try [resolveExplicitLaunch(
                 for: config,
@@ -663,11 +706,9 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             )]
         }
 
-        let effectiveHints = supplementalPathProvider(config.additionalPathHints)
         return try validLaunches(
             candidates: launchCandidates(
-                configuredCommand: configuredCommand,
-                commandSelection: config.commandSelection,
+                stage: stage,
                 additionalPathHints: effectiveHints,
                 environment: environment
             ),
@@ -786,8 +827,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
     }
 
     private func launchCandidates(
-        configuredCommand: String,
-        commandSelection: CursorAgentCommandSelection,
+        stage: CursorACPLaunchCandidate,
         additionalPathHints: [String],
         environment: [String: String]
     ) -> [CursorACPPathCandidate] {
@@ -803,37 +843,40 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             candidates.append(CursorACPPathCandidate(path: expanded, entrypoint: entrypoint))
         }
 
-        let configuredBasename = (configuredCommand as NSString).lastPathComponent.lowercased()
-        let launchCandidates: [CursorACPLaunchCandidate] = switch commandSelection {
-        case .automatic:
-            [.cursorAgentACP, .agentACP]
-        case .exact:
-            configuredBasename == CursorACPLaunchCandidate.agentACP.command
-                ? [.agentACP]
-                : [.cursorAgentACP]
-        }
-        for launchCandidate in launchCandidates {
+        let launchCandidate = stage
+        append(
+            CommandPathResolver.resolve(
+                launchCandidate.command,
+                environment: environment,
+                additionalPaths: additionalPathHints,
+                preferredBasenames: [launchCandidate.command],
+                shellLookupMode: .fallbackOnly
+            ),
+            entrypoint: launchCandidate
+        )
+        for directory in CommandPathResolver.mergedPathComponents(
+            environment: environment,
+            additionalPaths: additionalPathHints
+        ) {
             append(
-                CommandPathResolver.resolve(
-                    launchCandidate.command,
-                    environment: environment,
-                    additionalPaths: additionalPathHints,
-                    preferredBasenames: [launchCandidate.command],
-                    shellLookupMode: .fallbackOnly
-                ),
+                (directory as NSString).appendingPathComponent(launchCandidate.command),
                 entrypoint: launchCandidate
             )
-            for directory in CommandPathResolver.mergedPathComponents(
-                environment: environment,
-                additionalPaths: additionalPathHints
-            ) {
-                append(
-                    (directory as NSString).appendingPathComponent(launchCandidate.command),
-                    entrypoint: launchCandidate
-                )
-            }
         }
         return candidates
+    }
+
+    private func launchStages(
+        configuredCommand: String,
+        commandSelection: CursorAgentCommandSelection
+    ) -> [CursorACPLaunchCandidate] {
+        let basename = (configuredCommand as NSString).lastPathComponent.lowercased()
+        switch commandSelection {
+        case .automatic:
+            return [.cursorAgentACP, .agentACP]
+        case .exact:
+            return basename == CursorACPLaunchCandidate.agentACP.command ? [.agentACP] : [.cursorAgentACP]
+        }
     }
 
     private func validLaunches(
