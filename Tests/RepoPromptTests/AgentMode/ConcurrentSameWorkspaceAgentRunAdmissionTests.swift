@@ -2035,11 +2035,14 @@ import XCTest
                 composeTabs: [originalTab],
                 activeComposeTabID: originalTab.id
             )
-            window.workspaceManager.workspaces.append(workspace)
-            let workspaceFileURL = try await window.workspaceManager.saveWorkspaceToFileAsync(
-                workspace,
-                source: .directUnknown
-            )
+            let workspaceFileURL = window.workspaceManager.workspaceFileURL(for: workspace)
+            let creation = try await DomainWorkspaceAuthorityClient(
+                store: runtime.workspaceStore,
+                windowID: window.windowID
+            ).create(workspace, fileURL: workspaceFileURL)
+            guard creation.disposition == .applied else {
+                throw AdmissionTestError.fixtureSetup("explicit workspace creation did not commit")
+            }
             await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.flush(url: workspaceFileURL)
             // A sibling window can publish a catalog projection while this synthetic workspace is
             // being created, so establish the local projection from the workspace just committed.
@@ -2146,11 +2149,14 @@ import XCTest
                     composeTabs: [originalTab],
                     activeComposeTabID: originalTab.id
                 )
-                window.workspaceManager.workspaces.append(workspace)
-                let workspaceFileURL = try await window.workspaceManager.saveWorkspaceToFileAsync(
-                    workspace,
-                    source: .directUnknown
-                )
+                let workspaceFileURL = window.workspaceManager.workspaceFileURL(for: workspace)
+                let creation = try await DomainWorkspaceAuthorityClient(
+                    store: runtime.workspaceStore,
+                    windowID: window.windowID
+                ).create(workspace, fileURL: workspaceFileURL)
+                guard creation.disposition == .applied else {
+                    throw AdmissionTestError.fixtureSetup("explicit workspace creation did not commit")
+                }
                 await WorkspaceManagerViewModel.WorkspaceDiskWriter.shared.flush(url: workspaceFileURL)
                 // Catalog projection and fixture creation are independent publications; the test
                 // window must expose the workspace that the authority has already committed.
