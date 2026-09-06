@@ -1244,11 +1244,15 @@ actor WorkspaceFileContextStore {
         private var postWriteCatalogRegistrationDidBeginHandler: (@Sendable (UUID, String) async -> Void)?
         private var watcherSinkWillApplyHandler: (@Sendable (UUID) async -> Void)?
         private var storeEditDeferredPublicationDidRegisterHandler: (@Sendable (UUID, String) async -> Void)?
+        private var createFilePostDiskWriteHandlerForTesting: (@Sendable (UUID, String) async throws -> Void)?
         private var publisherIngressWillWaitHandler: (@Sendable (Set<UUID>) async -> Void)?
         private var watcherPublisherIngressDidOpenHandler: (@Sendable (UUID, UUID) async -> Void)?
         private var watcherInfrastructureDidJoinFlightHandler: (@Sendable (UUID, UUID) async -> Void)?
         private var watcherServiceStateWillReconcileHandler: (@Sendable (UUID, Bool) async -> Void)?
         private var watcherStopWillBeginHandler: (@Sendable (UUID) async -> Void)?
+        private var wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler: (@Sendable (UUID) async -> Void)?
+        private var wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler: (@Sendable (UUID) async -> Void)?
+        private var postWriteCatalogRegistrationDidReturnHandler: (@Sendable (UUID, String) async -> Void)?
         private var rootUnloadTerminationDidCompleteHandler: (@Sendable (WorkspaceRootUnloadTerminationDiagnostics) async -> Void)?
         private var appliedIngressDidCaptureWatermarksHandler: (@Sendable ([UUID: UInt64]) async -> Void)?
         private var scopedIngressBarrierWillFlushHandler: (@Sendable (UUID) async -> Void)?
@@ -2013,6 +2017,24 @@ actor WorkspaceFileContextStore {
             watcherStopWillBeginHandler = handler
         }
 
+        func setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting(
+            _ handler: (@Sendable (UUID) async -> Void)?
+        ) {
+            wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler = handler
+        }
+
+        func setPostWriteCatalogRegistrationDidReturnHandlerForTesting(
+            _ handler: (@Sendable (UUID, String) async -> Void)?
+        ) {
+            postWriteCatalogRegistrationDidReturnHandler = handler
+        }
+
+        func setWrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandlerForTesting(
+            _ handler: (@Sendable (UUID) async -> Void)?
+        ) {
+            wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler = handler
+        }
+
         func setRootUnloadTerminationDidCompleteHandler(
             _ handler: (@Sendable (WorkspaceRootUnloadTerminationDiagnostics) async -> Void)?
         ) {
@@ -2636,6 +2658,12 @@ actor WorkspaceFileContextStore {
             _ handler: (@Sendable (UUID, String) async -> Void)?
         ) {
             storeEditDeferredPublicationDidRegisterHandler = handler
+        }
+
+        func setCreateFilePostDiskWriteHandlerForTesting(
+            _ handler: (@Sendable (UUID, String) async throws -> Void)?
+        ) {
+            createFilePostDiskWriteHandlerForTesting = handler
         }
 
         func setSearchContentReadChunkHandlerForTesting(
@@ -3566,7 +3594,12 @@ actor WorkspaceFileContextStore {
         else {
             throw WorkspaceSessionWorktreeOwnershipError.unavailableRoot(rootPath)
         }
-        let managedOnlyIgnoredFilePaths = managedOnlyIgnoredFilePathsForRecovery(state: state)
+        let initialManagedOnlyIgnoredFilePaths = managedOnlyIgnoredFilePathsForRecovery(state: state)
+        #if DEBUG
+            if let wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler {
+                await wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler(rootID)
+            }
+        #endif
 
         // The old service has an invalid continuation. Stop it before rebuilding;
         // the replacement below receives its own FSEvents journal cut.
@@ -3588,7 +3621,7 @@ actor WorkspaceFileContextStore {
             }
         #endif
         await replacement.restoreExplicitlyManagedIgnoredFilePathsForRecovery(
-            managedOnlyIgnoredFilePaths
+            initialManagedOnlyIgnoredFilePaths
         )
 
         let rootURL = URL(fileURLWithPath: rootPath).standardizedFileURL
@@ -3625,6 +3658,7 @@ actor WorkspaceFileContextStore {
             throw WorkspaceSessionWorktreeOwnershipError.unavailableRoot(rootPath)
         }
 
+        let latestManagedOnlyIgnoredFilePaths = managedOnlyIgnoredFilePathsForRecovery(state: currentState)
         let recoveryDeltas = wrappedWatcherRecoveryDeltas(
             state: currentState,
             actualFolderPaths: actualFolderPaths,
@@ -3635,6 +3669,16 @@ actor WorkspaceFileContextStore {
         rootStatesByID[rootID] = replacementState
 
         do {
+            #if DEBUG
+                if let wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler {
+                    await wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler(rootID)
+                }
+            #endif
+            try Task.checkCancellation()
+            await replacement.restoreExplicitlyManagedIgnoredFilePathsForRecovery(
+                latestManagedOnlyIgnoredFilePaths
+            )
+            try Task.checkCancellation()
             await invalidateRetainedSearchContentForRecoveryUncertainty(rootID: rootID)
             await handleObservedFileSystemDeltas(
                 recoveryDeltas,
@@ -16959,6 +17003,7 @@ actor WorkspaceFileContextStore {
         rootID: UUID,
         relativePath: String,
         content: String,
+        overwrite: Bool = false,
         validating rootScope: WorkspaceLookupRootScope? = nil
     ) async throws -> WorkspaceFileCatalogMaterializationResult {
         if let rootScope {
@@ -16974,6 +17019,9 @@ actor WorkspaceFileContextStore {
             rootID: rootID,
             commands: [.modified([standardizedRelativePath])]
         )
+        #if DEBUG
+            let postDiskWriteHandler = createFilePostDiskWriteHandlerForTesting
+        #endif
         var didCommitCatalogMutation = false
         var retainedFenceUntilMutationDrain = false
         defer {
@@ -16985,7 +17033,11 @@ actor WorkspaceFileContextStore {
             }
         }
         do {
-            try await state.service.createFile(atRelativePath: standardizedRelativePath, content: content)
+            try await state.service.createFile(
+                atRelativePath: standardizedRelativePath,
+                content: content,
+                overwrite: overwrite
+            )
         } catch is CancellationError {
             retainedFenceUntilMutationDrain = true
             retainCodemapPathFenceUntilMutationDrain(
@@ -16995,6 +17047,11 @@ actor WorkspaceFileContextStore {
             )
             throw CancellationError()
         }
+        #if DEBUG
+            if let postDiskWriteHandler {
+                try await postDiskWriteHandler(rootID, standardizedRelativePath)
+            }
+        #endif
         let result = try await materializeCatalogFileAfterDiskWrite(
             rootID: rootID,
             relativePath: standardizedRelativePath,
@@ -18896,33 +18953,73 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    private func registerPostWriteFileForCurrentService(
+        rootID: UUID,
+        relativePath: String
+    ) async throws -> (
+        registration: FileSystemExplicitlyManagedRegularFileRegistration,
+        service: FileSystemService
+    ) {
+        let expectedLifetimeID = try state(for: rootID).lifetimeID
+        var didReroute = false
+        while true {
+            let state = try state(for: rootID)
+            guard state.lifetimeID == expectedLifetimeID else {
+                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
+            }
+            let registration = await state.service.beginExplicitlyManagedRegularFileRegistration(
+                relativePath: relativePath
+            )
+            #if DEBUG
+                if let postWriteCatalogRegistrationDidBeginHandler {
+                    await postWriteCatalogRegistrationDidBeginHandler(rootID, relativePath)
+                }
+                if let postWriteCatalogRegistrationDidReturnHandler {
+                    await postWriteCatalogRegistrationDidReturnHandler(rootID, relativePath)
+                }
+            #endif
+            guard let currentState = rootStatesByID[rootID],
+                  currentState.lifetimeID == state.lifetimeID
+            else {
+                if let token = registration.token {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(token)
+                }
+                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
+            }
+            guard currentState.service === state.service else {
+                if let token = registration.token {
+                    _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(token)
+                }
+                guard !didReroute else {
+                    throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                        "filesystem service changed more than once while registering a post-write file: \(relativePath)"
+                    )
+                }
+                didReroute = true
+                continue
+            }
+            return (registration: registration, service: state.service)
+        }
+    }
+
     @discardableResult
     func materializeCatalogFileAfterDiskWrite(
         rootID: UUID,
         relativePath: String,
         codemapPathLocalMutation: Bool = false
     ) async throws -> WorkspaceFileCatalogMaterializationResult {
-        let state = try state(for: rootID)
         let standardizedRelativePath = StandardizedPath.relative(relativePath)
-        let registration = await state.service.beginExplicitlyManagedRegularFileRegistration(
+        let registered = try await registerPostWriteFileForCurrentService(
+            rootID: rootID,
             relativePath: standardizedRelativePath
         )
+        let registration = registered.registration
         var pendingRegistrationToken = registration.token
-        #if DEBUG
-            if let postWriteCatalogRegistrationDidBeginHandler {
-                await postWriteCatalogRegistrationDidBeginHandler(rootID, standardizedRelativePath)
-            }
-        #endif
 
         do {
-            try Task.checkCancellation()
-            guard let currentState = rootStatesByID[rootID],
-                  currentState.lifetimeID == state.lifetimeID,
-                  currentState.service === state.service
-            else {
-                throw WorkspaceFileContextStoreError.rootNotLoaded(rootID)
-            }
-
+            /// Registration and catalog materialization are one Store-actor
+            /// admission. Do not re-check cancellation here: once registration
+            /// has been installed, the post-write public call must settle it.
             func materialize(managedOnly: Bool) throws -> WorkspaceFileCatalogMaterializationResult {
                 let perform = {
                     try self.materializeCatalogRegularFile(
@@ -18958,13 +19055,13 @@ actor WorkspaceFileContextStore {
             }
 
             if let token = pendingRegistrationToken {
-                _ = await state.service.commitExplicitlyManagedRegularFileRegistration(token)
+                _ = await registered.service.commitExplicitlyManagedRegularFileRegistration(token)
                 pendingRegistrationToken = nil
             }
             return result
         } catch {
             if let pendingRegistrationToken {
-                _ = await state.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
+                _ = await registered.service.rollbackExplicitlyManagedRegularFileRegistration(pendingRegistrationToken)
             }
             throw error
         }

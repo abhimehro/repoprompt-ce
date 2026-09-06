@@ -442,22 +442,37 @@ extension FileSystemService {
         }
     #endif
 
-    /// Restores the store-owned managed-only inventory before a replacement
-    /// service is attached. Missing paths remain installed so their deletion
-    /// callback is not discarded by the replacement's early filter.
+    /// Merges the store-owned managed-only inventory into a replacement service.
+    /// Missing paths remain installed so their deletion callback is not discarded
+    /// by the replacement's early filter. Existing ownership is intentionally
+    /// preserved: Store actor reentrancy can register a new path before this
+    /// final restore runs, and that owner is not in the captured inventory. A
+    /// directory marker already established by the crawl wins over regular-file
+    /// ownership and must not acquire a regular-file exemption.
     func restoreExplicitlyManagedIgnoredFilePathsForRecovery(_ rawPaths: Set<String>) {
-        for rawPath in rawPaths {
-            let relativePath = (rawPath as NSString).standardizingPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedPaths = Set(rawPaths.compactMap { rawPath -> String? in
+            let relativePath = (rawPath as NSString).standardizingPath
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             guard !relativePath.isEmpty,
                   relativePath != ".",
                   relativePath != "..",
                   !relativePath.hasPrefix("../"),
                   !relativePath.hasPrefix("/")
-            else { continue }
-            explicitlyManagedIgnoredFilePaths.insert(relativePath)
+            else { return nil }
+            return relativePath
+        })
+
+        for relativePath in normalizedPaths {
+            let isDirectory = visitedItems[relativePath] == true || fileOrFolderIsDir(relativePath)
             visitedPaths.insert(relativePath)
-            visitedItems[relativePath] = false
-            watcherEarlyFilter.addExplicitlyManagedIgnoredFile(relativePath)
+            visitedItems[relativePath] = isDirectory
+            if isDirectory {
+                explicitlyManagedIgnoredFilePaths.remove(relativePath)
+                watcherEarlyFilter.removeExplicitlyManagedIgnoredFile(relativePath)
+            } else {
+                explicitlyManagedIgnoredFilePaths.insert(relativePath)
+                watcherEarlyFilter.addExplicitlyManagedIgnoredFile(relativePath)
+            }
         }
     }
 
