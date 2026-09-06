@@ -3,6 +3,8 @@ import MCP
 @testable import RepoPromptDomainRuntime
 import XCTest
 
+// Async autoclosure assertions require await inside the argument as well as at the call.
+// swiftformat:disable hoistAwait
 final class DomainProtectedMutationSecurityTests: XCTestCase {
     func testFinalRuntimeClassifiesAllProtectedMutationActions() {
         XCTAssertNil(operation("manage_selection", ["op": .string("get")]))
@@ -145,7 +147,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
         )
 
         await XCTAssertThrowsErrorAsync(
-            try MCPDomainInvocationSecurityContext.$current.withValue(context) {
+            try await MCPDomainInvocationSecurityContext.$current.withValue(context) {
                 try await protectedBinding([
                     "action": .string("delete"),
                     "path": .string(target.path)
@@ -169,6 +171,84 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
         XCTAssertEqual(record.status, .failedBeforeCommit)
     }
 
+    func testProtectedCanonicalExportRejectsExistingDestinationBeforeCommit() async throws {
+        let fixture = try RuntimeFixture(mode: .standalone)
+        let fileManager = FileManager.default
+        let container = fileManager.temporaryDirectory
+            .appendingPathComponent("m4-canonical-export-collision-\(UUID().uuidString)", isDirectory: true)
+        let root = container.appendingPathComponent("authorized-root", isDirectory: true)
+        let destination = root.appendingPathComponent("export.md")
+        let existing = Data("existing export bytes\n".utf8)
+        defer { try? fileManager.removeItem(at: container) }
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        try existing.write(to: destination)
+
+        let snapshot = DomainCanonicalWorkspaceSnapshot(
+            identity: DomainContextIdentity(workspaceID: UUID(), contextID: UUID()),
+            roots: [root],
+            prompt: "prompt",
+            selection: []
+        )
+        let snapshotBox = CanonicalWorkspaceSnapshotBox(snapshot)
+        let service = MCPDomainCanonicalWorkspaceService(
+            adapter: DomainCanonicalWorkspaceAdapter(
+                toolSnapshot: { _ in snapshotBox.value },
+                readSnapshot: { _ in snapshotBox.value },
+                mutate: { _, _ in snapshotBox.value },
+                resolvePath: { rawPath, roots, _ in
+                    guard let root = roots.first else {
+                        throw DomainMutationPhysicalCapabilityError.scopeUnavailable
+                    }
+                    return root.appendingPathComponent(rawPath).standardizedFileURL
+                }
+            )
+        )
+        let serviceBox = CanonicalWorkspaceServiceBox(service)
+        let binding = try MCPDomainToolBinding(
+            definition: XCTUnwrap(
+                MCPDomainCanonicalToolDefinitions.definition(named: "workspace_context")
+            ),
+            operation: { arguments in
+                let request = try DomainPhysicalToolRequest(arguments: arguments)
+                let readRequest = DomainPhysicalReadRequest(
+                    request: request,
+                    context: DomainReadInvocationContext(handle: nil, connectionID: nil),
+                    sideEffects: MCPDomainReadSideEffectEmitter(submit: { _, _, _, _, _ in })
+                )
+                _ = try await serviceBox.value.renderWorkspaceContext(readRequest)
+                return .null
+            }
+        )
+        let protectedBinding = fixture.runtime.protectedMutationProvider.protectedBinding(binding)
+        let context = fixture.context(
+            kind: .runScoped,
+            assurance: .hostLaunchToken,
+            authorizedCanonicalRoots: [root.path],
+            ephemeralGrantedToolNames: ["workspace_context"]
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await MCPDomainInvocationSecurityContext.$current.withValue(context) {
+                try await protectedBinding([
+                    "op": .string("export"),
+                    "path": .string("export.md")
+                ])
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? DomainMutationPhysicalCapabilityError,
+                .destinationExists(destination.path)
+            )
+        }
+
+        XCTAssertEqual(try Data(contentsOf: destination), existing)
+        let journal = try await fixture.runtime.mutationJournal.snapshot()
+        let record = try XCTUnwrap(journal.recordSnapshots.first)
+        XCTAssertEqual(record.toolName, "workspace_context")
+        XCTAssertEqual(record.action, "export")
+        XCTAssertEqual(record.status, .failedBeforeCommit)
+    }
+
     func testExactRunScopedOperationGrantAllowsNamedActionAndDeniesSiblingAction() async throws {
         let fixture = try RuntimeFixture(mode: .standalone)
         let calls = CallCounter()
@@ -184,7 +264,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             try await binding(["op": .string("set")])
         }
         await XCTAssertThrowsErrorAsync(
-            try MCPDomainInvocationSecurityContext.$current.withValue(exactOperation) {
+            try await MCPDomainInvocationSecurityContext.$current.withValue(exactOperation) {
                 try await binding(["op": .string("append")])
             }
         ) { error in
@@ -294,7 +374,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             ephemeralGrantedToolNames: []
         )
         await XCTAssertThrowsErrorAsync(
-            try MCPDomainInvocationSecurityContext.$current.withValue(spoofed) {
+            try await MCPDomainInvocationSecurityContext.$current.withValue(spoofed) {
                 try await binding(["op": .string("set")])
             }
         ) { error in
@@ -335,7 +415,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             try await binding(["action": .string("add_folder"), "folder_path": .string(inside)])
         }
         await XCTAssertThrowsErrorAsync(
-            try MCPDomainInvocationSecurityContext.$current.withValue(allowed) {
+            try await MCPDomainInvocationSecurityContext.$current.withValue(allowed) {
                 try await binding(["action": .string("add_folder"), "folder_path": .string(outside)])
             }
         ) { error in
@@ -350,7 +430,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
             ephemeralGrantedToolNames: ["manage_workspaces"]
         )
         await XCTAssertThrowsErrorAsync(
-            try MCPDomainInvocationSecurityContext.$current.withValue(staleRouting) {
+            try await MCPDomainInvocationSecurityContext.$current.withValue(staleRouting) {
                 try await binding(["action": .string("add_folder"), "folder_path": .string(inside)])
             }
         ) { error in
@@ -396,7 +476,7 @@ final class DomainProtectedMutationSecurityTests: XCTestCase {
         )
 
         await XCTAssertThrowsErrorAsync(
-            try MCPDomainInvocationSecurityContext.$current.withValue(context) {
+            try await MCPDomainInvocationSecurityContext.$current.withValue(context) {
                 try await binding(["op": .string("set")])
             }
         ) { error in
@@ -559,6 +639,22 @@ private func XCTAssertThrowsErrorAsync(
         XCTFail("Expected expression to throw")
     } catch {
         verify(error)
+    }
+}
+
+private final class CanonicalWorkspaceSnapshotBox: @unchecked Sendable {
+    let value: DomainCanonicalWorkspaceSnapshot
+
+    init(_ value: DomainCanonicalWorkspaceSnapshot) {
+        self.value = value
+    }
+}
+
+private final class CanonicalWorkspaceServiceBox: @unchecked Sendable {
+    let value: MCPDomainCanonicalWorkspaceService
+
+    init(_ value: MCPDomainCanonicalWorkspaceService) {
+        self.value = value
     }
 }
 

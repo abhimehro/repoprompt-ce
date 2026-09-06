@@ -283,53 +283,25 @@ package final class DomainMutationPhysicalCapability: @unchecked Sendable {
             )
         }
 
-        do {
-            guard fchmod(temporaryDescriptor.fd, targetMode) == 0 else {
-                throw DomainMutationPhysicalCapabilityError.ioFailure(
-                    operation: "relative-replace-temp-mode",
-                    code: errno
-                )
-            }
-            try write(data, to: temporaryDescriptor.fd, operation: "relative-replace-write")
-            try synchronize(temporaryDescriptor.fd, operation: "relative-replace-file-sync")
-            guard renameat(parent.fd, createdName, parent.fd, name) == 0 else {
-                throw DomainMutationPhysicalCapabilityError.ioFailure(
-                    operation: "relative-atomic-replace",
-                    code: errno
-                )
-            }
-            temporaryName = nil
-            try synchronize(parent.fd, operation: "relative-replace-parent-sync")
-        } catch {
-            if let temporaryName {
-                try? removeIfSame(parent: parent, name: temporaryName, descriptor: temporaryDescriptor)
-            }
-            throw error
+        guard fchmod(temporaryDescriptor.fd, targetMode) == 0 else {
+            throw DomainMutationPhysicalCapabilityError.ioFailure(
+                operation: "relative-replace-temp-mode",
+                code: errno
+            )
         }
-    }
-
-    private func removeIfSame(
-        parent: DomainMutationPhysicalDescriptor,
-        name: String,
-        descriptor: DomainMutationPhysicalDescriptor
-    ) throws {
-        guard let current = try lookup(parent: parent, name: name, path: name),
-              try current.device == device(of: descriptor),
-              try current.inode == inode(of: descriptor)
-        else {
-            return
+        try write(data, to: temporaryDescriptor.fd, operation: "relative-replace-write")
+        try synchronize(temporaryDescriptor.fd, operation: "relative-replace-file-sync")
+        guard renameat(parent.fd, createdName, parent.fd, name) == 0 else {
+            // Do not attempt pathname cleanup here. The temporary entry is not an
+            // authority for deletion after a failure and may have been replaced.
+            throw DomainMutationPhysicalCapabilityError.ioFailure(
+                operation: "relative-atomic-replace",
+                code: errno
+            )
         }
-        guard unlinkat(parent.fd, name, 0) == 0 else {
-            let code = errno
-            guard code == ENOENT else {
-                throw DomainMutationPhysicalCapabilityError.ioFailure(
-                    operation: "relative-temp-cleanup",
-                    code: code
-                )
-            }
-            return
-        }
-        try synchronize(parent.fd, operation: "relative-temp-cleanup-parent-sync")
+        // A post-rename parent fsync failure is intentionally reported as an
+        // indeterminate/partial outcome to the protected caller.
+        try synchronize(parent.fd, operation: "relative-replace-parent-sync")
     }
 
     private func validateRegularEntry(
@@ -488,17 +460,6 @@ package final class DomainMutationPhysicalCapability: @unchecked Sendable {
         }
         return status.st_dev
     }
-
-    private func inode(of descriptor: DomainMutationPhysicalDescriptor) throws -> ino_t {
-        var status = stat()
-        guard fstat(descriptor.fd, &status) == 0 else {
-            throw DomainMutationPhysicalCapabilityError.ioFailure(
-                operation: "relative-descriptor-stat",
-                code: errno
-            )
-        }
-        return status.st_ino
-    }
 }
 
 private final class DomainMutationPhysicalLease: @unchecked Sendable {
@@ -526,6 +487,9 @@ private final class DomainMutationPhysicalLease: @unchecked Sendable {
     }
 
     func plan(for path: String) throws -> DomainMutationPhysicalTargetPlan {
+        guard !path.contains("\0") else {
+            throw DomainMutationPhysicalCapabilityError.invalidComponent(path)
+        }
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         guard let plan = plans[standardized] else {
             throw DomainMutationPhysicalCapabilityError.pathOutsideAuthorizedRoots(path)
@@ -536,6 +500,9 @@ private final class DomainMutationPhysicalLease: @unchecked Sendable {
     private static func openRoot(
         _ identity: DomainMutationPathIdentity
     ) throws -> DomainMutationPhysicalDescriptor {
+        guard !identity.originalPath.contains("\0") else {
+            throw DomainMutationPhysicalCapabilityError.invalidComponent(identity.originalPath)
+        }
         let descriptor = identity.originalPath.withCString {
             open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
@@ -568,6 +535,12 @@ private final class DomainMutationPhysicalLease: @unchecked Sendable {
         root: DomainMutationPathIdentity,
         descriptor rootDescriptor: DomainMutationPhysicalDescriptor
     ) throws -> DomainMutationPhysicalTargetPlan {
+        guard !root.originalPath.contains("\0") else {
+            throw DomainMutationPhysicalCapabilityError.invalidComponent(root.originalPath)
+        }
+        guard !entry.requestedPath.contains("\0") else {
+            throw DomainMutationPhysicalCapabilityError.invalidComponent(entry.requestedPath)
+        }
         let absolutePath = URL(fileURLWithPath: entry.requestedPath).standardizedFileURL.path
         let rootPrefix = root.originalPath == "/" ? "/" : root.originalPath + "/"
         guard absolutePath.hasPrefix(rootPrefix) else {
@@ -712,13 +685,9 @@ private final class DomainMutationPhysicalDescriptor: @unchecked Sendable {
 }
 
 private struct DomainMutationPhysicalFileIdentity {
-    let device: dev_t
-    let inode: ino_t
     let mode: mode_t
 
     init(_ status: stat) {
-        device = status.st_dev
-        inode = status.st_ino
         mode = status.st_mode & mode_t(S_IFMT)
     }
 

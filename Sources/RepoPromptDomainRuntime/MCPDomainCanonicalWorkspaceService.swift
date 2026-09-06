@@ -429,6 +429,12 @@ package struct MCPDomainCanonicalWorkspaceService {
         guard let capability = try await MCPDomainMutationCommitContext.physicalMutationCapability() else {
             throw DomainMutationPhysicalCapabilityError.scopeUnavailable
         }
+        try capability.validateWriteTarget(
+            at: destination.path,
+            overwrite: false,
+            expectedContentDigest: nil,
+            requireExisting: false
+        )
         try await MCPDomainMutationCommitContext.willCommit()
         return capability
     }
