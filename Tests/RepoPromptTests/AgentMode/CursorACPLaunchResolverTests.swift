@@ -1,8 +1,148 @@
+import Darwin
 import Foundation
 @testable import RepoPromptApp
 import XCTest
 
 final class CursorACPLaunchResolverTests: XCTestCase {
+    func testHealthyLegacyDoesNotDiscoverSecondaryEntrypoint() async throws {
+        let directory = try makeTemporaryDirectory()
+        let executable = try makeExecutable(named: "cursor-agent", in: directory)
+        let shellMarker = directory.appendingPathComponent("secondary-shell-lookup")
+        let shell = try makeExecutable(named: "shell", in: directory, marker: shellMarker, output: "")
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": directory.path, "SHELL": shell.path] },
+            supplementalPathProvider: { $0 }
+        )
+        let config = CursorAgentConfig(additionalPathHints: [], includeRepoPromptMCPServer: false)
+
+        let support = try await resolver.probeSupport(for: config)
+
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(try resolver.resolvedLaunch(for: config).command, try canonicalExecutablePath(executable))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shellMarker.path))
+    }
+
+    func testDuplicateCanonicalLegacyIsProbedOnceBeforeDistinctFallback() async throws {
+        let root = try makeTemporaryDirectory()
+        let directories = try ["legacy", "current", "first", "second"].map { name in
+            let directory = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            return directory
+        }
+        let legacy = try makeExecutable(named: "cursor-agent", in: directories[0])
+        let current = try makeExecutable(named: "cursor-agent", in: directories[1])
+        for directory in directories.suffix(2) {
+            try FileManager.default.createSymbolicLink(
+                at: directory.appendingPathComponent("cursor-agent"), withDestinationURL: legacy
+            )
+        }
+        // The same target also appears under the fallback name: deduplication spans stages.
+        try FileManager.default.createSymbolicLink(
+            at: directories[2].appendingPathComponent("agent"), withDestinationURL: legacy
+        )
+        try FileManager.default.createSymbolicLink(
+            at: directories[3].appendingPathComponent("agent"), withDestinationURL: current
+        )
+        let path = directories.suffix(2).map(\.path).joined(separator: ":")
+        let legacyPath = try canonicalExecutablePath(legacy)
+        let currentPath = try canonicalExecutablePath(current)
+        let probes = CursorProbeCommands()
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": path, "SHELL": "/bin/false"] },
+            supplementalPathProvider: { $0 },
+            probeRunner: { launch, _, _, _ in
+                await probes.record(launch.command)
+                return CLIProcessRunner.Result(
+                    stdout: Data("Cursor Agent ACP support".utf8), stderr: Data(),
+                    status: launch.command == legacyPath ? 2 : 0, timedOut: false
+                )
+            }
+        )
+        let config = CursorAgentConfig(additionalPathHints: [], includeRepoPromptMCPServer: false)
+
+        let support = try await resolver.probeSupport(for: config)
+
+        XCTAssertEqual(support, .supported)
+        XCTAssertEqual(try resolver.resolvedLaunch(for: config).command, currentPath)
+        let commands = await probes.commands
+        XCTAssertEqual(commands, [legacyPath, currentPath])
+    }
+
+    func testInitialDiscoveryDoesNotConsumeCapabilityProbeBudget() async throws {
+        try await assertDiscoveryPreservesProbeBudget(staleLegacy: false)
+    }
+
+    func testFallbackDiscoveryDoesNotConsumeCapabilityProbeBudget() async throws {
+        try await assertDiscoveryPreservesProbeBudget(staleLegacy: true)
+    }
+
+    func testCancellationDuringDiscoveryDoesNotAdmitProducer() async throws {
+        let root = try makeTemporaryDirectory()
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let executable = try makeExecutable(named: "cursor-agent", in: root)
+        let enteredFIFO = root.appendingPathComponent("lookup-entered")
+        let releaseFIFO = root.appendingPathComponent("lookup-release")
+        for fifo in [enteredFIFO, releaseFIFO] {
+            guard mkfifo(fifo.path, 0o600) == 0 else { throw POSIXError(.EIO) }
+        }
+        let enteredDescriptor = open(enteredFIFO.path, O_RDWR | O_NONBLOCK)
+        guard enteredDescriptor >= 0 else { throw POSIXError(.EIO) }
+        let entered = expectation(description: "Shell lookup reached the release barrier")
+        let reader = DispatchSource.makeReadSource(fileDescriptor: enteredDescriptor, queue: .global())
+        reader.setEventHandler {
+            var byte: UInt8 = 0
+            if Darwin.read(enteredDescriptor, &byte, 1) == 1 { entered.fulfill() }
+        }
+        reader.setCancelHandler { close(enteredDescriptor) }
+        reader.resume()
+        defer { reader.cancel() }
+        let releaseDescriptor = open(releaseFIFO.path, O_RDWR | O_NONBLOCK)
+        guard releaseDescriptor >= 0 else { throw POSIXError(.EIO) }
+        defer { close(releaseDescriptor) }
+        let completedMarker = root.appendingPathComponent("lookup-completed")
+        let shell = try makeExecutable(named: "shell", in: root)
+        try """
+        #!/bin/sh
+        printf '1' > '\(enteredFIFO.path)'
+        IFS= read -r release < '\(releaseFIFO.path)'
+        printf '1' > '\(completedMarker.path)'
+        printf '%s\\n' '__RP_BEGIN__' '\(executable.path)' '__RP_END__'
+        """.write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shell.path)
+        let calls = CursorProbeCallCounter()
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": bin.path, "SHELL": shell.path] },
+            supplementalPathProvider: { $0 },
+            probeRunner: { _, _, _, _ in
+                _ = await calls.nextCall()
+                return CLIProcessRunner.Result(
+                    stdout: Data("Cursor Agent ACP support".utf8), stderr: Data(), status: 0, timedOut: false
+                )
+            }
+        )
+        let config = CursorAgentConfig(commandName: "cursor-agent", additionalPathHints: [])
+        let supportTask = Task { try await resolver.probeSupport(for: config) }
+
+        // This timeout is a deadlock guard, not a performance oracle.
+        await fulfillment(of: [entered], timeout: 30)
+        supportTask.cancel()
+        var releaseByte: UInt8 = 10
+        XCTAssertEqual(Darwin.write(releaseDescriptor, &releaseByte, 1), 1)
+        do {
+            _ = try await supportTask.value
+            XCTFail("Expected cancellation after shell discovery")
+        } catch is CancellationError {
+            // Expected.
+        }
+        await resolver.waitForProbeAttemptSettlementForTesting()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: completedMarker.path))
+        let callCount = await calls.count()
+        XCTAssertEqual(callCount, 0)
+        XCTAssertThrowsError(try resolver.resolvedLaunch(for: config))
+    }
+
     func testProductionDefaultFallsBackToVerifiedAgentAlias() async throws {
         let rootDirectory = try makeTemporaryDirectory()
         let packageDirectory = rootDirectory.appendingPathComponent("cursor-package", isDirectory: true)
@@ -160,7 +300,7 @@ final class CursorACPLaunchResolverTests: XCTestCase {
             at: binDirectory.appendingPathComponent("agent"),
             withDestinationURL: currentExecutable
         )
-        let timeline = CursorProbeTimeline(nowValues: [0, 1, 10])
+        let timeline = CursorProbeTimeline(nowValues: [0, 1, 10, 10, 10])
         let deadline = CursorProbeDeadlineBarrier()
         let resolver = CursorACPLaunchResolver(
             environmentProvider: { _ in ["PATH": binDirectory.path, "SHELL": "/bin/false"] },
@@ -368,6 +508,61 @@ final class CursorACPLaunchResolverTests: XCTestCase {
         XCTAssertEqual(recoveredCallCount, 2)
         let recoveredLaunch = try resolver.resolvedLaunch(for: config)
         XCTAssertEqual(recoveredLaunch.command, try canonicalExecutablePath(executable))
+    }
+
+    private func assertDiscoveryPreservesProbeBudget(staleLegacy: Bool) async throws {
+        let root = try makeTemporaryDirectory()
+        let legacyDirectory = root.appendingPathComponent("legacy", isDirectory: true)
+        let currentDirectory = root.appendingPathComponent("current", isDirectory: true)
+        let binDirectory = root.appendingPathComponent("bin", isDirectory: true)
+        for directory in [legacyDirectory, currentDirectory, binDirectory] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let legacy = try makeExecutable(named: "cursor-agent", in: legacyDirectory)
+        let current = try makeExecutable(named: "cursor-agent", in: currentDirectory)
+        let alias = (staleLegacy ? root : binDirectory).appendingPathComponent("agent")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: current)
+        if staleLegacy {
+            try FileManager.default.createSymbolicLink(
+                at: binDirectory.appendingPathComponent("cursor-agent"), withDestinationURL: legacy
+            )
+        }
+        let lookupMarker = root.appendingPathComponent("shell-lookup")
+        let shell = try makeExecutable(
+            named: "shell", in: root, marker: lookupMarker,
+            output: staleLegacy ? "__RP_BEGIN__\n\(alias.path)\n__RP_END__" : ""
+        )
+        let legacyPath = try canonicalExecutablePath(legacy)
+        let currentPath = try canonicalExecutablePath(current)
+        let probes = CursorProbeCommands()
+        let clock = CursorDiscoveryClock(lookupMarker: lookupMarker)
+        let resolver = CursorACPLaunchResolver(
+            environmentProvider: { _ in ["PATH": binDirectory.path, "SHELL": shell.path] },
+            supplementalPathProvider: { $0 },
+            probeRunner: { launch, _, timeout, _ in
+                await probes.record(launch.command, timeout: timeout)
+                if launch.command == legacyPath { clock.advance(by: 6) }
+                return CLIProcessRunner.Result(
+                    stdout: Data("Cursor Agent ACP support".utf8), stderr: Data(),
+                    status: launch.command == legacyPath ? 2 : 0, timedOut: false
+                )
+            },
+            // Model slow discovery without sleeps or a host-dependent duration assertion.
+            nowProvider: { clock.now() },
+            deadlineWaiter: { _ in await CursorProbeDeadlineBarrier().wait() },
+            aggregateProbeTimeout: 10
+        )
+        let config = CursorAgentConfig(additionalPathHints: [], includeRepoPromptMCPServer: false)
+
+        let support = try await resolver.probeSupport(for: config)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lookupMarker.path))
+        XCTAssertEqual(support, .supported)
+        let commands = await probes.commands
+        XCTAssertEqual(commands, staleLegacy ? [legacyPath, currentPath] : [currentPath])
+        let timeouts = await probes.timeouts
+        XCTAssertEqual(timeouts, staleLegacy ? [7, 1] : [7])
+        XCTAssertEqual(try resolver.resolvedLaunch(for: config).command, currentPath)
     }
 
     private func makeResolver(path: String) -> CursorACPLaunchResolver {
@@ -601,5 +796,37 @@ private actor CursorProbeDeadlineRouter {
         guard !barriers.isEmpty else { return }
         let barrier = barriers.removeFirst()
         await barrier.wait()
+    }
+}
+
+private actor CursorProbeCommands {
+    private(set) var commands: [String] = []
+    private(set) var timeouts: [TimeInterval] = []
+
+    func record(_ command: String, timeout: TimeInterval? = nil) {
+        commands.append(command)
+        if let timeout { timeouts.append(timeout) }
+    }
+}
+
+private final class CursorDiscoveryClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let lookupMarker: URL
+    private var elapsedProbeTime: TimeInterval = 0
+
+    init(lookupMarker: URL) {
+        self.lookupMarker = lookupMarker
+    }
+
+    func advance(by duration: TimeInterval) {
+        lock.lock()
+        elapsedProbeTime += duration
+        lock.unlock()
+    }
+
+    func now() -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return elapsedProbeTime + (FileManager.default.fileExists(atPath: lookupMarker.path) ? 20 : 0)
     }
 }
