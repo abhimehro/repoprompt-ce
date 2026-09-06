@@ -3,6 +3,7 @@
 [![CI](https://github.com/repoprompt/repoprompt-ce/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/repoprompt/repoprompt-ce/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Platform: macOS 26+](https://img.shields.io/badge/platform-macOS%2026%2B-black)
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/abhimehro/repoprompt-ce?utm_source=oss&utm_medium=github&utm_campaign=abhimehro%2Frepoprompt-ce&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 **A free, open-source native macOS app and agent orchestrator for context engineering.**
 
