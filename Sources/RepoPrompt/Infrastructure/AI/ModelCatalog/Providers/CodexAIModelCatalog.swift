@@ -149,24 +149,32 @@ enum CodexDynamicModelMapper {
             }
         }
 
-        return options.sorted { lhs, rhs in
-            let leftBase = CodexModelIdentity.key(lhs.baseID)
-            let rightBase = CodexModelIdentity.key(rhs.baseID)
-            if leftBase == rightBase {
-                let leftRank = effortRank(lhs.reasoningEffort)
-                let rightRank = effortRank(rhs.reasoningEffort)
-                if leftRank != rightRank {
-                    return leftRank < rightRank
-                }
-                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        return options.sorted(by: optionPrecedes)
+    }
+
+    static func optionPrecedes(_ lhs: CodexDynamicModelOption, _ rhs: CodexDynamicModelOption) -> Bool {
+        if lhs.isDefault != rhs.isDefault {
+            return lhs.isDefault && !rhs.isDefault
+        }
+
+        let leftBase = CodexModelIdentity.key(lhs.baseID)
+        let rightBase = CodexModelIdentity.key(rhs.baseID)
+        if leftBase == rightBase {
+            let leftRank = effortRank(lhs.reasoningEffort)
+            let rightRank = effortRank(rhs.reasoningEffort)
+            if leftRank != rightRank {
+                return leftRank < rightRank
             }
-            if lhs.isDefault != rhs.isDefault {
-                return lhs.isDefault && !rhs.isDefault
-            }
+        } else {
             if AIModel.codexBaseModelPrecedes(leftBase, rightBase) { return true }
             if AIModel.codexBaseModelPrecedes(rightBase, leftBase) { return false }
-            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
         }
+
+        let displayComparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        if displayComparison != .orderedSame {
+            return displayComparison == .orderedAscending
+        }
+        return normalizedOptionID(lhs.id) < normalizedOptionID(rhs.id)
     }
 
     static func displayName(forModelID id: String, records: [CodexDynamicModelRecord]) -> String? {
@@ -220,6 +228,10 @@ enum CodexDynamicModelMapper {
         let key = CodexModelIdentity.key(option.id)
         guard seen.insert(key).inserted else { return }
         output.append(option)
+    }
+
+    private static func normalizedOptionID(_ id: String) -> String {
+        CodexModelIdentity.key(id)
     }
 
     private static func normalizedEfforts(for record: CodexDynamicModelRecord, fallbackDescription: String) -> [EffortEntry] {
