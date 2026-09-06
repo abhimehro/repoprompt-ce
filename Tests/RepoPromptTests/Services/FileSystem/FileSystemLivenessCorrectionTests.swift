@@ -211,8 +211,14 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
     func testWrappedRecoveryRetainsManagedIgnoredFileForMutationAndDeletion() async throws {
         let rootURL = try makeTestDirectory(name: "FileSystemManagedIgnoredRecovery")
         let ignoredPath = "ManagedIgnored.swift"
-        try write("ManagedIgnored.swift\n", to: rootURL.appendingPathComponent(".gitignore"))
+        let postSnapshotIgnoredPath = "ManagedIgnoredAfterSnapshot.swift"
+        let managedDirectoryPath = "ManagedIgnoredDirectoryAfterSnapshot.swift"
+        try write(
+            "ManagedIgnored.swift\nManagedIgnoredAfterSnapshot.swift\nManagedIgnoredDirectoryAfterSnapshot.swift\n",
+            to: rootURL.appendingPathComponent(".gitignore")
+        )
         try write("initial", to: rootURL.appendingPathComponent(ignoredPath))
+        try write("initial directory candidate", to: rootURL.appendingPathComponent(managedDirectoryPath))
         let store = WorkspaceFileContextStore()
         let root = try await store.loadRoot(
             path: rootURL.path,
@@ -228,87 +234,319 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
         guard await publisherOpeningIterator.next() != nil else {
             return XCTFail("Expected the managed-only test root publisher ingress to open")
         }
-        _ = try await store.materializeCatalogFileAfterDiskWrite(
+        let initialMaterialization = try await materializeManagedIgnoredFile(
+            store: store,
             rootID: root.id,
             relativePath: ignoredPath
         )
+        XCTAssertNotNil(initialMaterialization.file)
+        let initialDirectoryMaterialization = try await materializeManagedIgnoredFile(
+            store: store,
+            rootID: root.id,
+            relativePath: managedDirectoryPath
+        )
+        XCTAssertNotNil(initialDirectoryMaterialization.file)
         guard let oldService = await store.fileSystemServiceForTesting(rootID: root.id) else {
             return XCTFail("Expected the managed-only root to own a filesystem service")
         }
         let deliveryGeneration = oldService.fseventDeliveryBarrier.currentGeneration
         let streamGeneration = await oldService.fseventStreamGenerationForTesting()
         let ingressGeneration = await oldService.watcherIngressGenerationForTesting()
-        await oldService.handleFSEventIDsWrappedForTesting(
-            streamGeneration: streamGeneration,
-            ingressGeneration: ingressGeneration,
-            deliveryGeneration: deliveryGeneration
-        )
-        guard await publisherOpeningIterator.next() != nil else {
-            return XCTFail("Expected managed-only recovery to reopen publisher ingress")
-        }
-        guard let recoveredService = await store.fileSystemServiceForTesting(rootID: root.id) else {
-            return XCTFail("Expected the managed-only root to retain a recovered service")
-        }
-        let filterCountBeforeMutation = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
 
-        let modifiedAccepted = try await store.acceptWatcherPayloadForTesting(
-            rootID: root.id,
-            events: [(
-                absolutePath: rootURL.appendingPathComponent(ignoredPath).path,
-                flags: FSEventStreamEventFlags(
-                    kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile
-                ),
-                eventId: 2
-            )],
-            scheduleDrain: false
-        )
-        guard let modifiedAccepted else {
-            return XCTFail("Managed-only mutation must remain visible to the replacement filter")
-        }
-        let modifiedPublicationSequence = await recoveredService.flushPendingEventsNow(
-            throughAcceptedWatcherWatermark: modifiedAccepted
-        )
-        await store.waitUntilPublisherIngressAppliedForTesting(
-            rootID: root.id,
-            servicePublicationSequence: modifiedPublicationSequence
-        )
-        let retainedAfterMutation = await store.lookupPath(
-            rootID: root.id,
-            relativePath: ignoredPath
-        )
-        XCTAssertNotNil(retainedAfterMutation?.file)
-        let filterCountAfterMutation = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
-        XCTAssertEqual(filterCountAfterMutation, filterCountBeforeMutation)
+        try await withManagedOnlyRecoverySnapshotSuspension(store: store) { suspension in
+            await oldService.handleFSEventIDsWrappedForTesting(
+                streamGeneration: streamGeneration,
+                ingressGeneration: ingressGeneration,
+                deliveryGeneration: deliveryGeneration
+            )
+            guard await suspension.waitUntilReached() else {
+                return
+            }
+            guard let currentService = await store.fileSystemServiceForTesting(rootID: root.id),
+                  currentService === oldService
+            else {
+                XCTFail("Recovery must still own the old service at the inventory snapshot")
+                return
+            }
+            let setupFlightCount = await store.watcherInfrastructureFlightCountForTesting(rootID: root.id)
+            XCTAssertEqual(setupFlightCount, 1, "The active owner recovery must be the current setup flight")
 
-        try FileManager.default.removeItem(at: rootURL.appendingPathComponent(ignoredPath))
-        let removedAccepted = try await store.acceptWatcherPayloadForTesting(
-            rootID: root.id,
-            events: [(
-                absolutePath: rootURL.appendingPathComponent(ignoredPath).path,
-                flags: FSEventStreamEventFlags(
-                    kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile
-                ),
-                eventId: 3
-            )],
-            scheduleDrain: false
-        )
-        guard let removedAccepted else {
-            return XCTFail("Managed-only deletion must remain visible to the replacement filter")
+            try write(
+                "during recovery",
+                to: rootURL.appendingPathComponent(postSnapshotIgnoredPath)
+            )
+            let racedMaterialization = try await materializeManagedIgnoredFile(
+                store: store,
+                rootID: root.id,
+                relativePath: postSnapshotIgnoredPath
+            )
+            XCTAssertNotNil(racedMaterialization.file)
+            let managedDirectoryURL = rootURL.appendingPathComponent(managedDirectoryPath)
+            try FileManager.default.removeItem(at: managedDirectoryURL)
+            try FileManager.default.createDirectory(
+                at: managedDirectoryURL,
+                withIntermediateDirectories: false
+            )
+            suspension.release()
+
+            guard await publisherOpeningIterator.next() != nil else {
+                XCTFail("Expected managed-only recovery to reopen publisher ingress")
+                return
+            }
+            guard let recoveredService = await store.fileSystemServiceForTesting(rootID: root.id) else {
+                XCTFail("Expected the managed-only root to retain a recovered service")
+                return
+            }
+            let recoveredState = await recoveredService.getTestState()
+            XCTAssertTrue(
+                recoveredState.visitedItems[managedDirectoryPath] == true,
+                "Replacement crawl must retain the managed path as a directory"
+            )
+            let filterCountBeforeMutation = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
+
+            for (pathIndex, managedPath) in [ignoredPath, postSnapshotIgnoredPath].enumerated() {
+                let managedURL = rootURL.appendingPathComponent(managedPath)
+                let modifiedAccepted = try await store.acceptWatcherPayloadForTesting(
+                    rootID: root.id,
+                    events: [(
+                        absolutePath: managedURL.path,
+                        flags: FSEventStreamEventFlags(
+                            kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile
+                        ),
+                        eventId: UInt64(2 + pathIndex * 2)
+                    )],
+                    scheduleDrain: false
+                )
+                guard let modifiedAccepted else {
+                    XCTFail("Managed-only mutation must remain visible to the replacement filter: \(managedPath)")
+                    return
+                }
+                let modifiedPublicationSequence = await recoveredService.flushPendingEventsNow(
+                    throughAcceptedWatcherWatermark: modifiedAccepted
+                )
+                await store.waitUntilPublisherIngressAppliedForTesting(
+                    rootID: root.id,
+                    servicePublicationSequence: modifiedPublicationSequence
+                )
+                let retainedAfterMutation = await store.lookupPath(
+                    rootID: root.id,
+                    relativePath: managedPath
+                )
+                XCTAssertNotNil(retainedAfterMutation?.file)
+                let filterCountAfterMutation = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
+                XCTAssertEqual(filterCountAfterMutation, filterCountBeforeMutation)
+
+                try FileManager.default.removeItem(at: managedURL)
+                let removedAccepted = try await store.acceptWatcherPayloadForTesting(
+                    rootID: root.id,
+                    events: [(
+                        absolutePath: managedURL.path,
+                        flags: FSEventStreamEventFlags(
+                            kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile
+                        ),
+                        eventId: UInt64(3 + pathIndex * 2)
+                    )],
+                    scheduleDrain: false
+                )
+                guard let removedAccepted else {
+                    XCTFail("Managed-only deletion must remain visible to the replacement filter")
+                    return
+                }
+                let removedPublicationSequence = await recoveredService.flushPendingEventsNow(
+                    throughAcceptedWatcherWatermark: removedAccepted
+                )
+                await store.waitUntilPublisherIngressAppliedForTesting(
+                    rootID: root.id,
+                    servicePublicationSequence: removedPublicationSequence
+                )
+                let removedRecord = await store.lookupPath(
+                    rootID: root.id,
+                    relativePath: managedPath
+                )
+                XCTAssertNil(removedRecord?.file)
+                let filterCountAfterDeletion = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
+                XCTAssertEqual(filterCountAfterDeletion, filterCountBeforeMutation)
+            }
         }
-        let removedPublicationSequence = await recoveredService.flushPendingEventsNow(
-            throughAcceptedWatcherWatermark: removedAccepted
-        )
-        await store.waitUntilPublisherIngressAppliedForTesting(
-            rootID: root.id,
-            servicePublicationSequence: removedPublicationSequence
-        )
-        let removedRecord = await store.lookupPath(rootID: root.id, relativePath: ignoredPath)
-        XCTAssertNil(removedRecord?.file)
-        let filterCountAfterDeletion = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
-        XCTAssertEqual(filterCountAfterDeletion, filterCountBeforeMutation)
+
         await store.stopWatchingRoot(id: root.id)
         await store.setWatcherPublisherIngressDidOpenHandler(nil)
         publisherOpeningContinuation.finish()
+    }
+
+    func testPostWriteRegistrationReroutesAcrossWrappedServiceReplacement() async throws {
+        let rootURL = try makeTestDirectory(name: "FileSystemStalePostWriteRegistration")
+        let ignoredPath = "ManagedIgnoredAfterRegistration.swift"
+        try write(
+            "ManagedIgnoredAfterRegistration.swift\n",
+            to: rootURL.appendingPathComponent(".gitignore")
+        )
+        try write("initial", to: rootURL.appendingPathComponent(ignoredPath))
+        let store = WorkspaceFileContextStore()
+        let root = try await store.loadRoot(
+            path: rootURL.path,
+            respectRepoIgnore: true,
+            respectCursorignore: false
+        )
+        let (publisherOpenings, publisherOpeningContinuation) = AsyncStream<Void>.makeStream()
+        var publisherOpeningIterator = publisherOpenings.makeAsyncIterator()
+        await store.setWatcherPublisherIngressDidOpenHandler { _, _ in
+            publisherOpeningContinuation.yield(())
+        }
+        try await store.startWatchingRoot(id: root.id)
+        guard await publisherOpeningIterator.next() != nil else {
+            return XCTFail("Expected the stale-registration root publisher ingress to open")
+        }
+        guard let oldService = await store.fileSystemServiceForTesting(rootID: root.id) else {
+            return XCTFail("Expected the stale-registration root to own a filesystem service")
+        }
+        let deliveryGeneration = oldService.fseventDeliveryBarrier.currentGeneration
+        let streamGeneration = await oldService.fseventStreamGenerationForTesting()
+        let ingressGeneration = await oldService.watcherIngressGenerationForTesting()
+
+        try await withManagedOnlyRecoveryAndPostWriteRegistrationSuspensions(store: store) {
+            registrationSuspension, recoverySuspension, finalRestoreSuspension in
+            let materializationTask = Task {
+                try await store.materializeCatalogFileAfterDiskWrite(
+                    rootID: root.id,
+                    relativePath: ignoredPath
+                )
+            }
+            guard await registrationSuspension.waitUntilReached() else {
+                materializationTask.cancel()
+                registrationSuspension.release()
+                return
+            }
+
+            await oldService.handleFSEventIDsWrappedForTesting(
+                streamGeneration: streamGeneration,
+                ingressGeneration: ingressGeneration,
+                deliveryGeneration: deliveryGeneration
+            )
+            guard await recoverySuspension.waitUntilReached() else {
+                materializationTask.cancel()
+                registrationSuspension.release()
+                recoverySuspension.release()
+                return
+            }
+            await store.setPostWriteCatalogRegistrationDidReturnHandlerForTesting(nil)
+            recoverySuspension.release()
+
+            guard await finalRestoreSuspension.waitUntilReached() else {
+                XCTFail("Expected recovery to suspend before final ownership restore")
+                materializationTask.cancel()
+                registrationSuspension.release()
+                finalRestoreSuspension.release()
+                return
+            }
+            guard let replacementBeforeRestore = await store.fileSystemServiceForTesting(rootID: root.id) else {
+                XCTFail("Expected wrapped recovery to install a replacement service before restore")
+                materializationTask.cancel()
+                registrationSuspension.release()
+                finalRestoreSuspension.release()
+                return
+            }
+            XCTAssertFalse(oldService === replacementBeforeRestore)
+            registrationSuspension.release()
+
+            // The replacement registration completes while final restore is held;
+            // its path is intentionally absent from the captured recovery set.
+            let materialization = try await materializationTask.value
+            XCTAssertNotNil(materialization.file)
+            finalRestoreSuspension.release()
+
+            guard await publisherOpeningIterator.next() != nil else {
+                XCTFail("Expected wrapped recovery to publish replacement ingress")
+                return
+            }
+            guard let recoveredService = await store.fileSystemServiceForTesting(rootID: root.id) else {
+                XCTFail("Expected wrapped recovery to retain the replacement service")
+                return
+            }
+            XCTAssertTrue(replacementBeforeRestore === recoveredService)
+            let accepted = try await store.acceptWatcherPayloadForTesting(
+                rootID: root.id,
+                events: [(
+                    absolutePath: rootURL.appendingPathComponent(ignoredPath).path,
+                    flags: FSEventStreamEventFlags(
+                        kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile
+                    ),
+                    eventId: 1
+                )],
+                scheduleDrain: false
+            )
+            XCTAssertNotNil(accepted, "The rerouted registration must own the replacement filter")
+        }
+
+        await store.stopWatchingRoot(id: root.id)
+        await store.setWatcherPublisherIngressDidOpenHandler(nil)
+        publisherOpeningContinuation.finish()
+    }
+
+    func testCancelledPostWriteRegistrationCompletesAfterRegistrationGate() async throws {
+        let rootURL = try makeTestDirectory(name: "FileSystemCancelledPostWriteRegistration")
+        let ignoredPath = "ManagedIgnoredAfterCancellation.swift"
+        let ignoredURL = rootURL.appendingPathComponent(ignoredPath)
+        try write(
+            "ManagedIgnoredAfterCancellation.swift\n",
+            to: rootURL.appendingPathComponent(".gitignore")
+        )
+        try write("initial", to: ignoredURL)
+        let store = WorkspaceFileContextStore()
+        let root = try await store.loadRoot(
+            path: rootURL.path,
+            respectRepoIgnore: true,
+            respectCursorignore: false
+        )
+        try await store.startWatchingRoot(id: root.id)
+
+        try await withManagedOnlyRecoveryAndPostWriteRegistrationSuspensions(store: store) {
+            registrationSuspension, _, _ in
+            let materializationTask = Task {
+                try await store.materializeCatalogFileAfterDiskWrite(
+                    rootID: root.id,
+                    relativePath: ignoredPath
+                )
+            }
+            guard await registrationSuspension.waitUntilReached() else {
+                XCTFail("Expected post-write registration to reach its return gate")
+                materializationTask.cancel()
+                registrationSuspension.release()
+                return
+            }
+
+            materializationTask.cancel()
+            registrationSuspension.release()
+            let materialization = try await materializationTask.value
+            guard let materializedFile = materialization.file else {
+                return XCTFail("Cancellation must not discard post-write catalog materialization")
+            }
+            XCTAssertEqual(try String(contentsOf: ignoredURL, encoding: .utf8), "initial")
+            guard let catalogFile = await store.lookupPath(
+                rootID: root.id,
+                relativePath: ignoredPath
+            )?.file else {
+                return XCTFail("Cancelled post-write must leave a current Store catalog file")
+            }
+            XCTAssertEqual(catalogFile.id, materializedFile.id)
+            guard await store.fileSystemServiceForTesting(rootID: root.id) != nil else {
+                return XCTFail("Cancelled post-write must retain the current filesystem owner")
+            }
+            let accepted = try await store.acceptWatcherPayloadForTesting(
+                rootID: root.id,
+                events: [(
+                    absolutePath: ignoredURL.path,
+                    flags: FSEventStreamEventFlags(
+                        kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile
+                    ),
+                    eventId: 1
+                )],
+                scheduleDrain: false
+            )
+            XCTAssertNotNil(accepted, "Current owner must retain managed post-write ownership")
+        }
+
+        await store.stopWatchingRoot(id: root.id)
     }
 
     func testLoadedRootReplacesWrappedServiceAndDeliversSubsequentMutation() async throws {
@@ -476,6 +714,81 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
         await service.stopWatchingForChanges()
     }
 
+    private func materializeManagedIgnoredFile(
+        store: WorkspaceFileContextStore,
+        rootID: UUID,
+        relativePath: String
+    ) async throws -> WorkspaceFileCatalogMaterializationResult {
+        try await store.materializeCatalogFileAfterDiskWrite(
+            rootID: rootID,
+            relativePath: relativePath
+        )
+    }
+
+    private func withManagedOnlyRecoverySnapshotSuspension<T>(
+        store: WorkspaceFileContextStore,
+        operation: (ManagedOnlyRecoverySnapshotSuspension) async throws -> T
+    ) async throws -> T {
+        let suspension = ManagedOnlyRecoverySnapshotSuspension()
+        await store.setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting { _ in
+            await suspension.suspend()
+        }
+        do {
+            let result = try await operation(suspension)
+            suspension.finish()
+            await store.setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting(nil)
+            return result
+        } catch {
+            suspension.finish()
+            await store.setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting(nil)
+            throw error
+        }
+    }
+
+    private func withManagedOnlyRecoveryAndPostWriteRegistrationSuspensions<T>(
+        store: WorkspaceFileContextStore,
+        operation: (
+            ManagedOnlyRecoverySnapshotSuspension,
+            ManagedOnlyRecoverySnapshotSuspension,
+            ManagedOnlyRecoverySnapshotSuspension
+        ) async throws -> T
+    ) async throws -> T {
+        let registrationSuspension = ManagedOnlyRecoverySnapshotSuspension()
+        let recoverySuspension = ManagedOnlyRecoverySnapshotSuspension()
+        let finalRestoreSuspension = ManagedOnlyRecoverySnapshotSuspension()
+        await store.setPostWriteCatalogRegistrationDidReturnHandlerForTesting { _, _ in
+            await registrationSuspension.suspend()
+        }
+        await store.setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting { _ in
+            await recoverySuspension.suspend()
+        }
+        await store.setWrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandlerForTesting { _ in
+            await finalRestoreSuspension.suspend()
+        }
+        do {
+            let result = try await operation(
+                registrationSuspension,
+                recoverySuspension,
+                finalRestoreSuspension
+            )
+            registrationSuspension.finish()
+            recoverySuspension.finish()
+            finalRestoreSuspension.finish()
+            await store.setPostWriteCatalogRegistrationDidReturnHandlerForTesting(nil)
+            await store.setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting(nil)
+            await store.setWrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandlerForTesting(nil)
+            return result
+        } catch {
+            registrationSuspension.finish()
+            recoverySuspension.finish()
+            finalRestoreSuspension.finish()
+            await store.setPostWriteCatalogRegistrationDidReturnHandlerForTesting(nil)
+            await store.setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting(nil)
+            await store.setWrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandlerForTesting(nil)
+            throw error
+        }
+    }
+
     private func makeSeededServiceReadyForPublication(
         name: String
     ) async throws -> (FileSystemService, FileSystemSeedInitializationID) {
@@ -524,6 +837,42 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try content.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
+private final class ManagedOnlyRecoverySnapshotSuspension: @unchecked Sendable {
+    private let reachedStream: AsyncStream<Void>
+    private let reachedContinuation: AsyncStream<Void>.Continuation
+    private let releaseStream: AsyncStream<Void>
+    private let releaseContinuation: AsyncStream<Void>.Continuation
+
+    init() {
+        let reached = AsyncStream<Void>.makeStream()
+        reachedStream = reached.stream
+        reachedContinuation = reached.continuation
+        let release = AsyncStream<Void>.makeStream()
+        releaseStream = release.stream
+        releaseContinuation = release.continuation
+    }
+
+    func waitUntilReached() async -> Bool {
+        var iterator = reachedStream.makeAsyncIterator()
+        return await iterator.next() != nil
+    }
+
+    func suspend() async {
+        reachedContinuation.yield(())
+        var iterator = releaseStream.makeAsyncIterator()
+        _ = await iterator.next()
+    }
+
+    func release() {
+        releaseContinuation.yield(())
+    }
+
+    func finish() {
+        releaseContinuation.finish()
+        reachedContinuation.finish()
     }
 }
 
