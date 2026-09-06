@@ -302,7 +302,6 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
                 recoveredState.visitedItems[managedDirectoryPath] == true,
                 "Replacement crawl must retain the managed path as a directory"
             )
-            let filterCountBeforeMutation = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
 
             for (pathIndex, managedPath) in [ignoredPath, postSnapshotIgnoredPath].enumerated() {
                 let managedURL = rootURL.appendingPathComponent(managedPath)
@@ -333,8 +332,6 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
                     relativePath: managedPath
                 )
                 XCTAssertNotNil(retainedAfterMutation?.file)
-                let filterCountAfterMutation = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
-                XCTAssertEqual(filterCountAfterMutation, filterCountBeforeMutation)
 
                 try FileManager.default.removeItem(at: managedURL)
                 let removedAccepted = try await store.acceptWatcherPayloadForTesting(
@@ -364,8 +361,19 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
                     relativePath: managedPath
                 )
                 XCTAssertNil(removedRecord?.file)
-                let filterCountAfterDeletion = await recoveredService.watcherEarlyFilterSnapshotForTesting().filteredEntryCount
-                XCTAssertEqual(filterCountAfterDeletion, filterCountBeforeMutation)
+                // Recovery removed the old file exemption when this managed path became a directory.
+                let staleFormerFileEvent = try await store.acceptWatcherPayloadForTesting(
+                    rootID: root.id,
+                    events: [(
+                        absolutePath: rootURL.appendingPathComponent(managedDirectoryPath).path,
+                        flags: FSEventStreamEventFlags(
+                            kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile
+                        ),
+                        eventId: UInt64(3 + pathIndex * 2)
+                    )],
+                    scheduleDrain: false
+                )
+                XCTAssertNil(staleFormerFileEvent, "A stale event for the former ignored file can be filtered after directory recovery")
             }
         }
 
