@@ -169,10 +169,16 @@ extension FileSystemService {
         var isDirectory = ObjCBool(false)
         guard fm.fileExists(atPath: standardizedAbsolutePath, isDirectory: &isDirectory), !isDirectory.boolValue else { return false }
         if let values = try? URL(fileURLWithPath: standardizedAbsolutePath).resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) {
-            if values.isSymbolicLink == true { return false }
-            if values.isRegularFile == false { return false }
+            if values.isSymbolicLink == true {
+                return false
+            }
+            if values.isRegularFile == false {
+                return false
+            }
         }
-        if skipSymlinks, pathContainsSymlinkComponent(relativePath: relativePath) { return false }
+        if skipSymlinks, pathContainsSymlinkComponent(relativePath: relativePath) {
+            return false
+        }
         outcome = "current"
         return true
     }
@@ -191,7 +197,9 @@ extension FileSystemService {
 
         var isDirectory = ObjCBool(false)
         guard fm.fileExists(atPath: standardizedAbsolutePath, isDirectory: &isDirectory), isDirectory.boolValue else { return false }
-        if skipSymlinks && pathContainsSymlinkComponent(relativePath: relativePath) { return false }
+        if skipSymlinks && pathContainsSymlinkComponent(relativePath: relativePath) {
+            return false
+        }
         let canonicalPath = URL(fileURLWithPath: standardizedAbsolutePath).resolvingSymlinksInPath().path
         let canonicalPrefix = canonicalRootPath.hasSuffix("/") ? canonicalRootPath : canonicalRootPath + "/"
         guard canonicalPath == canonicalRootPath || canonicalPath.hasPrefix(canonicalPrefix) else { return false }
@@ -218,8 +226,12 @@ extension FileSystemService {
         }
         let url = URL(fileURLWithPath: standardizedAbsolutePath)
         if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) {
-            if values.isSymbolicLink == true { return .ineligible(.symbolicLink) }
-            if values.isRegularFile == false { return .ineligible(.nonRegularFile) }
+            if values.isSymbolicLink == true {
+                return .ineligible(.symbolicLink)
+            }
+            if values.isRegularFile == false {
+                return .ineligible(.nonRegularFile)
+            }
         }
         if skipSymlinks && pathContainsSymlinkComponent(relativePath: relativePath) {
             return .ineligible(.symlinkComponent)
@@ -442,22 +454,42 @@ extension FileSystemService {
         }
     #endif
 
-    /// Restores the store-owned managed-only inventory before a replacement
-    /// service is attached. Missing paths remain installed so their deletion
-    /// callback is not discarded by the replacement's early filter.
+    /// Merges the store-owned managed-only inventory into a replacement service.
+    /// Missing paths remain installed so their deletion callback is not discarded
+    /// by the replacement's early filter. Existing ownership is intentionally
+    /// preserved: Store actor reentrancy can register a new path before this
+    /// final restore runs, and that owner is not in the captured inventory. A
+    /// directory marker already established by the crawl wins over regular-file
+    /// ownership and must not acquire a regular-file exemption.
     func restoreExplicitlyManagedIgnoredFilePathsForRecovery(_ rawPaths: Set<String>) {
-        for rawPath in rawPaths {
-            let relativePath = (rawPath as NSString).standardizingPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedPaths = Set(rawPaths.compactMap { rawPath -> String? in
+            let relativePath = (rawPath as NSString).standardizingPath
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             guard !relativePath.isEmpty,
                   relativePath != ".",
                   relativePath != "..",
                   !relativePath.hasPrefix("../"),
                   !relativePath.hasPrefix("/")
-            else { continue }
-            explicitlyManagedIgnoredFilePaths.insert(relativePath)
+            else { return nil }
+            return relativePath
+        })
+
+        for relativePath in normalizedPaths {
+            let isDirectory = visitedItems[relativePath] == true || fileOrFolderIsDir(relativePath)
             visitedPaths.insert(relativePath)
-            visitedItems[relativePath] = false
-            watcherEarlyFilter.addExplicitlyManagedIgnoredFile(relativePath)
+            visitedItems[relativePath] = isDirectory
+            if isDirectory {
+                explicitlyManagedIgnoredFilePaths.remove(relativePath)
+                watcherEarlyFilter.removeExplicitlyManagedIgnoredFile(relativePath)
+            } else {
+                // Restored Store ownership survives rollback of any pending registration.
+                if var state = explicitlyManagedIgnoredRegistrationStates[relativePath] {
+                    state.hasCommittedIgnoredOwner = true
+                    explicitlyManagedIgnoredRegistrationStates[relativePath] = state
+                }
+                explicitlyManagedIgnoredFilePaths.insert(relativePath)
+                watcherEarlyFilter.addExplicitlyManagedIgnoredFile(relativePath)
+            }
         }
     }
 
@@ -740,7 +772,9 @@ extension FileSystemService {
 
     nonisolated static func deepCopyEventPath(_ source: CFString) -> String? {
         let length = CFStringGetLength(source)
-        if length == 0 { return "" }
+        if length == 0 {
+            return ""
+        }
 
         let utf8Encoding = CFStringBuiltInEncodings.UTF8.rawValue
         if let directUTF8 = CFStringGetCStringPtr(source, utf8Encoding) {
@@ -834,9 +868,15 @@ extension FileSystemService {
         guard count > 0 else { return }
 
         // Although these are non-optional in the API, guard against unexpected null pointers defensively
-        if Int(bitPattern: eventPaths) == 0 { return }
-        if Int(bitPattern: eventFlags) == 0 { return }
-        if Int(bitPattern: eventIds) == 0 { return }
+        if Int(bitPattern: eventPaths) == 0 {
+            return
+        }
+        if Int(bitPattern: eventFlags) == 0 {
+            return
+        }
+        if Int(bitPattern: eventIds) == 0 {
+            return
+        }
 
         guard service.fseventDeliveryBarrier.currentGeneration == callbackContext.deliveryGeneration else {
             return
@@ -1259,7 +1299,9 @@ extension FileSystemService {
             var parts: [String] = []
 
             func check(_ flag: Int, _ name: String) {
-                if (raw & UInt32(flag)) != 0 { parts.append(name) }
+                if (raw & UInt32(flag)) != 0 {
+                    parts.append(name)
+                }
             }
 
             check(kFSEventStreamEventFlagItemCreated, "Created")
@@ -1366,7 +1408,9 @@ extension FileSystemService {
         }
 
         // Vim-style hidden swap: .filename.swp
-        if name.hasPrefix("."), name.contains(".sw") { return true }
+        if name.hasPrefix("."), name.contains(".sw") {
+            return true
+        }
 
         return false
     }
@@ -1643,7 +1687,9 @@ extension FileSystemService {
                 // Renamed events sometimes arrive WITHOUT Created/Removed (Finder trash moves, cross-dir moves, etc.)
                 if !created, !removed {
                     // Ignore temp-save churn
-                    if isTempFile { continue }
+                    if isTempFile {
+                        continue
+                    }
 
                     let fullPath = fullPath(forRelativePath: relPath)
                     var isDirFlag: ObjCBool = false
@@ -1665,7 +1711,9 @@ extension FileSystemService {
                             immediateModifications.append(diskIsDir ? .folderAdded(relPath) : .fileAdded(relPath))
                             visitedPaths.insert(relPath)
                             visitedItems[relPath] = diskIsDir
-                            if diskIsDir { trackFolder(relPath, eventId: eventId) }
+                            if diskIsDir {
+                                trackFolder(relPath, eventId: eventId)
+                            }
                         }
                     } else if isKnown {
                         // Path no longer exists here => removal from watched root
