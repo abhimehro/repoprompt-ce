@@ -557,6 +557,124 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
         await store.stopWatchingRoot(id: root.id)
     }
 
+    func testRecoveryRestorePreservesPendingIgnoredOwnerAfterRollback() async throws {
+        let rootURL = try makeTestDirectory(name: "FileSystemRestoredPendingOwner")
+        let restoredPath = "RestoredManagedIgnored.swift"
+        let controlPath = "UnrestoredManagedIgnored.swift"
+        try write(
+            "\(restoredPath)\n\(controlPath)\n",
+            to: rootURL.appendingPathComponent(".gitignore")
+        )
+        let restoredURL = rootURL.appendingPathComponent(restoredPath)
+        let controlURL = rootURL.appendingPathComponent(controlPath)
+        try write("restored durable file\n", to: restoredURL)
+        try write("ordinary pending file\n", to: controlURL)
+
+        let service = try await FileSystemService(
+            path: rootURL.path,
+            respectRepoIgnore: true,
+            respectCursorignore: false,
+            skipSymlinks: true,
+            isTestMode: true
+        )
+
+        let restoredRegistration = await service.beginExplicitlyManagedRegularFileRegistration(
+            relativePath: restoredPath
+        )
+        guard case .ineligible(.ignored) = restoredRegistration.eligibility else {
+            return XCTFail("Expected the restored path to be ignored")
+        }
+        let restoredToken = try XCTUnwrap(restoredRegistration.token)
+        let restoredPending = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+            relativePath: restoredPath
+        )
+        XCTAssertEqual(restoredPending.pendingOwnerCount, 1)
+        XCTAssertFalse(restoredPending.hasCommittedOwner)
+        XCTAssertTrue(restoredPending.isRegistered)
+        XCTAssertTrue(restoredPending.watcherExemptsPath)
+
+        await service.restoreExplicitlyManagedIgnoredFilePathsForRecovery([restoredPath])
+        let restoredAfterRestore = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+            relativePath: restoredPath
+        )
+        XCTAssertEqual(restoredAfterRestore.pendingOwnerCount, 1)
+        XCTAssertTrue(
+            restoredAfterRestore.hasCommittedOwner,
+            "Recovery ownership must become durable without settling the pending registration"
+        )
+        XCTAssertTrue(restoredAfterRestore.isRegistered)
+        XCTAssertTrue(restoredAfterRestore.watcherExemptsPath)
+
+        let restoredRollbackSucceeded = await service.rollbackExplicitlyManagedRegularFileRegistration(restoredToken)
+        XCTAssertTrue(restoredRollbackSucceeded)
+        let restoredAfterRollback = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+            relativePath: restoredPath
+        )
+        XCTAssertEqual(restoredAfterRollback.pendingOwnerCount, 0)
+        XCTAssertTrue(restoredAfterRollback.hasCommittedOwner)
+        XCTAssertEqual(restoredAfterRollback.visitedItem, false)
+        XCTAssertTrue(restoredAfterRollback.isVisited)
+        XCTAssertTrue(restoredAfterRollback.isRegistered)
+        XCTAssertTrue(restoredAfterRollback.watcherExemptsPath)
+
+        try FileManager.default.removeItem(at: restoredURL)
+        let acceptedDeletion = await service.acceptWatcherPayloadForTesting(
+            [(
+                absolutePath: restoredURL.path,
+                flags: FSEventStreamEventFlags(
+                    kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile
+                ),
+                eventId: 1
+            )],
+            scheduleDrain: false
+        )
+        XCTAssertNotNil(
+            acceptedDeletion,
+            "A restored managed owner must keep deletion ingress visible after rollback"
+        )
+
+        let controlRegistration = await service.beginExplicitlyManagedRegularFileRegistration(
+            relativePath: controlPath
+        )
+        guard case .ineligible(.ignored) = controlRegistration.eligibility else {
+            return XCTFail("Expected the control path to be ignored")
+        }
+        let controlToken = try XCTUnwrap(controlRegistration.token)
+        let controlPending = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+            relativePath: controlPath
+        )
+        XCTAssertEqual(controlPending.pendingOwnerCount, 1)
+        XCTAssertFalse(controlPending.hasCommittedOwner)
+
+        let controlRollbackSucceeded = await service.rollbackExplicitlyManagedRegularFileRegistration(controlToken)
+        XCTAssertTrue(controlRollbackSucceeded)
+        let controlAfterRollback = await service.explicitlyManagedIgnoredRegistrationSnapshotForTesting(
+            relativePath: controlPath
+        )
+        XCTAssertEqual(controlAfterRollback.pendingOwnerCount, 0)
+        XCTAssertFalse(controlAfterRollback.hasCommittedOwner)
+        XCTAssertNil(controlAfterRollback.visitedItem)
+        XCTAssertFalse(controlAfterRollback.isVisited)
+        XCTAssertFalse(controlAfterRollback.isRegistered)
+        XCTAssertFalse(controlAfterRollback.watcherExemptsPath)
+
+        try FileManager.default.removeItem(at: controlURL)
+        let filteredControlDeletion = await service.acceptWatcherPayloadForTesting(
+            [(
+                absolutePath: controlURL.path,
+                flags: FSEventStreamEventFlags(
+                    kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile
+                ),
+                eventId: 2
+            )],
+            scheduleDrain: false
+        )
+        XCTAssertNil(
+            filteredControlDeletion,
+            "An ordinary rolled-back ignored owner must remain filtered"
+        )
+    }
+
     func testLoadedRootReplacesWrappedServiceAndDeliversSubsequentMutation() async throws {
         let rootURL = try makeTestDirectory(name: "FileSystemOwnerRecovery")
         try write("initial", to: rootURL.appendingPathComponent("Initial.swift"))

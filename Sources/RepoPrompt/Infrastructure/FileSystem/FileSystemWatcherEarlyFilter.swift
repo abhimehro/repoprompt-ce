@@ -64,6 +64,12 @@ final class FileSystemWatcherEarlyFilter: @unchecked Sendable {
         lock.unlock()
     }
 
+    func containsExplicitlyManagedIgnoredFile(_ relativePath: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return explicitlyManagedIgnoredFiles.contains(relativePath)
+    }
+
     func filter(_ payload: FSEventCallbackPayload) -> Result {
         guard !payload.entries.isEmpty else {
             return Result(payload: nil, filteredEntryCount: 0)
