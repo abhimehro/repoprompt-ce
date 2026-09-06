@@ -21,11 +21,17 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         defer { WindowStatesManager.shared.unregisterWindowState(window) }
 
         let viewModel = window.agentModeViewModel
+        let workspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let tabID = try XCTUnwrap(workspace.activeComposeTabID)
         let sessionID = UUID()
-        let session = await viewModel.ensureSessionReady(tabID: UUID())
+        let session = await viewModel.ensureSessionReady(tabID: tabID)
         session.selectedAgent = .cursor
         session.selectedModelRaw = "grok-4.6"
-        _ = viewModel.test_installPersistentSessionBinding(sessionID: sessionID, on: session)
+        XCTAssertNotNil(viewModel.test_installPersistentSessionBinding(
+            sessionID: sessionID,
+            on: session,
+            compareAndSetInWorkspaceID: workspace.id
+        ))
         session.runState = .running
 
         let service = makeManageService(window: window)
@@ -171,6 +177,99 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             XCTAssertEqual(session.mcpControlContext?.activationID, competingControl)
             XCTAssertEqual(session.acpModelParameterSelections, capturedSelections)
         }
+    }
+
+    func testResumeFailureSettlesProvisionalClaimAfterPublicSteerStartsNewerRun() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let window = try await makeWindow(name: "Cursor resume public ownership", root: fixture.root)
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+
+        let viewModel = window.agentModeViewModel
+        let workspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
+        let sessionID = UUID()
+        viewModel.upsertSessionIndex(
+            sessionID: sessionID,
+            tabID: UUID(),
+            name: "Cursor public ownership",
+            lastUserMessageAt: nil,
+            savedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastRunStateRaw: AgentSessionRunState.completed.rawValue,
+            itemCount: 1,
+            agentKindRaw: AgentProviderKind.cursor.rawValue,
+            agentModelRaw: "grok-4.6",
+            agentReasoningEffortRaw: nil,
+            autoEditEnabled: false
+        )
+
+        let activationReached = expectation(description: "Resume published MCP control")
+        let releaseActivation = AsyncStream<Void>.makeStream()
+        var activatedSession: AgentModeViewModel.TabSession?
+        viewModel.test_afterMCPControlActivation = { session in
+            activatedSession = session
+            activationReached.fulfill()
+            for await _ in releaseActivation.stream {
+                break
+            }
+        }
+        defer {
+            releaseActivation.continuation.yield(())
+            viewModel.test_afterMCPControlActivation = nil
+        }
+
+        let resumeService = makeManageService(window: window)
+        let resume = Task { @MainActor in
+            try await resumeService.execute(args: [
+                "op": .string("resume_session"),
+                "session_id": .string(sessionID.uuidString),
+                "model_id": .string(cursorModelID),
+                "model_parameters": request([("effort", "high")])
+            ])
+        }
+        defer { resume.cancel() }
+        await fulfillment(of: [activationReached], timeout: 5)
+
+        let session = try XCTUnwrap(activatedSession)
+        XCTAssertEqual(session.activeAgentSessionID, sessionID)
+        var steerService = makeRunService(window: window)
+        steerService.testDispatchSteerInstruction = { dispatchedSessionID, _, _, agentModeVM in
+            XCTAssertEqual(dispatchedSessionID, sessionID)
+            let controlledSession = try XCTUnwrap(agentModeVM.mcpControlledSession(sessionID: dispatchedSessionID))
+            XCTAssertTrue(controlledSession.mcpFollowUpRunPending)
+            controlledSession.runState = .running
+            agentModeVM.publishMCPStateChange(for: controlledSession)
+            return .startedRun
+        }
+        _ = try await steerService.execute(args: [
+            "op": .string("steer"),
+            "session_id": .string(sessionID.uuidString),
+            "message": .string("start the newer public run")
+        ])
+        XCTAssertTrue(session.runState.isActive)
+        XCTAssertNotNil(session.mcpControlContext)
+
+        releaseActivation.continuation.yield(())
+        do {
+            _ = try await resume.value
+            XCTFail("The older resume must lose to the public steer run")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("actively running"), String(describing: error))
+        }
+
+        let settledTarget = try await viewModel.mcpResolveOrCreateSessionTarget(
+            tabID: nil,
+            sessionID: sessionID,
+            createIfNeeded: true,
+            sessionName: nil,
+            expectedWorkspaceID: workspace.id
+        )
+        XCTAssertEqual(settledTarget.origin, .existingSession)
+        viewModel.mcpAcceptSessionTarget(settledTarget)
+        XCTAssertTrue(session.runState.isActive)
+        XCTAssertNotNil(session.mcpControlContext)
+
+        session.runState = .completed
+        await viewModel.mcpDeactivateControlContext(sessionID: sessionID, cleanupSessionStore: true)
     }
 
     func testConfigurationRejectsStaleTargetBeforeChangingReplacementSession() async throws {
@@ -396,6 +495,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             sessionName: nil
         )
         let sessionID = try XCTUnwrap(target.sessionID)
+        agentModeVM.mcpAcceptSessionTarget(target)
         _ = try await agentModeVM.mcpStageModelParameterSelections(
             tabID: tabID,
             agentRaw: AgentProviderKind.cursor.rawValue,
@@ -470,7 +570,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         defer { WindowStatesManager.shared.unregisterWindowState(window) }
         let agentModeVM = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
-        _ = try await agentModeVM.mcpResolveOrCreateSessionTarget(
+        let initialTarget = try await agentModeVM.mcpResolveOrCreateSessionTarget(
             tabID: tabID,
             sessionID: nil,
             createIfNeeded: true,
@@ -482,6 +582,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             modelRaw: "grok-4.6",
             selections: [selection(value: "low")]
         )
+        agentModeVM.mcpAcceptSessionTarget(initialTarget)
 
         let service = makeRunService(
             window: window,
