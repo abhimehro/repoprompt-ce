@@ -364,7 +364,7 @@ actor WorkspaceFileContextStore {
     private struct RootState {
         let lifetimeID: UUID
         let root: WorkspaceRootRecord
-        let service: FileSystemService
+        var service: FileSystemService
         var folderIDsByRelativePath: [String: UUID]
         var fileIDsByRelativePath: [String: UUID]
         var childFolderIDsByFolderID: [UUID: [UUID]]
@@ -1247,6 +1247,9 @@ actor WorkspaceFileContextStore {
         private var watcherInfrastructureDidJoinFlightHandler: (@Sendable (UUID, UUID) async -> Void)?
         private var watcherServiceStateWillReconcileHandler: (@Sendable (UUID, Bool) async -> Void)?
         private var watcherStopWillBeginHandler: (@Sendable (UUID) async -> Void)?
+        private var wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler: (@Sendable (UUID) async -> Void)?
+        private var wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler: (@Sendable (UUID) async -> Void)?
+        private var postWriteCatalogRegistrationDidReturnHandler: (@Sendable (UUID, String) async -> Void)?
         private var rootUnloadTerminationDidCompleteHandler: (@Sendable (WorkspaceRootUnloadTerminationDiagnostics) async -> Void)?
         private var appliedIngressDidCaptureWatermarksHandler: (@Sendable ([UUID: UInt64]) async -> Void)?
         private var scopedIngressBarrierWillFlushHandler: (@Sendable (UUID) async -> Void)?
@@ -1982,6 +1985,24 @@ actor WorkspaceFileContextStore {
 
         func setWatcherStopWillBeginHandler(_ handler: (@Sendable (UUID) async -> Void)?) {
             watcherStopWillBeginHandler = handler
+        }
+
+        func setWrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandlerForTesting(
+            _ handler: (@Sendable (UUID) async -> Void)?
+        ) {
+            wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler = handler
+        }
+
+        func setPostWriteCatalogRegistrationDidReturnHandlerForTesting(
+            _ handler: (@Sendable (UUID, String) async -> Void)?
+        ) {
+            postWriteCatalogRegistrationDidReturnHandler = handler
+        }
+
+        func setWrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandlerForTesting(
+            _ handler: (@Sendable (UUID) async -> Void)?
+        ) {
+            wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler = handler
         }
 
         func setRootUnloadTerminationDidCompleteHandler(
@@ -3247,6 +3268,59 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    private func recoverActiveWatcherIfNeeded(
+        rootID: UUID,
+        expectedLifetimeID: UUID,
+        service: FileSystemService
+    ) async {
+        guard let state = rootStatesByID[rootID],
+              state.lifetimeID == expectedLifetimeID,
+              state.service === service,
+              hasAggregateWatcherDemand(rootID: rootID, lifetimeID: expectedLifetimeID)
+        else { return }
+        do {
+            // Re-enter the existing owner setup flight. It closes/drains the
+            // poisoned ingress, replaces/crawls the service, and reattaches it.
+            try await ensureWatcherInfrastructure(state: state, rootID: rootID)
+        } catch {
+            // A failed owner recovery remains fail-closed. The demand owner can
+            // retry through the normal lifecycle; this signal is not a watchdog.
+        }
+    }
+
+    private func withSeededPublicationRecoveryPermits<T>(
+        _ pendingRoots: [PendingSeededRoot],
+        _ body: () -> T?
+    ) -> T? {
+        let orderedRoots = pendingRoots.sorted {
+            $0.state.service.diagnosticRootToken.uuidString
+                < $1.state.service.diagnosticRootToken.uuidString
+        }
+        var permits: [FileSystemServiceFSEventRecoveryPublicationPermit] = []
+        var lockedServiceTokens = Set<UUID>()
+        permits.reserveCapacity(orderedRoots.count)
+
+        for pending in orderedRoots {
+            guard let proof = pending.activationProof,
+                  lockedServiceTokens.insert(pending.state.service.diagnosticRootToken).inserted,
+                  let permit = pending.state.service.acquireSeededPublicationRecoveryPermit(proof)
+            else {
+                for permit in permits.reversed() {
+                    permit.release()
+                }
+                return nil
+            }
+            permits.append(permit)
+        }
+
+        defer {
+            for permit in permits.reversed() {
+                permit.release()
+            }
+        }
+        return body()
+    }
+
     private func ensureWatcherInfrastructure(state: RootState, rootID: UUID) async throws {
         let key = WatcherInfrastructureKey(rootID: rootID, lifetimeID: state.lifetimeID)
         guard isRootLifetimeCurrent(rootID: rootID, expectedLifetimeID: key.lifetimeID) else {
@@ -3315,6 +3389,7 @@ actor WorkspaceFileContextStore {
             {
                 subscription = attachment.subscription
             } else {
+                state.service.fseventRecoverySignal.clear()
                 watcherPublisherAttachmentsByKey.removeValue(forKey: key)?.cancellable.cancel()
                 guard let attachedSubscription = try await attachPublisherIngress(
                     state: state,
@@ -3335,6 +3410,18 @@ actor WorkspaceFileContextStore {
                 await waitForCurrentPublisherIngress(rootIDs: [key.rootID])
             } catch {
                 removeWatcherPublisherAttachment(key: key, subscription: subscription)
+                await waitForCurrentPublisherIngress(rootIDs: [key.rootID])
+                if let activationError = error as? FileSystemWatcherActivationError,
+                   case .eventIDsWrapped = activationError
+                {
+                    try await recoverWrappedWatcherService(
+                        rootID: key.rootID,
+                        expectedLifetimeID: key.lifetimeID,
+                        rootPath: rootPath,
+                        failedService: state.service
+                    )
+                    continue
+                }
                 if isRootLifetimeCurrent(rootID: key.rootID, expectedLifetimeID: key.lifetimeID) {
                     try? await reconcileWatcherServiceState(state.service, rootID: key.rootID)
                     await waitForCurrentPublisherIngress(rootIDs: [key.rootID])
@@ -3359,6 +3446,193 @@ actor WorkspaceFileContextStore {
             }
             return
         }
+    }
+
+    private func recoverWrappedWatcherService(
+        rootID: UUID,
+        expectedLifetimeID: UUID,
+        rootPath: String,
+        failedService: FileSystemService
+    ) async throws {
+        try Task.checkCancellation()
+        guard let state = rootStatesByID[rootID],
+              state.lifetimeID == expectedLifetimeID,
+              state.root.standardizedFullPath == rootPath,
+              state.service === failedService,
+              hasAggregateWatcherDemand(rootID: rootID, lifetimeID: expectedLifetimeID)
+        else {
+            throw WorkspaceSessionWorktreeOwnershipError.unavailableRoot(rootPath)
+        }
+        let configuration = await failedService.watcherConfigurationForRootRecovery()
+        try Task.checkCancellation()
+        guard isRootLifetimeCurrent(rootID: rootID, expectedLifetimeID: expectedLifetimeID),
+              rootStatesByID[rootID]?.service === failedService,
+              hasAggregateWatcherDemand(rootID: rootID, lifetimeID: expectedLifetimeID)
+        else {
+            throw WorkspaceSessionWorktreeOwnershipError.unavailableRoot(rootPath)
+        }
+        let initialManagedOnlyIgnoredFilePaths = managedOnlyIgnoredFilePathsForRecovery(state: state)
+        #if DEBUG
+            if let wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler {
+                await wrappedWatcherRecoveryDidSnapshotManagedOnlyIgnoredFilePathsHandler(rootID)
+            }
+        #endif
+
+        // The old service has an invalid continuation. Stop it before rebuilding;
+        // the replacement below receives its own FSEvents journal cut.
+        await failedService.stopWatchingForChanges()
+        try Task.checkCancellation()
+
+        let replacement = try await FileSystemService(
+            path: rootPath,
+            respectRepoIgnore: configuration.respectRepoIgnore,
+            respectCursorignore: configuration.respectCursorignore,
+            skipSymlinks: configuration.skipSymlinks,
+            enableHierarchicalIgnores: configuration.enableHierarchicalIgnores
+        )
+        #if DEBUG
+            if let watcherActivationFailurePointForNewServicesForTesting {
+                await replacement.setWatcherActivationFailureForTesting(
+                    watcherActivationFailurePointForNewServicesForTesting
+                )
+            }
+        #endif
+        await replacement.restoreExplicitlyManagedIgnoredFilePathsForRecovery(
+            initialManagedOnlyIgnoredFilePaths
+        )
+
+        let rootURL = URL(fileURLWithPath: rootPath).standardizedFileURL
+        var actualFolderPaths = Set<String>()
+        var actualFilePaths = Set<String>()
+        do {
+            for try await event in await replacement.loadContentsInChunks(of: rootURL) {
+                try Task.checkCancellation()
+                guard case let .preparedItems(chunk) = event else { continue }
+                actualFolderPaths.formUnion(
+                    chunk.folders
+                        .map { StandardizedPath.relative($0.relativePath) }
+                        .filter { !$0.isEmpty }
+                )
+                actualFilePaths.formUnion(
+                    chunk.files
+                        .map { StandardizedPath.relative($0.relativePath) }
+                        .filter { !$0.isEmpty }
+                )
+            }
+        } catch {
+            await replacement.stopWatchingForChanges()
+            throw error
+        }
+        try Task.checkCancellation()
+
+        guard let currentState = rootStatesByID[rootID],
+              currentState.lifetimeID == expectedLifetimeID,
+              currentState.root.standardizedFullPath == rootPath,
+              currentState.service === failedService,
+              hasAggregateWatcherDemand(rootID: rootID, lifetimeID: expectedLifetimeID)
+        else {
+            await replacement.stopWatchingForChanges()
+            throw WorkspaceSessionWorktreeOwnershipError.unavailableRoot(rootPath)
+        }
+
+        let latestManagedOnlyIgnoredFilePaths = managedOnlyIgnoredFilePathsForRecovery(state: currentState)
+        let recoveryDeltas = wrappedWatcherRecoveryDeltas(
+            state: currentState,
+            actualFolderPaths: actualFolderPaths,
+            actualFilePaths: actualFilePaths
+        )
+        var replacementState = currentState
+        replacementState.service = replacement
+        rootStatesByID[rootID] = replacementState
+
+        do {
+            #if DEBUG
+                if let wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler {
+                    await wrappedWatcherRecoveryWillRestoreLatestManagedOnlyIgnoredFilePathsHandler(rootID)
+                }
+            #endif
+            try Task.checkCancellation()
+            await replacement.restoreExplicitlyManagedIgnoredFilePathsForRecovery(
+                latestManagedOnlyIgnoredFilePaths
+            )
+            try Task.checkCancellation()
+            await invalidateRetainedSearchContentForRecoveryUncertainty(rootID: rootID)
+            await handleObservedFileSystemDeltas(
+                recoveryDeltas,
+                root: currentState.root,
+                expectedLifetimeID: expectedLifetimeID,
+                requiresFullResync: true
+            )
+            try Task.checkCancellation()
+        } catch {
+            await replacement.stopWatchingForChanges()
+            throw error
+        }
+        guard let committedState = rootStatesByID[rootID],
+              committedState.lifetimeID == expectedLifetimeID,
+              committedState.service === replacement,
+              hasAggregateWatcherDemand(rootID: rootID, lifetimeID: expectedLifetimeID)
+        else {
+            await replacement.stopWatchingForChanges()
+            throw WorkspaceSessionWorktreeOwnershipError.unavailableRoot(rootPath)
+        }
+    }
+
+    private func managedOnlyIgnoredFilePathsForRecovery(state: RootState) -> Set<String> {
+        Set(state.fileIDsByRelativePath.compactMap { relativePath, fileID in
+            managedOnlyFileIDs.contains(fileID) ? relativePath : nil
+        })
+    }
+
+    private func wrappedWatcherRecoveryDeltas(
+        state: RootState,
+        actualFolderPaths: Set<String>,
+        actualFilePaths: Set<String>
+    ) -> [FileSystemDelta] {
+        let currentFolderPaths = Set(state.folderIDsByRelativePath.keys.filter { !$0.isEmpty })
+        let currentFilePaths = Set(state.fileIDsByRelativePath.keys.filter { !$0.isEmpty })
+        let discoverableFolderPaths = Set(
+            currentFolderPaths.filter { path in
+                guard let folderID = state.folderIDsByRelativePath[path] else { return false }
+                return isDiscoverableFolderID(folderID)
+            }
+        )
+        let discoverableFilePaths = Set(
+            currentFilePaths.filter { path in
+                guard let fileID = state.fileIDsByRelativePath[path] else { return false }
+                return isDiscoverableFileID(fileID)
+            }
+        )
+
+        let removedFolderPaths = discoverableFolderPaths
+            .subtracting(actualFolderPaths)
+            .union(currentFolderPaths.filter { actualFilePaths.contains($0) })
+        let removedFilePaths = discoverableFilePaths
+            .subtracting(actualFilePaths)
+            .union(currentFilePaths.filter { actualFolderPaths.contains($0) })
+        let addedFolderPaths = actualFolderPaths
+            .subtracting(currentFolderPaths)
+            .union(actualFolderPaths.intersection(currentFilePaths))
+        let addedFilePaths = actualFilePaths
+            .subtracting(currentFilePaths)
+            .union(actualFilePaths.intersection(currentFolderPaths))
+
+        func pathDepth(_ path: String) -> Int {
+            path.split(separator: "/").count
+        }
+
+        var deltas: [FileSystemDelta] = []
+        deltas.append(contentsOf: removedFolderPaths.sorted {
+            if pathDepth($0) == pathDepth($1) { return $0 > $1 }
+            return pathDepth($0) > pathDepth($1)
+        }.map { .folderRemoved($0) })
+        deltas.append(contentsOf: removedFilePaths.sorted().map { .fileRemoved($0) })
+        deltas.append(contentsOf: addedFolderPaths.sorted {
+            if pathDepth($0) == pathDepth($1) { return $0 < $1 }
+            return pathDepth($0) < pathDepth($1)
+        }.map { .folderAdded($0) })
+        deltas.append(contentsOf: addedFilePaths.sorted().map { .fileAdded($0) })
+        return deltas
     }
 
     private func attachPublisherIngress(
@@ -3433,6 +3707,18 @@ actor WorkspaceFileContextStore {
             subscription: subscription,
             cancellable: cancellable
         )
+        let service = state.service
+        service.fseventRecoverySignal.install { [weak self, weak service] in
+            guard let service else { return }
+            Task { [weak self, weak service] in
+                guard let self, let service else { return }
+                await recoverActiveWatcherIfNeeded(
+                    rootID: key.rootID,
+                    expectedLifetimeID: key.lifetimeID,
+                    service: service
+                )
+            }
+        }
         return subscription
     }
 
@@ -3479,6 +3765,18 @@ actor WorkspaceFileContextStore {
             cancellable.cancel()
             coordinator.closePublisherIngress(subscription)
             throw WorkspaceSessionWorktreeOwnershipError.staleUpdate
+        }
+        let service = pending.state.service
+        service.fseventRecoverySignal.install { [weak self, weak service] in
+            guard let self, let service else { return }
+            Task { [weak self, weak service] in
+                guard let self, let service else { return }
+                await recoverActiveWatcherIfNeeded(
+                    rootID: rootID,
+                    expectedLifetimeID: lifetimeID,
+                    service: service
+                )
+            }
         }
         return WatcherPublisherAttachment(subscription: subscription, cancellable: cancellable)
     }
@@ -3539,6 +3837,7 @@ actor WorkspaceFileContextStore {
         subscription: WorkspaceFileSystemIngressCoordinator.Subscription
     ) {
         if watcherPublisherAttachmentsByKey[key]?.subscription == subscription {
+            rootStatesByID[key.rootID]?.service.fseventRecoverySignal.clear()
             watcherPublisherAttachmentsByKey.removeValue(forKey: key)?.cancellable.cancel()
         }
         publisherIngressCoordinator.closePublisherIngress(subscription)
@@ -4633,6 +4932,7 @@ actor WorkspaceFileContextStore {
         guard var pending = pendingSeededRootsByID[pendingID] else { return }
         pending.phase = terminalPhase
         pendingSeededRootsByID[pendingID] = pending
+        pending.state.service.fseventRecoverySignal.clear()
         await pending.state.service.abortSeededPreparation(initializationID: pending.initializationID)
         pending.attachment?.cancellable.cancel()
         if let subscription = pending.attachment?.subscription {
@@ -5359,118 +5659,134 @@ actor WorkspaceFileContextStore {
         }
         let publicationFences = pendingRoots.compactMap(\.authorityFence)
 
-        // No await, callback, task creation, or throwing operation is allowed
-        // from the authority permit through the complete visible-state assignment.
+        // Keep the authority permit and visible-state assignment synchronous.
+        // Existing drain/path work may be enqueued here, but must not re-enter
+        // publication state or these locks before the assignment completes.
         var installedRoots = currentRecord.roots
         var newlyPublishedRootIDs = Set<UUID>()
         var newlyPublishedPaths: [String] = []
-        var pendingServices: [(FileSystemService, FileSystemSeedPublicationActivationProof, WorktreeStartupContext)] = []
+        var pendingServices: [(
+            rootID: UUID,
+            lifetimeID: UUID,
+            service: FileSystemService,
+            activationProof: FileSystemSeedPublicationActivationProof,
+            context: WorktreeStartupContext
+        )] = []
         var previousToken: WorkspaceSessionWorktreeOwnershipToken?
-        let didPublish = workspaceStateAuthority.withPendingInitializationAuthorityPublicationPermit(
-            publicationFences
-        ) {
-            guard latestSessionWorktreeOwnershipGenerationByOwnerID[preparation.token.ownerID]
-                == preparation.token.generation,
-                sessionWorktreeOwnershipRecordsByToken[preparation.token]?.pendingSeededRootIDs == pendingIDs,
-                pendingRoots.allSatisfy({ pending in
-                    guard let fence = pending.authorityFence,
-                          let current = pendingSeededRootsByID[pending.id]
-                    else { return false }
-                    return current.phase == .readyForCommit
-                        && current.authorityFence == fence
-                        && current.authorityInvalidationGeneration == fence.lease.invalidationGeneration
-                        && current.authorityAcceptedMetadataWatermark == fence.acceptedMetadataWatermark
-                        && current.authorityMutationDepth == 0
-                        && current.terminalFallbackReason == nil
-                }),
-                pausedHandoffSubscriptions.allSatisfy({
-                    publisherIngressCoordinator.resumeDrainAfterHandoff($0)
-                })
-            else { return false }
-
-            for pending in pendingRoots {
-                guard let fence = pending.authorityFence,
-                      let authorityClaim = pending.authorityClaim,
-                      let activationProof = pending.activationProof
+        let didPublish = withSeededPublicationRecoveryPermits(pendingRoots) {
+            workspaceStateAuthority.withPendingInitializationAuthorityPublicationPermit(
+                publicationFences
+            ) {
+                guard !Task.isCancelled,
+                      latestSessionWorktreeOwnershipGenerationByOwnerID[preparation.token.ownerID]
+                      == preparation.token.generation,
+                      sessionWorktreeOwnershipRecordsByToken[preparation.token]?.pendingSeededRootIDs == pendingIDs,
+                      pendingRoots.allSatisfy({ pending in
+                          guard let fence = pending.authorityFence,
+                                let current = pendingSeededRootsByID[pending.id]
+                          else { return false }
+                          return current.phase == .readyForCommit
+                              && current.authorityFence == fence
+                              && current.authorityInvalidationGeneration == fence.lease.invalidationGeneration
+                              && current.authorityAcceptedMetadataWatermark == fence.acceptedMetadataWatermark
+                              && current.authorityMutationDepth == 0
+                              && current.terminalFallbackReason == nil
+                      }),
+                      pausedHandoffSubscriptions.allSatisfy({
+                          publisherIngressCoordinator.resumeDrainAfterHandoff($0)
+                      })
                 else { return false }
-                let root = pending.state.root
-                let ownedRoot = WorkspaceSessionWorktreeOwnedRoot(
-                    rootID: root.id,
-                    lifetimeID: pending.state.lifetimeID,
-                    standardizedPhysicalPath: pending.standardizedPath
-                )
-                commit(pending.indexes)
-                rootIDsByStandardizedPath[pending.standardizedPath] = root.id
-                rootStatesByID[root.id] = pending.state
-                rootLoadConfigurationsByPath[pending.standardizedPath] = pending.loadConfiguration
-                rootLoadOrder.append(root.id)
-                appliedIndexGenerationsByRootID[root.id] = 0
-                catalogGenerationsByRootID[root.id] = 0
-                publishedRootCatalogShardsByRootID[root.id] = pending.preparedShard
-                rootCatalogShardDeltaStatesByRootID[root.id] = RootCatalogShardDeltaState(
-                    lifetimeID: pending.state.lifetimeID,
-                    lastAppliedIndexGeneration: 0,
-                    isDirty: false,
-                    capability: .recordsAndPathIndexes
-                )
-                if let shard = pending.preparedShard {
-                    registerPublishedRootCatalogShard(shard, kind: .authoritative)
-                }
-                if let attachment = pending.attachment {
-                    watcherPublisherAttachmentsByKey[WatcherInfrastructureKey(
+
+                for pending in pendingRoots {
+                    guard let fence = pending.authorityFence,
+                          let authorityClaim = pending.authorityClaim,
+                          let activationProof = pending.activationProof
+                    else { return false }
+                    let root = pending.state.root
+                    let ownedRoot = WorkspaceSessionWorktreeOwnedRoot(
+                        rootID: root.id,
+                        lifetimeID: pending.state.lifetimeID,
+                        standardizedPhysicalPath: pending.standardizedPath
+                    )
+                    commit(pending.indexes)
+                    rootIDsByStandardizedPath[pending.standardizedPath] = root.id
+                    rootStatesByID[root.id] = pending.state
+                    rootLoadConfigurationsByPath[pending.standardizedPath] = pending.loadConfiguration
+                    rootLoadOrder.append(root.id)
+                    appliedIndexGenerationsByRootID[root.id] = 0
+                    catalogGenerationsByRootID[root.id] = 0
+                    publishedRootCatalogShardsByRootID[root.id] = pending.preparedShard
+                    rootCatalogShardDeltaStatesByRootID[root.id] = RootCatalogShardDeltaState(
+                        lifetimeID: pending.state.lifetimeID,
+                        lastAppliedIndexGeneration: 0,
+                        isDirty: false,
+                        capability: .recordsAndPathIndexes
+                    )
+                    if let shard = pending.preparedShard {
+                        registerPublishedRootCatalogShard(shard, kind: .authoritative)
+                    }
+                    if let attachment = pending.attachment {
+                        watcherPublisherAttachmentsByKey[WatcherInfrastructureKey(
+                            rootID: root.id,
+                            lifetimeID: pending.state.lifetimeID
+                        )] = attachment
+                    }
+                    let lifetimeKey = SessionWorktreeRootLifetimeKey(
                         rootID: root.id,
                         lifetimeID: pending.state.lifetimeID
-                    )] = attachment
+                    )
+                    sessionWorktreeOwnershipTokensByRootLifetime[lifetimeKey, default: []]
+                        .insert(preparation.token)
+                    removeSessionWorktreeReservation(
+                        standardizedPath: pending.standardizedPath,
+                        token: preparation.token
+                    )
+                    installedRoots.append(ownedRoot)
+                    newlyPublishedRootIDs.insert(root.id)
+                    newlyPublishedPaths.append(pending.standardizedPath)
+                    pendingServices.append((
+                        rootID: root.id,
+                        lifetimeID: pending.state.lifetimeID,
+                        service: pending.state.service,
+                        activationProof: activationProof,
+                        context: pending.startupContext
+                    ))
+                    publishedSeededAuthorityFencesByRootID[root.id] = fence
+                    publishedSeededAuthorityClaimsByRootID[root.id] = authorityClaim
+                    publishedSeededAuthorityStatesByRootID[root.id] = PublishedSeededAuthorityState(
+                        epoch: 0,
+                        pendingInvalidationGeneration: nil,
+                        pendingAcceptedMetadataWatermark: fence.acceptedMetadataWatermark,
+                        activeMutationDepth: 0,
+                        isBlocked: false,
+                        isReconciling: false,
+                        reconciliationFailed: false,
+                        fullCrawlAttemptedGeneration: nil,
+                        fullCrawlCompletedGeneration: nil
+                    )
+                    pendingSeededRootsByID.removeValue(forKey: pending.id)
+                    pendingSeededRootIDsByStandardizedPath.removeValue(forKey: pending.standardizedPath)
+                    #if DEBUG
+                        rootCrawlCountsByRootID[root.id] = 0
+                    #endif
                 }
-                let lifetimeKey = SessionWorktreeRootLifetimeKey(
-                    rootID: root.id,
-                    lifetimeID: pending.state.lifetimeID
+                sessionRootLifetimeClock.advance()
+                sessionWorktreeOwnershipRecordsByToken[preparation.token] = SessionWorktreeOwnershipRecord(
+                    bindingFingerprint: preparation.bindingFingerprint,
+                    roots: installedRoots,
+                    pendingSeededRootIDs: []
                 )
-                sessionWorktreeOwnershipTokensByRootLifetime[lifetimeKey, default: []]
-                    .insert(preparation.token)
-                removeSessionWorktreeReservation(
-                    standardizedPath: pending.standardizedPath,
-                    token: preparation.token
+                previousToken = installedSessionWorktreeOwnershipTokenByOwnerID.updateValue(
+                    preparation.token,
+                    forKey: preparation.token.ownerID
                 )
-                installedRoots.append(ownedRoot)
-                newlyPublishedRootIDs.insert(root.id)
-                newlyPublishedPaths.append(pending.standardizedPath)
-                pendingServices.append((pending.state.service, activationProof, pending.startupContext))
-                publishedSeededAuthorityFencesByRootID[root.id] = fence
-                publishedSeededAuthorityClaimsByRootID[root.id] = authorityClaim
-                publishedSeededAuthorityStatesByRootID[root.id] = PublishedSeededAuthorityState(
-                    epoch: 0,
-                    pendingInvalidationGeneration: nil,
-                    pendingAcceptedMetadataWatermark: fence.acceptedMetadataWatermark,
-                    activeMutationDepth: 0,
-                    isBlocked: false,
-                    isReconciling: false,
-                    reconciliationFailed: false,
-                    fullCrawlAttemptedGeneration: nil,
-                    fullCrawlCompletedGeneration: nil
+                invalidatePathMatchSnapshot(
+                    affectedRootKinds: [.sessionWorktree],
+                    reason: .rootLoad,
+                    affectedRootIDs: newlyPublishedRootIDs
                 )
-                pendingSeededRootsByID.removeValue(forKey: pending.id)
-                pendingSeededRootIDsByStandardizedPath.removeValue(forKey: pending.standardizedPath)
-                #if DEBUG
-                    rootCrawlCountsByRootID[root.id] = 0
-                #endif
+                return true
             }
-            sessionRootLifetimeClock.advance()
-            sessionWorktreeOwnershipRecordsByToken[preparation.token] = SessionWorktreeOwnershipRecord(
-                bindingFingerprint: preparation.bindingFingerprint,
-                roots: installedRoots,
-                pendingSeededRootIDs: []
-            )
-            previousToken = installedSessionWorktreeOwnershipTokenByOwnerID.updateValue(
-                preparation.token,
-                forKey: preparation.token.ownerID
-            )
-            invalidatePathMatchSnapshot(
-                affectedRootKinds: [.sessionWorktree],
-                reason: .rootLoad,
-                affectedRootIDs: newlyPublishedRootIDs
-            )
-            return true
         } ?? false
 
         guard didPublish else {
@@ -5492,16 +5808,42 @@ actor WorkspaceFileContextStore {
             installRootSeedSearchShadow(shadowPreparation)
         }
 
-        // Watchers were activated and revalidated while private. Finalization
-        // only retires the proof; visibility waiters remain held until it succeeds.
-        for (service, activationProof, context) in pendingServices {
-            guard await service.finalizeSeededPublication(activationProof) else {
-                throw WorkspaceSessionWorktreeOwnershipError.staleUpdate
+        // Watchers were activated and revalidated while private. Publication has
+        // already linearized; a wrap observed during awaited finalization is an
+        // owner-recovery outcome, never a stale-update error for a visible root.
+        var postCommitRecoveryRoots: [(UUID, UUID, FileSystemService)] = []
+        for pendingService in pendingServices {
+            let finalized = await pendingService.service.finalizeSeededPublication(
+                pendingService.activationProof
+            )
+            if !finalized,
+               isRootLifetimeCurrent(
+                   rootID: pendingService.rootID,
+                   expectedLifetimeID: pendingService.lifetimeID
+               ),
+               rootStatesByID[pendingService.rootID]?.service === pendingService.service,
+               hasAggregateWatcherDemand(
+                   rootID: pendingService.rootID,
+                   lifetimeID: pendingService.lifetimeID
+               )
+            {
+                postCommitRecoveryRoots.append((
+                    pendingService.rootID,
+                    pendingService.lifetimeID,
+                    pendingService.service
+                ))
             }
             WorktreeStartupInstrumentation.record(
                 .seedPublished,
-                context: context,
+                context: pendingService.context,
                 route: .diffSeedServing
+            )
+        }
+        for (rootID, lifetimeID, service) in postCommitRecoveryRoots {
+            await recoverActiveWatcherIfNeeded(
+                rootID: rootID,
+                expectedLifetimeID: lifetimeID,
+                service: service
             )
         }
         #if DEBUG
@@ -6204,6 +6546,7 @@ actor WorkspaceFileContextStore {
             return
         }
         let key = WatcherInfrastructureKey(rootID: rootID, lifetimeID: state.lifetimeID)
+        state.service.fseventRecoverySignal.clear()
         watcherPublisherAttachmentsByKey.removeValue(forKey: key)?.cancellable.cancel()
         publisherIngressCoordinator.closePublisherIngress(rootID: rootID)
         try await reconcileWatcherServiceState(state.service, rootID: rootID)
@@ -10874,6 +11217,7 @@ actor WorkspaceFileContextStore {
             completedScopedIngressBarrierCutsByRootID.removeValue(forKey: rootID)
             if let state = rootStatesByID[rootID] {
                 let watcherKey = WatcherInfrastructureKey(rootID: rootID, lifetimeID: state.lifetimeID)
+                state.service.fseventRecoverySignal.clear()
                 watcherPublisherAttachmentsByKey.removeValue(forKey: watcherKey)?.cancellable.cancel()
                 watcherInfrastructureFlightsByKey.removeValue(forKey: watcherKey)?.task.cancel()
             }
@@ -17476,15 +17820,52 @@ actor WorkspaceFileContextStore {
         }
     }
 
+    private func registerPostWriteFileForCurrentService(
+        rootID: UUID,
+        relativePath: String
+    ) async throws -> CatalogRegularFileEligibility {
+        var didReroute = false
+        while true {
+            let state = try state(for: rootID)
+            let eligibility = await state.service.registerExplicitlyManagedRegularFile(
+                relativePath: relativePath
+            )
+            #if DEBUG
+                if let postWriteCatalogRegistrationDidReturnHandler {
+                    await postWriteCatalogRegistrationDidReturnHandler(rootID, relativePath)
+                }
+            #endif
+            guard let currentState = rootStatesByID[rootID],
+                  currentState.lifetimeID == state.lifetimeID
+            else {
+                throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                    "workspace root changed while registering a post-write file: \(relativePath)"
+                )
+            }
+            guard currentState.service === state.service else {
+                guard !didReroute else {
+                    throw WorkspaceFileContextStoreError.catalogMaterializationFailed(
+                        "filesystem service changed more than once while registering a post-write file: \(relativePath)"
+                    )
+                }
+                didReroute = true
+                continue
+            }
+            return eligibility
+        }
+    }
+
     @discardableResult
     func materializeCatalogFileAfterDiskWrite(
         rootID: UUID,
         relativePath: String,
         codemapPathLocalMutation: Bool = false
     ) async throws -> WorkspaceFileCatalogMaterializationResult {
-        let state = try state(for: rootID)
         let standardizedRelativePath = StandardizedPath.relative(relativePath)
-        let eligibility = await state.service.registerExplicitlyManagedRegularFile(relativePath: standardizedRelativePath)
+        let eligibility = try await registerPostWriteFileForCurrentService(
+            rootID: rootID,
+            relativePath: standardizedRelativePath
+        )
 
         func materialize(managedOnly: Bool) throws -> WorkspaceFileCatalogMaterializationResult {
             let perform = {
