@@ -1,5 +1,6 @@
 # RepoPrompt CE
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/c07ca73a6a8c4cbcaa4d8924052cf3e1)](https://app.codacy.com/gh/abhimehro/repoprompt-ce?utm_source=github.com&utm_medium=referral&utm_content=abhimehro/repoprompt-ce&utm_campaign=Badge_Grade)
 [![CI](https://github.com/repoprompt/repoprompt-ce/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/repoprompt/repoprompt-ce/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Platform: macOS 26+](https://img.shields.io/badge/platform-macOS%2026%2B-black)
