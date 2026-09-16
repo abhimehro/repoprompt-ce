@@ -109,6 +109,9 @@ final class HeadlessAgentModeRunner {
                     return
                 }
 
+                // Undecorated: the oversight supplement is attached inside `executeHeadlessRun`,
+                // after the lease's provider-initialization hop, because that hop is a suspension
+                // during which link membership can change.
                 let agentMessage = self.hooks.providerInput.buildHeadlessAgentMessage(
                     session,
                     initialMessageForRun,
@@ -167,15 +170,47 @@ final class HeadlessAgentModeRunner {
         attachmentReservationID: UUID?,
         lease: MCPBootstrapLease
     ) async {
+        let isPeriodic = session.oversight.pendingAutoWake?.isPeriodic == true
         var providerInitializationCompleted = false
         let report = await DomainAgentRunExecutionCore.execute(
             failureText: { "Agent failed: \($0.localizedDescription)" }
         ) {
             await lease.providerInitializationStarted(provider: session.selectedAgent.rawValue)
-            let stream = try await provider.streamAgentMessage(initialMessage, runID: runID)
+            // Composed here, after the lease hop and immediately before stream creation: that hop is
+            // a suspension, so reading membership any earlier could dispatch inventory the user has
+            // already changed. This is the last point before the provider sees the turn.
+            let monitoring = hooks.providerInput.decoratedAgentMessage(
+                initialMessage,
+                session: session,
+                dispatchID: .headlessRun(runID: runID)
+            )
+            // A dispatch that exists only to carry a lane batch has nothing to say without it, so it
+            // is retracted here rather than sent empty. Cancellation is the quiet terminal: no
+            // provider call, no error row, and the batch stays owed to a later dispatch.
+            guard !monitoring.mustAbortDispatch else {
+                hooks.providerInput.recordAgentSessionLinkPhysicalDispatchNotAttempted(
+                    session,
+                    .headlessRun(runID: runID)
+                )
+                throw CancellationError()
+            }
+            guard hooks.providerInput.acquireAgentSessionLinkPhysicalDispatch(
+                session,
+                .headlessRun(runID: runID)
+            ) else {
+                hooks.providerInput.recordAgentSessionLinkPhysicalDispatchNotAttempted(
+                    session,
+                    .headlessRun(runID: runID)
+                )
+                throw CancellationError()
+            }
+            let stream = try await provider.streamAgentMessage(monitoring.message, runID: runID)
+            // Successful stream creation is the acceptance signal for every headless provider,
+            // including Claude headless. A throwing creation leaves the claim pending for the retry.
+            hooks.providerInput.acceptAgentSessionLinkPrompt(session, monitoring.dispatchContext, monitoring.claim)
             providerInitializationCompleted = true
             await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "ready")
-            hooks.providerInput.recordPendingHandoffSendOutcome(session, true)
+            if !isPeriodic { hooks.providerInput.recordPendingHandoffSendOutcome(session, true) }
             hooks.attachments.stageConsumedAttachmentFilesForDeferredCleanup(attachments, session)
             hooks.attachments.markAttachmentsConsumed(session, attachmentReservationID)
             _ = await lease.releaseWhenRouted()
@@ -201,6 +236,12 @@ final class HeadlessAgentModeRunner {
         }
 
         guard case let .terminal(outcome) = report.result else { return }
+        if !providerInitializationCompleted {
+            hooks.providerInput.recordAgentSessionLinkPhysicalDispatchFailure(
+                session,
+                .headlessRun(runID: runID)
+            )
+        }
         let terminalState: AgentSessionRunState
         let source: String
         let notifyTurnComplete: Bool
@@ -215,7 +256,7 @@ final class HeadlessAgentModeRunner {
             if !providerInitializationCompleted {
                 await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "cancelled")
             }
-            hooks.providerInput.recordPendingHandoffSendOutcome(session, false)
+            if !isPeriodic { hooks.providerInput.recordPendingHandoffSendOutcome(session, false) }
             terminalState = .cancelled
             source = "headless.cancelled"
             notifyTurnComplete = false
@@ -224,7 +265,7 @@ final class HeadlessAgentModeRunner {
             if !providerInitializationCompleted {
                 await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "failed")
             }
-            hooks.providerInput.recordPendingHandoffSendOutcome(session, false)
+            if !isPeriodic { hooks.providerInput.recordPendingHandoffSendOutcome(session, false) }
             terminalState = .failed
             source = "headless.failed"
             notifyTurnComplete = false

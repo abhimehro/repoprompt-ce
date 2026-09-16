@@ -95,6 +95,13 @@ package protocol DomainAgentCapabilityBackend: Sendable {
     func explore(_ request: DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
     func run(_ request: DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
     func manage(_ request: DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
+    /// Cross-window oversight-link operations.
+    ///
+    /// Standalone/headless compositions have no windows and therefore no live top-level Agent
+    /// sessions to grant or observe, so a conforming backend is expected to fail closed. The binding
+    /// still exists because the canonical catalog must stay complete: a tool that is absent from one
+    /// composition would be an ungated hole rather than a denial.
+    func monitorSessionLink(_ request: DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
     func shareThoughts(_ request: DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
     func publishStatus(_ request: DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
     func waitForInstruction(_ request: DomainPhysicalToolRequest) async throws -> DomainPhysicalToolResult
@@ -274,7 +281,37 @@ package enum MCPDomainStandaloneToolInstaller {
             binding(MCPWindowToolName.fileActions, backends.filesystem.manageFiles),
             binding(MCPWindowToolName.applyEdits, backends.filesystem.applyFileEdits),
             binding(MCPWindowToolName.oracleUtils, backends.conversation.accessOracleUtilities),
-            binding(MCPWindowToolName.askOracle, backends.conversation.startOracleConversation),
+            binding(MCPWindowToolName.askOracle) { request in
+                let args = try request.mcpArguments()
+                if args["chat_id"] != nil, args["chat_id"]?.stringValue == nil {
+                    throw MCPError.invalidParams("ask_oracle chat_id must be a string")
+                }
+                if args["new_chat"] != nil, args["new_chat"]?.boolValue == nil {
+                    throw MCPError.invalidParams("ask_oracle new_chat must be a boolean")
+                }
+                if args["model"] != nil, args["model"]?.stringValue == nil {
+                    throw MCPError.invalidParams("ask_oracle model must be a string")
+                }
+                let route: OracleConversationRoute
+                do {
+                    route = try OracleConversationRoute.resolve(
+                        chatID: args["chat_id"]?.stringValue,
+                        newChat: args["new_chat"]?.boolValue ?? false,
+                        modelOverride: args["model"]?.stringValue,
+                        whenMissingChatID: .startNew
+                    )
+                } catch {
+                    throw MCPError.invalidParams(error.localizedDescription)
+                }
+                switch route {
+                case .start:
+                    return try await backends.conversation.startOracleConversation(request)
+                case .continuation:
+                    return try await backends.conversation.continueOracleConversation(request)
+                case .implicitContinuation:
+                    throw MCPError.internalError("ask_oracle resolved an invalid implicit continuation route")
+                }
+            },
             binding(MCPWindowToolName.oracleSend, backends.conversation.continueOracleConversation),
             binding(MCPWindowToolName.manageWorktree, backends.versionControl.manageWorktree),
             binding(MCPWindowToolName.contextBuilder, backends.conversation.buildContext),
@@ -282,6 +319,7 @@ package enum MCPDomainStandaloneToolInstaller {
             binding(MCPWindowToolName.agentExplore, backends.agent.explore),
             binding(MCPWindowToolName.agentRun, backends.agent.run),
             binding(MCPWindowToolName.agentManage, backends.agent.manage),
+            binding(MCPWindowToolName.agentSessionLink, backends.agent.monitorSessionLink),
             binding(MCPWindowToolName.shareThoughts, backends.agent.shareThoughts),
             binding(MCPWindowToolName.setStatus, backends.agent.publishStatus),
             binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction),

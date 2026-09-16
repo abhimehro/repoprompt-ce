@@ -56,6 +56,7 @@ final class AgentTabSession: ObservableObject {
     @Published var runState: AgentSessionRunState = .idle {
         didSet {
             guard runState != oldValue else { return }
+            noteMonitorObservationInputsChanged()
             onRunStateChanged?(self)
         }
     }
@@ -110,34 +111,151 @@ final class AgentTabSession: ObservableObject {
     /// and intentionally never persisted as session state.
     var pendingInitialStartLocation: AgentModeViewModel.InitialStartLocation = .local
     var composerSubmissionToken = UUID()
-    var activeComposerSubmitAttempt: AgentComposerSubmitAttempt?
+    var activeComposerSubmitAttempt: AgentComposerSubmitAttempt? {
+        didSet {
+            // Only the in-flight transition matters to an observer; attempt-internal churn does
+            // not change what an overseeing caller can see.
+            if (oldValue == nil) != (activeComposerSubmitAttempt == nil) {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
     var isComposerSubmissionInFlight: Bool {
         activeComposerSubmitAttempt != nil
     }
 
-    var isPreparingInitialWorktree: Bool = false
-    var isChangingExecutionLocation: Bool = false
+    /// These gate delivery readiness and published `idle_for_send`, so wake observers when either
+    /// non-published transition changes.
+    var isPreparingInitialWorktree: Bool = false {
+        didSet {
+            if oldValue != isPreparingInitialWorktree {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
+    var isChangingExecutionLocation: Bool = false {
+        didSet {
+            if oldValue != isChangingExecutionLocation {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
     var worktreeBindingTransitionInProgress: Bool = false
 
-    // Wait/question state
-    @Published var waitingPrompt: String? = nil
-    @Published var pendingAskUser: AgentAskUserPendingState? = nil
-    @Published var pendingUserInputRequest: AgentRequestUserInputRequest? = nil
-    @Published var pendingApproval: AgentApprovalRequest? = nil
-    @Published var pendingCodexHookReview: AgentCodexHookReviewRequest? = nil
+    /// Wait/question state
+    @Published var waitingPrompt: String? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    @Published var pendingAskUser: AgentAskUserPendingState? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    @Published var pendingUserInputRequest: AgentRequestUserInputRequest? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    @Published var pendingApproval: AgentApprovalRequest? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    @Published var pendingCodexHookReview: AgentCodexHookReviewRequest? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
     var codexHookReviewContinuation: CheckedContinuation<Void, Error>?
     var codexHookGateCoalescedContinuations: [UUID: CheckedContinuation<Void, Error>] = [:]
     var codexHookGateGeneration: UInt64 = 0
-    var codexHookGateAttemptToken: UUID?
+    var codexHookGateAttemptToken: UUID? {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
     var codexHookGateDispatchOwnerToken: UUID?
     var codexHookGateInventoryFingerprint: String?
     @Published var codexHookGateAudit: AgentCodexHookGateAudit?
     var codexHookGateBindingMemo: CodexHookGateBindingIdentity?
     var codexHookGateActiveBinding: CodexHookGateBindingIdentity?
-    @Published var pendingPermissionsRequest: AgentPermissionsRequest? = nil
-    @Published var pendingMCPElicitationRequest: AgentMCPElicitationRequest? = nil
-    @Published var pendingApplyEditsReview: PendingApplyEditsReview? = nil
-    @Published var pendingWorktreeMergeReview: PendingWorktreeMergeReview? = nil
+    @Published var pendingPermissionsRequest: AgentPermissionsRequest? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    @Published var pendingMCPElicitationRequest: AgentMCPElicitationRequest? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    @Published var pendingApplyEditsReview: PendingApplyEditsReview? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    @Published var pendingWorktreeMergeReview: PendingWorktreeMergeReview? = nil {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    /// Explicit change channel for oversight inputs that are not `@Published`.
+    /// A non-replaying subject avoids perturbing unrelated session observers.
+    let monitorObservationSignal = PassthroughSubject<Void, Never>()
+
+    /// Every change channel that can move this session's send/wake readiness.
+    ///
+    /// The merged set is explicit and includes both review publishers. Non-`@Published` readiness
+    /// inputs reach it through `monitorObservationSignal`, which is the only way terminal-commit,
+    /// follow-up/steering/composer-queue, binding-transition, and hydration changes can wake an
+    /// observer.
+    ///
+    /// Owned here, beside the state it reports on, and shared by both readers: the cross-window
+    /// oversight observation and the auto-wake coordinator's settlement wait. Two copies of this list
+    /// would be two chances to forget a blocker — and the auto-wake copy forgetting one means an
+    /// attempt parks forever waiting for an event that is never published.
+    var monitorReadinessChangePublisher: AnyPublisher<Void, Never> {
+        Publishers.MergeMany([
+            $runState.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $items.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $waitingPrompt.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $pendingAskUser.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $pendingUserInputRequest.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $pendingApproval.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $pendingPermissionsRequest.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $pendingMCPElicitationRequest.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $pendingApplyEditsReview.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $pendingWorktreeMergeReview.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            monitorObservationSignal.eraseToAnyPublisher()
+        ])
+        .eraseToAnyPublisher()
+    }
+
+    /// Every oversight-subsystem value this exact incarnation owns: durable Auto-wake selection, the
+    /// one reserved automatic follow-up, failure suppression, per-lane snooze policy, and the
+    /// target-declared waiting context. `AgentSessionOversightState` documents each field's
+    /// lifetime; this is the subsystem's single mutation surface on the session.
+    ///
+    /// Only two transitions reach the observation signal, because only they change what an
+    /// overseeing caller can see: the reserved wake appearing or clearing, and snooze *content*
+    /// changing. Snooze task/token churn and the durable selection pair publish nothing here — the
+    /// selection surfaces republish through their own authoritative refresh.
+    var oversight = AgentSessionOversightState() {
+        didSet {
+            if oldValue.hasPendingAutoWake != oversight.hasPendingAutoWake
+                || oldValue.autoWakeSnoozes != oversight.autoWakeSnoozes
+            {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
+    func noteMonitorObservationInputsChanged() {
+        invalidatePeriodicIdleSpanIfLocallyBlocked()
+        monitorObservationSignal.send(())
+    }
+
+    func invalidatePeriodicIdleSpanIfLocallyBlocked() {
+        guard oversight.periodicIdleSince != nil,
+              !AgentModeViewModel.agentSessionLinkPeriodicWakeSessionIsIdle(self) else { return }
+        oversight.invalidatePeriodicIdleSpan()
+    }
+
     var queuedUserInputRequests: [AgentRequestUserInputRequest] = []
     var queuedMCPElicitationRequests: [AgentMCPElicitationRequest] = []
     var transcriptViewportState: AgentTranscriptViewportState = .liveBottom
@@ -153,7 +271,19 @@ final class AgentTabSession: ObservableObject {
     var applyEditsApprovalSubscriptionTask: Task<Void, Never>?
     var worktreeMergeReviewContinuation: CheckedContinuation<WorktreeMergeReviewDecision, Never>?
     var worktreeMergeReviewTimeoutTask: Task<Void, Never>?
-    var mcpControlContext: AgentModeViewModel.AgentMCPControlContext?
+    /// External MCP control attachment. Its presence and effective task label determine whether this
+    /// exact session may act as an oversight observer.
+    var mcpControlContext: AgentModeViewModel.AgentMCPControlContext? {
+        didSet {
+            guard oldValue?.taskLabelKind != mcpControlContext?.taskLabelKind
+                || (oldValue == nil) != (mcpControlContext == nil)
+            else {
+                return
+            }
+            AgentSessionLinkCandidateReadinessSignal.didChange()
+        }
+    }
+
     var mcpStateObservationCancellable: AnyCancellable?
     var mcpControlCleanupTask: Task<Void, Never>?
     var mcpControlActivationGeneration: UInt64 = 0
@@ -162,6 +292,7 @@ final class AgentTabSession: ObservableObject {
         didSet {
             if oldValue != mcpFollowUpRunPending {
                 mcpFollowUpRunPendingUpdatedAt = Date()
+                noteMonitorObservationInputsChanged()
             }
         }
     }
@@ -186,8 +317,15 @@ final class AgentTabSession: ObservableObject {
     /// when MCP control is active, `.userConfigured` otherwise.
     var permissionProfile: AgentModeViewModel.AgentPermissionProfile = .userConfigured
 
-    // Instruction queue for when user sends while agent is not waiting (shared across all runners)
-    var pendingInstructions: [String] = []
+    /// Instruction queue for when user sends while agent is not waiting (shared across all runners)
+    var pendingInstructions: [String] = [] {
+        didSet {
+            if oldValue.count != pendingInstructions.count {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
     let codexSteerAckTracker = CodexSteerAckTracker()
 
     /// Claude-only steering queue — carries draft text for restoration on cancel/failure
@@ -210,7 +348,14 @@ final class AgentTabSession: ObservableObject {
         var supersedingProtectedTurnIDs: Set<UUID> = []
     }
 
-    var pendingClaudeSteeringInstructions: [ClaudeSteeringInstruction] = []
+    var pendingClaudeSteeringInstructions: [ClaudeSteeringInstruction] = [] {
+        didSet {
+            if oldValue.count != pendingClaudeSteeringInstructions.count {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
     /// Claude turn IDs whose terminal events should be treated as superseded by accepted steering.
     var claudeSupersedingProtectedTurnIDs: Set<UUID> = []
     /// Task that drains `pendingClaudeSteeringInstructions` one-by-one, waiting for MCP tool idle between each.
@@ -238,7 +383,14 @@ final class AgentTabSession: ObservableObject {
         let createdAt: Date
     }
 
-    var pendingACPSteeringInstructions: [ACPSteeringInstruction] = []
+    var pendingACPSteeringInstructions: [ACPSteeringInstruction] = [] {
+        didSet {
+            if oldValue.count != pendingACPSteeringInstructions.count {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
     /// Task that drains `pendingACPSteeringInstructions` one-by-one, waiting for MCP tool idle between each.
     var acpSteeringFlushTask: Task<Void, Never>?
 
@@ -254,6 +406,7 @@ final class AgentTabSession: ObservableObject {
     }
 
     struct CodexPendingAuthRetryTurn: Equatable {
+        /// Undecorated provider text, exactly as every other Codex buffer stores it.
         var text: String
         var images: [AgentImageAttachment]
         var model: String?
@@ -262,6 +415,12 @@ final class AgentTabSession: ObservableObject {
         var attachmentReservationID: UUID?
         var expectedTurnID: String?
         var retryAttempted: Bool = false
+        /// Final monitoring identity composed for the original physical dispatch, if any.
+        var monitoringDispatchID: AgentSessionLinkPromptDispatchID?
+        var monitoringDispatchContext: AgentSessionLinkDispatchContext?
+        /// Accepted oversight claim from the original dispatch, retained so managed-auth replay can
+        /// attach the byte-equivalent supplement without acknowledging it twice.
+        var monitoringClaim: AgentSessionLinkOutboundPromptClaim?
     }
 
     enum CodexTurnKind: String {
@@ -427,6 +586,7 @@ final class AgentTabSession: ObservableObject {
         let originRunAttemptID: UUID
         var blockingTurn: CodexFallbackBlockingTurn?
         var state: CodexFallbackQueueState
+        var monitoringDispatchContext: AgentSessionLinkDispatchContext?
     }
 
     var codexPendingTurnKind: CodexTurnKind?
@@ -435,20 +595,32 @@ final class AgentTabSession: ObservableObject {
     var codexAnonymousActiveTurn: CodexAnonymousTurnLiveness?
     var codexRoutingObservedTurnID: String?
     var codexPendingSteerLifecycleReconciliation: CodexPendingSteerLifecycleReconciliation?
-    var codexFallbackQueue: [CodexFallbackQueueEntry] = []
-    var codexFallbackDispatchInFlight: CodexFallbackQueueEntry?
+    var codexFallbackQueue: [CodexFallbackQueueEntry] = [] {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
+    var codexFallbackDispatchInFlight: CodexFallbackQueueEntry? {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
     /// Bridges queued follow-ups to a hook-gate owner's turn for as long as that turn has no
     /// settled identity of its own. Whichever of the accepted `turn/start` receipt or the
     /// lifecycle start arrives first supplies the value — they race, and the queue has to be
     /// bound by then either way. It is transient by design: the turn's terminal event either
     /// upgrades it to the identity-derived blocker or resolves the queue outright.
     var codexFallbackHookGateOwnerBlocker: CodexFallbackBlockingTurn?
-    var codexFallbackPumpTask: Task<Void, Never>?
+    var codexFallbackPumpTask: Task<Void, Never>? {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
     var codexFallbackSuccessorRetryTask: Task<Void, Never>?
     let codexDispatchSerialGate = CodexDispatchSerialGate()
 
-    // Instruction steering coordination state
-    var instructionContinuation: CheckedContinuation<UserInstructionResponse, Error>?
+    /// Instruction steering coordination state
+    var instructionContinuation: CheckedContinuation<UserInstructionResponse, Error>? {
+        didSet { noteMonitorObservationInputsChanged() }
+    }
+
     var instructionTimeoutTask: Task<Void, Never>?
     var instructionWaitID: UUID?
 
@@ -489,7 +661,21 @@ final class AgentTabSession: ObservableObject {
     }
 
     var provider: HeadlessAgentProvider?
-    var agentTask: Task<Void, Never>?
+    var agentTask: Task<Void, Never>? {
+        didSet {
+            // Latch the actual producer synchronously, while its exact composer admission is held.
+            // ACP may install this after cancellation during awaited startup: the tombstone still
+            // owns that exact composer claim. Sampling after start could capture a rebound user's task.
+            guard let agentTask, var attempt = oversight.pendingAutoWake,
+                  attempt.isPeriodic,
+                  attempt.phase == .preparingDispatch || attempt.phase == .cancelledBeforeDispatch,
+                  attempt.periodicProducerTask == nil,
+                  let submissionID = attempt.periodicComposerAttemptID,
+                  activeComposerSubmitAttempt?.id == submissionID else { return }
+            attempt.periodicProducerTask = agentTask
+            oversight.pendingAutoWake = attempt
+        }
+    }
 
     // Settings (per-tab)
     var selectedAgent: AgentProviderKind = .claudeCode
@@ -510,7 +696,6 @@ final class AgentTabSession: ObservableObject {
     }
 
     var autoEditEnabled: Bool = true
-
     /// Volatile ownership for an accepted explicit write. This is intentionally
     /// separate from durable selections so stale asynchronous rollbacks cannot
     /// overwrite a newer selection, including a normalized no-op write.
@@ -600,6 +785,22 @@ final class AgentTabSession: ObservableObject {
     }
 
     private(set) var codexControllerGeneration = UUID()
+    /// The open session-link catalog-repair cycle, if any: the controller generation a stuck
+    /// catalog projection was observed against.
+    ///
+    /// `nil` is no cycle. Otherwise `cycle.state(currentControllerGeneration:)` says whether this
+    /// cycle's single controller replacement is still owed or was already spent by an unrelated
+    /// reconnect; see `AgentSessionLinkCodexCatalogRepair.Cycle` for why a generation rather than a
+    /// Boolean is what makes that distinction expressible.
+    ///
+    /// Only five paths write `nil`, and all of them mean the cycle is over rather than spent: an
+    /// exact current positive catalog, exact outbound loss, a provider switch away from `.codexExec`,
+    /// the tool being disabled before the cycle was spent, and the stranded-run recovery that
+    /// retires a run whose consuming reconnect left no controller behind. It must never be cleared
+    /// from `codexController.didSet` or generic controller teardown.
+    ///
+    /// Never persisted: it describes a live process-local controller generation.
+    var codexSessionLinkCatalogRepairCycle: AgentSessionLinkCodexCatalogRepair.Cycle?
     /// The permission profile the current Codex controller was created with.
     /// Used to detect when MCP control changes require controller recycling.
     var codexControllerPermissionProfile: AgentModeViewModel.AgentPermissionProfile?
@@ -681,13 +882,37 @@ final class AgentTabSession: ObservableObject {
     }
 
     private(set) var bindingTransitionGeneration: UInt64 = 0
-    private(set) var bindingTransitionInProgress: Bool = false
+    private(set) var bindingTransitionInProgress: Bool = false {
+        didSet {
+            if oldValue != bindingTransitionInProgress {
+                noteMonitorObservationInputsChanged()
+                AgentSessionLinkCandidateReadinessSignal.didChange()
+            }
+        }
+    }
+
     private(set) var persistenceMutationGeneration: UInt64 = 0
     var saveRequestGeneration: UInt64 = 0
     var parentSessionID: UUID?
-    var hasLoadedPersistedState: Bool = false
+    var hasLoadedPersistedState: Bool = false {
+        didSet {
+            if oldValue != hasLoadedPersistedState {
+                noteMonitorObservationInputsChanged()
+                AgentSessionLinkCandidateReadinessSignal.didChange()
+            }
+        }
+    }
+
+    func clearAgentSessionLinkWaitingOnAfterAcceptedTurn() {
+        guard oversight.waitingOn != nil else { return }
+        oversight.waitingOn = nil
+        monitorObservationSignal.send(())
+    }
+
     private(set) var authoritativeHydratedBinding: AgentPersistentSessionBindingIdentity?
     private(set) var authoritativeHydratedBindingTransitionGeneration: UInt64?
+    /// Binding-qualified hydration proof for automatic oversight restoration.
+    private(set) var restorationReadiness: AgentSessionRestorationReadiness = .unbound
     var persistedLoadTask: Task<Void, Never>?
     var lastActivityAt: Date = .init()
     var lastUserMessageAt: Date?
@@ -727,10 +952,17 @@ final class AgentTabSession: ObservableObject {
 
     init(tabID: UUID) {
         self.tabID = tabID
+        // The lifecycle facade owns terminal-commit phase state, so bridge it into the explicit
+        // oversight change channel from that authority.
+        runLifecycle.onTerminalCommitPhaseChange = { [weak self] in
+            self?.noteMonitorObservationInputsChanged()
+        }
     }
 
     deinit {
         applyEditsApprovalSubscriptionTask?.cancel()
+        oversight.snoozeDeadlineTask?.cancel()
+        oversight.periodicDeadlineTask?.cancel()
     }
 
     /// Cancels all ephemeral runtime tasks and clears transient state on this
@@ -768,6 +1000,8 @@ final class AgentTabSession: ObservableObject {
         applyEditsApprovalSubscriptionTask?.cancel()
         applyEditsApprovalSubscriptionTask = nil
         applyEditsApprovalSubscriptionID = nil
+        oversight.retireSnoozeState()
+        oversight.retirePeriodicScheduling()
     }
 
     var hasPendingCodexHookReviewRequest: Bool {
@@ -835,6 +1069,9 @@ final class AgentTabSession: ObservableObject {
 
     @discardableResult
     func beginPersistentBindingTransition() -> UInt64 {
+        // Clear the outgoing proof before the generation moves so it cannot be observed under the
+        // incoming incarnation.
+        restorationReadiness = .unbound
         bindingTransitionGeneration &+= 1
         bindingTransitionInProgress = true
         // Terminal commit revisions are scoped to the binding captured by
@@ -850,6 +1087,39 @@ final class AgentTabSession: ObservableObject {
         precondition(binding == nil || binding?.tabID == tabID)
         persistentSessionBindingIdentity = binding
         bindingTransitionInProgress = false
+        restorationReadiness = currentRestorationBindingToken.map { .pending($0) } ?? .unbound
+        AgentSessionLinkCandidateReadinessSignal.didChange()
+    }
+
+    var currentRestorationBindingToken: AgentSessionRestorationBindingToken? {
+        guard let persistentSessionBindingIdentity else { return nil }
+        return AgentSessionRestorationBindingToken(
+            bindingIdentity: persistentSessionBindingIdentity,
+            bindingTransitionGeneration: bindingTransitionGeneration
+        )
+    }
+
+    var qualifiedRestorationReadiness: AgentSessionRestorationReadiness {
+        guard let current = currentRestorationBindingToken else { return .unbound }
+        guard restorationReadiness.bindingToken == current else { return .pending(current) }
+        return restorationReadiness
+    }
+
+    func recordRestorationAuthoritative(_ source: AgentSessionRestorationReadiness.Source) {
+        guard let current = currentRestorationBindingToken else { return }
+        restorationReadiness = .authoritative(current, source)
+        AgentSessionLinkCandidateReadinessSignal.didChange()
+    }
+
+    func recordRestorationAuthoritativeIfNeeded(_ source: AgentSessionRestorationReadiness.Source) {
+        guard !qualifiedRestorationReadiness.isAuthoritative else { return }
+        recordRestorationAuthoritative(source)
+    }
+
+    func recordRestorationTerminal(_ failure: AgentSessionRestorationReadiness.Failure) {
+        guard let current = currentRestorationBindingToken else { return }
+        restorationReadiness = .terminal(current, failure)
+        AgentSessionLinkCandidateReadinessSignal.didChange()
     }
 
     func finishPersistentBindingTransition(generation: UInt64) {
