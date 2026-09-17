@@ -122,7 +122,13 @@ public struct RepoPromptProgressParams: Codable, Sendable, Hashable {
     /// When this progress was emitted (ISO8601 string)
     public let emittedAt: String
 
-    public init(tool: String, kind: RepoPromptProgressKind, stage: String, message: String, emittedAt: Date = Date()) {
+    public init(
+        tool: String,
+        kind: RepoPromptProgressKind,
+        stage: String,
+        message: String,
+        emittedAt: Date = Date()
+    ) {
         self.tool = tool
         self.kind = kind
         self.stage = stage

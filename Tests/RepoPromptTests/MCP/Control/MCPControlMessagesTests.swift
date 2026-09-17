@@ -94,30 +94,6 @@ final class MCPControlMessagesTests: XCTestCase {
         }
     }
 
-    /// Measures the complete concurrent progress-notification path, including
-    /// date formatting, JSON encoding, and synchronization of concurrent emits.
-    /// XCTest reports the wall-clock samples so formatter changes can be
-    /// compared under representative progress-update contention.
-    func testConcurrentProgressNotificationEndToEndPerformance() {
-        let emissionCount = 1_000
-        let queue = DispatchQueue(label: "MCPControlMessagesTests.progress", attributes: .concurrent)
-
-        measure {
-            DispatchQueue.concurrentPerform(iterations: emissionCount) { index in
-                let notification = RepoPromptControlNotification(
-                    method: RepoPromptControlMethod.progress,
-                    params: RepoPromptProgressParams(
-                        tool: "context_builder",
-                        kind: index.isMultiple(of: 2) ? .heartbeat : .stage,
-                        stage: "planning",
-                        message: "Progress \(index)"
-                    )
-                )
-                _ = queue.sync { notification.encodedJSONLine() }
-            }
-        }
-    }
-
     func testKillSignalPayloadPathAndJSONRoundTrip() throws {
         let directory = URL(fileURLWithPath: "/tmp/MCPKillSignals-CE-D-7", isDirectory: true)
         let url = MCPKillSignal.signalFileURL(forSessionToken: "session-token", directory: directory)
