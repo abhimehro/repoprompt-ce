@@ -178,6 +178,9 @@ struct NotificationsButtonView: View {
                 .overlay(badge, alignment: .topTrailing)
         }
         .accessibilityLabel("Notifications")
+        .accessibilityValue(
+            pendingItems.isEmpty ? "No pending notifications" : "\(pendingItems.count) pending notifications"
+        )
         .popover(isPresented: $showPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
             NotificationsPopover(
                 activeItems: pendingItems,
