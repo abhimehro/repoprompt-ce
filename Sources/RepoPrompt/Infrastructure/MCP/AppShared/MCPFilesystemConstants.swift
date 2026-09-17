@@ -94,6 +94,7 @@ enum MCPFilesystemConstants {
         let fm = FileManager.default
 
         if fm.fileExists(atPath: url.path) {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
             return true
         }
 
@@ -103,6 +104,7 @@ enum MCPFilesystemConstants {
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
             return true
         } catch {
             mcpFilesystemConstantsDebugLog("Failed to create socket directory: \(error)")
