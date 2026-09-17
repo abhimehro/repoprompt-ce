@@ -134,6 +134,39 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
         URL(fileURLWithPath: "/tmp/\(socketDirectoryName)-\(userID)", isDirectory: true)
     }
 
+    /// Creates and secures the socket directory without following symlinks.
+    public static func ensureSocketDirectoryExists(at url: URL) -> Bool {
+        let path = url.path
+        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+        var fd = open(path, flags)
+        if fd < 0, errno == ENOENT {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url,
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700]
+                )
+            } catch {
+                return false
+            }
+            fd = open(path, flags)
+        }
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var status = stat()
+        guard fstat(fd, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFDIR,
+              status.st_uid == getuid(),
+              fchmod(fd, mode_t(0o700)) == 0 else { return false }
+
+        var verified = stat()
+        return fstat(fd, &verified) == 0
+            && (verified.st_mode & 0o777) == 0o700
+            && (verified.st_mode & S_IFMT) == S_IFDIR
+            && verified.st_uid == getuid()
+    }
+
     public func bootstrapSocketURL(userID: uid_t = getuid()) -> URL {
         socketDirectoryURL(userID: userID).appendingPathComponent(bootstrapSocketName, isDirectory: false)
     }

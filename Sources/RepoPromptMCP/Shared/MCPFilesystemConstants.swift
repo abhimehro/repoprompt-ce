@@ -84,26 +84,11 @@ enum MCPFilesystemConstants {
 
     @discardableResult
     static func ensureSocketDirectoryExists() -> Bool {
-        let url = socketDirectoryURL()
-        let fm = FileManager.default
-
-        if fm.fileExists(atPath: url.path) {
-            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-            return true
+        let secured = MCPFilesystemIdentity.ensureSocketDirectoryExists(at: socketDirectoryURL())
+        if !secured {
+            mcpFilesystemConstantsDebugLog("Failed to create or secure socket directory")
         }
-
-        do {
-            try fm.createDirectory(
-                at: url,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-            return true
-        } catch {
-            mcpFilesystemConstantsDebugLog("Failed to create socket directory: \(error)")
-            return false
-        }
+        return secured
     }
 
     static func bootstrapSocketURL() -> URL {
