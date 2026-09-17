@@ -1,0 +1,3 @@
+## 2025-02-28 - Thread-Safe Date Formatting Optimization in Swift
+**Learning:** Instantiating `ISO8601DateFormatter()` repeatedly is expensive in high-frequency code paths, but sharing a `static` `ISO8601DateFormatter` reference with `nonisolated(unsafe)` introduces data races because `ISO8601DateFormatter` is not thread-safe. Swift Foundation's `date.formatted(.iso8601)` is both thread-safe (`Sendable`) and avoids `ISO8601DateFormatter` allocation overhead.
+**Action:** Use `date.formatted(.iso8601)` instead of creating new `ISO8601DateFormatter()` instances or sharing un-synchronized static `ISO8601DateFormatter` instances across threads.

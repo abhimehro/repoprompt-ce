@@ -127,9 +127,9 @@ public struct RepoPromptProgressParams: Codable, Sendable, Hashable {
         self.kind = kind
         self.stage = stage
         self.message = message
-        // Format date as ISO8601 string for cross-decoder compatibility
-        let formatter = ISO8601DateFormatter()
-        self.emittedAt = formatter.string(from: emittedAt)
+        // Format date as ISO8601 string using thread-safe Swift Foundation ISO8601FormatStyle
+        // to avoid expensive repeated ISO8601DateFormatter allocations during progress updates.
+        self.emittedAt = emittedAt.formatted(.iso8601)
     }
 }
 
