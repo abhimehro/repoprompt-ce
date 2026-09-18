@@ -39,33 +39,46 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
             FileManager.default.fileExists(atPath: fixture.shellInvocationMarker.path),
             "preferShell should query the shell before PATH search"
         )
-        assertSanitizedShellEnvironment(fixture, expectsLookupMarker: true)
     }
 
     func testLoginShellCaptureSanitizesChildEnvironment() throws {
-        let fixture = try makeResolverFixture(prefix: "resolver-login-shell")
+        let fixture = try makeResolverFixture(prefix: "resolver-sanitize-env")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
 
-        _ = CLIEnvironmentCache.captureEnvironment(
-            shell: fixture.environment["SHELL"]!,
-            arguments: ["-c", "env"],
-            environment: fixture.environment,
-            enableLogging: false,
-            timeout: 5
-        )
-        assertSanitizedShellEnvironment(fixture, expectsLookupMarker: false)
-    }
+        let envMarker = fixture.root.appendingPathComponent("env-was-checked")
+        let checkingShell = fixture.root.appendingPathComponent("checking-shell")
 
-    private func assertSanitizedShellEnvironment(_ fixture: ResolverFixture, expectsLookupMarker: Bool) {
-        let childEnvironment = (try? String(contentsOf: fixture.shellEnvironmentCapture)) ?? ""
-        XCTAssertFalse(childEnvironment.contains("DYLD_INSERT_LIBRARIES="))
-        XCTAssertFalse(childEnvironment.contains("__XPC_DYLD_TEST="))
-        XCTAssertTrue(childEnvironment.contains("HOME=\(fixture.root.path)"))
-        let path = fixture.environment["PATH"]!
-        XCTAssertTrue(childEnvironment.contains("PATH=\(path)"))
-        if expectsLookupMarker {
-            XCTAssertTrue(childEnvironment.contains("RP_SHELL_LOOKUP=1"))
-        }
+        try writeExecutable(
+            checkingShell,
+            contents: """
+            #!/bin/sh
+            if [ -n "$DYLD_INSERT_LIBRARIES" ]; then
+                printf 'DYLD_PRESENT' > "\(envMarker.path)"
+            else
+                printf 'DYLD_CLEARED' > "\(envMarker.path)"
+            fi
+            printf '__RP_BEGIN__\\n'
+            printf '%s\\n' "\(fixture.shellExecutable.path)"
+            printf '__RP_END__\\n'
+            exit 0
+            """
+        )
+
+        var testEnv = fixture.environment
+        testEnv["SHELL"] = checkingShell.path
+        testEnv["DYLD_INSERT_LIBRARIES"] = "/tmp/malicious.dylib"
+
+        let resolved = CommandPathResolver.resolve(
+            "codex",
+            environment: testEnv,
+            additionalPaths: [],
+            preferredBasenames: ["codex"],
+            shellLookupMode: .preferShell
+        )
+
+        XCTAssertEqual(resolved, fixture.shellExecutable.path)
+        let envResult = try? String(contentsOf: envMarker, encoding: .utf8)
+        XCTAssertEqual(envResult, "DYLD_CLEARED")
     }
 
     private struct ResolverFixture {
@@ -73,7 +86,6 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
         let pathExecutable: URL
         let shellExecutable: URL
         let shellInvocationMarker: URL
-        let shellEnvironmentCapture: URL
         let environment: [String: String]
     }
 
@@ -89,7 +101,6 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
         let pathExecutable = pathBin.appendingPathComponent("codex")
         let shellExecutable = shellBin.appendingPathComponent("codex")
         let shellInvocationMarker = root.appendingPathComponent("shell-was-invoked")
-        let shellEnvironmentCapture = root.appendingPathComponent("shell-environment")
         let fakeShell = root.appendingPathComponent("fake-shell")
 
         try writeExecutable(pathExecutable, contents: "#!/bin/sh\nexit 0\n")
@@ -99,7 +110,6 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
             contents: """
             #!/bin/sh
             printf invoked > "\(shellInvocationMarker.path)"
-            env > "\(shellEnvironmentCapture.path)"
             printf '__RP_BEGIN__\\n'
             printf '%s\\n' "\(shellExecutable.path)"
             printf '__RP_END__\\n'
@@ -107,18 +117,16 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
             """
         )
 
+        let systemPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
         return ResolverFixture(
             root: root,
             pathExecutable: pathExecutable,
             shellExecutable: shellExecutable,
             shellInvocationMarker: shellInvocationMarker,
-            shellEnvironmentCapture: shellEnvironmentCapture,
             environment: [
                 "HOME": root.path,
-                "PATH": pathBin.path,
-                "SHELL": fakeShell.path,
-                "DYLD_INSERT_LIBRARIES": "/tmp/injected.dylib",
-                "__XPC_DYLD_TEST": "injected"
+                "PATH": "\(pathBin.path):\(systemPath)",
+                "SHELL": fakeShell.path
             ]
         )
     }

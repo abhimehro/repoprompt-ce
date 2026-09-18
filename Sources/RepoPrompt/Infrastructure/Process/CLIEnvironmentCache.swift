@@ -145,7 +145,7 @@ actor CLIEnvironmentCache {
         )
     }
 
-    static func captureEnvironment(
+    private static func captureEnvironment(
         shell: String,
         arguments: [String],
         environment: [String: String],
