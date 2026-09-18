@@ -23,6 +23,22 @@ enum MCPAppFileReadResult {
 /// Namespace for independently injected app-process capability families.
 /// No provider receives an unrestricted aggregate of every app capability.
 enum MCPAppPhysicalCapabilityAdapters {
+    enum PromptExportPhaseHookPoint: String, Hashable {
+        case beforeDurableWrite
+        case afterDurableWrite
+    }
+
+    typealias PromptExportPhaseHook = @MainActor @Sendable (PromptExportPhaseHookPoint) async -> Void
+
+    #if DEBUG
+        @MainActor private static var promptExportPhaseHookForTesting: PromptExportPhaseHook?
+
+        @MainActor
+        static func setPromptExportPhaseHookForTesting(_ hook: PromptExportPhaseHook?) {
+            promptExportPhaseHookForTesting = hook
+        }
+    #endif
+
     struct ContextBuilderTabResolution {
         let identity: WorkspaceSelectionIdentity
         let nestedTabContext: MCPServerViewModel.TabContextSnapshot
@@ -111,6 +127,7 @@ enum MCPAppPhysicalCapabilityAdapters {
         _ agentModeSessionID: UUID?,
         _ agentModeRunID: UUID?,
         _ mode: HeadlessMode,
+        _ execution: ResolvedOracleExecution,
         _ prompt: String,
         _ selection: StoredSelection,
         _ lookupContext: WorkspaceLookupContext?,
@@ -343,6 +360,7 @@ enum MCPAppPhysicalCapabilityAdapters {
         let executeAgentExplore: ExecuteTool
         let executeAgentRun: ExecuteTool
         let executeAgentManage: ExecuteTool
+        let executeAgentSessionLink: ExecuteTool
         let requireTargetWindow: RequireTargetWindow
         let requireCurrentTabContext: RequireCurrentTabContext
         let requireAgentModeConnection: RequireAgentModeConnection
@@ -432,5 +450,12 @@ enum MCPAppPhysicalCapabilityAdapters {
         let buildTabClipboardContent: BuildTabClipboardContent
         let writePromptExportFile: WritePromptExportFile
         let latestTokenBreakdown: LatestTokenBreakdown
+
+        @MainActor
+        func reachExportPhaseHook(_ phase: PromptExportPhaseHookPoint) async {
+            #if DEBUG
+                await MCPAppPhysicalCapabilityAdapters.promptExportPhaseHookForTesting?(phase)
+            #endif
+        }
     }
 }

@@ -527,6 +527,7 @@ class OracleViewModel: ObservableObject {
     }
 
     @Published private(set) var visibleSessions: [ChatSession] = []
+    @Published private(set) var sessionOperationError: String?
 
     struct MCPSessionUIState: Equatable {
         var modelInfo: String
@@ -984,7 +985,7 @@ class OracleViewModel: ObservableObject {
     }
 
     @MainActor
-    private func purgeSessionStorage(_ sessionID: UUID) {
+    func purgeSessionStorage(_ sessionID: UUID) {
         let messageIDs: [UUID]
         if let stored = messageStore.removeValue(forKey: sessionID) {
             messageStoreRevision &+= 1
@@ -1114,6 +1115,7 @@ class OracleViewModel: ObservableObject {
     private var hasSeenNonReasoningText: Set<UUID> = []
     private var providerStopSeen: Set<UUID> = []
     private var completionPolicies: [UUID: OracleResponseCompletionPolicy] = [:]
+    private var oracleControlledResponseIDs: Set<UUID> = []
     /// Tracks when we last armed the inactivity watchdog per query (for throttling)
     private var lastInactivityWatchdogArmAt: [UUID: Date] = [:]
     /// Minimum interval between watchdog re-arms during streaming (reduces Task churn)
@@ -1700,6 +1702,13 @@ class OracleViewModel: ObservableObject {
     /// 3) If this was the current session, switch to another or create a new one.
     @MainActor
     func deleteSession(_ session: ChatSession) async {
+        do {
+            if try await deleteOracleGroupIfNeeded(containing: session) { return }
+        } catch {
+            sessionOperationError = error.asFriendlyString()
+            return
+        }
+        sessionOperationError = nil
         sessionSwitchGeneration += 1
         if isSessionStreaming(session.id) {
             await cancelAIResponse(in: session.id, skipPartialParseAndSave: true)
@@ -1753,13 +1762,20 @@ class OracleViewModel: ObservableObject {
 
         // 2) Delete chat JSON files only for this workspace
         do {
+            let store = AppDomainRuntimeComposition.shared.oracleConversationStore
+            try await store.deleteAllGroups(
+                ownerKind: "app-tab",
+                identifierPrefix: "workspace:\(activeWS.id.uuidString):tab:"
+            )
             let files = try await chatData.listChatSessions(for: activeWS)
             for file in files {
                 try await chatData.deleteChatSessionFile(file)
             }
         } catch {
-            print("Error clearing chats for workspace \(activeWS.name): \(error)")
+            sessionOperationError = error.asFriendlyString()
+            return
         }
+        sessionOperationError = nil
 
         // 3) Remove from memory all sessions belonging to the active workspace
         sessions.removeAll()
@@ -2107,17 +2123,24 @@ class OracleViewModel: ObservableObject {
     @MainActor
     @discardableResult
     func startNewChatSession(
+        id: UUID = UUID(),
         name: String = "New Chat",
+        workspaceID: UUID? = nil,
         tabID: UUID? = nil,
         agentModeSessionID: UUID? = nil,
         agentModeRunID: UUID? = nil,
+        oracleGroupID: UUID? = nil,
+        oracleLaneIndex: Int? = nil,
+        oracleGroupSize: Int? = nil,
+        oracleModelRaw: String? = nil,
         activateInUI: Bool = true,
-        setActiveForTab: Bool = true
+        setActiveForTab: Bool = true,
+        reuseBlankSession: Bool = true
     ) async -> UUID? {
         let resolvedTabID = tabID ?? promptViewModel.activeComposeTabID
 
         // If there's already a blank session with that name, just switch to it
-        if let existingIndex = sessions.firstIndex(where: {
+        if reuseBlankSession, let existingIndex = sessions.firstIndex(where: {
             $0.name == name &&
                 $0.effectiveMessageCount == 0 &&
                 $0.composeTabID == resolvedTabID &&
@@ -2167,10 +2190,15 @@ class OracleViewModel: ObservableObject {
         let selectedChatPresetId = promptViewModel.selectedChatPresetID
 
         let newSession = ChatSession(
-            workspaceID: workspaceManager.activeWorkspace?.id,
+            id: id,
+            workspaceID: workspaceID ?? workspaceManager.activeWorkspace?.id,
             composeTabID: resolvedTabID,
             agentModeSessionID: agentModeSessionID,
             agentModeRunID: agentModeRunID,
+            oracleGroupID: oracleGroupID,
+            oracleLaneIndex: oracleLaneIndex,
+            oracleGroupSize: oracleGroupSize,
+            oracleModelRaw: oracleModelRaw,
             name: name,
             selectedFilePaths: currentSelectedPaths,
             selectedPromptIDs: currentSelectedPrompts,
@@ -2246,7 +2274,8 @@ class OracleViewModel: ObservableObject {
                 selectedFilePaths: fullSession.selectedFilePaths,
                 selectedPromptIDs: fullSession.selectedPromptIDs,
                 preferredAIModel: fullSession.preferredAIModel,
-                selectedChatPresetID: fullSession.selectedChatPresetID
+                selectedChatPresetID: fullSession.selectedChatPresetID,
+                oracleExecutionAuthority: fullSession.oracleExecutionAuthority
             )
 
             // Persist the clone and capture the file URL so the stub can resolve it later
@@ -2364,7 +2393,8 @@ class OracleViewModel: ObservableObject {
             selectedFilePaths: originalSession.selectedFilePaths, // Or maybe capture current selection? Decide based on desired UX
             selectedPromptIDs: originalSession.selectedPromptIDs, // Same as above
             preferredAIModel: originalSession.preferredAIModel,
-            selectedChatPresetID: originalSession.selectedChatPresetID
+            selectedChatPresetID: originalSession.selectedChatPresetID,
+            oracleExecutionAuthority: originalSession.oracleExecutionAuthority
         )
 
         // Add the new session to the list and switch to it
@@ -2693,6 +2723,7 @@ class OracleViewModel: ObservableObject {
                 sessionToSave.selectedPromptIDs = session.selectedPromptIDs
                 sessionToSave.preferredAIModel = session.preferredAIModel
                 sessionToSave.selectedChatPresetID = session.selectedChatPresetID
+                sessionToSave.oracleExecutionAuthority = session.oracleExecutionAuthority
             } catch {
                 print("Warning: Failed to load full session for stub-safe save, skipping save: \(error)")
                 throw error
@@ -2749,19 +2780,30 @@ class OracleViewModel: ObservableObject {
     }
 
     @MainActor
-    func autosaveChatHistory(for sessionID: UUID, force: Bool = false) {
+    func autosaveChatHistory(
+        for sessionID: UUID,
+        force: Bool = false,
+        completion: ((Bool) -> Void)? = nil
+    ) {
         // ------------------------------------------------------------------
         // 0️⃣  Preconditions
         // ------------------------------------------------------------------
-        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard let session = sessions.first(where: { $0.id == sessionID }), session.workspaceID != nil else {
+            completion?(false)
+            return
+        }
         guard let liveMessages = messageStore[sessionID] ?? (sessionID == currentSessionID ? messages : nil) else {
+            completion?(false)
             return
         }
 
         // ------------------------------------------------------------------
         // 1️⃣  Fast‑path: detect "no changes" and bail early
         // ------------------------------------------------------------------
-        let usesPromptSelections = Self.shouldUseLivePromptStateForAutosave(
+        let isOracleControlled = oracleControlledResponseIDs.contains {
+            sessionIDByMessageId[$0] == sessionID
+        }
+        let usesPromptSelections = !isOracleControlled && Self.shouldUseLivePromptStateForAutosave(
             sessionID: sessionID,
             currentSessionID: currentSessionID,
             sessionComposeTabID: session.composeTabID,
@@ -2828,6 +2870,7 @@ class OracleViewModel: ObservableObject {
 
         if !force && !shouldSkipChangeCheck && nothingChanged {
             oracleViewModelDebugLog("autosaveChatHistory -> skipped (no meaningful changes)")
+            completion?(true)
             return
         }
 
@@ -2891,8 +2934,10 @@ class OracleViewModel: ObservableObject {
                 }
                 unloadNonCurrentSessions()
                 workspaceManager.pollAndSaveState()
+                completion?(true)
             } catch {
                 print("Autosave failed: \(error)")
+                completion?(false)
             }
         }
     }
@@ -3005,8 +3050,13 @@ class OracleViewModel: ObservableObject {
             print("Warning: Ignoring overrideAIMessage without overrideMode.")
             return nil
         }
+        let packagedUserMessage = """
+        <user_instructions>
+        \(newUserMessage)
+        </user_instructions>
+        """
         guard let lastUserMessage = overrideAIMessage.conversationMessages.last(where: { $0.role == .user })?.content,
-              lastUserMessage == newUserMessage
+              lastUserMessage == newUserMessage || lastUserMessage == packagedUserMessage
         else {
             print("Warning: Ignoring overrideAIMessage because its final user message does not match the current send input.")
             return nil
@@ -3023,6 +3073,7 @@ class OracleViewModel: ObservableObject {
         sessionID: UUID? = nil,
         overrideModel: AIModel? = nil,
         overrideChatPresetID: UUID? = nil,
+        oraclePromptConfiguration: OraclePromptConfiguration? = nil,
         overrideMode: PromptViewModel.PlanActMode? = nil,
         gitInclusionOverride: GitInclusion? = nil,
         gitBaseOverride: String? = nil,
@@ -3123,6 +3174,9 @@ class OracleViewModel: ObservableObject {
         }
         registerMessage(aiResponseId, sessionID: targetSessionID)
         completionPolicies[aiResponseId] = completionPolicy
+        if oraclePromptConfiguration != nil {
+            oracleControlledResponseIDs.insert(aiResponseId)
+        }
         setSessionStreaming(targetSessionID, queryId: aiResponseId, streamId: nil)
 
         if currentSessionID == targetSessionID {
@@ -3153,21 +3207,24 @@ class OracleViewModel: ObservableObject {
                 }) {
                     aiMessage = overrideAIMessage
                 } else {
-                    // Build override context from the specified chat preset or current one
-                    let chatPreset: ChatPreset = if let presetID = overrideChatPresetID,
-                                                    let overridePreset = ChatPresetManager.shared.preset(with: presetID)
+                    let chatPreset: ChatPreset = if let oraclePromptConfiguration {
+                        oraclePromptConfiguration.chatPreset
+                    } else if let presetID = overrideChatPresetID,
+                              let overridePreset = ChatPresetManager.shared.preset(with: presetID)
                     {
                         overridePreset
                     } else {
                         promptViewModel.currentChatPreset()
                     }
-                    let overrideContext = promptViewModel.resolvedPromptContext(from: chatPreset)
+                    let overrideContext = oraclePromptConfiguration?.promptContext
+                        ?? promptViewModel.resolvedPromptContext(from: chatPreset)
 
                     aiMessage = await promptViewModel.packagePrompt(
                         conversation: conversation,
                         overrideModel: model,
                         overridePromptConfig: overrideContext,
                         overrideChatPreset: chatPreset,
+                        oraclePromptConfiguration: oraclePromptConfiguration,
                         overrideMode: overrideMode,
                         gitInclusionOverride: gitInclusionOverride,
                         gitBaseOverride: gitBaseOverride,
@@ -3441,6 +3498,7 @@ class OracleViewModel: ObservableObject {
         outcome: OracleMessageFinalizationOutcome
     ) async {
         completionPolicies.removeValue(forKey: id)
+        oracleControlledResponseIDs.remove(id)
         await finalisationHub.fulfil(id, outcome: outcome)
     }
 
@@ -3473,15 +3531,15 @@ class OracleViewModel: ObservableObject {
 
             let finalContent = messageStore[sessionID]?[index].content ?? ""
             if finalContent.isEmpty {
-                await concludeFinalisation(aiResponseId, outcome: .cancelled)
                 withSessionMessages(sessionID) { msgs in
                     if let idx = msgs.firstIndex(where: { $0.id == aiResponseId }) {
                         msgs.remove(at: idx)
                     }
                 }
+                autosaveChatHistory(for: sessionID)
                 purgeMessageCaches(for: aiResponseId)
                 clearSessionStreaming(sessionID)
-                autosaveChatHistory(for: sessionID)
+                await concludeFinalisation(aiResponseId, outcome: .cancelled)
                 return
             }
 
@@ -3716,14 +3774,14 @@ class OracleViewModel: ObservableObject {
 
         let finalContent = messageStore[sessionID]?[idx].content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if finalContent.isEmpty {
-            await concludeFinalisation(queryId, outcome: .cancelled)
             withSessionMessages(sessionID) { msgs in
                 if let index = msgs.firstIndex(where: { $0.id == queryId && !$0.isUser }) {
                     msgs.remove(at: index)
                 }
             }
-            purgeMessageCaches(for: queryId)
             autosaveChatHistory(for: sessionID)
+            purgeMessageCaches(for: queryId)
+            await concludeFinalisation(queryId, outcome: .cancelled)
             return
         }
 
@@ -3849,6 +3907,18 @@ class OracleViewModel: ObservableObject {
         }
         guard let index = sessions.firstIndex(where: { $0.id == id }) else {
             print("Session \(id) not found for renaming.")
+            return
+        }
+        if sessions[index].oracleGroupID != nil {
+            let session = sessions[index]
+            Task { [weak self] in
+                do {
+                    try await self?.renameOracleGroup(containing: session, newName: newName)
+                    self?.sessionOperationError = nil
+                } catch {
+                    self?.sessionOperationError = error.asFriendlyString()
+                }
+            }
             return
         }
 

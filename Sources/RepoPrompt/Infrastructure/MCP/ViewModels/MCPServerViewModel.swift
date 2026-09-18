@@ -570,7 +570,7 @@ final class MCPServerViewModel: ObservableObject {
                         return try await override(args, promptVM, tabContext)
                     }
                 #endif
-                return try await oracleVM.tool_chatSend(
+                return try await oracleVM.tool_chatSendWithConfiguredRoster(
                     args: args,
                     promptVM: promptVM,
                     tabContext: tabContext
@@ -914,6 +914,31 @@ final class MCPServerViewModel: ObservableObject {
         )
     }
 
+    private var agentSessionLinkToolService: AgentSessionLinkMCPToolService {
+        AgentSessionLinkMCPToolService(
+            toolName: MCPWindowToolName.agentSessionLink,
+            captureRequestMetadata: { [self] in await captureRequestMetadata() },
+            requireTargetWindow: { [self] in try requireTargetWindow() },
+            // Exact run-installed/handover/pending-run routing only: the observing endpoint can never
+            // be supplied, hinted, or explicitly bound by the caller.
+            resolveObserverEndpoint: { [self] metadata, targetWindow in
+                await resolveAgentSessionLinkObserverEndpoint(
+                    metadata: metadata,
+                    targetWindow: targetWindow
+                )
+            },
+            withHeartbeat: { [self] connectionID, tool, stage, message, operation in
+                try await withHeartbeat(
+                    connectionID: connectionID,
+                    tool: tool,
+                    stage: stage,
+                    message: message,
+                    operation: operation
+                )
+            }
+        )
+    }
+
     @Published private(set) var isRunning = false // overall status
     @Published private(set) var pendingClientID: String? // approval state
     @Published private(set) var diagnostics: MCPDiagnostics = .init(
@@ -1109,6 +1134,12 @@ final class MCPServerViewModel: ObservableObject {
             guard let self else { throw MCPError.internalError("Window deallocated while executing agent_manage") }
             return try await agentManageToolService.execute(args: args)
         },
+        executeAgentSessionLink: { [weak self] args in
+            guard let self else {
+                throw MCPError.internalError("Window deallocated while executing agent_session_link")
+            }
+            return try await agentSessionLinkToolService.execute(args: args)
+        },
         requireTargetWindow: { [weak self] in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving target window") }
             return try requireTargetWindow()
@@ -1216,7 +1247,7 @@ final class MCPServerViewModel: ObservableObject {
                 _ = authorization
             #endif
         },
-        runMCPPlanOrQuestion: { [weak self] contextBuilderVM, identity, agentModeSessionID, agentModeRunID, mode, prompt, selection, lookupContext, reviewGitContext, finalReviewAuthorization, progressReporter, activityReporter in
+        runMCPPlanOrQuestion: { [weak self] contextBuilderVM, identity, agentModeSessionID, agentModeRunID, mode, execution, prompt, selection, lookupContext, reviewGitContext, finalReviewAuthorization, progressReporter, activityReporter in
             guard let self else { throw MCPError.internalError("Window deallocated while generating context_builder response") }
             #if DEBUG
                 if let override = contextBuilderFollowUpOverrideForTesting {
@@ -1226,6 +1257,7 @@ final class MCPServerViewModel: ObservableObject {
                         agentModeSessionID,
                         agentModeRunID,
                         mode,
+                        execution,
                         prompt,
                         selection,
                         lookupContext,
@@ -1242,6 +1274,7 @@ final class MCPServerViewModel: ObservableObject {
                 agentModeSessionID: agentModeSessionID,
                 agentModeRunID: agentModeRunID,
                 mode: mode,
+                execution: execution,
                 prompt: prompt,
                 selection: selection,
                 lookupContext: lookupContext,
@@ -1841,13 +1874,14 @@ final class MCPServerViewModel: ObservableObject {
             return await applyReadFileAutoSelectionBatch(batch, for: key)
         },
         applyMirror: { [weak self] key in
-            await self?.applyReadFileAutoSelectionMirror(for: key)
+            guard let self else { return .invalidated }
+            return await applyReadFileAutoSelectionMirror(for: key)
         }
     )
     @MainActor
     private func applyReadFileAutoSelectionMirror(
         for key: MCPReadFileAutoSelectionCoordinator.TabMirrorKey
-    ) async {
+    ) async -> WorkspaceSelectionCoordinator.SelectionMirrorOutcome {
         #if DEBUG
             await readFileAutoSelectionMirrorGateForTesting?()
         #endif
@@ -1865,9 +1899,10 @@ final class MCPServerViewModel: ObservableObject {
             )?.selection {
                 workspaceManager?.updateComposeTabSelectionPresentation(selection, forTabID: key.tabID)
             }
-            return
+            return .converged
         }
-        await workspaceManager?.applyStoredSelectionMirrorForReadFileAutoSelection(tabID: key.tabID)
+        guard let workspaceManager else { return .invalidated }
+        return await workspaceManager.applyStoredSelectionMirrorForReadFileAutoSelection(tabID: key.tabID)
     }
 
     /// Presentation snapshot cache. Domain routing remains the only routing authority.
@@ -3978,15 +4013,19 @@ final class MCPServerViewModel: ObservableObject {
                 guard let workspaceID = context.workspaceID,
                       let workspace = targetWindow.workspaceManager.workspaces.first(where: { $0.id == workspaceID })
                 else {
-                    throw MCPError.invalidParams("context_builder could not resolve the invoking Agent Mode workspace.")
+                    throw MCPError.invalidParams(ContextBuilderWorkspaceContextError.readiness(
+                        WorkspaceRootReadinessFailure(reason: .workspaceUnavailable, expectedCount: 0, loadedCount: 0, missingCount: 0)
+                    ).localizedDescription)
                 }
                 do {
                     workspaceContext = try await ContextBuilderWorkspaceContext.resolve(
                         from: context,
                         workspaceRepoPaths: workspace.repoPaths,
                         workspaceDirectoryPath: targetWindow.workspaceManager.workspaceDirectory(for: workspace).path,
-                        store: targetWindow.promptManager.workspaceFileContextStore
+                        workspaceManager: targetWindow.workspaceManager
                     )
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
                     throw MCPError.invalidParams(error.localizedDescription)
                 }

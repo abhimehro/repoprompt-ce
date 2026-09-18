@@ -77,15 +77,27 @@ struct DomainDeletionTombstone: Codable {
     let version: Int
     let workspaceID: UUID
     let fileURL: URL
+    let retainedOperations: [DomainRecordedOperation]?
     let operation: DomainRecordedOperation
     let deletedAt: Date
 
-    init(workspaceID: UUID, fileURL: URL, operation: DomainRecordedOperation, deletedAt: Date) {
+    init(
+        workspaceID: UUID,
+        fileURL: URL,
+        retainedOperations: [DomainRecordedOperation] = [],
+        operation: DomainRecordedOperation,
+        deletedAt: Date
+    ) {
         version = Self.schemaVersion
         self.workspaceID = workspaceID
         self.fileURL = fileURL
+        self.retainedOperations = retainedOperations.isEmpty ? nil : retainedOperations
         self.operation = operation
         self.deletedAt = deletedAt
+    }
+
+    var recordedOperations: [DomainRecordedOperation] {
+        (retainedOperations ?? []) + [operation]
     }
 }
 
@@ -111,6 +123,12 @@ enum DomainExternalDocumentProbe {
     case missing(DomainFileMetadata)
     case invalid(DomainFileMetadata)
     case cancelled
+}
+
+enum DomainSavedConsolidationMarkerStatus: Sendable {
+    case unmarked
+    case marked
+    case unreadable
 }
 
 struct DomainPersistenceBootstrap {
@@ -185,7 +203,7 @@ package struct DomainPersistenceDataSnapshot: Sendable {
     }
 }
 
-private final class DomainBlockingCancellation: Sendable {
+package final class DomainBlockingCancellation: Sendable {
     private let state = OSAllocatedUnfairLock(initialState: false)
 
     func cancel() {
@@ -199,7 +217,7 @@ private final class DomainBlockingCancellation: Sendable {
     }
 }
 
-private enum DomainBlockingIO {
+package enum DomainBlockingIO {
     static func run<T: Sendable>(
         _ operation: @escaping @Sendable (DomainBlockingCancellation) throws -> T
     ) async throws -> T {
@@ -348,6 +366,10 @@ package struct DomainPersistenceCoordinator {
             .appendingPathComponent("DomainRuntime", isDirectory: true)
             .appendingPathComponent("v1", isDirectory: true)
             .appendingPathComponent("\(safe)-\(digest)", isDirectory: true)
+    }
+
+    package var oracleStorageRoot: URL {
+        runtimeRoot.appendingPathComponent("oracle", isDirectory: true)
     }
 
     private var journalDirectory: URL { runtimeRoot.appendingPathComponent("working-journals", isDirectory: true) }
@@ -644,6 +666,31 @@ package struct DomainPersistenceCoordinator {
         }
     }
 
+    func savedConsolidationMarkerStatus(
+        for document: DomainWorkspaceDocument
+    ) async throws -> DomainSavedConsolidationMarkerStatus {
+        try await DomainBlockingIO.run { cancellation in
+            let worker = blockingWorker(cancellation)
+            try cancellation.check()
+            guard let savedBytes = try? Data(contentsOf: document.fileURL) else {
+                try cancellation.check()
+                return .unreadable
+            }
+            try cancellation.check()
+            guard let savedDocument = worker.decodeWorkspaceDocument(
+                savedBytes,
+                fileURL: document.fileURL,
+                expectedWorkspaceID: document.workspaceID
+            ) else {
+                return .unreadable
+            }
+            try cancellation.check()
+            return savedDocument.metadata.consolidatedIntoWorkspaceID == nil
+                ? .unmarked
+                : .marked
+        }
+    }
+
     func persistWorking(
         document: DomainWorkspaceDocument,
         expectedRevision: UInt64,
@@ -812,14 +859,16 @@ package struct DomainPersistenceCoordinator {
 
     func refreshWorkspace(
         workspaceID: UUID,
-        fallbackFileURL: URL
+        fallbackFileURL: URL,
+        requireCatalogMembership: Bool = false
     ) async -> DomainPersistenceWorkspaceRefresh? {
         do {
             return try await DomainBlockingIO.run { cancellation in
                 try cancellation.check()
                 return blockingWorker(cancellation).refreshWorkspaceBlocking(
                     workspaceID: workspaceID,
-                    fallbackFileURL: fallbackFileURL
+                    fallbackFileURL: fallbackFileURL,
+                    requireCatalogMembership: requireCatalogMembership
                 )
             }
         } catch DomainPersistenceError.cancelled {
@@ -838,8 +887,14 @@ package struct DomainPersistenceCoordinator {
 
     private func refreshWorkspaceBlocking(
         workspaceID: UUID,
-        fallbackFileURL: URL
+        fallbackFileURL: URL,
+        requireCatalogMembership: Bool
     ) -> DomainPersistenceWorkspaceRefresh {
+        if requireCatalogMembership, fileManager.fileExists(atPath: deletionURL(workspaceID).path) {
+            return DomainPersistenceWorkspaceRefresh(
+                workspace: nil, workspaceIsDeleted: true, health: .writable, catalogRevision: 0
+            )
+        }
         guard let catalogData = try? Data(contentsOf: catalogURL) else {
             return DomainPersistenceWorkspaceRefresh(
                 workspace: loadWorkspace(workspaceID: workspaceID, fileURL: fallbackFileURL)?.workspace,
@@ -873,6 +928,9 @@ package struct DomainPersistenceCoordinator {
                 health: .degradedReadOnly(reason: "duplicate_workspace_catalog_id"),
                 catalogRevision: catalog.revision
             )
+        }
+        if requireCatalogMembership, matchingEntries.isEmpty {
+            return DomainPersistenceWorkspaceRefresh(workspace: nil, workspaceIsDeleted: isDeleted, health: .removed, catalogRevision: catalog.revision)
         }
         let fileURL = matchingEntries.first?.fileURL ?? fallbackFileURL
         return DomainPersistenceWorkspaceRefresh(
@@ -934,7 +992,7 @@ package struct DomainPersistenceCoordinator {
                 return DomainPersistenceBootstrap(
                     workspaces: [],
                     unavailableWorkspaces: [],
-                    deletedOperations: deletionTombstones.map(\.operation),
+                    deletedOperations: deletionTombstones.flatMap(\.recordedOperations),
                     deletedWorkspaceIDs: deletedIDs,
                     health: .degradedReadOnly(reason: "workspace_index_decode_failed"),
                     catalogRevision: 0
@@ -994,7 +1052,7 @@ package struct DomainPersistenceCoordinator {
         return DomainPersistenceBootstrap(
             workspaces: loaded,
             unavailableWorkspaces: unavailable,
-            deletedOperations: deletionTombstones.map(\.operation),
+            deletedOperations: deletionTombstones.flatMap(\.recordedOperations),
             deletedWorkspaceIDs: deletedIDs,
             health: globalHealth,
             catalogRevision: catalog?.revision ?? 0
@@ -1631,6 +1689,7 @@ package struct DomainPersistenceCoordinator {
                 let tombstone = DomainDeletionTombstone(
                     workspaceID: document.workspaceID,
                     fileURL: document.fileURL,
+                    retainedOperations: current.operations,
                     operation: operation,
                     deletedAt: now
                 )
@@ -1728,10 +1787,12 @@ package struct DomainPersistenceCoordinator {
         return DomainDeletionTombstone(
             workspaceID: tombstone.workspaceID,
             fileURL: tombstone.fileURL,
+            retainedOperations: tombstone.retainedOperations ?? [],
             operation: DomainRecordedOperation(
                 fingerprint: operation.fingerprint,
                 recordedAt: operation.recordedAt,
-                outcome: outcome
+                outcome: outcome,
+                resultingWorkspaceID: operation.resultingWorkspaceID
             ),
             deletedAt: tombstone.deletedAt
         )
@@ -2088,7 +2149,7 @@ package struct DomainPersistenceCoordinator {
     }
 }
 
-private enum DomainPersistenceLock {
+package enum DomainPersistenceLock {
     private static let waitTimeoutNanoseconds: UInt64 = 2_000_000_000
     private static let retryDelayMicroseconds: useconds_t = 10000
 

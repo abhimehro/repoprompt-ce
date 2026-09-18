@@ -56,6 +56,7 @@ final class AppSettingsMCPService: Service {
                 - `{"op":"get","keys":["ui.appearance_mode","ui.show_tooltips"]}`
                 - `{"op":"get","group":"file_system"}`
                 - `{"op":"set","key":"models.planning_model","value":null}`
+                - `{"op":"set","key":"models.additional_oracle_models","value":["openai/gpt-5.2","anthropic/claude-opus-4-6"]}`
                 - `{"op":"set","key":"file_system.global_ignore_defaults","value":"**/node_modules/\\n"}`
                 - `{"op":"options","key":"models.planning_model","agent":"codexExec"}`
 
@@ -67,7 +68,15 @@ final class AppSettingsMCPService: Service {
                         "group": .string(description: "Settings group.", enum: ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode"]),
                         "key": .string(description: "Allowlisted setting key (required for set/options)."),
                         "keys": .array(description: "Multiple keys (get only).", items: .string()),
-                        "value": .anyOf([.boolean(), .integer(), .number(), .string(), .null]),
+                        "value": .anyOf([
+                            .boolean(), .integer(), .number(), .string(),
+                            .array(
+                                description: "Ordered Oracle roster additions (maximum four model identifiers).",
+                                items: .string(maxLength: OracleRosterContract.maximumModelIdentifierLength),
+                                maxItems: OracleRosterContract.maximumAdditionalCount
+                            ),
+                            .null
+                        ]),
                         "agent": .string(description: "Filter options by CLI backend."),
                         "limit": .integer(description: "Maximum options returned (1–200)."),
                         "detailed": .boolean(description: "Include descriptions and model metadata.")
@@ -325,6 +334,14 @@ final class AppSettingsMCPService: Service {
             "corrupt_unrecoverable"
         case .saveFailed:
             "save_failed"
+        case .writerBusy:
+            "settings_writer_busy"
+        case .changedOnDisk:
+            "settings_changed_on_disk"
+        case .missingOnDisk:
+            "settings_missing_on_disk"
+        case .loadFailed:
+            "settings_load_failed"
         case .automaticSchemaNormalizationFailed:
             "automatic_schema_normalization_failed"
         }
@@ -337,9 +354,17 @@ final class AppSettingsMCPService: Service {
         case .incompatibleSchema:
             "Setting was applied in memory, but globalSettings.json was written by a different or unrecognized RepoPrompt settings schema; it will not persist until the settings file is imported or recovered."
         case .corruptUnrecoverable:
-            "Setting was applied in memory, but globalSettings.json is unreadable and could not be backed up; it will not persist until the settings file is recovered."
+            "Setting was applied in memory, but globalSettings.json is unreadable or malformed and remains preserved; it will not persist until the settings file is explicitly recovered."
         case .saveFailed:
             "Setting was applied in memory, but RepoPrompt could not write globalSettings.json; it will not persist until saving succeeds."
+        case .writerBusy:
+            "Setting was applied in memory, but another RepoPrompt CE process is updating settings. Retry saving after that update finishes."
+        case .changedOnDisk:
+            "Setting was applied in memory, but settings changed on disk. Reload settings in Settings before making further changes; reloading replaces unsaved in-memory changes."
+        case .missingOnDisk:
+            "Setting was applied in memory, but the settings file is missing. In Settings, explicitly save the current in-memory settings to a new file, or restore the file and reload."
+        case .loadFailed:
+            "Setting was applied in memory, but settings could not be loaded safely. Retry loading in Settings before making further changes; reloading replaces unsaved in-memory changes."
         case .automaticSchemaNormalizationFailed:
             "Setting was applied in memory, but RepoPrompt could not safely back up and normalize the existing globalSettings.json schema header; the original file is preserved and the setting will not persist until explicit recovery."
         }
@@ -429,6 +454,7 @@ private enum AppSettingValueType: String {
     case boolean
     case string
     case optionalString = "string|null"
+    case stringArray = "string[]"
     case number
 }
 
@@ -713,6 +739,12 @@ private enum AppSettingsMCPRegistry {
             afterWrite: postRecommendationsDidApply,
             candidateProvider: aiModelRawCandidates
         ),
+        oracleRosterSetting(
+            read: { .array($0.additionalOracleModelRaws().map(Value.string)) },
+            write: { try $0.setAdditionalOracleModelRaws(requiredStringArray(from: $1)) },
+            afterWrite: postRecommendationsDidApply,
+            candidateProvider: aiModelRawCandidates
+        ),
         boolSetting(
             key: "models.sync_chat_model_with_oracle",
             group: "models",
@@ -758,7 +790,9 @@ private enum AppSettingsMCPRegistry {
             key: "context_builder.agent",
             group: "context_builder",
             description: "CLI agent used by the Context Builder MCP tool.",
-            allowedValues: AgentProviderKind.allCases.map(\.rawValue),
+            allowedValues: AgentProviderKind.allCases
+                .filter { AgentModelCatalog.AgentSelectionSurface.headless.allows($0) }
+                .map(\.rawValue),
             read: { .string($0.globalContextBuilderAgentSelection().agentRaw ?? AgentProviderKind.claudeCode.rawValue) },
             write: { store, value in
                 let agentRaw = try requiredString(from: value)
@@ -1084,6 +1118,38 @@ private enum AppSettingsMCPRegistry {
         )
     }
 
+    private static func oracleRosterSetting(
+        read: @escaping @MainActor (GlobalSettingsStore) -> Value,
+        write: @escaping @MainActor (GlobalSettingsStore, Value) throws -> Void,
+        afterWrite: (@MainActor (GlobalSettingsStore, Value, NotificationCenter) -> Void)? = nil,
+        candidateProvider: (@MainActor (AppSettingCandidateRequest) throws -> AppSettingCandidatesResult)? = nil
+    ) -> AppSettingDefinition {
+        let descriptor = OracleRosterSettingsDescriptor.additional
+        return AppSettingDefinition(
+            key: descriptor.key,
+            group: descriptor.group,
+            valueType: .stringArray,
+            label: "Additional Oracle Models",
+            description: descriptor.description,
+            allowedValues: nil,
+            valueFormat: "Ordered model identifiers; maximum \(OracleRosterContract.maximumAdditionalCount).",
+            read: read,
+            validate: { value in
+                guard let domainValue = DomainSettingValue(mcpValue: value) else {
+                    throw MCPError.invalidParams("\(descriptor.key) must be an array of model identifier strings.")
+                }
+                do {
+                    return try DomainAppSettingsCatalog.normalize(domainValue, for: descriptor).mcpValue
+                } catch {
+                    throw MCPError.invalidParams(error.localizedDescription)
+                }
+            },
+            write: write,
+            afterWrite: afterWrite,
+            candidateProvider: candidateProvider
+        )
+    }
+
     private static func optionalModelRawSetting(
         key: String,
         group: String,
@@ -1303,6 +1369,13 @@ private enum AppSettingsMCPRegistry {
         return try requiredString(from: value)
     }
 
+    private static func requiredStringArray(from value: Value) throws -> [String] {
+        guard case let .array(values) = value else {
+            throw MCPError.invalidParams("Expected normalized string-array value.")
+        }
+        return try values.map(requiredString(from:))
+    }
+
     private static func requiredDouble(from value: Value) throws -> Double {
         guard case let .double(double) = value else {
             throw MCPError.invalidParams("Expected normalized numeric value.")
@@ -1342,6 +1415,8 @@ private enum AppSettingsMCPRegistry {
             .codex
         case .openCode:
             .openCode
+        case .antigravity:
+            nil
         case .cursor:
             .cursor
         case .grokBuild:
@@ -1480,7 +1555,7 @@ private enum AppSettingsMCPRegistry {
     static func agentModelRawCandidates(
         request: AppSettingCandidateRequest
     ) throws -> AppSettingCandidatesResult {
-        let discoveryAgents = AgentModelCatalog.discoveryAgents(availability: request.availability)
+        let discoveryAgents = AgentModelCatalog.discoveryAgents(availability: request.availability, surface: .headless)
         let filteredAgents: [AgentModelCatalog.DiscoveryAgent] = if let agentFilter = request.agentFilter {
             discoveryAgents.filter { $0.agent == agentFilter && $0.available }
         } else {
