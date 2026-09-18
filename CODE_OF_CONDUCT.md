@@ -50,9 +50,10 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement via GitHub issues
-on this repository or by contacting the maintainers listed in
-`APPROVED_CONTRIBUTORS` / repository ownership.
+reported privately to the community leaders responsible for enforcement at
+conduct@repoprompt.com. This mailbox is monitored by the maintainers, and
+reports will be handled confidentially. Public GitHub issues should only be
+used for reports that contain no private or sensitive information.
 
 All complaints will be reviewed and investigated promptly and fairly.
 
