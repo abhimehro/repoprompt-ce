@@ -50,9 +50,10 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement via GitHub issues
-on this repository or by contacting the maintainers listed in
-`APPROVED_CONTRIBUTORS` / repository ownership.
+reported privately to the repository maintainers, who are responsible for
+receiving and handling conduct reports, through GitHub's private reporting form:
+open this repository's **Security** tab and choose **Report a vulnerability**.
+Do not use a public issue for a conduct report.
 
 All complaints will be reviewed and investigated promptly and fairly.
 
