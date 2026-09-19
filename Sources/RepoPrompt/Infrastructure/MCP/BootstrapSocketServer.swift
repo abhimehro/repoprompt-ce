@@ -270,7 +270,9 @@ actor BootstrapSocketServer {
         self.onNewConnection = onNewConnection
 
         // Ensure socket directory exists with secure permissions
-        MCPFilesystemConstants.ensureSocketDirectoryExists()
+        guard MCPFilesystemConstants.ensureSocketDirectoryExists() else {
+            throw BootstrapSocketError.startCancelled
+        }
         #if DEBUG
             print("[MCPStartup] ensured socket dir=\(socketURL.deletingLastPathComponent().path) exists=\(FileManager.default.fileExists(atPath: socketURL.deletingLastPathComponent().path))")
         #endif
