@@ -5,6 +5,15 @@ import XCTest
 
 @MainActor
 final class ContextBuilderGlobalBehaviorSettingsTests: XCTestCase {
+    func testAnalysisTokenBudgetNormalizationPreservesBoundsAndClampsOutsideValues() {
+        let range = ContextBuilderDefaults.analysisTokenBudgetRange
+
+        XCTAssertEqual(ContextBuilderDefaults.normalizedAnalysisTokenBudget(range.lowerBound - 1), range.lowerBound)
+        XCTAssertEqual(ContextBuilderDefaults.normalizedAnalysisTokenBudget(range.lowerBound), range.lowerBound)
+        XCTAssertEqual(ContextBuilderDefaults.normalizedAnalysisTokenBudget(range.upperBound), range.upperBound)
+        XCTAssertEqual(ContextBuilderDefaults.normalizedAnalysisTokenBudget(range.upperBound + 1), range.upperBound)
+    }
+
     func testUIBudgetUsesContextBudgetWhenFollowUpAnalysisDisabled() {
         var settings = ContextBuilderDefaults.behaviorSettings
         settings.contextTokenBudget = 43210

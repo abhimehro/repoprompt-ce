@@ -121,7 +121,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     typealias ProviderFactory = (
         _ agent: AgentProviderKind,
         _ modelString: String?,
-        _ workspacePath: String?
+        _ workspacePath: String?,
+        _ modelParameterSelections: [ACPModelParameterSelection]
     ) -> HeadlessAgentProvider
 
     private func debugLog(_ message: @autoclosure () -> String) {
@@ -1034,6 +1035,13 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         workspaceManager?.activeWorkspace?.repoPaths.first
     }
 
+    /// Execution root for the Context Builder effort chooser's demand-scoped probe.
+    /// Worktree-aware only during a run; the chooser edits future configuration, so the active
+    /// workspace root is the honest preview context (the composer's fallback tier).
+    var chooserProbeWorkspacePath: String? {
+        currentWorkspacePath
+    }
+
     /// Track which agents are running (for cleanup)
     private var activeAgentRuns: Set<UUID> = []
 
@@ -1063,11 +1071,12 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         self.oracleViewModel = oracleViewModel
         self.settingsManager = settingsManager
         self.codexModelPollingService = codexModelPollingService
-        self.providerFactory = providerFactory ?? { agent, modelString, workspacePath in
+        self.providerFactory = providerFactory ?? { agent, modelString, workspacePath, modelParameterSelections in
             AgentRuntimeProviderService.shared.makeProvider(
                 for: agent,
                 modelString: modelString,
-                workspacePath: workspacePath
+                workspacePath: workspacePath,
+                modelParameterSelections: modelParameterSelections
             )
         }
         refreshAvailableAgents()
@@ -1771,6 +1780,98 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         updateDynamicModelPolling(startCursorPolling: false)
     }
 
+    /// The scope a Context Builder pin write lands in. Surfaces capture this at render time and
+    /// hand it back, so a menu opened against one scope cannot write into another after an
+    /// inheritance change — provider/model can stay identical across that switch, because a new
+    /// workspace override profile starts as a copy of the global one.
+    var contextBuilderEditingScope: AgentModelsEditingScope {
+        if let workspaceID = currentWorkspaceID,
+           settingsManager.workspaceAgentModelsSettings(for: workspaceID).inheritanceMode == .useWorkspaceOverrides
+        {
+            .workspace(workspaceID)
+        } else {
+            .global
+        }
+    }
+
+    /// Set or clear the Context Builder agent's ACP parameter pin, persisting the displayed
+    /// agent+model choice atomically so the pin stays eligible. Resolve the write target from the
+    /// current settings authority rather than the cached `@Published` selection. Cross-surface
+    /// notifications arrive on a later runloop turn, so the
+    /// cache can still describe the menu's old model when another surface has already committed a
+    /// newer one. Re-running the normal display resolution also preserves intentional availability
+    /// fallback pinning instead of comparing directly against the persisted raw value.
+    func setContextBuilderModelParameter(
+        _ selections: [ACPModelParameterSelection]?,
+        expectedProviderID: ACPProviderID,
+        expectedModelRaw: String,
+        expectedScope: AgentModelsEditingScope
+    ) {
+        let scope = contextBuilderEditingScope
+        guard scope == expectedScope,
+              let liveSelection = Self.contextBuilderPinWriteSelection(
+                  resolvedPersistedContextBuilderSelection(),
+                  expectedProviderID: expectedProviderID,
+                  expectedModelRaw: expectedModelRaw
+              )
+        else { return }
+        settingsManager.setAgentModelsContextBuilderModelParameter(
+            selections,
+            agentRaw: liveSelection.agent.rawValue,
+            modelRaw: liveSelection.modelRaw,
+            scope: scope
+        )
+    }
+
+    private static func contextBuilderPinWriteSelection(
+        _ liveSelection: AgentModelCatalog.NormalizedAgentSelection?,
+        expectedProviderID: ACPProviderID,
+        expectedModelRaw: String
+    ) -> AgentModelCatalog.NormalizedAgentSelection? {
+        guard let liveSelection,
+              let liveProviderID = liveSelection.agent.acpProviderID,
+              liveProviderID == expectedProviderID,
+              ACPModelParameterIdentity.canonicalBaseModelRaw(
+                  liveSelection.modelRaw,
+                  providerID: liveProviderID
+              ) == ACPModelParameterIdentity.canonicalBaseModelRaw(
+                  expectedModelRaw,
+                  providerID: liveProviderID
+              )
+        else { return nil }
+        return liveSelection
+    }
+
+    #if DEBUG
+        static func test_contextBuilderPinWriteSelection(
+            liveAgent: AgentProviderKind,
+            liveModelRaw: String,
+            expectedProviderID: ACPProviderID,
+            expectedModelRaw: String
+        ) -> AgentModelCatalog.NormalizedAgentSelection? {
+            contextBuilderPinWriteSelection(
+                .init(agent: liveAgent, modelRaw: liveModelRaw),
+                expectedProviderID: expectedProviderID,
+                expectedModelRaw: expectedModelRaw
+            )
+        }
+    #endif
+
+    /// The saved `.thinking` pin value for the current Context Builder selection, if any. The
+    /// chip's saved-state input.
+    var contextBuilderThinkingParameterValueRaw: String? {
+        contextBuilderModelParameters.last { $0.kind == .thinking }?.valueRaw
+    }
+
+    /// The saved OpenCode effort pin for the **displayed** Context Builder selection. Display
+    /// and probe must agree with the model the chip is mounted for (`selectedModelRaw`), which
+    /// availability fallback can make differ from the persisted choice without writing back.
+    var contextBuilderModelParameters: [ACPModelParameterSelection] {
+        settingsManager
+            .effectiveAgentModelsProfile(workspaceID: currentWorkspaceID)
+            .contextBuilderModelParameterSelections(for: selectedAgent, modelRaw: selectedModelRaw)
+    }
+
     /// Update the effective Agent Models profile's Context Builder selection.
     private func persistAgentModelToEffectiveProfile() {
         guard !isRestoringState else { return }
@@ -1922,7 +2023,11 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         return ContextBuilderResolvedRunAuthority(
             configuration: configuration,
             agentKind: selection.agent,
-            modelRaw: selection.modelRaw
+            modelRaw: selection.modelRaw,
+            modelParameterSelections: profile.contextBuilderModelParameterSelections(
+                for: selection.agent,
+                modelRaw: selection.modelRaw
+            )
         )
     }
 
@@ -2050,6 +2155,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                     origin: .mcp(controlToken: mcpControlToken),
                     agentKind: runAgent,
                     modelRaw: runModelRaw,
+                    modelParameterSelections: authority.modelParameterSelections,
                     workspaceContext: workspaceContext,
                     mcpConfiguration: configuration,
                     continuation: continuation,
@@ -2162,11 +2268,22 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 generatedResponseAuthority: base.generatedResponseAuthority,
                 isSystemWorkspace: base.isSystemWorkspace
             )
+            let overrideAgentKind = agentOverride ?? resolved.agentKind
+            let overrideModelRaw = modelOverrideRaw ?? resolved.modelRaw
+            let overrideSelections = (agentOverride == nil && modelOverrideRaw == nil)
+                ? resolved.modelParameterSelections
+                : settingsManager
+                .effectiveAgentModelsProfile(workspaceID: identity.workspaceID)
+                .contextBuilderModelParameterSelections(
+                    for: overrideAgentKind,
+                    modelRaw: overrideModelRaw
+                )
             return try await runContextBuilderForMCP(
                 authority: ContextBuilderResolvedRunAuthority(
                     configuration: configuration,
-                    agentKind: agentOverride ?? resolved.agentKind,
-                    modelRaw: modelOverrideRaw ?? resolved.modelRaw
+                    agentKind: overrideAgentKind,
+                    modelRaw: overrideModelRaw,
+                    modelParameterSelections: overrideSelections
                 ),
                 instructionsOverride: instructionsOverride,
                 workspaceContext: workspaceContext,
@@ -2571,7 +2688,13 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             ownership: ownership,
             origin: .ui,
             agentKind: runAgent,
-            modelRaw: runModelRaw
+            modelRaw: runModelRaw,
+            modelParameterSelections: settingsManager
+                .effectiveAgentModelsProfile(workspaceID: currentWorkspaceID)
+                .contextBuilderModelParameterSelections(
+                    for: runAgent,
+                    modelRaw: runModelRaw
+                )
         )
 
         guard runRegistry.register(record) else {
@@ -2732,7 +2855,12 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             let providerWorkspacePath = record.mcpConfiguration?.providerWorkspacePath
                 ?? record.workspaceContext?.providerWorkspacePath
                 ?? currentWorkspacePath
-            let provider = providerFactory(record.agentKind, modelString, providerWorkspacePath)
+            let provider = providerFactory(
+                record.agentKind,
+                modelString,
+                providerWorkspacePath,
+                record.modelParameterSelections
+            )
             guard record.installProvider(provider) else {
                 await provider.dispose()
                 await lease.failAndCleanup()
@@ -4628,17 +4756,13 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     @MainActor
     func planStatus(for tabID: UUID?) -> ContextBuilderPlanStatus {
         guard let id = tabID, let session = sessions[id] else { return .idle }
-        if session.isBackgroundPlanGenerating {
-            return .generating
-        }
-        if let error = session.backgroundPlanError {
-            return .error(error)
-        }
-        if let route = session.generatedAnswerRoute {
-            let preview = session.backgroundPlanResponsePreviewText ?? session.backgroundPlanResponseText
-            return .ready(route: route, previewText: preview)
-        }
-        return .idle
+        return session.planStatus
+    }
+
+    @MainActor
+    func failedAnswerRoute(for tabID: UUID?) -> ContextBuilderGeneratedAnswerRoute? {
+        guard let tabID else { return nil }
+        return sessions[tabID]?.failedAnswerRoute
     }
 
     /// Returns the current context-builder follow-up Oracle chat ID for a tab, when known.
@@ -4914,10 +5038,6 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                     "Context Builder Oracle group result did not match its prepared members"
                 )
             }
-            guard let primary = session.followUpOracleGroupState.members.first else {
-                throw ChatToolError.internalError("Context Builder Oracle group completed without Primary state")
-            }
-            let primaryResult = groupReply.result.primary
             try await oracleStore.releaseArtifactReservation(
                 frozenPack.reservation,
                 removeIfUnreferenced: false
@@ -4927,36 +5047,12 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 await runTestHooks?.afterOracleArtifactReservationReleased?(generation)
             #endif
             try requireCurrentOracleRun(session: session, generation: generation)
-            if primaryResult.status != .completed,
-               let partialResponse = primaryResult.error?.partialResponse,
-               !partialResponse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                session.backgroundPlanResponseText = partialResponse
-            }
-            let primaryResponse = try groupReply.requiredCompletedPrimaryResponse()
-            let errors = groupReply.orderedResults.compactMap { result in
-                result.error.map {
-                    "\(OracleViewModel.oracleLabel(laneIndex: result.laneIndex)) failed: \($0.message)"
-                }
-            }
-            let reply = ChatSendReply(
-                chatId: primary.sessionID,
-                shortId: primary.chatID,
-                mode: mode.mcpModeName,
-                response: primaryResponse,
-                errors: errors.isEmpty ? nil : errors,
-                oracleGroup: groupReply
+            let reply = try session.completeOracleGroupReply(
+                groupReply,
+                generation: generation,
+                originWorkspaceID: originWorkspaceID,
+                mode: mode
             )
-            session.isBackgroundPlanGenerating = false
-            session.backgroundPlanResponseText = reply.response
-            session.backgroundPlanReasoningText = nil
-            session.generatedAnswerRoute = ContextBuilderGeneratedAnswerRoute(
-                workspaceID: originWorkspaceID,
-                tabID: tabID,
-                chatID: primary.chatID
-            )
-            session.followUpOracleGroupState.finish(generation: generation)
-            session.followUpOracleGroupTask = nil
             clearPendingBackgroundPlanUIRefresh(for: tabID)
             applyPlanPreview(to: session)
             updateRuntimeBindings(from: session)
@@ -5982,6 +6078,73 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 message: message
             )
         )
+    }
+}
+
+extension ContextBuilderAgentViewModel.TabSession {
+    /// Called only after the runtime settled and artifact reservation release succeeded.
+    /// A failed primary is a group outcome, not a failure to deliver the group.
+    @MainActor
+    func completeOracleGroupReply(
+        _ groupReply: ContextBuilderOracleGroupReply,
+        generation: UInt64,
+        originWorkspaceID: UUID,
+        mode: HeadlessMode
+    ) throws -> ChatSendReply {
+        try Task.checkCancellation()
+        guard followUpOracleGroupState.generation == generation else { throw CancellationError() }
+        guard followUpOracleGroupState.matchesFinalResult(groupReply.result, generation: generation),
+              let primary = followUpOracleGroupState.members.first
+        else {
+            throw ChatToolError.internalError("Context Builder Oracle group result did not match its prepared members")
+        }
+        let primaryResult = groupReply.result.primary
+        let errors = groupReply.orderedResults.compactMap { result in
+            result.error.map {
+                "\(OracleViewModel.oracleLabel(laneIndex: result.laneIndex)) \(result.status.rawValue): \($0.message)"
+            }
+        }
+        let reply = ChatSendReply(
+            chatId: primary.sessionID,
+            shortId: primary.chatID,
+            mode: mode.mcpModeName,
+            response: primaryResult.status == .completed ? primaryResult.response : nil,
+            errors: errors.isEmpty ? nil : errors,
+            oracleGroup: groupReply
+        )
+        isBackgroundPlanGenerating = false
+        backgroundPlanResponseText = reply.response ?? primaryResult.error?.partialResponse
+        backgroundPlanReasoningText = nil
+        backgroundPlanError = primaryResult.status == .completed ? nil :
+            ContextBuilderOraclePrimaryCompletionError.notCompleted(
+                status: primaryResult.status,
+                code: primaryResult.error?.code ?? "oracle_primary_not_completed",
+                message: primaryResult.error?.message ?? "Primary Oracle did not complete successfully."
+            ).localizedDescription
+        generatedAnswerRoute = ContextBuilderGeneratedAnswerRoute(
+            workspaceID: originWorkspaceID,
+            tabID: tabID,
+            chatID: primary.chatID
+        )
+        followUpOracleGroupState.finish(generation: generation)
+        followUpOracleGroupTask = nil
+        return reply
+    }
+
+    @MainActor
+    var planStatus: ContextBuilderPlanStatus {
+        if isBackgroundPlanGenerating { return .generating }
+        if let error = backgroundPlanError { return .error(error) }
+        if let route = generatedAnswerRoute {
+            return .ready(route: route, previewText: backgroundPlanResponsePreviewText ?? backgroundPlanResponseText)
+        }
+        return .idle
+    }
+
+    @MainActor
+    var failedAnswerRoute: ContextBuilderGeneratedAnswerRoute? {
+        guard !isBackgroundPlanGenerating, backgroundPlanError != nil else { return nil }
+        return generatedAnswerRoute
     }
 }
 

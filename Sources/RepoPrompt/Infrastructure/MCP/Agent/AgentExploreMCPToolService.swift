@@ -13,7 +13,7 @@ struct AgentExploreMCPToolService {
     let resolveSpawnSourceTabID: (_ metadata: RequestMetadata) async -> UUID?
     let resolveSpawnParentSessionID: (_ metadata: RequestMetadata, _ targetWindow: WindowState) async -> UUID?
     let withHeartbeat: (_ connectionID: UUID?, _ tool: String, _ stage: String, _ message: String, _ operation: @escaping HeartbeatOperation) async throws -> Value
-    var beginAgentRunWait: (_ metadata: RequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval?) async -> AgentRunWaitScopeRegistration? = { _, _, _ in nil }
+    var beginAgentRunWait: (_ metadata: RequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval) async -> AgentRunWaitScopeRegistration? = { _, _, _ in nil }
     var endAgentRunWait: (_ token: UUID, _ completion: AgentRunWaitScopeCompletion) async -> Void = { _, _ in }
     let startRun: StartRun
     #if DEBUG
@@ -40,8 +40,14 @@ struct AgentExploreMCPToolService {
         )
     }
 
-    static func resolvedStartTimeoutSeconds(_ value: Value?) throws -> TimeInterval {
-        try AgentRunMCPToolService.resolvedStartTimeoutSeconds(value)
+    static func resolvedStartTimeoutSeconds(
+        _ value: Value?,
+        capturedDefaultWaitSeconds: TimeInterval
+    ) throws -> TimeInterval {
+        try AgentRunMCPToolService.resolvedStartTimeoutSeconds(
+            value,
+            capturedDefaultWaitSeconds: capturedDefaultWaitSeconds
+        )
     }
 
     func execute(args: [String: Value]) async throws -> Value {
@@ -69,7 +75,11 @@ struct AgentExploreMCPToolService {
         let worktreeStartRequest = try startWorktreeCoordinator.parseRequest(args: args)
         try validateBatchWorktreeRequest(worktreeStartRequest, messageCount: messages.count)
         let detach = AgentMCPToolHelpers.parseBool(args["detach"]) ?? false
-        let timeoutSeconds = try Self.resolvedStartTimeoutSeconds(args["timeout"])
+        let capturedDefaultWaitSeconds = AgentRunMCPToolService.capturedDefaultWaitTimeoutSeconds()
+        let timeoutSeconds = try Self.resolvedStartTimeoutSeconds(
+            args["timeout"],
+            capturedDefaultWaitSeconds: capturedDefaultWaitSeconds
+        )
 
         let metadata = await captureRequestMetadata()
         let context = try await resolveStartContext(metadata: metadata)
@@ -333,6 +343,17 @@ struct AgentExploreMCPToolService {
         try context.agentModeVM.requireCurrentMCPWorkspaceTarget(
             target,
             expectedWorkspaceID: context.expectedWorkspaceID
+        )
+        // An `explore` role default may carry a stored model-parameter pin (e.g. an OpenCode
+        // thinking level). Stage it onto the freshly created session so the run builder picks it
+        // up from stored selections, exactly as `agent_run` start does. No rollback bookkeeping:
+        // a failed explore start discards its target rather than restoring it. A role without a
+        // pin resolves to an empty array, which stages nothing.
+        _ = try context.agentModeVM.mcpStageModelParameterSelections(
+            tabID: target.tabID,
+            agentRaw: context.selection.agentRaw,
+            modelRaw: context.selection.modelRaw,
+            selections: context.selection.modelParameterSelections
         )
         let outcome = try await startRun(
             target,
