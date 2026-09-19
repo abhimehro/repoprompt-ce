@@ -460,8 +460,11 @@ class ExtractStagedReleaseTests(unittest.TestCase):
                 zf.writestr(info_exec, b"#!/bin/sh\necho test")
 
                 info_zero = zipfile.ZipInfo("file_zero.txt")
-                info_zero.external_attr = 0
+                info_zero.external_attr = 1
                 zf.writestr(info_zero, b"zero mode file")
+
+            with zipfile.ZipFile(archive_path) as zf:
+                self.assertEqual(zf.getinfo("file_zero.txt").external_attr >> 16, 0)
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPT_DIR / "extract_staged_release.py"), str(archive_path), str(dest_dir), "RepoPrompt"],
