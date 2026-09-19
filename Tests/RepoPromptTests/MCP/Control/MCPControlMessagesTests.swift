@@ -18,7 +18,7 @@ final class MCPControlMessagesTests: XCTestCase {
             )
 
             let data = try XCTUnwrap(notification.encodedJSONLine(), caseLabel)
-            XCTAssertEqual(data.last, 10, caseLabel + ": encodedJSONLine() must preserve the trailing newline transport delimiter")
+            XCTAssertEqual(data.last, 10, "\(caseLabel): encodedJSONLine() must preserve the trailing newline transport delimiter")
             XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("repoprompt/control/terminate"), caseLabel)
             XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("repoprompt\\/control\\/terminate"), caseLabel)
 
@@ -92,42 +92,6 @@ final class MCPControlMessagesTests: XCTestCase {
             XCTAssertEqual(parsed.message, "Planning response", caseLabel)
             XCTAssertEqual(parsed.emittedAt, "1970-01-01T00:00:00Z", caseLabel)
         }
-    }
-
-    /// Measures the complete hot path used for progress events: payload construction,
-    /// JSON-line encoding, and delivery through the serial notification queue. Run with
-    /// `swift test --filter MCPControlMessagesTests/testProgressNotificationDeliveryPerformance`
-    /// to record the wall-clock baseline on the target machine.
-    func testProgressNotificationDeliveryPerformance() {
-        let deliveryQueue = DispatchQueue(label: "MCPControlMessagesTests.progress-delivery")
-        let deliveryGroup = DispatchGroup()
-        let emittedAt = Date(timeIntervalSince1970: 1_700_000_000)
-
-        measure {
-            for index in 0..<1_000 {
-                let notification = RepoPromptControlNotification(
-                    method: RepoPromptControlMethod.progress,
-                    params: RepoPromptProgressParams(
-                        tool: "context_builder",
-                        kind: .stage,
-                        stage: "planning",
-                        message: "Planning response \(index)",
-                        emittedAt: emittedAt
-                    )
-                )
-                guard let data = notification.encodedJSONLine() else {
-                    XCTFail("Progress notification must encode")
-                    continue
-                }
-                deliveryGroup.enter()
-                deliveryQueue.async {
-                    _ = data.count
-                    deliveryGroup.leave()
-                }
-            }
-            deliveryGroup.wait()
-        }
-
     }
 
     func testKillSignalPayloadPathAndJSONRoundTrip() throws {
