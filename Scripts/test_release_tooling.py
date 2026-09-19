@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -440,6 +441,37 @@ class EmbeddedProvisioningProfileTests(unittest.TestCase):
                     source,
                 )
 
+
+
+class ExtractStagedReleaseTests(unittest.TestCase):
+    def test_extract_normalizes_file_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "test.zip"
+            dest_dir = root / "extracted"
+
+            with zipfile.ZipFile(archive_path, "w") as zf:
+                info_normal = zipfile.ZipInfo("file_normal.txt")
+                info_normal.external_attr = 0o666 << 16
+                zf.writestr(info_normal, b"normal file")
+
+                info_exec = zipfile.ZipInfo("file_exec.sh")
+                info_exec.external_attr = 0o777 << 16
+                zf.writestr(info_exec, b"#!/bin/sh\necho test")
+
+                info_zero = zipfile.ZipInfo("file_zero.txt")
+                info_zero.external_attr = 0
+                zf.writestr(info_zero, b"zero mode file")
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "extract_staged_release.py"), str(archive_path), str(dest_dir), "RepoPrompt"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(stat.S_IMODE((dest_dir / "file_normal.txt").stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((dest_dir / "file_exec.sh").stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((dest_dir / "file_zero.txt").stat().st_mode), 0o644)
 
 if __name__ == "__main__":
     unittest.main()
