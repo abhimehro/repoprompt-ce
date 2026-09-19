@@ -94,6 +94,47 @@ final class MCPControlMessagesTests: XCTestCase {
         }
     }
 
+    /// Measures the complete progress-notification path: construction, encoding,
+    /// contended enqueueing, queue wait, and delivery. Run this benchmark before
+    /// and after formatter changes when evaluating progress-stream performance.
+    func testProgressNotificationEndToEndPerformance() {
+        let producerCount = 8
+        let notificationsPerProducer = 125
+        let deliveryQueue = DispatchQueue(label: "MCPControlMessagesTests.progress-delivery")
+
+        measure {
+            let deliveryGroup = DispatchGroup()
+            let producers = DispatchQueue(label: "MCPControlMessagesTests.progress-producers", attributes: .concurrent)
+
+            for producer in 0..<producerCount {
+                deliveryGroup.enter()
+                producers.async {
+                    for index in 0..<notificationsPerProducer {
+                        let notification = RepoPromptControlNotification(
+                            method: RepoPromptControlMethod.progress,
+                            params: RepoPromptProgressParams(
+                                tool: "context_builder",
+                                kind: .stage,
+                                stage: "planning",
+                                message: "Progress \(producer)-\(index)"
+                            )
+                        )
+                        _ = notification.encodedJSONLine()
+                        deliveryQueue.async {
+                            _ = notification.params.message
+                        }
+                    }
+                    deliveryQueue.async {
+                        deliveryGroup.leave()
+                    }
+                }
+            }
+
+            deliveryGroup.wait()
+            deliveryQueue.sync {}
+        }
+    }
+
     func testKillSignalPayloadPathAndJSONRoundTrip() throws {
         let directory = URL(fileURLWithPath: "/tmp/MCPKillSignals-CE-D-7", isDirectory: true)
         let url = MCPKillSignal.signalFileURL(forSessionToken: "session-token", directory: directory)
