@@ -156,7 +156,7 @@ actor CLIEnvironmentCache {
         process.executableURL = URL(fileURLWithPath: shell)
         process.arguments = arguments
         process.standardInput = FileHandle.nullDevice
-        process.environment = environment
+        process.environment = ProcessEnvironmentSanitizer.sanitizedForChildLaunch(environment)
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
