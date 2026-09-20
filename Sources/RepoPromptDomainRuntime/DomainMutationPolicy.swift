@@ -318,7 +318,12 @@ package actor DomainMutationPolicyStore {
                 return false
             }
             return authorized.contains { authorizedRoot in
-                requested == authorizedRoot || requested.hasPrefix(authorizedRoot.hasSuffix("/") ? authorizedRoot : authorizedRoot + "/")
+                // # SECURITY: Canonicalize authorized roots symmetrically to prevent symlink/tilde/trailing-slash authorization mismatches.
+                guard let canonicalAuthorized = DomainMutationPathFence.canonicalPath(authorizedRoot) else {
+                    return false
+                }
+                let prefix = canonicalAuthorized.hasSuffix("/") ? canonicalAuthorized : canonicalAuthorized + "/"
+                return requested == canonicalAuthorized || requested.hasPrefix(prefix)
             }
         }
     }
