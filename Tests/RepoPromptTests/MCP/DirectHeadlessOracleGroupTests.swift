@@ -1684,7 +1684,7 @@ private struct Fixture {
           "${REPOPROMPT_MCP_ORACLE_GROUP_CLAIM_ID:-}" >> '\(callLog.path)'
         /bin/cat >/dev/null
         case "$model" in
-          cancel-*) trap 'exit 0' TERM INT; /bin/sleep 30 ;;
+          cancel-*) trap 'exit 0' TERM INT; /bin/sleep 30 & wait ;;
           fail) /usr/bin/printf '%s\\n' 'fake provider failure' >&2; exit 7 ;;
           exact) /usr/bin/printf '%s\\n' '{"type":"message","text":"  exact response  "}'; exit 0 ;;
         esac
