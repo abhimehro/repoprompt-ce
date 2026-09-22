@@ -1,0 +1,27 @@
+name: Jules
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Task description for Jules (it will analyze the repo and open a PR)"
+        required: true
+        type: string
+      branch:
+        description: "Optional: branch for Jules to start from (defaults to the repo's default branch)"
+        required: false
+        type: string
+
+jobs:
+  invoke-jules:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Invoke Jules
+        uses: google-labs-code/jules-invoke@v1
+        with:
+          prompt: |
+            ${{ inputs.task }}
+          starting_branch: ${{ inputs.branch || 'main' }}
+          jules_api_key: ${{ secrets.JULES_API_KEY }}

@@ -1,0 +1,38 @@
+name: Jules PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: jules-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Advanced Jules PR Reviewer
+        uses: thalesraymond/jules-pr-reviewer@v1.7.0
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on: never
+          block_on: high
+          min_severity_to_report: warning
+          strictness: chill
+          skip_drafts: true
+          skip_forks: true
+          bypass_label: jules-override
+          status_context: jules/review
+          timeout_minutes: 30
+          enable_suggestions: true
+          enable_approve: false
+          dedupe: true
+          large_pr_strategy: prioritize
