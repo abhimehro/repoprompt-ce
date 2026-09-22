@@ -685,6 +685,7 @@ final class CLIProcessRunner {
                 if case let .failed(error) = outcome {
                     ProcessDiagnostics.log("❌ [REAPER] Observation failed for pid=\(spawned.pid): \(error)")
                 }
+                descriptorCleanup.closeInput()
                 await ProcessTermination.terminateProcessGroupAfterRootReap(
                     processGroupID: spawned.processGroupID,
                     logger: { message in
@@ -692,7 +693,7 @@ final class CLIProcessRunner {
                     }
                 )
                 ProcessDiagnostics.log("🔒 [FD] Closing FDs for pid=\(spawned.pid)")
-                descriptorCleanup.closeAll()
+                descriptorCleanup.closeOutput()
 
                 let groupFinished = await Self.waitForGroup(group, timeout: 5.0, pid: spawned.pid) { msg in
                     ProcessDiagnostics.log(msg)
