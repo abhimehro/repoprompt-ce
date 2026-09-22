@@ -194,26 +194,16 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
         fileManager: FileManager = .default,
         log: ((String) -> Void)? = nil
     ) -> Bool {
-        let url = socketDirectoryURL()
-
-        if !fileManager.fileExists(atPath: url.path) {
-            do {
-                try fileManager.createDirectory(
-                    at: url,
-                    withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
-                )
-            } catch {
-                log?("Failed to create socket directory: \(error)")
-                return false
-            }
-        }
-
+        let dirPath = socketDirectoryURL().path
+        let ownerPermissions: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
         do {
-            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+            if !fileManager.fileExists(atPath: dirPath) {
+                try fileManager.createDirectory(atPath: dirPath, withIntermediateDirectories: true, attributes: ownerPermissions)
+            }
+            try fileManager.setAttributes(ownerPermissions, ofItemAtPath: dirPath)
             return true
         } catch {
-            log?("Failed to set permissions on socket directory: \(error)")
+            log?("Failed to secure socket directory at \(dirPath): \(error)")
             return false
         }
     }
