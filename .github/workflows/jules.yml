@@ -23,5 +23,5 @@ jobs:
         with:
           prompt: |
             ${{ inputs.task }}
-          starting_branch: ${{ inputs.branch || 'main' }}
+          starting_branch: ${{ inputs.branch || github.event.repository.default_branch }}
           jules_api_key: ${{ secrets.JULES_API_KEY }}
