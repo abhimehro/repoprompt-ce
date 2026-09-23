@@ -113,7 +113,7 @@ struct AgentModelRouterPill: View {
     @ObservedObject private var fontScale = FontScaleManager.shared
 
     private var tooltip: String {
-        if let reason = props.disabledReason, !props.isAvailable { return reason }
+        if let reason = props.disabledReason { return reason }
         if props.isRouting { return "Router is choosing a target for this new session" }
         return props.isOn
             ? "Router on: New primary sessions and subagents are routed automatically"

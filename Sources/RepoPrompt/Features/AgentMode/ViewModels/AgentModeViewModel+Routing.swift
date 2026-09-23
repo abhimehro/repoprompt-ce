@@ -27,13 +27,18 @@ extension AgentModeViewModel {
         let configuration = modelRouterSettingsStore.modelRouterConfiguration()
         let available = modelRouterCanRoutePrimarySession(configuration)
         let isRouting = currentTabID.map { freshTaskRoutingByTabID[$0] != nil } ?? false
+        let disabledReason: String? = if configuration.enabled, !available {
+            "Router is enabled but paused until its routing service and provider targets are available. Click to turn it off."
+        } else if !available {
+            "Configure a routing service and targets in Model Router Settings."
+        } else {
+            nil
+        }
         return AgentModelRouterPillProps(
-            isOn: configuration.enabled && available,
+            isOn: configuration.enabled,
             isAvailable: available || configuration.enabled,
             isRouting: isRouting,
-            disabledReason: available || configuration.enabled
-                ? nil
-                : "Configure a routing service and targets in Model Router Settings."
+            disabledReason: disabledReason
         )
     }
 
@@ -46,27 +51,9 @@ extension AgentModeViewModel {
     }
 
     private func reconcileModelRouterEnabledState() {
-        let configuration = modelRouterSettingsStore.modelRouterConfiguration()
-        guard configuration.enabled else {
-            syncAllActiveUIState()
-            return
-        }
-        let backendReadiness = configuration.selectedBackendID.flatMap {
-            modelRouterRuntime?.backendReadiness($0)
-        }
-        let credentialIsDefinitivelyMissing = if case let .needsConfiguration(generation, _) = backendReadiness {
-            generation > 0
-        } else {
-            false
-        }
-        let providerValidationIsComplete = promptManager?.apiSettingsViewModel?
-            .isContextBuilderProviderValidationComplete == true
-        let verifiedTargetsAreUnavailable = providerValidationIsComplete
-            && backendReadiness?.isReady == true
-            && !modelRouterCanRoutePrimarySession(configuration)
-        if credentialIsDefinitivelyMissing || verifiedTargetsAreUnavailable {
-            modelRouterSettingsStore.setModelRouterEnabled(false)
-        }
+        // Readiness and target availability are transient runtime observations, not
+        // authorities for the user's persisted enablement intent. Keeping the intent
+        // enabled lets startup and provider discovery recover automatically.
         syncAllActiveUIState()
     }
 
@@ -128,7 +115,8 @@ extension AgentModeViewModel {
         }
         guard let runtime = modelRouterRuntime,
               configuration.validity == .valid,
-              let backendID = configuration.selectedBackendID
+              let backendID = configuration.selectedBackendID,
+              runtime.isBackendReady(backendID)
         else {
             return .blocked(message: "Model Router is unavailable. Turn it off to send with the current selection.")
         }
