@@ -19,7 +19,7 @@ jobs:
       contents: read
     steps:
       - name: Invoke Jules
-        uses: google-labs-code/jules-invoke@v1
+        uses: google-labs-code/jules-invoke@v1.0.0
         with:
           prompt: |
             ${{ inputs.task }}
