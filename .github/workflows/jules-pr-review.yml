@@ -10,13 +10,15 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
 
 jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
     steps:
       - name: Advanced Jules PR Reviewer
         uses: thalesraymond/jules-pr-reviewer@v1.7.0
