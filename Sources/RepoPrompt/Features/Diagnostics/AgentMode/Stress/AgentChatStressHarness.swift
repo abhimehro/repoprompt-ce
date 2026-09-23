@@ -571,7 +571,8 @@
         }
 
         func note(_ message: String) {
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            // PERF: Replace expensive ISO8601DateFormatter allocation with thread-safe Date().formatted(.iso8601).
+            let timestamp = Date().formatted(.iso8601)
             recentEvents.append("[\(timestamp)] \(message)")
             if recentEvents.count > configuration.maxVisibleEventLogEntries {
                 recentEvents.removeFirst(recentEvents.count - configuration.maxVisibleEventLogEntries)
