@@ -215,7 +215,13 @@ final class RouterSettingsViewModel: ObservableObject {
         case let .missingSecret(message), let .superseded(message), let .failed(message): .failed(message)
         }
         await refresh()
-        if case .succeeded = result { return true }
+        if case .succeeded = result {
+            if case .removeStoredSecret = action {
+                settingsStore.setModelRouterEnabled(false)
+                synchronizeConfiguration()
+            }
+            return true
+        }
         return false
     }
 
@@ -295,13 +301,6 @@ final class RouterSettingsViewModel: ObservableObject {
                     guard self?.observedBackendID == registration.id,
                           self?.settingsStore.modelRouterConfiguration().selectedBackendID == registration.id else { return }
                     self?.readiness = snapshot
-                    if case let .needsConfiguration(generation, _) = snapshot,
-                       generation > 0,
-                       self?.settingsStore.modelRouterConfiguration().enabled == true
-                    {
-                        self?.settingsStore.setModelRouterEnabled(false)
-                        self?.synchronizeConfiguration()
-                    }
                 }
             }
         }
@@ -341,14 +340,6 @@ final class RouterSettingsViewModel: ObservableObject {
             )
         }
         policyCanBuildCandidates = !targetPreviews.isEmpty
-        if configuration.enabled,
-           apiSettingsViewModel.isContextBuilderProviderValidationComplete,
-           readiness.isReady,
-           !policyCanBuildCandidates
-        {
-            settingsStore.setModelRouterEnabled(false)
-            configuration = settingsStore.modelRouterConfiguration()
-        }
     }
 
     static func effectiveRoles(

@@ -209,7 +209,7 @@ extension AgentComposerSubmissionAttemptTests {
         XCTAssertTrue(props.areModelControlsDisabled)
     }
 
-    func testDefinitiveMissingRouterCredentialDisablesPersistedEnablement() throws {
+    func testMissingRouterCredentialPreservesPersistedEnablementIntent() throws {
         let backend = ComposerRoutingBackend(
             outcome: .selectLast,
             readiness: .needsConfiguration(generation: 1, reason: "Validate a TypeSafe API key.")
@@ -219,8 +219,50 @@ extension AgentComposerSubmissionAttemptTests {
 
         viewModel.handleModelRouterRuntimeChanged()
 
-        XCTAssertFalse(store.modelRouterConfiguration().enabled)
-        XCTAssertFalse(viewModel.modelRouterPillProps().isOn)
+        XCTAssertTrue(store.modelRouterConfiguration().enabled)
+        XCTAssertTrue(viewModel.modelRouterPillProps().isOn)
+        XCTAssertTrue(viewModel.modelRouterPillProps().isAvailable)
+        XCTAssertNotNil(viewModel.modelRouterPillProps().disabledReason)
+    }
+
+    func testMissingRouterCredentialBlocksPrimarySubmitWithoutClearingIntent() async throws {
+        let backend = ComposerRoutingBackend(
+            outcome: .selectLast,
+            readiness: .needsConfiguration(generation: 1, reason: "Validate a TypeSafe API key.")
+        )
+        let (viewModel, store) = try makeRoutingViewModel(backend: backend)
+        let tabID = UUID()
+        viewModel.test_setCurrentTabIDOverride(tabID)
+        let session = viewModel.session(for: tabID)
+        let claim = try routingClaim(viewModel: viewModel, session: session, text: "Implement a parser")
+
+        let result = await viewModel.submitUserTurnAfterFreshTaskRouting(
+            text: "Implement a parser",
+            claim: claim,
+            session: session,
+            destinationTabID: tabID
+        )
+
+        XCTAssertEqual(result, .blocked(message: "Model Router is unavailable. Turn it off to send with the current selection."))
+        XCTAssertTrue(store.modelRouterConfiguration().enabled)
+        XCTAssertTrue(session.items.isEmpty)
+        XCTAssertTrue(session.transcript.turns.isEmpty)
+    }
+
+    func testMissingRouterCredentialBlocksSubagentRoutingWithoutClearingIntent() async throws {
+        let backend = ComposerRoutingBackend(
+            outcome: .selectLast,
+            readiness: .needsConfiguration(generation: 1, reason: "Validate a TypeSafe API key.")
+        )
+        let (viewModel, store) = try makeRoutingViewModel(backend: backend)
+
+        do {
+            _ = try await viewModel.routeSubagentTargetIfEnabled(task: "Explore the parser", surface: .general)
+            XCTFail("An enabled but paused Router must fail closed")
+        } catch AgentModeViewModel.GlobalModelRoutingError.unavailable {
+            // Expected.
+        }
+        XCTAssertTrue(store.modelRouterConfiguration().enabled)
     }
 
     func testFakeReadyRouterCommitsSelectedExecutableTargetAtSubmitBoundary() async throws {
