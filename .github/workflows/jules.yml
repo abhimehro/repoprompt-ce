@@ -12,6 +12,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: jules-invoke-${{ github.workflow }}-${{ github.event.inputs.task || 'manual' }}
+  cancel-in-progress: true
+
 jobs:
   invoke-jules:
     runs-on: ubuntu-latest
