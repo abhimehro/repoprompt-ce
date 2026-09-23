@@ -28,7 +28,7 @@ jobs:
           fail_on: never
           block_on: high
           min_severity_to_report: warning
-          strictness: chill
+          strictness: assertive
           skip_drafts: true
           skip_forks: true
           bypass_label: jules-override
