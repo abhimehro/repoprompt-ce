@@ -18619,15 +18619,16 @@ actor WorkspaceFileContextStore {
               currentRecord.standardizedFullPath == file.standardizedFullPath
         else { return nil }
         var canUseRelativeToken = false
+        let observationsCurrent = try await exactFileBindingObservationsAreCurrent(
+            candidates.bindingObservations,
+            relativePath: file.standardizedRelativePath,
+            bindings: namespace.rootBindings
+        )
         if candidates.matches.count == 1,
            candidates.matches[0].file?.id == file.id,
            !candidates.blocked,
            !candidates.hasUnavailableBinding,
-           try await exactFileBindingObservationsAreCurrent(
-               candidates.bindingObservations,
-               relativePath: file.standardizedRelativePath,
-               bindings: namespace.rootBindings
-           ),
+           observationsCurrent,
            exactRelativeTokenIsStructurallySafe(file, namespace: namespace)
         {
             canUseRelativeToken = true
