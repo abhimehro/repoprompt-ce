@@ -425,6 +425,8 @@ enum CLIPathInstaller {
 
         do {
             try scriptContent.write(to: tempFile, atomically: true, encoding: .utf8)
+            // SECURITY: Restrict temporary script permissions to 0600 to prevent local tampering in shared temp directories
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempFile.path)
         } catch {
             throw InstallError.scriptFailed("Failed to write temporary script: \(error.localizedDescription)")
         }
