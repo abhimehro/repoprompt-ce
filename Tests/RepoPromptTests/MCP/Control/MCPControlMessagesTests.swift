@@ -18,7 +18,7 @@ final class MCPControlMessagesTests: XCTestCase {
             )
 
             let data = try XCTUnwrap(notification.encodedJSONLine(), caseLabel)
-            XCTAssertEqual(data.last, 10, caseLabel + ": encodedJSONLine() must preserve the trailing newline transport delimiter")
+            XCTAssertEqual(data.last, 10, "\(caseLabel): encodedJSONLine() must preserve the trailing newline transport delimiter")
             XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("repoprompt/control/terminate"), caseLabel)
             XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("repoprompt\\/control\\/terminate"), caseLabel)
 
