@@ -27,6 +27,7 @@ struct SettingsButton<Content: View>: View {
             .background(isHovered ? Color.primary.opacity(0.1) : Color.clear)
         }
         .buttonStyle(PlainButtonStyle())
+        .hoverTooltip("Settings")
         .onHover { hovering in
             isHovered = hovering
         }
