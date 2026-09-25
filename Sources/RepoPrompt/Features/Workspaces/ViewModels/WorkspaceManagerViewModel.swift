@@ -14695,27 +14695,52 @@ class WorkspaceManagerViewModel: ObservableObject {
         else {
             throw PersistentFolderOpenError.invalidFolder
         }
-        let outcome: DomainCommandOutcome
-        do {
-            outcome = try await domainWorkspaceAuthorityClient.resolveOrCreatePersistentWorkspace(
-                workspace,
-                fileURL: fileURL,
-                canonicalRootPath: canonicalRootPath,
-                operationID: operationID
-            )
-        } catch {
-            reportDomainAuthorityFailure(
-                error,
-                workspaceID: workspace.id,
-                operation: "open_folder_resolve_or_create"
-            )
-            throw error
+        var remainingAttempts = 3
+        var outcome: DomainCommandOutcome
+        var currentWorkspace = workspace
+        var currentFileURL = fileURL
+
+        while true {
+            do {
+                outcome = try await domainWorkspaceAuthorityClient.resolveOrCreatePersistentWorkspace(
+                    currentWorkspace,
+                    fileURL: currentFileURL,
+                    canonicalRootPath: canonicalRootPath,
+                    operationID: operationID
+                )
+            } catch {
+                reportDomainAuthorityFailure(
+                    error,
+                    workspaceID: currentWorkspace.id,
+                    operation: "open_folder_resolve_or_create"
+                )
+                throw error
+            }
+
+            if outcome.diagnostic == "exact_root_selection_changed", remainingAttempts > 1 {
+                remainingAttempts -= 1
+                try Task.checkCancellation()
+                let reobservedSnapshot = await domainWorkspaceAuthorityClient.snapshot()
+                let reobservedCandidates = (try? persistentFolderOpenCandidates(from: reobservedSnapshot)) ?? candidates
+                currentWorkspace = WorkspaceModel(
+                    name: uniqueWorkspaceName(
+                        baseName: folderURL.lastPathComponent,
+                        in: reobservedCandidates
+                    ),
+                    repoPaths: [folderURL.path],
+                    isSavedWorkspace: true
+                )
+                currentFileURL = workspaceFileURL(for: currentWorkspace)
+                continue
+            }
+
+            break
         }
 
         guard Self.isSuccessfulDomainOutcome(outcome),
               let outcomeWorkspace = outcome.workspace
         else {
-            applyDomainAuthorityOutcome(outcome, workspaceID: workspace.id)
+            applyDomainAuthorityOutcome(outcome, workspaceID: currentWorkspace.id)
             reportDomainAuthorityIssue(outcome, operation: "open_folder_resolve_or_create")
             throw DomainWorkspaceAuthorityOperationError(outcome: outcome)
         }
