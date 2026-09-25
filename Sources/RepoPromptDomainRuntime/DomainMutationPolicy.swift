@@ -318,7 +318,10 @@ package actor DomainMutationPolicyStore {
                 return false
             }
             return authorized.contains { authorizedRoot in
-                requested == authorizedRoot || requested.hasPrefix(authorizedRoot.hasSuffix("/") ? authorizedRoot : authorizedRoot + "/")
+                // Authorized roots are canonicalized and persisted at grant issuance. Do not
+                // resolve them again here: filesystem changes must not rebind their authority.
+                let prefix = authorizedRoot.hasSuffix("/") ? authorizedRoot : authorizedRoot + "/"
+                return requested == authorizedRoot || requested.hasPrefix(prefix)
             }
         }
     }
@@ -373,10 +376,10 @@ package actor DomainMutationPolicyStore {
         for grant in document.headlessGrants {
             try validateGrant(grant)
             guard grant.canonicalRoots.allSatisfy({ root in
-                guard let canonical = DomainMutationPathFence.canonicalPath(root) else {
-                    return false
-                }
-                return canonical == root
+                // Stored roots were canonicalized when the grant was issued. Validate their
+                // stable path form without resolving them against the current filesystem.
+                guard root.hasPrefix("/") else { return false }
+                return URL(fileURLWithPath: root).standardizedFileURL.path == root
             }) else {
                 throw DomainMutationPolicyError.invalidGrant("stored canonical roots are invalid")
             }
