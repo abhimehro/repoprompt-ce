@@ -135,7 +135,9 @@ extension AgentModeViewModel {
               let backendID = configuration.selectedBackendID,
               runtime.isBackendReady(backendID)
         else {
-            return .blocked(message: "Model Router is unavailable. Turn it off to send with the current selection.")
+            return await submitUserTurnAfterAutoEffort(
+                text: text, claim: claim, session: session, destinationTabID: destinationTabID
+            )
         }
 
         let providers = providers(for: .primarySession, configuration: configuration)
@@ -192,11 +194,15 @@ extension AgentModeViewModel {
         switch outcome {
         case let .selected(opaqueKey, _):
             guard let selected = candidates.only(where: { $0.opaqueKey == opaqueKey }) else {
-                return .blocked(message: "The router returned an invalid target.")
+                return await submitUserTurnAfterAutoEffort(
+                    text: text, claim: claim, session: session, destinationTabID: destinationTabID
+                )
             }
             let baseline = RoutedSelectionRollback(target: executableTarget(for: session))
             guard applyRoutingTarget(selected.target, to: session) else {
-                return .blocked(message: "The routed target is no longer available.")
+                return await submitUserTurnAfterAutoEffort(
+                    text: text, claim: claim, session: session, destinationTabID: destinationTabID
+                )
             }
             guard composerSubmitClaimIsCurrent(claim),
                   sessions[destinationTabID] === session,
@@ -219,7 +225,9 @@ extension AgentModeViewModel {
             }
             return result
         case .abstained, .failed:
-            return .blocked(message: "The Router could not choose a target. Retry, or turn off Router to use your current selection.")
+            return await submitUserTurnAfterAutoEffort(
+                text: text, claim: claim, session: session, destinationTabID: destinationTabID
+            )
         case .cancelled:
             return .blocked(message: "Model routing was cancelled.")
         }
@@ -367,7 +375,7 @@ extension AgentModeViewModel {
               configuration.validity == .valid,
               let backendID = configuration.selectedBackendID,
               runtime.isBackendReady(backendID)
-        else { throw GlobalModelRoutingError.unavailable }
+        else { return nil }
         let result = await routeModelThenEffort(
             requestID: UUID(),
             text: task,
@@ -383,14 +391,11 @@ extension AgentModeViewModel {
         }
         switch result.outcome {
         case let .selected(opaqueKey, _):
-            guard let selected = result.candidates.only(where: { $0.opaqueKey == opaqueKey }) else {
-                throw GlobalModelRoutingError.failed
-            }
-            return selected.target
+            return result.candidates.only(where: { $0.opaqueKey == opaqueKey })?.target
         case .cancelled:
             throw GlobalModelRoutingError.cancelled
         case .abstained, .failed:
-            throw GlobalModelRoutingError.failed
+            return nil
         }
     }
 
@@ -405,6 +410,7 @@ extension AgentModeViewModel {
         runtime: AgentTaskRouterRuntime
     ) async -> StagedTaskRoutingResult {
         let builder = AgentTaskRoutingCandidateBuilder()
+        let routingText = AgentTaskRoutingTaskExcerpt.make(from: text)
         guard let models = try? builder.build(
             allowedProviders: providers,
             availability: modelRouterAvailabilityContext,
@@ -418,12 +424,13 @@ extension AgentModeViewModel {
         }
 
         let selectedModel: AgentTaskRoutingCandidateBuilder.Candidate
+        var modelEvidence: AgentTaskRoutingDecisionEvidence?
         if models.count == 1 {
             selectedModel = firstModel
         } else {
             guard let modelRequest = try? AgentTaskRoutingEnvelopeBuilder().build(
                 requestID: requestID,
-                text: text,
+                text: routingText,
                 scope: scope,
                 decisionStage: .model,
                 customInstructions: configuration.customInstructions,
@@ -435,23 +442,25 @@ extension AgentModeViewModel {
                 )
             }
             let modelOutcome = await runtime.coordinator.route(backendID: backendID, request: modelRequest)
-            guard case let .selected(modelKey, _) = modelOutcome,
+            guard case let .selected(modelKey, evidence) = modelOutcome,
                   let match = models.only(where: { $0.opaqueKey == modelKey })
             else { return StagedTaskRoutingResult(candidates: models, outcome: modelOutcome) }
             selectedModel = match
+            modelEvidence = evidence
         }
 
         guard !Task.isCancelled else {
             return StagedTaskRoutingResult(candidates: models, outcome: .cancelled)
         }
+        let modelFallback = StagedTaskRoutingResult(
+            candidates: models,
+            outcome: .selected(opaqueKey: selectedModel.opaqueKey, evidence: modelEvidence)
+        )
         guard let efforts = try? builder.buildEfforts(
             for: selectedModel,
             availability: modelRouterAvailabilityContext
         ), let firstEffort = efforts.first else {
-            return StagedTaskRoutingResult(
-                candidates: models,
-                outcome: .failed(category: .invalidRequest, retryable: false, evidence: nil)
-            )
+            return modelFallback
         }
         guard efforts.count > 1 else {
             return StagedTaskRoutingResult(
@@ -461,19 +470,23 @@ extension AgentModeViewModel {
         }
         guard let effortRequest = try? AgentTaskRoutingEnvelopeBuilder().build(
             requestID: requestID,
-            text: text,
+            text: routingText,
             scope: scope,
             decisionStage: .effort,
             customInstructions: configuration.customInstructions,
             candidates: efforts.map(\.descriptor)
         ) else {
-            return StagedTaskRoutingResult(
-                candidates: efforts,
-                outcome: .failed(category: .invalidRequest, retryable: false, evidence: nil)
-            )
+            return modelFallback
         }
         let effortOutcome = await runtime.coordinator.route(backendID: backendID, request: effortRequest)
-        return StagedTaskRoutingResult(candidates: efforts, outcome: effortOutcome)
+        switch effortOutcome {
+        case .selected:
+            return StagedTaskRoutingResult(candidates: efforts, outcome: effortOutcome)
+        case .cancelled:
+            return StagedTaskRoutingResult(candidates: models, outcome: .cancelled)
+        case .abstained, .failed:
+            return modelFallback
+        }
     }
 
     private func modelRouterConfigurationIsCurrent(
