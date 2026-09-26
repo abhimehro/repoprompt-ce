@@ -80,6 +80,9 @@ actor AntigravityRuntimeManager {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
         process.arguments = ["-q", "-o", archive.path, "-d", directory.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw AntigravityRuntimeError.invalidArchive }
