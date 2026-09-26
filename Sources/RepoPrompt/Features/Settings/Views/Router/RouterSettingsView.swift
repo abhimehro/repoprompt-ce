@@ -67,6 +67,10 @@ struct RouterSettingsView: View {
                 Text("When enabled, Router chooses the target for every new primary session and RepoPrompt-managed subagent. Existing sessions keep their established target.")
                     .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
                     .foregroundStyle(.secondary)
+                Text("TypeSafe Jev receives task text to choose a model and effort. For long tasks, RepoPrompt sends only a short, best-effort masked excerpt from the beginning and end; the full task goes only to the selected agent. Masking can miss sensitive prose. If routing is unavailable or returns no valid choice, the task continues with the current selection or role default.")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -76,7 +80,7 @@ struct RouterSettingsView: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Label("Auto effort", systemImage: "brain.head.profile").font(.headline)
-                    Text("Let Jev choose reasoning effort for the model you already selected, before an eligible user turn. Includes settled MCP follow-ups; first MCP starts and active steering keep their requested effort. Model Router does not need to be on.")
+                    Text("Let Jev choose reasoning effort for the model you already selected, before an eligible user turn. Includes first MCP starts and settled follow-ups; starts already routed by Model Router and active steering keep their chosen effort. Model Router does not need to be on.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
