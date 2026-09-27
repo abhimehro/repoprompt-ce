@@ -478,6 +478,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             // One eager revocation hook covering every live-session removal path (tab close, stash,
             // delete, MCP control teardown) instead of five separate call sites that could drift.
             notifyAgentSessionLinkBindingsChanged(previous: oldValue)
+            syncAttentionNotificationObservers()
         }
     }
 
@@ -710,6 +711,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     struct StagedTaskRoutingResult {
         let candidates: [AgentTaskRoutingCandidateBuilder.Candidate]
         let outcome: AgentTaskRoutingBackendOutcome
+        var judgmentRequested = false
+        var effortFallback = false
     }
 
     struct FreshTaskRoutingOwnership {
@@ -911,7 +914,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     var tabDraftText: [UUID: String] = [:]
     private var cancellables = Set<AnyCancellable>()
     private let listeners = ListenerRegistry()
-    private var isAgentModeActive = false
+    private(set) var isAgentModeActive = false
+    /// Observation state feeding `AgentNotificationCoordinator` (see `+AttentionNotifications`).
+    let notificationAttention = AgentModeNotificationAttentionTracker()
     #if DEBUG
         private var test_currentTabIDOverride: UUID?
         private var test_activeWorkspaceIDForSessionIndexOverride: UUID?
@@ -3067,6 +3072,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 },
                 notifyAgentTurnComplete: { [weak self] session in
                     self?.notifyAgentTurnComplete(for: session)
+                },
+                notifyAgentTurnFailed: { [weak self] session, errorText in
+                    self?.notifyAgentTurnFailed(for: session, errorText: errorText)
                 }
             ),
             bindingObservation: .init(
@@ -4067,6 +4075,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             let workspaceIDForLog = workspaceManager?.activeWorkspace?.id
         #endif
         isAgentModeActive = isActive
+        NotificationService.shared.agentNotifications.visibilityMayHaveChanged()
         guard isActive else {
             #if DEBUG
                 WorkspaceRestorePerfLog.log(
@@ -5677,6 +5686,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         session.providerSessionID = agentSession.providerSessionID
         session.providerCleanupHandle = agentSession.resolvedProviderCleanupHandle
         session.providerTokenUsageByTurn = agentSession.providerTokenUsageByTurn
+        session.automationTurnAudit = agentSession.automationTurnAudit
         session.pendingHandoff = PendingHandoffState(
             payload: agentSession.pendingHandoffPayload,
             createdAt: agentSession.pendingHandoffCreatedAt,
@@ -6014,6 +6024,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         session.providerSessionID = nil
         session.providerCleanupHandle = nil
         session.providerTokenUsageByTurn.removeAll()
+        session.automationTurnAudit.removeAll()
         session.lastUserMessageAt = nil
         session.isDirty = false
     }
@@ -10556,9 +10567,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             isNativePreparedTurn: nativePreparedTurn != nil,
             preserveRoutedInitialEffort: preserveRoutedInitialEffort
         )
-        let autoEffortSelection = judgesUserTurn
+        let autoEffortChoice = judgesUserTurn
             ? await chooseAutoEffortForUserTurn(text: trimmedText, session: session, workflow: workflow)
             : nil
+        let autoEffortSelection = autoEffortChoice?.selection
         try Task.checkCancellation()
         guard mcpControlledSession(sessionID: sessionID) === session else {
             throw MCPError.invalidParams("The session changed while choosing effort. Retry the turn.")
@@ -10588,6 +10600,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             signalsDeliveryAfterDispatch = false
         }
         let submittedAutoEffortSelection = delivery == .startedRun ? autoEffortSelection : nil
+        let submittedAutoEffortAudit = delivery == .startedRun
+            ? autoEffortChoice?.audit
+            : autoEffortChoice?.audit.discardedAfterMCPReclassification()
 
         let activeDispatchWakeIdentity = delivery.isActiveRunDispatch
             ? mcpActiveDispatchWakeIdentity(for: session, sessionID: sessionID)
@@ -10617,14 +10632,16 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                         taggedFilesToSend: [],
                         activeWorkflow: nativePreparedTurn.bubbleWorkflow,
                         nativePreparedTurn: nativePreparedTurn,
-                        codexAttemptID: codexAttemptID
+                        codexAttemptID: codexAttemptID,
+                        autoEffortAudit: submittedAutoEffortAudit
                     )
                 }
                 return submitUserTurn(
                     text: trimmedText,
                     tabID: session.tabID,
                     codexAttemptID: codexAttemptID,
-                    autoEffortSelection: submittedAutoEffortSelection
+                    autoEffortSelection: submittedAutoEffortSelection,
+                    autoEffortAudit: submittedAutoEffortAudit
                 )
             }
             switch submission {
@@ -13538,7 +13555,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         return lowered == "request_user_input" || lowered == "requestuserinput" || lowered.hasSuffix(".requestuserinput")
     }
 
-    private func resolvedSessionDisplayName(for tabID: UUID) -> String {
+    func resolvedSessionDisplayName(for tabID: UUID) -> String {
         normalizedSessionTitle(workspaceManager?.composeTabName(with: tabID))
     }
 
@@ -15230,6 +15247,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             periodicIdleWakeEnabled: session.oversight.periodicIdleWakeEnabled,
             periodicIdleWakeIntervalSeconds: session.oversight.periodicIdleWakeIntervalSeconds,
             providerTokenUsageByTurn: session.providerTokenUsageByTurn,
+            automationTurnAudit: session.automationTurnAudit,
             parentSessionID: session.parentSessionID,
             pendingHandoffPayload: session.pendingHandoff.payload,
             pendingHandoffCreatedAt: session.pendingHandoff.createdAt,
@@ -16085,7 +16103,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         tabID: UUID,
         codexAttemptID: UUID? = nil,
         rawDraftText: String? = nil,
-        autoEffortSelection: AutoEffortTurnSelection? = nil
+        autoEffortSelection: AutoEffortTurnSelection? = nil,
+        autoEffortAudit: AgentAutomationTurnAudit.Feature? = nil,
+        routerAudit: AgentAutomationTurnAudit.Feature? = nil
     ) -> UserTurnSubmissionResult {
         let session = session(for: tabID)
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -16203,6 +16223,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                     codexAttemptID: codexAttemptID,
                     rawDraftText: rawDraftText,
                     autoEffortSelection: autoEffortSelection,
+                    autoEffortAudit: autoEffortAudit,
+                    routerAudit: routerAudit,
                     restorationSelectedWorkflow: activeWorkflow,
                     restorationSelectedWorkflowMutationGeneration: restorationSelectedWorkflowMutationGeneration
                 )
@@ -16221,6 +16243,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             codexAttemptID: codexAttemptID,
             rawDraftText: rawDraftText,
             autoEffortSelection: autoEffortSelection,
+            autoEffortAudit: autoEffortAudit,
+            routerAudit: routerAudit,
             restorationSelectedWorkflow: activeWorkflow,
             restorationSelectedWorkflowMutationGeneration: restorationSelectedWorkflowMutationGeneration
         )
@@ -16236,6 +16260,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         codexAttemptID: UUID? = nil,
         rawDraftText: String? = nil,
         autoEffortSelection: AutoEffortTurnSelection? = nil,
+        autoEffortAudit: AgentAutomationTurnAudit.Feature? = nil,
+        routerAudit: AgentAutomationTurnAudit.Feature? = nil,
         restorationSelectedWorkflow: AgentWorkflowDefinition? = nil,
         restorationSelectedWorkflowMutationGeneration: UInt64? = nil
     ) async {
@@ -16266,6 +16292,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             codexAttemptID: codexAttemptID,
             rawDraftText: rawDraftText,
             autoEffortSelection: autoEffortSelection,
+            autoEffortAudit: autoEffortAudit,
+            routerAudit: routerAudit,
             restorationSelectedWorkflow: restorationSelectedWorkflow,
             restorationSelectedWorkflowMutationGeneration: restorationSelectedWorkflowMutationGeneration
         )
@@ -16566,6 +16594,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         codexAttemptID: UUID? = nil,
         rawDraftText: String? = nil,
         autoEffortSelection: AutoEffortTurnSelection? = nil,
+        autoEffortAudit: AgentAutomationTurnAudit.Feature? = nil,
+        routerAudit: AgentAutomationTurnAudit.Feature? = nil,
         restorationSelectedWorkflow: AgentWorkflowDefinition? = nil,
         restorationSelectedWorkflowMutationGeneration: UInt64? = nil
     ) -> UserTurnSubmissionResult {
@@ -16657,6 +16687,31 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         )
         let turnRuntimeAnchorRollback = recordAgentTurnUserAnchor(for: session, userItem: userItem)
         session.appendItem(userItem)
+        let routerConfiguration = modelRouterSettingsStore.modelRouterConfiguration()
+        let defaultRouterAudit = AgentAutomationTurnAudit.Feature(
+            configured: routerConfiguration.enabled,
+            eligible: false,
+            judgmentRequested: false,
+            decision: routerConfiguration.enabled ? .ineligible : .disabled
+        )
+        let autoEffortEnabled = modelRouterSettingsStore.autoEffortEnabled()
+        let defaultAutoAudit = AgentAutomationTurnAudit.Feature(
+            configured: autoEffortEnabled,
+            eligible: false,
+            judgmentRequested: false,
+            decision: autoEffortEnabled ? .ineligible : .disabled
+        )
+        session.appendAutomationAudit(
+            AgentAutomationTurnAudit(
+                turnID: userItem.id,
+                createdAt: userItem.timestamp,
+                router: routerAudit ?? defaultRouterAudit,
+                autoEffort: autoEffortAudit ?? defaultAutoAudit,
+                acceptedProviderRaw: session.selectedAgent.rawValue,
+                acceptedModelRaw: session.selectedModelRaw,
+                acceptedEffortRaw: session.selectedReasoningEffortRaw
+            )
+        )
         agentSessionLinkClearWaitingOnAfterAcceptedTurn(session)
         // This is the single acceptance point for every local user turn, including waiting-instruction
         // continuations, and deliberately so: it is where the local user takes the submission gate.
@@ -19615,7 +19670,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         let inlineItem = AgentChatItem.assistantInline(waitMessage, sequenceIndex: session.nextSequenceIndex)
         session.appendItem(inlineItem)
         updateBindingsFromSession(session)
-        notifyAgentWaitingForUser(for: tabID, prompt: waitMessage)
+        // The instruction wait surfaces through the attention-notification reconciler once the
+        // continuation below is installed (see `AgentPendingInteractionDescriptor.make`).
 
         return try await withCheckedThrowingContinuation { continuation in
             session.instructionContinuation = continuation
@@ -20295,47 +20351,16 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     func notifyAgentTurnComplete(for session: TabSession) {
-        let preview = latestAssistantPreviewText(in: session)
-        NotificationService.shared.notifyAgentTurnComplete(
-            sessionName: resolvedSessionDisplayName(for: session.tabID),
-            previewText: preview,
-            route: agentNotificationRoute(for: session),
-            fallbackToDockBounce: true
+        guard let state = attentionNotificationState(for: session, includeInteraction: false) else { return }
+        NotificationService.shared.agentNotifications.postTurnOutcome(
+            .completed(preview: latestAssistantPreviewText(in: session)),
+            for: state
         )
     }
 
-    func notifyAgentWaitingForUser(for tabID: UUID, prompt: String) {
-        NotificationService.shared.notifyAgentWaitingForUser(
-            sessionName: resolvedSessionDisplayName(for: tabID),
-            promptText: prompt,
-            route: agentNotificationRoute(forTabID: tabID),
-            fallbackToDockBounce: true
-        )
-    }
-
-    private func agentNotificationRoute(for session: TabSession) -> AgentSessionDeepLinkRoute? {
-        agentNotificationRoute(forTabID: session.tabID, sessionID: session.activeAgentSessionID)
-    }
-
-    private func agentNotificationRoute(forTabID tabID: UUID, sessionID explicitSessionID: UUID? = nil) -> AgentSessionDeepLinkRoute? {
-        guard let workspace = workspaceManager?.activeWorkspace else {
-            return nil
-        }
-        let tabIsInWorkspace = workspace.composeTabs.contains(where: { $0.id == tabID })
-            || workspace.stashedTabs.contains(where: { $0.tab.id == tabID })
-        guard tabIsInWorkspace else {
-            return nil
-        }
-
-        let resolvedSessionID = explicitSessionID
-            ?? sessions[tabID]?.activeAgentSessionID
-            ?? workspaceManager?.activeAgentSessionID(forTabID: tabID, inWorkspaceID: workspace.id)
-        return AgentSessionDeepLinkRoute(
-            windowID: windowID,
-            workspaceID: workspace.id,
-            tabID: tabID,
-            sessionID: resolvedSessionID
-        )
+    func notifyAgentTurnFailed(for session: TabSession, errorText: String?) {
+        guard let state = attentionNotificationState(for: session, includeInteraction: false) else { return }
+        NotificationService.shared.agentNotifications.postTurnOutcome(.failed(message: errorText), for: state)
     }
 
     private func latestAssistantPreviewText(in session: TabSession) -> String? {
@@ -20468,6 +20493,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         session.providerSessionID = nil
         session.providerCleanupHandle = nil
         session.providerTokenUsageByTurn.removeAll()
+        session.automationTurnAudit.removeAll()
         session.pendingNonCodexUserInputTokenQueue.removeAll()
         session.activeNonCodexTurnTokenAccumulator = nil
         session.contextUsageSnapshot = nil
