@@ -5,6 +5,8 @@
 ![Platform: macOS 26+](https://img.shields.io/badge/platform-macOS%2026%2B-black)
 ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/abhimehro/repoprompt-ce?utm_source=oss&utm_medium=github&utm_campaign=abhimehro%2Frepoprompt-ce&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
+[![Quality gate](https://sonarcloud.io/api/project_badges/quality_gate?project=abhimehro_repoprompt-ce)](https://sonarcloud.io/summary/new_code?id=abhimehro_repoprompt-ce)
+
 **A free, open-source native macOS app and agent orchestrator for context engineering.**
 
 RepoPrompt CE helps coding agents understand your codebase before they act. It
