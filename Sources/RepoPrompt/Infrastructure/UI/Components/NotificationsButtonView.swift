@@ -177,6 +177,8 @@ struct NotificationsButtonView: View {
                 .foregroundColor(pendingItems.isEmpty ? .secondary : .primary)
                 .overlay(badge, alignment: .topTrailing)
         }
+        .accessibilityLabel(pendingItems.isEmpty ? "Notifications" : "Notifications, \(pendingItems.count) unread")
+        .hoverTooltip("Notifications")
         .popover(isPresented: $showPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
             NotificationsPopover(
                 activeItems: pendingItems,
