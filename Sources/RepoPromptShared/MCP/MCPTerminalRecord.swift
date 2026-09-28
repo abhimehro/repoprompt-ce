@@ -252,6 +252,11 @@ public struct MCPTerminalFingerprint: Codable, CustomStringConvertible, Equatabl
 public enum MCPTerminalRecordStore {
     private static let retainedRecordLimit = 256
 
+    /// Atomically writes a terminal record as JSON in the supplied directory, creating it if needed.
+    /// The filename includes a colon-free ISO 8601 timestamp with fractional seconds and the record ID.
+    /// Permission updates and pruning to the retention limit are best effort and preserve the new record.
+    /// - Returns: The URL of the written record.
+    /// - Throws: An error if directory creation, JSON encoding, or writing fails.
     @discardableResult
     public static func write(
         _ record: MCPTerminalRecord,

@@ -43,6 +43,8 @@ private let debugLogURL: URL = {
     return url
 }()
 
+/// Appends an ISO 8601 timestamped message to the socket proxy log when debug logging is enabled.
+/// Evaluates the message only when enabled and ignores file write failures.
 func debugLog(_ message: @autoclosure () -> String) {
     guard enableSocketDebugLog else { return }
     let timestamp = Date().formatted(.iso8601)

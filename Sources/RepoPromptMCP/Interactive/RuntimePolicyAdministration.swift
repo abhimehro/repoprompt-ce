@@ -20,6 +20,9 @@ enum RuntimePolicyAdministration {
         }
     }
 
+    /// Executes a policy list, grant, or revoke command from interactive stdin and stderr TTYs.
+    /// Grant and revoke require confirmation before persisting a policy change.
+    /// - Returns: Zero on success, or two after reporting an error to stderr.
     static func run(arguments: [String]) async -> Int32 {
         do {
             guard isatty(STDIN_FILENO) != 0, isatty(STDERR_FILENO) != 0 else {
