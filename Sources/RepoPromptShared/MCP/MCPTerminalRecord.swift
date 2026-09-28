@@ -268,9 +268,8 @@ public enum MCPTerminalRecordStore {
             ofItemAtPath: directory.path
         )
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let timestamp = formatter.string(from: record.timestamp)
+        // PERF: Replace expensive ISO8601DateFormatter allocation with thread-safe record.timestamp.formatted(.iso8601.fractionalSeconds()).
+        let timestamp = record.timestamp.formatted(.iso8601.fractionalSeconds())
             .replacingOccurrences(of: ":", with: "-")
         let fileURL = directory.appendingPathComponent(
             "terminal-\(timestamp)-\(record.id.uuidString).json",
