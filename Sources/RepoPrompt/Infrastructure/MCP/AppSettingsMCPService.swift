@@ -315,9 +315,10 @@ final class AppSettingsMCPService: Service {
         return .object(envelope)
     }
 
-    /// Returns the current UTC time in ISO 8601 format without fractional seconds for settings responses.
     private static func iso8601Timestamp() -> String {
-        Date().formatted(.iso8601)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Date())
     }
 
     private static func valuesEqual(_ lhs: Value, _ rhs: Value) -> Bool {

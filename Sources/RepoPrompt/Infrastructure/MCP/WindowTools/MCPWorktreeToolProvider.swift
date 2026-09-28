@@ -823,7 +823,6 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         )
     }
 
-    /// Converts a session's worktree binding to an MCP reply with an ISO 8601 binding timestamp.
     private func bindingDTO(_ binding: AgentSessionWorktreeBinding) -> ToolResultDTOs.ManageWorktreeReplyDTO.BindingDTO {
         ToolResultDTOs.ManageWorktreeReplyDTO.BindingDTO(
             id: binding.id,
@@ -838,7 +837,7 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
             head: binding.head,
             visualLabel: binding.visualLabel,
             visualColorHex: binding.visualColorHex,
-            boundAt: binding.boundAt.formatted(.iso8601),
+            boundAt: ISO8601DateFormatter().string(from: binding.boundAt),
             source: binding.source
         )
     }

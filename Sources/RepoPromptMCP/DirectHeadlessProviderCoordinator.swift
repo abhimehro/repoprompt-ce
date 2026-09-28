@@ -331,8 +331,6 @@ actor DirectHeadlessProviderCoordinator {
         agents[sessionID]?.task?.cancel()
     }
 
-    /// Returns tracked agent snapshots and restored session metadata, excluding duplicate session IDs.
-    /// Restored entries include status, an ISO 8601 update timestamp, and whether the session can resume.
     func listAgents() async -> [Value] {
         var values: [Value] = []
         for record in agents.values {
@@ -345,7 +343,7 @@ actor DirectHeadlessProviderCoordinator {
             values.append(.object([
                 "session_id": .string(metadata.sessionID.uuidString),
                 "status": .string(metadata.state.rawValue),
-                "updated_at": .string(metadata.updatedAt.formatted(.iso8601)),
+                "updated_at": .string(ISO8601DateFormatter().string(from: metadata.updatedAt)),
                 "resumable": .bool(metadata.resumable)
             ]))
         }

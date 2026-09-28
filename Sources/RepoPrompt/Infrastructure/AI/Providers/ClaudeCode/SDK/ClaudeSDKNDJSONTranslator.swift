@@ -10,12 +10,10 @@ enum ClaudeReasoningExtractionFeature {
             .appendingPathComponent("claude-reasoning-debug.log", isDirectory: false)
         private static let lock = NSLock()
 
-        /// Appends an ISO 8601 timestamped line to the reasoning debug log under a lock.
-        /// File creation and write failures are ignored so diagnostics do not interrupt translation.
         static func append(_ line: String) {
             lock.lock()
             defer { lock.unlock() }
-            let timestamp = Date().formatted(.iso8601)
+            let timestamp = ISO8601DateFormatter().string(from: Date())
             let payload = "\(timestamp) \(line)\n"
             guard let data = payload.data(using: .utf8) else { return }
             let fileManager = FileManager.default
