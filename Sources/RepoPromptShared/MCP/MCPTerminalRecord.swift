@@ -268,7 +268,7 @@ public enum MCPTerminalRecordStore {
             ofItemAtPath: directory.path
         )
 
-        let timestamp = record.timestamp.formatted(.iso8601.withFractionalSeconds)
+        let timestamp = record.timestamp.formatted(.iso8601.includingFractionalSeconds)
             .replacingOccurrences(of: ":", with: "-")
         let fileURL = directory.appendingPathComponent(
             "terminal-\(timestamp)-\(record.id.uuidString).json",

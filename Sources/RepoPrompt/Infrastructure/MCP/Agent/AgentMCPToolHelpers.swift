@@ -114,9 +114,16 @@ enum AgentMCPToolHelpers {
 
     // MARK: - Timestamps
 
-    /// Formats a date as an ISO 8601 string with fractional seconds.
+    /// Shared ISO 8601 formatter with fractional seconds, used across all agent MCP surfaces.
+    static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// Formats a date as an ISO 8601 string.
     static func timestamp(_ date: Date) -> String {
-        date.formatted(.iso8601.withFractionalSeconds)
+        timestampFormatter.string(from: date)
     }
 
     // MARK: - Value helpers
