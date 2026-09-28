@@ -188,4 +188,23 @@ public struct MCPFilesystemIdentity: Equatable, Sendable {
             .appendingPathComponent("RepoPrompt", isDirectory: true)
             .appendingPathComponent(userSpaceCLIFileName, isDirectory: false)
     }
+
+    @discardableResult
+    public func ensureSocketDirectoryExists(
+        fileManager: FileManager = .default,
+        log: ((String) -> Void)? = nil
+    ) -> Bool {
+        let dirPath = socketDirectoryURL().path
+        let ownerPermissions: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        do {
+            if !fileManager.fileExists(atPath: dirPath) {
+                try fileManager.createDirectory(atPath: dirPath, withIntermediateDirectories: true, attributes: ownerPermissions)
+            }
+            try fileManager.setAttributes(ownerPermissions, ofItemAtPath: dirPath)
+            return true
+        } catch {
+            log?("Failed to secure socket directory at \(dirPath): \(error)")
+            return false
+        }
+    }
 }
