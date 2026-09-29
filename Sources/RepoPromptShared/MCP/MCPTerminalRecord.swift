@@ -251,11 +251,6 @@ public struct MCPTerminalFingerprint: Codable, CustomStringConvertible, Equatabl
 
 public enum MCPTerminalRecordStore {
     private static let retainedRecordLimit = 256
-    private static let dateFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 
     @discardableResult
     public static func write(
@@ -273,7 +268,9 @@ public enum MCPTerminalRecordStore {
             ofItemAtPath: directory.path
         )
 
-        let timestamp = dateFormatter.string(from: record.timestamp)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = formatter.string(from: record.timestamp)
             .replacingOccurrences(of: ":", with: "-")
         let fileURL = directory.appendingPathComponent(
             "terminal-\(timestamp)-\(record.id.uuidString).json",
