@@ -1,0 +1,3 @@
+## 2025-05-18 - Settings View Accessibility Improvements
+**Learning:** Icon-only buttons used for external documentation links (`info.circle`) across settings views lack `accessibilityLabel` and `hoverTooltip`, making them unintelligible to screen readers. Inversely, `info.circle` icons used as decorative bullet points before explanatory text blocks are read aloud, adding clutter.
+**Action:** When adding or reviewing `info.circle` icons, distinguish their function. If it's a clickable button, ensure `.accessibilityLabel` and `.hoverTooltip` are present. If it's purely a decorative bullet point next to a text block, ensure `.accessibilityHidden(true)` is applied.

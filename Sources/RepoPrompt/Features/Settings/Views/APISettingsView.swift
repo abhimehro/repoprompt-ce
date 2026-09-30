@@ -383,6 +383,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .accessibilityLabel("Learn more about \(title)")
+                .hoverTooltip("Learn more about \(title)")
             }
             if let caption {
                 Text(caption)
@@ -627,6 +629,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .accessibilityLabel("Learn more about Azure OpenAI")
+                .hoverTooltip("Learn more about Azure OpenAI")
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -704,6 +708,8 @@ struct APISettingsView: View {
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .accessibilityLabel("Learn more about Local Model Settings")
+                    .hoverTooltip("Learn more about Local Model Settings")
                 }
                 Text("Ollama uses port 11434 | LM Studio uses port 1234")
                     .font(.caption)
