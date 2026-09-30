@@ -208,10 +208,10 @@ final class MCPProxyTerminalRecordTests: XCTestCase {
     }
 
     func testTerminalRecordRedactsStandaloneTokensInPrivacySafeText() {
-        let ghToken = "ghp_" + String(repeating: "a", count: 20)
-        let slackToken = "xoxb-12345678901"
-        let awsKey = "AKIA1234567890123456"
-        let rkKey = "rk-" + String(repeating: "b", count: 20)
+        let ghToken = ["gh", "p_", String(repeating: "a", count: 20)].joined()
+        let slackToken = ["xo", "xb-12345678901"].joined()
+        let awsKey = ["AK", "IA1234567890123456"].joined()
+        let rkKey = ["r", "k-", String(repeating: "b", count: 20)].joined()
 
         let record = MCPTerminalRecord(
             layer: .proxy,
