@@ -206,4 +206,34 @@ final class MCPProxyTerminalRecordTests: XCTestCase {
         XCTAssertEqual(record.bridgeHasForwardedProtocolFrame, snapshot.hasForwardedProtocolFrame)
         XCTAssertEqual(record.errorDescription, "Run completed")
     }
+
+    func testTerminalRecordRedactsStandaloneTokensInPrivacySafeText() {
+        let ghToken = "ghp_" + String(repeating: "a", count: 20)
+        let slackToken = "xoxb-12345678901"
+        let awsKey = "AKIA1234567890123456"
+        let rkKey = "rk-" + String(repeating: "b", count: 20)
+
+        let record = MCPTerminalRecord(
+            layer: .proxy,
+            initiator: .host,
+            reason: "Failed with \(ghToken)",
+            sessionToken: nil,
+            localPID: 100,
+            peerPID: 200,
+            appConnectionID: nil,
+            connectionGeneration: nil,
+            errno: nil,
+            errorDescription: "Error details: \(slackToken), \(awsKey), \(rkKey)"
+        )
+
+        XCTAssertFalse(record.reason.contains(ghToken))
+        XCTAssertTrue(record.reason.contains("<redacted>"))
+        if let errDesc = record.errorDescription {
+            XCTAssertFalse(errDesc.contains(slackToken))
+            XCTAssertFalse(errDesc.contains(awsKey))
+            XCTAssertFalse(errDesc.contains(rkKey))
+        } else {
+            XCTFail("Expected non-nil errorDescription")
+        }
+    }
 }
