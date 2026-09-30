@@ -6,9 +6,10 @@ import XCTest
 /// Bounded, reason-aware automatic reauthorization of the launch snapshot.
 ///
 /// The contracts pinned here are the ones a wrong implementation gets *silently* wrong: reserving
-/// before a barrier, force-hydrating a lazy tab, deleting a saved link because a window that was
-/// abandoned rather than observed did not come back, and requeueing an entry after the user watched
-/// oversight end.
+/// before a barrier, leaving a saved pair dormant because its background tab was never opened,
+/// deleting a saved link because a window that was abandoned rather than observed did not come back,
+/// requeueing an entry after the user watched oversight end, and dropping the user's saved
+/// management / auto-approval delegation across a relaunch.
 @MainActor
 final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
     // MARK: - Fake host
@@ -25,6 +26,18 @@ final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
         var discovery: [AgentSessionLinkDiscoveryState] = []
         var topology: AgentSessionOversightRestoreTopologyState = .completeAllEntriesConsumed
         private(set) var publishedPresentations: [AgentSessionOversightPersistencePresentation] = []
+        var laneCreatorByEndpoint: [DomainAgentSessionLinkEndpointIdentity: UUID] = [:]
+        private(set) var providerTaskRequests = 0
+
+        func agentSessionLinkLaneProvenance(for endpoint: DomainAgentSessionLinkEndpointIdentity) -> UUID? {
+            laneCreatorByEndpoint[endpoint]
+        }
+
+        private(set) var hydrationRequests: [Set<UUID>] = []
+
+        func agentSessionLinkRequestRestorationHydration(sessionIDs: Set<UUID>) {
+            hydrationRequests.append(sessionIDs)
+        }
 
         func agentSessionLinkCandidates() -> [AgentSessionLinkEndpointCandidate] {
             candidateCallCount += 1
@@ -57,6 +70,7 @@ final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
                 displayName: candidate.displayName,
                 providerDisplayName: candidate.providerDisplayName,
                 status: .idle,
+                board: .empty,
                 idleForSend: true,
                 pendingInteractionKind: nil,
                 latestVisibleAssistantPreview: nil,
@@ -129,7 +143,17 @@ final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
             liveness _: @escaping AgentSessionLinkSendLivenessProbe,
             commitAuthorization _: @MainActor () async -> AgentSessionLinkSendCommitOutcome
         ) async -> AgentSessionLinkSendTransactionOutcome {
-            .blocked(.shuttingDown)
+            providerTaskRequests += 1
+            return .blocked(.shuttingDown)
+        }
+
+        func agentSessionLinkPerformCompact(
+            to _: AgentSessionLinkEndpointCandidate,
+            request _: AgentSessionLinkCompactRequest,
+            liveness _: @escaping AgentSessionLinkSendLivenessProbe,
+            commitAuthorization _: @MainActor () async -> AgentSessionLinkSendCommitOutcome
+        ) async -> AgentSessionLinkSendTransactionOutcome {
+            .blocked(.endpointInvalidated)
         }
     }
 
@@ -293,6 +317,28 @@ final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
 
     // MARK: - Barriers
 
+    func testCreatorLaneRestoresAsOrdinaryManagedLinkWithoutStartingAProviderTask() async throws {
+        try seedSavedPair()
+        let originalFile = try Data(contentsOf: directory.appendingPathComponent(AgentSessionOversightIntentStore.filename))
+        let fixture = makeFixture()
+        let observer = makeReadyCandidate(windowID: 1, sessionID: observerSessionID)
+        let lane = makeReadyCandidate(windowID: 2, sessionID: targetSessionID)
+        fixture.host.candidates = [observer, lane]
+        fixture.host.descriptors = [descriptor(for: observer), descriptor(for: lane)]
+        fixture.host.laneCreatorByEndpoint[lane.domainEndpoint] = observerSessionID
+
+        await fixture.bridge.bootstrapIntentStore(fixture.store)
+        await fixture.bridge.test_settleLaunchReconciliation()
+
+        let inventory = await fixture.authority.links(forObserverEndpoint: observer.domainEndpoint)
+        XCTAssertEqual(inventory.items.map(\.targetSessionID), [targetSessionID])
+        XCTAssertEqual(inventory.items.first?.capabilities, DomainAgentSessionLinkCapability.managed)
+        XCTAssertEqual(fixture.bridge.test_launchEntryState(for: pair), .active)
+        XCTAssertEqual(fixture.bridge.test_launchReservationStartCount(), 1)
+        XCTAssertEqual(fixture.host.providerTaskRequests, 0)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(AgentSessionOversightIntentStore.filename)), originalFile)
+    }
+
     func testNothingIsReservedWhileTheRestoreTopologyIsStillPending() async throws {
         try seedSavedPair()
         let fixture = makeFixture()
@@ -333,8 +379,9 @@ final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
 
     // MARK: - Lazy background tabs
 
-    /// The behaviour the whole descriptor mechanism exists for: a saved session that is *present* but
-    /// unhydrated must be waited for, never force-loaded and never declared missing.
+    /// A saved session that is *present* but unhydrated is waited for — never declared missing — and
+    /// its tab is asked to load exactly once, so the pair comes back at launch without the user having
+    /// to open every endpoint's tab. The already-hydrated observer is never asked to reload.
     func testALazyBackgroundTabWaitsAndThenActivatesExactlyOnceWhenItHydrates() async throws {
         try seedSavedPair()
         let fixture = makeFixture()
@@ -359,8 +406,18 @@ final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.bridge.test_launchEntryState(for: pair), .waiting)
         let tokenWhileWaiting = await fixture.store.token(for: pair)
         XCTAssertNotNil(tokenWhileWaiting, "Waiting must never delete the saved intent.")
+        XCTAssertEqual(
+            fixture.host.hydrationRequests,
+            [[targetSessionID]],
+            "Only the unhydrated endpoint of the saved pair is asked to load."
+        )
 
-        // The user visits the tab: it hydrates and becomes a live authoritative candidate.
+        // Further events before the load lands must not re-request it.
+        fixture.bridge.noteCandidateReadinessChanged()
+        await fixture.bridge.test_settleLaunchReconciliation()
+        XCTAssertEqual(fixture.host.hydrationRequests.count, 1)
+
+        // The requested load lands: the tab becomes a live authoritative candidate.
         let target = makeReadyCandidate(windowID: 2, sessionID: targetSessionID)
         fixture.host.candidates = [observer, target]
         fixture.host.descriptors = [descriptor(for: observer), descriptor(for: target)]
@@ -369,8 +426,37 @@ final class AgentSessionOversightLaunchCoordinatorTests: XCTestCase {
 
         restored = await isRestored(fixture)
         XCTAssertTrue(restored)
+        let restoredInventory = await fixture.authority.links(forObserverEndpoint: observer.domainEndpoint)
+        XCTAssertEqual(restoredInventory.items.first?.capabilities, DomainAgentSessionLinkCapability.managed)
+        let managedLease = try await fixture.authority.authorize(
+            operation: .monitorRespond,
+            observerEndpoint: observer.domainEndpoint,
+            targetSessionID: target.sessionID
+        ).get()
+        XCTAssertEqual(managedLease.capability, .manage, "restoration follows the same managed Add path")
         XCTAssertEqual(fixture.bridge.test_launchEntryState(for: pair), .active)
         XCTAssertEqual(fixture.bridge.test_launchReservationStartCount(), 1)
+    }
+
+    /// A bound-but-still-pending candidate (a tab whose session object exists but whose payload has
+    /// not loaded) is also asked to load; an authoritative one is not.
+    func testAPendingCandidateIsAskedToHydrateButAnAuthoritativeOneIsNot() async throws {
+        try seedSavedPair()
+        let fixture = makeFixture()
+        let observer = makeReadyCandidate(windowID: 1, sessionID: observerSessionID)
+        let ready = makeReadyCandidate(windowID: 2, sessionID: targetSessionID)
+        guard case let .authoritative(bindingToken, _) = ready.restorationReadiness else {
+            return XCTFail("Expected an authoritative fixture")
+        }
+        let pending = withReadiness(ready, .pending(bindingToken))
+        fixture.host.candidates = [observer, pending]
+        fixture.host.descriptors = [descriptor(for: observer), descriptor(for: pending)]
+
+        await fixture.bridge.bootstrapIntentStore(fixture.store)
+        await fixture.bridge.test_settleLaunchReconciliation()
+
+        XCTAssertEqual(fixture.host.hydrationRequests, [[targetSessionID]])
+        XCTAssertEqual(fixture.bridge.test_launchEntryState(for: pair), .waiting)
     }
 
     func testInProgressDeletionKeepsLaunchIntentWaitingAndFailureRestoresIt() async throws {

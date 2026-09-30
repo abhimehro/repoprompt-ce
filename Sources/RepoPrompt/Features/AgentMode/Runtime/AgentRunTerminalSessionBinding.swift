@@ -35,7 +35,13 @@ struct AgentRunTerminalSessionBinding {
             AgentRunTerminalCommitRevision,
             AgentRunEpochTransitionKind?
         ) async -> AgentRunTerminalPublicationResult
-        let startFollowUpRun: @MainActor (String) -> Void
+        let startFollowUpRun: @MainActor (AgentRunPendingInstruction) -> Void
+        /// Post-publication, post-successor terminal observation; provider work must be deferred.
+        var onSelfCompactTerminalSettled: @MainActor (
+            AgentRunTerminalCommitRevision,
+            AgentRunTerminalPublicationResult,
+            @escaping @MainActor () -> Bool
+        ) -> Void = { _, _, _ in }
     }
 
     let tabID: UUID
@@ -47,7 +53,7 @@ struct AgentRunTerminalSessionBinding {
     private let terminalTurnIDProvider: @MainActor () -> UUID?
     private let queuedFollowUpProvider: @MainActor () -> String?
     private let followUpPendingSetter: @MainActor (Bool) -> Void
-    private let firstQueuedFollowUpRemover: @MainActor () -> String?
+    private let firstQueuedFollowUpRemover: @MainActor () -> AgentRunPendingInstruction?
     private let errorAppender: @MainActor (String) -> Void
     private let activeStateFinisher: @MainActor (AgentRunOwnership, AgentSessionRunState, String) -> Void
     private let processRunIdentityRetainer: @MainActor (UUID, UUID) -> Void
@@ -64,7 +70,7 @@ struct AgentRunTerminalSessionBinding {
         terminalTurnID: @escaping @MainActor () -> UUID?,
         queuedFollowUp: @escaping @MainActor () -> String?,
         setFollowUpPending: @escaping @MainActor (Bool) -> Void,
-        removeFirstQueuedFollowUp: @escaping @MainActor () -> String?,
+        removeFirstQueuedFollowUp: @escaping @MainActor () -> AgentRunPendingInstruction?,
         appendError: @escaping @MainActor (String) -> Void,
         finishActiveState: @escaping @MainActor (AgentRunOwnership, AgentSessionRunState, String) -> Void,
         retainProcessRunIdentity: @escaping @MainActor (UUID, UUID) -> Void,
@@ -110,7 +116,7 @@ struct AgentRunTerminalSessionBinding {
     }
 
     @discardableResult
-    func removeFirstQueuedFollowUp() -> String? {
+    func removeFirstQueuedFollowUp() -> AgentRunPendingInstruction? {
         firstQueuedFollowUpRemover()
     }
 

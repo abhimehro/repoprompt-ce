@@ -26,6 +26,7 @@ struct AgentSessionLinkPromptInventoryItem: Hashable {
     let targetSessionID: UUID
     let displayName: String?
     let capabilityNames: [String]
+    let createdByYou: Bool
     /// Hidden exact-grant identity used only to fence passive attention delivery.
     ///
     /// It is never rendered. Fixtures may omit it, but an attention request then fails closed rather
@@ -36,7 +37,8 @@ struct AgentSessionLinkPromptInventoryItem: Hashable {
         targetSessionID: UUID,
         displayName: String?,
         capabilityNames: [String],
-        reference: DomainAgentSessionLinkReference? = nil
+        reference: DomainAgentSessionLinkReference? = nil,
+        createdByYou: Bool = false
     ) {
         self.targetSessionID = targetSessionID
         // Re-normalized here rather than trusted from the authority: the renderer's byte budget is
@@ -47,6 +49,7 @@ struct AgentSessionLinkPromptInventoryItem: Hashable {
         )
         self.capabilityNames = capabilityNames.sorted()
         self.reference = reference
+        self.createdByYou = createdByYou
     }
 }
 
@@ -71,7 +74,10 @@ struct AgentSessionLinkPromptInventory: Hashable {
         self.items = items.sorted { $0.targetSessionID.uuidString < $1.targetSessionID.uuidString }
     }
 
-    init(_ inventory: DomainAgentSessionLinkInventory) {
+    init(
+        _ inventory: DomainAgentSessionLinkInventory,
+        createdByYou: (UUID) -> Bool = { _ in false }
+    ) {
         self.init(
             observerSessionID: inventory.sessionID,
             linkSetRevision: inventory.linkSetRevision,
@@ -83,7 +89,8 @@ struct AgentSessionLinkPromptInventory: Hashable {
                     reference: DomainAgentSessionLinkReference(
                         linkID: item.linkID,
                         generation: item.generation
-                    )
+                    ),
+                    createdByYou: createdByYou(item.targetSessionID)
                 )
             }
         )
@@ -352,7 +359,7 @@ enum AgentSessionLinkPromptSupplementKind: String, Hashable {
 /// Pure decision over membership revisions and current eligibility.
 ///
 /// Kept free of view-model, authority, and provider types so the whole injection policy — including
-/// the "never inject twice for one revision" and "at most one final revocation supplement" rules —
+/// the "settled membership and guidance go quiet" and "at most one final revocation" rules —
 /// is a truth table rather than an integration behaviour.
 ///
 /// Every input is a fact the caller states outright. Nothing here reconstructs *why* an inventory is
@@ -382,10 +389,12 @@ enum AgentSessionLinkPromptSupplementDecision {
         isEligibilitySuppressed: Bool,
         lastAcceptedRevision: UInt64?,
         lastAcceptedHadLinks: Bool,
-        possiblyDeliveredLinkRevision: UInt64? = nil
+        possiblyDeliveredLinkRevision: UInt64? = nil,
+        acceptedInventoryGuidanceRevision: UInt64? = AgentSessionLinkPrompts.currentInventoryGuidanceRevision,
+        currentInventoryGuidanceRevision: UInt64 = AgentSessionLinkPrompts.currentInventoryGuidanceRevision
     ) -> AgentSessionLinkPromptSupplementKind? {
-        // Already acknowledged for this exact membership *state*: later turns are quiet. Status
-        // changes and renames never reach here because they do not advance the membership revision.
+        // Already acknowledged for this exact membership and inventory-guidance state: later turns
+        // are quiet. Status changes and renames do not advance either revision.
         //
         // The acknowledged state is `(revision, hadLinks)` rather than the revision alone. Eligibility
         // loss empties the effective inventory while deliberately preserving the revision
@@ -403,6 +412,7 @@ enum AgentSessionLinkPromptSupplementDecision {
         if let lastAcceptedRevision,
            lastAcceptedRevision == currentRevision,
            lastAcceptedHadLinks == hasLinks,
+           !hasLinks || (acceptedInventoryGuidanceRevision ?? 0) >= currentInventoryGuidanceRevision,
            hasLinks || possiblyDeliveredLinkRevision == nil
         {
             return nil
@@ -486,7 +496,8 @@ enum AgentSessionLinkPromptSupplementDecision {
         return acknowledged != nil || possiblyDeliveredLinkRevision != nil
     }
 
-    /// Whether acknowledging `claim` moves the observer's accepted state forward.
+    /// Whether acknowledging `claim` moves the accepted *membership* state forward. Inventory
+    /// guidance has its own monotone acknowledgement in `accept(_:)` before this gate.
     ///
     /// A strictly newer revision always does. At an unchanged revision, either direction of the
     /// `hadLinks` flip does, because those are exactly the supplements `decide` newly emits for an
@@ -683,7 +694,12 @@ struct AgentSessionLinkOutboundPromptClaim: Hashable {
     /// Recorded even when the byte budget dropped the batch, for the same reason `passiveQueue` is:
     /// it is part of what decides whether a retry of the same dispatch may reuse this fragment.
     let laneGuidanceMode: AgentSessionLinkPrompts.LaneGuidanceMode?
+    /// Inventory wording actually rendered; nil for closing notices and passive-only claims.
+    let inventoryGuidanceRevision: UInt64?
     let fragment: String
+    /// The exact observer incarnation this claim was rendered for. Acceptance never transfers its
+    /// inventory or passive receipt to a successor incarnation.
+    var observerEndpoint: DomainAgentSessionLinkEndpointIdentity?
 
     // MARK: Membership readers
 
@@ -810,6 +826,7 @@ final class AgentSessionLinkOutboundPromptClaimStore {
         var pendingOrder: [AgentSessionLinkPromptDispatchID] = []
         var lastAcceptedRevision: UInt64?
         var lastAcceptedHadLinks = false
+        var lastAcceptedInventoryGuidanceRevision: UInt64?
         /// Newest lane-guidance revision this observer physically accepted in the current epoch.
         ///
         /// Kept here rather than in a second acknowledgement store so it is reset by exactly the
@@ -891,6 +908,7 @@ final class AgentSessionLinkOutboundPromptClaimStore {
             guard previous.hasSameProviderIncarnation(as: identity) else {
                 lastAcceptedRevision = nil
                 lastAcceptedHadLinks = false
+                lastAcceptedInventoryGuidanceRevision = nil
                 // The replacement context never saw the guidance, so it is owed in full again. The
                 // bridge-owned queue receipt is untouched: what the model was *told* and what the
                 // queue considers *delivered* are independent facts.
@@ -992,12 +1010,14 @@ final class AgentSessionLinkOutboundPromptClaimStore {
         /// Participates so a cached fragment rendered with the reminder cannot be reused after the
         /// guidance is re-owed in full, and vice versa.
         let laneGuidanceMode: AgentSessionLinkPrompts.LaneGuidanceMode?
+        let inventoryGuidanceRevision: UInt64?
 
         init(
             membershipKind: AgentSessionLinkPromptSupplementKind?,
             inventory: AgentSessionLinkPromptInventory,
             passiveNotices: AgentSessionLinkPassiveStatusNotices.Snapshot?,
-            laneGuidanceMode: AgentSessionLinkPrompts.LaneGuidanceMode?
+            laneGuidanceMode: AgentSessionLinkPrompts.LaneGuidanceMode?,
+            inventoryGuidanceRevision: UInt64?
         ) {
             membershipRevision = membershipKind == nil ? nil : inventory.linkSetRevision
             self.membershipKind = membershipKind
@@ -1008,6 +1028,7 @@ final class AgentSessionLinkOutboundPromptClaimStore {
                 )
             }
             self.laneGuidanceMode = laneGuidanceMode
+            self.inventoryGuidanceRevision = inventoryGuidanceRevision
         }
 
         init(_ claim: AgentSessionLinkOutboundPromptClaim) {
@@ -1015,6 +1036,7 @@ final class AgentSessionLinkOutboundPromptClaimStore {
             membershipKind = claim.membership?.kind
             passiveQueue = claim.passiveQueue
             laneGuidanceMode = claim.laneGuidanceMode
+            inventoryGuidanceRevision = claim.inventoryGuidanceRevision
         }
     }
 
@@ -1059,6 +1081,7 @@ final class AgentSessionLinkOutboundPromptClaimStore {
         passiveNotices: AgentSessionLinkPassiveStatusNotices.Snapshot? = nil,
         locationLabelsByReference: [DomainAgentSessionLinkReference: String] = [:],
         allowsClaimlessAutoWake: Bool = false,
+        inventoryGuidanceRevision: UInt64 = AgentSessionLinkPrompts.currentInventoryGuidanceRevision,
         render: (AgentSessionLinkPromptRenderRequest) -> AgentSessionLinkPromptRenderResult
     ) -> AgentSessionLinkPromptClaimOutcome {
         let requiresLaneBatch = dispatchID.isAutoWakeFamily && !(allowsClaimlessAutoWake && dispatchID.autoWakeID != nil)
@@ -1091,7 +1114,9 @@ final class AgentSessionLinkOutboundPromptClaimStore {
             isEligibilitySuppressed: !epoch.allowsSupplement,
             lastAcceptedRevision: state.lastAcceptedRevision,
             lastAcceptedHadLinks: state.lastAcceptedHadLinks,
-            possiblyDeliveredLinkRevision: state.possiblyDeliveredLinkRevision
+            possiblyDeliveredLinkRevision: state.possiblyDeliveredLinkRevision,
+            acceptedInventoryGuidanceRevision: state.lastAcceptedInventoryGuidanceRevision,
+            currentInventoryGuidanceRevision: inventoryGuidanceRevision
         )
         let passiveBatch = Self.deliverablePassiveBatch(
             passiveNotices,
@@ -1120,7 +1145,8 @@ final class AgentSessionLinkOutboundPromptClaimStore {
             membershipKind: membershipKind,
             inventory: inventory,
             passiveNotices: passiveBatch,
-            laneGuidanceMode: laneGuidanceMode
+            laneGuidanceMode: laneGuidanceMode,
+            inventoryGuidanceRevision: membershipKind == .inventory ? inventoryGuidanceRevision : nil
         )
         if let existing = state.pending[dispatchID], ClaimFingerprint(existing) == fingerprint {
             state.recordPossibleDelivery(of: existing)
@@ -1194,7 +1220,9 @@ final class AgentSessionLinkOutboundPromptClaimStore {
             passiveQueue: fingerprint.passiveQueue,
             passive: passiveComponent,
             laneGuidanceMode: laneGuidanceMode,
-            fragment: rendered.fragment
+            inventoryGuidanceRevision: fingerprint.inventoryGuidanceRevision,
+            fragment: rendered.fragment,
+            observerEndpoint: epoch.endpoint
         )
         state.setPending(claim)
         // Recorded at hand-off, not at dispatch: the store never learns whether the caller's transport
@@ -1214,6 +1242,7 @@ final class AgentSessionLinkOutboundPromptClaimStore {
         inventory: AgentSessionLinkPromptInventory,
         passiveNotices: AgentSessionLinkPassiveStatusNotices.Snapshot? = nil,
         locationLabelsByReference: [DomainAgentSessionLinkReference: String] = [:],
+        inventoryGuidanceRevision: UInt64 = AgentSessionLinkPrompts.currentInventoryGuidanceRevision,
         render: (AgentSessionLinkPromptRenderRequest) -> AgentSessionLinkPromptRenderResult
     ) -> AgentSessionLinkOutboundPromptClaim? {
         claimOutcome(
@@ -1222,6 +1251,7 @@ final class AgentSessionLinkOutboundPromptClaimStore {
             inventory: inventory,
             passiveNotices: passiveNotices,
             locationLabelsByReference: locationLabelsByReference,
+            inventoryGuidanceRevision: inventoryGuidanceRevision,
             render: render
         ).claim
     }
@@ -1252,6 +1282,12 @@ final class AgentSessionLinkOutboundPromptClaimStore {
             return false
         }
         guard let membership = claim.membership else { return true }
+        if membership.kind == .inventory,
+           state.lastAcceptedInventoryGuidanceRevision != claim.inventoryGuidanceRevision
+           || claim.inventoryGuidanceRevision != AgentSessionLinkPrompts.currentInventoryGuidanceRevision
+        {
+            return false
+        }
         let expectedKind: AgentSessionLinkPromptSupplementKind = if hasLinks {
             .inventory
         } else if epoch.allowsSupplement {
@@ -1350,6 +1386,12 @@ final class AgentSessionLinkOutboundPromptClaimStore {
                 laneRevision
             )
         }
+        if let inventoryRevision = claim.inventoryGuidanceRevision {
+            state.lastAcceptedInventoryGuidanceRevision = max(
+                state.lastAcceptedInventoryGuidanceRevision ?? inventoryRevision,
+                inventoryRevision
+            )
+        }
         // A passive-only claim settles nothing further here. Its receipt belongs to the bridge-owned
         // queue, which fences it on its own epoch and revision, so this store neither applies nor
         // blocks it.
@@ -1425,12 +1467,14 @@ final class AgentSessionLinkOutboundPromptClaimStore {
         guard var state = states[observerSessionID] else { return }
         guard state.lastAcceptedRevision != nil
             || state.possiblyDeliveredLinkRevision != nil
+            || state.lastAcceptedInventoryGuidanceRevision != nil
             || state.lastAcceptedLaneGuidanceRevision != nil
         else {
             return
         }
         state.lastAcceptedRevision = nil
         state.lastAcceptedHadLinks = false
+        state.lastAcceptedInventoryGuidanceRevision = nil
         state.possiblyDeliveredLinkRevision = nil
         state.lastAcceptedLaneGuidanceRevision = nil
         states[observerSessionID] = state
@@ -1479,6 +1523,10 @@ final class AgentSessionLinkOutboundPromptClaimStore {
 
     func test_lastAcceptedRevision(observerSessionID: UUID) -> UInt64? {
         states[observerSessionID]?.lastAcceptedRevision
+    }
+
+    func test_lastAcceptedInventoryGuidanceRevision(observerSessionID: UUID) -> UInt64? {
+        states[observerSessionID]?.lastAcceptedInventoryGuidanceRevision
     }
 
     func test_lastAcceptedHadLinks(observerSessionID: UUID) -> Bool? {

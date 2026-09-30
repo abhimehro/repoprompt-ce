@@ -14,7 +14,13 @@ print_matches() {
   local label="$1"
   shift
   local output
-  output="$($@ 2>/dev/null || true)"
+  local status=0
+  output="$("$@" 2>&1)" || status=$?
+  if (( status > 1 )); then
+    fail "$label: check failed (exit $status)"
+    printf '%s\n' "$output" >&2
+    return
+  fi
   if [[ -n "$output" ]]; then
     fail "$label"
     printf '%s\n' "$output" >&2
@@ -188,9 +194,15 @@ else:
 app_by_name_dependencies = [dependency["byName"][0] for dependency in repo_prompt_app_dependencies if dependency.get("byName")]
 if app_by_name_dependencies.count("RepoPromptWorkspaceCore") != 1:
     errors.append("RepoPromptApp must depend exactly once on RepoPromptWorkspaceCore")
-for forbidden_consumer in ("RepoPrompt", "RepoPromptMCP", "RepoPromptShared", "RepoPromptTests"):
+for forbidden_consumer in ("RepoPrompt", "RepoPromptMCP", "RepoPromptMCPCore", "RepoPromptShared", "RepoPromptTests"):
     dependencies = [dependency["byName"][0] for dependency in targets.get(forbidden_consumer, {}).get("dependencies", []) if dependency.get("byName")]
     if "RepoPromptWorkspaceCore" in dependencies: errors.append(f"{forbidden_consumer} must not directly depend on RepoPromptWorkspaceCore")
+for target_name, target in targets.items():
+    if target.get("type") == "test" or target_name == "RepoPromptTestSupport":
+        continue
+    target_dependencies = [dependency["byName"][0] for dependency in target.get("dependencies", []) if dependency.get("byName")]
+    if "RepoPromptTestSupport" in target_dependencies:
+        errors.append(f"production target {target_name} must not depend on RepoPromptTestSupport")
 for product in package.get("products", []):
     if "RepoPromptWorkspaceCore" in product.get("targets", []): errors.append("RepoPromptWorkspaceCore must not be exposed as a package product")
 
@@ -337,9 +349,15 @@ required_core_imports = {
 for module in sorted(required_core_imports):
     if f"import {module}\n" not in core_syntax_source:
         errors.append(f"CodeMapSyntaxEngine missing direct grammar/wrapper module import: {module}")
-bridging_header = Path("Sources/RepoPrompt/Support/RepoPrompt-Bridging-Header.h").read_text()
-if "tree_sitter_" in bridging_header or "TSLanguage" in bridging_header:
-    errors.append("bridging header must not redeclare Tree-sitter grammar APIs")
+if "-import-objc-header" in Path("Package.swift").read_text():
+    errors.append("first-party targets must not use an Objective-C bridging header; import a C target module instead")
+repo_prompt_c_include = Path("Sources/RepoPromptC/include")
+repo_prompt_c_umbrella = (repo_prompt_c_include / "RepoPromptC.h").read_text()
+for header in sorted(repo_prompt_c_include.glob("*.h")):
+    if header.name != "RepoPromptC.h" and f'#include "{header.name}"' not in repo_prompt_c_umbrella:
+        errors.append(f"RepoPromptC umbrella header must include {header.name} (umbrella directories leave warm module caches stale)")
+if Path("Sources/RepoPrompt/Support").exists():
+    errors.append("Sources/RepoPrompt/Support was retired with the bridging header; C declarations belong in Sources/RepoPromptC")
 
 if errors:
     raise SystemExit("\n".join(errors))
@@ -579,9 +597,11 @@ else
 fi
 
 service_registry_source="Sources/RepoPrompt/Infrastructure/MCP/ServiceRegistry.swift"
-print_matches \
-  "ServiceRegistry reintroduced stored service/schema/catalog authority" \
-  grep -n -E 'static[[:space:]]+(var|let)[[:space:]]+(services|schemas|catalog)|\[any[[:space:]]+Service\]|\[Tool\]' "$service_registry_source"
+if [[ -f "$service_registry_source" ]]; then
+  print_matches \
+    "ServiceRegistry reintroduced stored service/schema/catalog authority" \
+    grep -n -E 'static[[:space:]]+(var|let)[[:space:]]+(services|schemas|catalog)|\[any[[:space:]]+Service\]|\[Tool\]' "$service_registry_source"
+fi
 for forwarding_source in \
   Sources/RepoPrompt/Infrastructure/MCP/MCPGlobalToolNames.swift \
   Sources/RepoPrompt/Infrastructure/MCP/WindowTools/MCPWindowToolNames.swift \
@@ -780,12 +800,17 @@ allowed_tracked_docs=(
   "docs/architecture/oracle-groups-rewrite.md"
   "docs/architecture/provider-plugins.md"
   "docs/architecture/settings-persistence.md"
+  "docs/architecture/self-compact-native-note-delivery.md"
   "docs/architecture/source-layout.md"
   "docs/architecture/xcode-workspace.md"
   "docs/designs/cross-restart-durability-root-search-cas-2026-06-25.md"
   "docs/mcp-progress.md"
   "docs/migrations/swift-6-2-concurrency-migration-2026-07-18.md"
   "docs/migrations/swift-6-2-concurrency/migration-ledger.md"
+  "docs/migrations/build-modularization-2026-09-28.md"
+  "docs/migrations/build-modularization/completion-plan.md"
+  "docs/migrations/build-modularization/ledger.md"
+  "docs/migrations/build-modularization/ratchets.json"
   "docs/open-source-readiness.md"
   "docs/privacy/telemetry.md"
   "docs/releasing.md"
@@ -816,6 +841,41 @@ unexpected_tracked_docs="$(comm -23 \
 if [[ -n "$unexpected_tracked_docs" ]]; then
   fail "unexpected tracked docs found; keep agent-authored working documents local or add durable docs to the explicit allowlist"
   printf '%s\n' "$unexpected_tracked_docs" >&2
+fi
+
+# 9. Runtime identity (build-modularization P0.6; inventory in
+# docs/migrations/build-modularization/ledger.md, "P0.6 compatibility inventory").
+# First-party production targets do not yet use SwiftPM resource bundles.
+# package_app.sh copies build-directory bundles, but arbitrary target bundles
+# have not been validated for runtime lookup after packaging.
+print_matches \
+  "production target declares SwiftPM resources (only test targets may; runtime bundle lookup is not validated)" \
+  awk '/\.(target|executableTarget|testTarget|binaryTarget)\(/ { kind = $0 } /resources:/ && kind !~ /testTarget/ { print FILENAME ":" FNR ": " $0 }' Package.swift
+print_matches \
+  "per-target bundle lookup in first-party Sources (use the app bundle via an allowlisted target)" \
+  grep -R -n -E '(^|[^A-Za-z0-9_])Bundle(\.module|\(for:)' Sources --include='*.swift'
+# `Bundle.main` and implicit main-bundle lookups resolve per process. They stay in
+# app-only targets; add a new app-only target here in the slice that creates it.
+# Targets linked into repoprompt-mcp are never allowlisted.
+bundle_main_allowed_roots=(
+  "Sources/RepoPrompt/"
+)
+bundle_main_hits="$(grep -R -n -E '(^|[^A-Za-z0-9_])(Bundle\.main|NSImage\(named:)' Sources --include='*.swift' || true)"
+for allowed_root in "${bundle_main_allowed_roots[@]}"; do
+  bundle_main_hits="$(printf '%s\n' "$bundle_main_hits" | grep -v -E "^${allowed_root}" || true)"
+done
+if [[ -n "$bundle_main_hits" ]]; then
+  fail "Bundle.main lookup outside an allowlisted app-only target"
+  printf '%s\n' "$bundle_main_hits" >&2
+fi
+# Swift class runtime names embed the module (`_TtC13RepoPromptApp...`), so these
+# APIs silently change identity when a type moves. Use explicit string identities.
+# The one allowed lookup names an Objective-C class, whose name has no module.
+runtime_type_name_hits="$(grep -R -n -E 'NSKeyedArchiver|NSKeyedUnarchiver|NSStringFromClass|NSClassFromString|_typeName\(' Sources --include='*.swift' \
+  | grep -v -F 'NSClassFromString("XCTestCase")' || true)"
+if [[ -n "$runtime_type_name_hits" ]]; then
+  fail "module-dependent runtime type-name API in first-party Sources"
+  printf '%s\n' "$runtime_type_name_hits" >&2
 fi
 
 if [[ "$failures" -ne 0 ]]; then

@@ -320,6 +320,11 @@ package enum MCPDomainStandaloneToolInstaller {
             binding(MCPWindowToolName.agentRun, backends.agent.run),
             binding(MCPWindowToolName.agentManage, backends.agent.manage),
             binding(MCPWindowToolName.agentSessionLink, backends.agent.monitorSessionLink),
+            // Direct-headless has no app-owned Agent Mode run or registration-time self origin.
+            // Keep the canonical catalog complete while failing closed even if a caller names it.
+            binding(MCPWindowToolName.agentSelf) { _ in
+                throw MCPError.invalidParams("agent_self is not available for this session.")
+            },
             binding(MCPWindowToolName.shareThoughts, backends.agent.shareThoughts),
             binding(MCPWindowToolName.setStatus, backends.agent.publishStatus),
             binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction),

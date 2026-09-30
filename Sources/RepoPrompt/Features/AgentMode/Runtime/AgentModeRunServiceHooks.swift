@@ -70,6 +70,9 @@ extension AgentModeRunService {
     /// Authority: queued-work recovery projection.
     struct QueuedWorkRecoveryHooks {
         let restoreDraftText: (_ tabID: UUID, _ text: String, _ message: String, _ strategy: DraftRestorationStrategy) -> Void
+        var isCurrentSessionBinding: @MainActor (AgentTabSession, AgentRunStartStopFence) -> Bool = { session, fence in
+            fence.binding == session.persistentSessionBindingIdentity
+        }
     }
 
     /// Host persistence scheduling for session/tab state.
@@ -203,13 +206,20 @@ extension AgentModeRunService {
             AgentRunTerminalCommitRevision,
             AgentRunEpochTransitionKind?
         ) async -> AgentRunTerminalPublicationResult
+        var onSelfCompactTerminalSettled: @MainActor (
+            AgentTabSession,
+            AgentRunTerminalCommitRevision,
+            AgentRunTerminalPublicationResult,
+            @escaping @MainActor () -> Bool
+        ) -> Void = { _, _, _, _ in }
     }
 
     /// Continuation of a settled or steered run (follow-up starts, MCP wakes).
     ///
     /// Authority: lifecycle command issuance back into the host.
     struct RunContinuationHooks {
-        let startFollowUpRun: (AgentTabSession, String) -> Void
+        let startFollowUpRun: (AgentTabSession, AgentTabSession.PendingInstruction) -> Void
+        let startTypedACPFollowUpRun: (AgentTabSession, AgentTabSession.PendingInstruction) -> Void
         /// Wakes MCP waiters once a steering instruction has actually been delivered to the provider.
         let signalMCPInstructionDelivered: (_ session: AgentTabSession) async -> Void
     }
@@ -227,6 +237,10 @@ extension AgentModeRunService {
         let interactions: RunInteractionHooks
         let terminalSettlement: TerminalSettlementHooks
         let continuation: RunContinuationHooks
+        /// Host-owned synchronous deferred-work cleanup, before the terminal shortcut.
+        var prepareForCancellation: (
+            AgentTabSession, DomainAgentRunCancellationIntent, AgentModeRunService.CancellationOrigin
+        ) -> Void = { _, _, _ in }
     }
 }
 
@@ -303,6 +317,11 @@ extension AgentModeRunService.Hooks {
                 },
                 startFollowUpRun: { instruction in
                     continuation.startFollowUpRun(session, instruction)
+                },
+                onSelfCompactTerminalSettled: { revision, result, teardownSettled in
+                    terminalSettlement.onSelfCompactTerminalSettled(
+                        session, revision, result, teardownSettled
+                    )
                 }
             ),
             validatesOwnership: { ownership, expectedRunID in
@@ -318,7 +337,7 @@ extension AgentModeRunService.Hooks {
                 session.items.last(where: { $0.kind == .user })?.id
             },
             queuedFollowUp: {
-                session.pendingInstructions.first
+                session.pendingInstructions.first?.providerText
             },
             setFollowUpPending: { pending in
                 session.mcpFollowUpRunPending = pending

@@ -3910,12 +3910,16 @@ class PromptViewModel: ObservableObject {
     func stashComposeTabs(
         withIDs ids: Set<UUID>,
         isMutationContextCurrent: (@MainActor () -> Bool)? = nil,
+        postPreflightValidation: (@MainActor () -> Bool)? = nil,
+        expandCascade: Bool = true,
         onProjectionRemovalCommitted: ComposeTabsProjectionRemovalCallback? = nil
     ) async -> ComposeTabMutationReport {
         await removeComposeTabs(
             withIDs: ids,
             reason: .stash,
+            expandCascade: expandCascade,
             isMutationContextCurrent: isMutationContextCurrent,
+            postPreflightValidation: postPreflightValidation,
             onProjectionRemovalCommitted: onProjectionRemovalCommitted
         )
     }

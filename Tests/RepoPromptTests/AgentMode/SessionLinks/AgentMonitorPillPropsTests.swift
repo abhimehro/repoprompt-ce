@@ -895,6 +895,17 @@ final class AgentMonitorPillPropsTests: XCTestCase {
         XCTAssertEqual(AgentMonitorUnlinkUndo.window, .seconds(8))
     }
 
+    // MARK: - Oversight boundary copy
+
+    /// The popover's only remaining help copy is the authority boundary on the Oversee session
+    /// button's tooltip: what the link grants is no longer spelled out on screen.
+    func testOversightDisclosureIsOnlyTheAuthorityBoundary() {
+        XCTAssertEqual(
+            AgentMonitorOversightDisclosure.boundary,
+            "Session-wide approvals, hook trust, merge reviews, and secret inputs stay with you."
+        )
+    }
+
     // MARK: - Notices
 
     private func notice(

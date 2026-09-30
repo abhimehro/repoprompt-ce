@@ -9,7 +9,7 @@ import RepoPromptDomainRuntime
 // wait outcome. `MCPConnectionManager` publishes projections; `AgentModeViewModel+SessionLinkPrompt`
 // accepts them under a run/route identity guard and fails the prompt context closed while a ready
 // projection is absent; `AgentSessionLinkCodexCatalogRepair` names the one stuck shape
-// (`hasAgentSessionLink == false` with a live outbound grant) that nothing else will heal.
+// (`hasAgentSessionLink == false` with a live grant in either direction) that nothing else will heal.
 // Invariant: `isReady` requires an exact route token *and* positive presence on both axes — an
 // unknown (`nil`) presence is not evidence of anything.
 
@@ -28,6 +28,8 @@ struct AgentSessionLinkRunCatalogProjection: Equatable {
     let routeToken: AgentSessionLinkRunCatalogRouteToken?
     let projectionRevision: UInt64
     let hasAgentSessionLink: Bool?
+    /// Exact live membership in either direction; catalog reachability, never outbound authority.
+    let hasAnyActiveLink: Bool?
     let hasActiveOutboundLink: Bool?
 
     init(
@@ -35,12 +37,14 @@ struct AgentSessionLinkRunCatalogProjection: Equatable {
         routeToken: AgentSessionLinkRunCatalogRouteToken?,
         projectionRevision: UInt64,
         hasAgentSessionLink: Bool?,
+        hasAnyActiveLink: Bool?,
         hasActiveOutboundLink: Bool? = true
     ) {
         self.runID = runID
         self.routeToken = routeToken
         self.projectionRevision = projectionRevision
         self.hasAgentSessionLink = hasAgentSessionLink
+        self.hasAnyActiveLink = hasAnyActiveLink
         self.hasActiveOutboundLink = hasActiveOutboundLink
     }
 

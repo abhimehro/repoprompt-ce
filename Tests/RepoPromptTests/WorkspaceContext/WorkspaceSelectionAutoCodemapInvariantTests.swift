@@ -1,4 +1,5 @@
 @testable import RepoPromptApp
+import RepoPromptTestSupport
 import XCTest
 
 final class WorkspaceSelectionAutoCodemapInvariantTests: XCTestCase {

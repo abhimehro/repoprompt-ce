@@ -172,6 +172,35 @@ extension AgentModeViewModel {
         }
     }
 
+    /// Loads, in the background, the persisted state of this window's compose tabs bound to one of
+    /// `sessionIDs`, so saved oversight pairs can be restored at launch.
+    ///
+    /// Passive by construction: `ensureSessionReady` with its default arguments only reads the
+    /// session payload from disk. It does not select the tab, focus the window, or start or reconnect
+    /// a provider. Tabs already hydrated or already loading are skipped (the load joins in-flight
+    /// work anyway).
+    func agentSessionLinkRequestRestorationHydration(sessionIDs: Set<UUID>) {
+        for descriptor in agentSessionLinkComposeTabDescriptors()
+            where sessionIDs.contains(descriptor.sessionID)
+        {
+            let tabID = descriptor.tabID
+            if let existing = sessions[tabID],
+               existing.hasLoadedPersistedState || existing.persistedLoadTask != nil
+            {
+                continue
+            }
+            Task { @MainActor [weak self] in
+                guard let self,
+                      // Re-read after the hop: the tab may have been closed or rebound meanwhile.
+                      agentSessionLinkComposeTabDescriptors().contains(where: {
+                          $0.tabID == tabID && $0.sessionID == descriptor.sessionID
+                      })
+                else { return }
+                _ = await ensureSessionReady(tabID: tabID)
+            }
+        }
+    }
+
     /// The exact live endpoint incarnation bound to one compose tab of this window.
     ///
     /// This is the single conversion used to turn server-owned connection routing
@@ -290,6 +319,13 @@ extension AgentModeViewModel {
                 displayName: candidate.displayName,
                 providerDisplayName: candidate.providerDisplayName,
                 status: .idle,
+                board: DomainAgentSessionLaneBoard(
+                    runOutcome: .none,
+                    failureReason: nil,
+                    sendBlockers: [SendBlocker.sessionUnavailable.rawValue],
+                    subagentRunning: 0,
+                    subagentFinished: 0
+                ),
                 idleForSend: false,
                 pendingInteractionKind: nil,
                 latestVisibleAssistantPreview: nil,
@@ -297,7 +333,98 @@ extension AgentModeViewModel {
                 lastActivityAt: Date()
             )
         }
-        return Self.observationSnapshot(for: session, candidate: candidate)
+        let counts = agentSessionLinkCensusWorkspaceID == candidate.workspaceID
+            ? agentSessionLinkSubagentCensus.counts(for: candidate.sessionID)
+            : .init()
+        return Self.observationSnapshot(
+            for: session,
+            candidate: candidate,
+            subagentCounts: (running: counts.running, finished: counts.finished)
+        )
+    }
+
+    /// Refresh durable child metadata once for a poll/wait batch. The synchronous snapshot path
+    /// reads only the already-merged parent lookup and never scans the registry per target.
+    ///
+    /// Runs on every `poll`/`wait`, so it reads only the cached metadata index (one index-file read on
+    /// a cold cache) and never backfills or reconciles session files on this hot path.
+    func agentSessionLinkRefreshSubagentCensus(for workspace: WorkspaceModel) async {
+        agentSessionLinkSubagentRefreshGeneration &+= 1
+        let generation = agentSessionLinkSubagentRefreshGeneration
+        let persisted = await agentSessionLinkPersistedSubagentMetaLoader(workspace)
+        guard !Task.isCancelled,
+              generation == agentSessionLinkSubagentRefreshGeneration,
+              workspaceManager?.activeWorkspace?.id == workspace.id
+        else { return }
+        // An unavailable index keeps the last good list instead of flapping `finished` counts (and
+        // the change cursor) on a transient read failure. A list from another workspace is already
+        // excluded by the rebuild's workspace gate, and committed deletions are filtered on rebuild.
+        guard let persisted else { return }
+        agentSessionLinkPersistedSubagentWorkspaceID = workspace.id
+        agentSessionLinkPersistedSubagentMeta = persisted
+        rebuildAgentSessionLinkSubagentCensus()
+    }
+
+    /// A durable tombstone is definitive even before all windows finish closing their tabs or
+    /// metadata/index cleanup. Forget it process-wide so parked parent observers see removal.
+    func agentSessionLinkForgetDeletedSubagent(_ sessionID: UUID) {
+        agentSessionLinkPersistedSubagentMeta.removeAll { $0.id == sessionID }
+        rebuildAgentSessionLinkSubagentCensus()
+    }
+
+    func rebuildAgentSessionLinkSubagentCensus(reconcileLiveObservers: Bool = false) {
+        if reconcileLiveObservers {
+            agentSessionLinkChildRunSubscriptions.removeAll()
+            for session in sessions.values {
+                agentSessionLinkChildRunSubscriptions[session.tabID] = session.$runState
+                    .dropFirst()
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] _ in
+                        MainActor.assumeIsolated {
+                            self?.rebuildAgentSessionLinkSubagentCensus()
+                        }
+                    }
+            }
+        }
+
+        let activeWorkspaceID = workspaceManager?.activeWorkspace?.id
+        let persisted: [AgentSessionLinkSubagentCensus.Record] =
+            agentSessionLinkPersistedSubagentWorkspaceID == activeWorkspaceID
+                ? agentSessionLinkPersistedSubagentMeta.compactMap {
+                    guard !AgentSessionDeletionRegistry.shared.isPermanentlyDeleted(sessionID: $0.id) else { return nil }
+                    return .init(sessionID: $0.id, parentSessionID: $0.parentSessionID, isLiveInFlight: false)
+                }
+                : []
+        let index = ownerValidatedSessionIndex.values.compactMap { entry -> AgentSessionLinkSubagentCensus.Record? in
+            guard !AgentSessionDeletionRegistry.shared.isPermanentlyDeleted(sessionID: entry.id) else { return nil }
+            return .init(sessionID: entry.id, parentSessionID: entry.parentSessionID, isLiveInFlight: false)
+        }
+        var knownParentBySessionID: [UUID: UUID] = [:]
+        for record in persisted {
+            if let parentID = record.parentSessionID { knownParentBySessionID[record.sessionID] = parentID }
+        }
+        for record in index {
+            if let parentID = record.parentSessionID { knownParentBySessionID[record.sessionID] = parentID }
+        }
+        let live = sessions.values.compactMap { session -> AgentSessionLinkSubagentCensus.Record? in
+            guard let sessionID = session.activeAgentSessionID,
+                  !AgentSessionDeletionRegistry.shared.isPermanentlyDeleted(sessionID: sessionID)
+            else { return nil }
+            let isInFlight = session.runState.isActive
+            return .init(
+                sessionID: sessionID,
+                parentSessionID: session.parentSessionID
+                    ?? (session.hasLoadedPersistedState ? nil : knownParentBySessionID[sessionID]),
+                isLiveInFlight: isInFlight
+            )
+        }
+        let updated = AgentSessionLinkSubagentCensus(persisted: persisted, index: index, live: live)
+        let changedParents = updated.changedParents(comparedTo: agentSessionLinkSubagentCensus)
+        agentSessionLinkSubagentCensus = updated
+        agentSessionLinkCensusWorkspaceID = activeWorkspaceID
+        if !changedParents.isEmpty {
+            agentSessionLinkSubagentCensusChanged.send(changedParents)
+        }
     }
 
     /// Status/activity-only projection: run state, pending interaction, and canonical activity.
@@ -506,24 +633,116 @@ extension AgentModeViewModel {
     /// Reserved for target publication and `poll`; UI rendering must use `statusProjection` instead.
     static func observationSnapshot(
         for session: TabSession,
-        candidate: AgentSessionLinkEndpointCandidate
+        candidate: AgentSessionLinkEndpointCandidate,
+        subagentCounts: (running: Int, finished: Int)
     ) -> DomainAgentSessionObservationSnapshot {
         let projection = statusProjection(for: session)
+        let blockers = sendBlockers(sendReadinessInputs(
+            session: session,
+            candidate: candidate,
+            status: projection.status
+        ))
         return DomainAgentSessionObservationSnapshot(
             sessionID: candidate.sessionID,
             displayName: candidate.displayName,
             providerDisplayName: candidate.providerDisplayName,
             status: projection.status,
-            idleForSend: isIdleForSend(
-                session: session,
-                candidate: candidate,
-                status: projection.status
+            board: laneBoard(
+                for: session,
+                blockers: blockers,
+                subagentCounts: subagentCounts
             ),
+            idleForSend: blockers.isEmpty,
             waitingOn: session.oversight.waitingOn,
             pendingInteractionKind: projection.pendingInteractionKind,
             latestVisibleAssistantPreview: latestVisibleAssistantPreview(for: session),
             visibleRowCount: session.transcriptCanonicalVisibleRowCount,
-            lastActivityAt: session.lastActivityAt
+            lastActivityAt: session.lastActivityAt,
+            context: observationContextLoad(for: session)
+        )
+    }
+
+    /// Passive board state from the target's own run, before `linkStatus` flattens terminal runs.
+    /// Subagent counts are supplied by the caller so this projection remains independent of the
+    /// view model's session collection; the caller reads them from `agentSessionLinkSubagentCensus`.
+    static func laneBoard(
+        for session: TabSession,
+        blockers: [SendBlocker],
+        subagentCounts: (running: Int, finished: Int)
+    ) -> DomainAgentSessionLaneBoard {
+        let runOutcome: DomainAgentSessionLaneBoard.RunOutcome = switch session.runState {
+        case .idle: .none
+        case .running: .running
+        case .waitingForUser, .waitingForQuestion, .waitingForApproval: .awaitingUser
+        case .completed: .completed
+        case .cancelled: .cancelled
+        case .failed: .failed
+        }
+        let revision = session.lastTerminalCommitRevision
+        let stampedReason = revision.flatMap { revision -> DomainAgentRunSnapshot.FailureReason? in
+            guard revision.terminalState == session.runState else { return nil }
+            return revision.failureReason
+        }
+        let failureReason = laneFailureReason(for: session.runState, stamped: stampedReason)
+        return DomainAgentSessionLaneBoard(
+            runOutcome: runOutcome,
+            failureReason: failureReason,
+            sendBlockers: blockers.map(\.rawValue),
+            subagentRunning: subagentCounts.running,
+            subagentFinished: subagentCounts.finished
+        )
+    }
+
+    static func laneFailureReason(
+        for runState: AgentSessionRunState,
+        stamped: DomainAgentRunSnapshot.FailureReason?
+    ) -> DomainAgentSessionLaneBoard.FailureReason? {
+        switch runState {
+        case .cancelled:
+            .cancelled
+        case .failed:
+            stamped.flatMap { DomainAgentSessionLaneBoard.FailureReason(rawValue: $0.rawValue) }
+        case .idle, .running, .waitingForUser, .waitingForQuestion, .waitingForApproval, .completed:
+            nil
+        }
+    }
+
+    /// The context load the target's context ring already shows, as recorded by its provider's usage
+    /// estimator: Claude-family stream usage, Codex native token usage, or ACP `usage_update`
+    /// occupancy.
+    ///
+    /// Usage written before the current provider was selected is not reported: a count or window is
+    /// reported only while it still equals the value the current provider's own live usage report
+    /// produced, since the last provider change, compaction (count only), or relaunch. The UI's
+    /// fallback windows and tool-derived estimates are never exported. An ACP count taken from
+    /// prompt-response billing stays in the ring only: it can be a per-turn total rather than
+    /// occupancy, just as Claude's billed aggregate is never used as a count. The confidence label is
+    /// the one the count was vouched with, and is `nil` whenever no count is exported.
+    static func observationContextLoad(for session: TabSession) -> DomainAgentSessionContextLoad? {
+        guard let usage = session.contextUsageSnapshot else { return nil }
+        // `ACPContextUsageEstimator` stores a billed count only under `.turnFinalization` (a later
+        // window-only update keeps that source), and occupancy only under `.acpUsageEvent`.
+        let isACPBilledCount = session.selectedAgent.acpProviderID != nil && usage.source == .turnFinalization
+        // A compaction signal carries the pre-compaction count forward; it no longer describes the
+        // context, so only the window can still be current until the next usage report.
+        let countIsCurrent = usage.source != .compactionSignal
+            && !isACPBilledCount
+            && usage.used.map { TabSession.ContextUsageVouch(agent: session.selectedAgent, tokens: $0) }
+            == session.vouchedContextCount
+        let windowIsCurrent = usage.window.map { TabSession.ContextUsageVouch(agent: session.selectedAgent, tokens: $0) }
+            == session.vouchedContextWindow
+        let countConfidence = countIsCurrent ? (session.vouchedContextCountConfidence ?? usage.confidence) : nil
+        let confidence: DomainAgentSessionContextLoad.Confidence? = countConfidence.map { label in
+            switch label {
+            case .exact: .exact
+            case .bestEffort: .bestEffort
+            case .inferred: .inferred
+            }
+        }
+        return DomainAgentSessionContextLoad(
+            usedTokens: countIsCurrent ? usage.used : nil,
+            windowTokens: windowIsCurrent ? usage.window : nil,
+            confidence: confidence
         )
     }
 
@@ -554,7 +773,11 @@ extension AgentModeViewModel {
             session.$pendingMCPElicitationRequest.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingApplyEditsReview.map { _ in () }.eraseToAnyPublisher(),
             session.$pendingWorktreeMergeReview.map { _ in () }.eraseToAnyPublisher(),
-            session.monitorObservationSignal.eraseToAnyPublisher()
+            session.monitorObservationSignal.eraseToAnyPublisher(),
+            agentSessionLinkSubagentCensusChanged
+                .filter { $0.contains(candidate.sessionID) }
+                .map { _ in () }
+                .eraseToAnyPublisher()
         ]
 
         let cancellable = Publishers.MergeMany(publishers)
@@ -1072,25 +1295,95 @@ extension AgentModeViewModel {
     /// `idle_for_send: true` for a target that `send` will still refuse, and `until: "sendable"` waits
     /// on exactly this field — so an omission turns the documented wait-then-send recipe back into
     /// the retry loop it exists to prevent.
-    static func isIdleForSend(
+    enum SendBlocker: String {
+        case sessionUnavailable = "session_unavailable"
+        case statusNotIdle = "status_not_idle"
+        case runStateActive = "run_state_active"
+        case persistedStateNotLoaded = "persisted_state_not_loaded"
+        case bindingTransitionInProgress = "binding_transition_in_progress"
+        case terminalCommitInProgress = "terminal_commit_in_progress"
+        case mcpFollowUpRunPending = "mcp_follow_up_run_pending"
+        case composerSubmissionInFlight = "composer_submission_in_flight"
+        case preparingInitialWorktree = "preparing_initial_worktree"
+        case changingExecutionLocation = "changing_execution_location"
+        case pendingInstructions = "pending_instructions"
+        case pendingACPSteeringInstructions = "pending_acp_steering_instructions"
+        case pendingClaudeSteeringInstructions = "pending_claude_steering_instructions"
+        case pendingAutoWake = "pending_auto_wake"
+        case pendingSelfCompact = "pending_self_compact"
+        case stopInProgress = "stop_in_progress"
+        case backgroundCompactionSettling = "background_compaction_settling"
+        case candidateClosing = "candidate_closing"
+    }
+
+    /// One sample of every send-readiness condition. The board and `idleForSend` consume the same
+    /// evaluator below; tests can exercise conditions that are otherwise private lifecycle state.
+    struct SendReadinessInputs {
+        var status: DomainAgentSessionLinkStatus
+        var runStateIsActive: Bool
+        var hasLoadedPersistedState: Bool
+        var bindingTransitionInProgress: Bool
+        var terminalCommitInProgress: Bool
+        var mcpFollowUpRunPending: Bool
+        var isComposerSubmissionInFlight: Bool
+        var isPreparingInitialWorktree: Bool
+        var isChangingExecutionLocation: Bool
+        var hasPendingInstructions: Bool
+        var hasPendingACPSteeringInstructions: Bool
+        var hasPendingClaudeSteeringInstructions: Bool
+        var hasPendingAutoWake: Bool
+        var hasPendingSelfCompact: Bool
+        var stopInProgress: Bool
+        var backgroundCompactionSettling = false
+        var isCandidateClosing: Bool
+    }
+
+    static func sendReadinessInputs(
         session: TabSession,
         candidate: AgentSessionLinkEndpointCandidate,
         status: DomainAgentSessionLinkStatus
-    ) -> Bool {
-        status == .idle
-            && !session.runState.isActive
-            && session.hasLoadedPersistedState
-            && !session.bindingTransitionInProgress
-            && !session.terminalCommitInProgress
-            && !session.mcpFollowUpRunPending
-            && !session.isComposerSubmissionInFlight
-            && !session.isPreparingInitialWorktree
-            && !session.isChangingExecutionLocation
-            && session.pendingInstructions.isEmpty
-            && session.pendingACPSteeringInstructions.isEmpty
-            && session.pendingClaudeSteeringInstructions.isEmpty
-            && session.oversight.pendingAutoWake == nil
-            && !candidate.isClosing
+    ) -> SendReadinessInputs {
+        SendReadinessInputs(
+            status: status,
+            runStateIsActive: session.runState.isActive,
+            hasLoadedPersistedState: session.hasLoadedPersistedState,
+            bindingTransitionInProgress: session.bindingTransitionInProgress,
+            terminalCommitInProgress: session.terminalCommitInProgress,
+            mcpFollowUpRunPending: session.mcpFollowUpRunPending,
+            isComposerSubmissionInFlight: session.isComposerSubmissionInFlight,
+            isPreparingInitialWorktree: session.isPreparingInitialWorktree,
+            isChangingExecutionLocation: session.isChangingExecutionLocation,
+            hasPendingInstructions: !session.pendingInstructions.isEmpty,
+            hasPendingACPSteeringInstructions: !session.pendingACPSteeringInstructions.isEmpty,
+            hasPendingClaudeSteeringInstructions: !session.pendingClaudeSteeringInstructions.isEmpty,
+            hasPendingAutoWake: session.oversight.pendingAutoWake != nil,
+            hasPendingSelfCompact: session.selfCompactState.blocksOverseerDelivery,
+            stopInProgress: session.stopState.isStopping(binding: session.persistentSessionBindingIdentity),
+            backgroundCompactionSettling: session.isSettlingACPBackgroundCompaction,
+            isCandidateClosing: candidate.isClosing
+        )
+    }
+
+    static func sendBlockers(_ input: SendReadinessInputs) -> [SendBlocker] {
+        var blockers: [SendBlocker] = []
+        if input.status != .idle { blockers.append(.statusNotIdle) }
+        if input.runStateIsActive { blockers.append(.runStateActive) }
+        if !input.hasLoadedPersistedState { blockers.append(.persistedStateNotLoaded) }
+        if input.bindingTransitionInProgress { blockers.append(.bindingTransitionInProgress) }
+        if input.terminalCommitInProgress { blockers.append(.terminalCommitInProgress) }
+        if input.mcpFollowUpRunPending { blockers.append(.mcpFollowUpRunPending) }
+        if input.isComposerSubmissionInFlight { blockers.append(.composerSubmissionInFlight) }
+        if input.isPreparingInitialWorktree { blockers.append(.preparingInitialWorktree) }
+        if input.isChangingExecutionLocation { blockers.append(.changingExecutionLocation) }
+        if input.hasPendingInstructions { blockers.append(.pendingInstructions) }
+        if input.hasPendingACPSteeringInstructions { blockers.append(.pendingACPSteeringInstructions) }
+        if input.hasPendingClaudeSteeringInstructions { blockers.append(.pendingClaudeSteeringInstructions) }
+        if input.hasPendingAutoWake { blockers.append(.pendingAutoWake) }
+        if input.hasPendingSelfCompact { blockers.append(.pendingSelfCompact) }
+        if input.stopInProgress { blockers.append(.stopInProgress) }
+        if input.backgroundCompactionSettling { blockers.append(.backgroundCompactionSettling) }
+        if input.isCandidateClosing { blockers.append(.candidateClosing) }
+        return blockers.sorted { $0.rawValue < $1.rawValue }
     }
 
     static func latestVisibleAssistantPreview(for session: TabSession) -> String? {

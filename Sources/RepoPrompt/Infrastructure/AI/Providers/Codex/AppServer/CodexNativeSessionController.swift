@@ -95,6 +95,13 @@ enum CodexTurnSteerError: Error, LocalizedError, Equatable {
         failure: CodexAppServerClient.RequestFailure
     )
 
+    /// When returned by `steerUserTurn`, these cases are rejected RPCs, not ambiguous transport failures.
+    var definitivelyRejectsInput: Bool {
+        switch self {
+        case .noActiveTurn, .expectedTurnMismatch, .activeTurnNotSteerable: true
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case let .noActiveTurn(failure):

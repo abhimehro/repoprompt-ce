@@ -20,6 +20,7 @@ struct AgentSessionIndexEntry: Identifiable, Equatable {
     var periodicIdleWakeEnabled: Bool = false
     var periodicIdleWakeIntervalSeconds: Int = AgentSessionLinkPeriodicWakeInterval.defaultSeconds
     var parentSessionID: UUID?
+    var createdByOverseerSessionID: UUID?
     var hasUnknownConversationContent: Bool
     var isMCPOriginated: Bool
     var worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary]

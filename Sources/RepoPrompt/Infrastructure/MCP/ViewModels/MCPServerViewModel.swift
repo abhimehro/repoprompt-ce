@@ -1198,6 +1198,25 @@ final class MCPServerViewModel: ObservableObject {
         )
     }
 
+    private var agentSelfToolService: AgentSelfMCPToolService {
+        AgentSelfMCPToolService(
+            captureRequestMetadata: { [self] in await captureRequestMetadata() },
+            requireTargetWindow: { [self] in try requireTargetWindow() },
+            resolveObserverEndpoint: { [self] metadata, targetWindow in
+                await resolveAgentSessionLinkObserverEndpoint(metadata: metadata, targetWindow: targetWindow)
+            },
+            captureCallOrigin: { AgentSelfMCPCallOrigin.current },
+            readSelf: { window, endpoint, origin in
+                window.agentModeViewModel.agentSelfContextSnapshot(endpoint: endpoint, origin: origin)
+            },
+            scheduleCompact: { window, endpoint, origin, note, key in
+                await window.agentModeViewModel.agentSelfCompactMCPAdmission(
+                    endpoint: endpoint, origin: origin, note: note, idempotencyKey: key
+                )
+            }
+        )
+    }
+
     private var agentSessionLinkToolService: AgentSessionLinkMCPToolService {
         AgentSessionLinkMCPToolService(
             toolName: MCPWindowToolName.agentSessionLink,
@@ -1409,19 +1428,23 @@ final class MCPServerViewModel: ObservableObject {
         executeAskOracle: { [weak self] args in
             guard let self else { throw MCPError.internalError("Window deallocated while executing ask_oracle") }
             let metadata = await captureRequestMetadata()
-            guard try await drainReadFileAutoSelection(
-                metadata: metadata,
-                requirement: .mirroredSelectionAndMetrics
-            ) == .completed else { throw CancellationError() }
+            try await MCPServerViewModel.requireReadFileAutoSelectionPrerequisite {
+                try await self.drainReadFileAutoSelection(
+                    metadata: metadata,
+                    requirement: .mirroredSelectionAndMetrics
+                )
+            }
             return try await oracleToolService.executeAskOracle(args: args)
         },
         executeOracleSend: { [weak self] args in
             guard let self else { throw MCPError.internalError("Window deallocated while executing oracle_send") }
             let metadata = await captureRequestMetadata()
-            guard try await drainReadFileAutoSelection(
-                metadata: metadata,
-                requirement: .mirroredSelectionAndMetrics
-            ) == .completed else { throw CancellationError() }
+            try await MCPServerViewModel.requireReadFileAutoSelectionPrerequisite {
+                try await self.drainReadFileAutoSelection(
+                    metadata: metadata,
+                    requirement: .mirroredSelectionAndMetrics
+                )
+            }
             return try await oracleToolService.executeOracleSend(args: args)
         },
         executeOracleChatLog: { [weak self] args in
@@ -1445,6 +1468,12 @@ final class MCPServerViewModel: ObservableObject {
                 throw MCPError.internalError("Window deallocated while executing agent_session_link")
             }
             return try await agentSessionLinkToolService.execute(args: args)
+        },
+        executeAgentSelf: { [weak self] args in
+            guard let self else {
+                throw MCPError.internalError("Window deallocated while executing agent_self")
+            }
+            return try await agentSelfToolService.execute(args: args)
         },
         requireTargetWindow: { [weak self] in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving target window") }
@@ -3753,6 +3782,22 @@ final class MCPServerViewModel: ObservableObject {
         let indexedRunID = shouldRegisterRunToolExecution(toolName: name)
             ? executionRunID
             : nil
+        // Capture the exact self caller at registration, before the tool body can suspend. Neither
+        // request metadata nor a later live tab lookup may substitute a successor run attempt.
+        let selfCallOrigin: AgentSelfMCPCallOrigin? = if name == MCPWindowToolName.agentSelf,
+                                                         let context = resolvedContext?.snapshot,
+                                                         let runID = context.runID,
+                                                         indexedRunID == runID,
+                                                         let window = try? requireTargetWindow(),
+                                                         let endpoint = window.agentModeViewModel.agentSessionLinkObserverEndpoint(tabID: context.tabID),
+                                                         let session = window.agentModeViewModel.sessions[context.tabID],
+                                                         session.runID == runID,
+                                                         let ownership = session.activeRunOwnership
+        {
+            .init(endpoint: endpoint, runID: runID, runAttemptID: ownership.attemptID)
+        } else {
+            nil
+        }
 
         // Generate a unique token for this tool execution to prevent cleanup races
         let toolToken = UUID()
@@ -3819,7 +3864,9 @@ final class MCPServerViewModel: ObservableObject {
                         EditFlowPerf.Stage.MCPToolCall.providerExecution,
                         EditFlowPerf.Dimensions(toolName: name)
                     ) {
-                        try await body()
+                        try await AgentSelfMCPCallOrigin.$current.withValue(selfCallOrigin) {
+                            try await body()
+                        }
                     }
                     EditFlowPerf.lifecycleEvent(
                         EditFlowPerf.Lifecycle.MCPRunTool.providerEnded,
@@ -4815,6 +4862,31 @@ final class MCPServerViewModel: ObservableObject {
             guard predecessorResult == .completed else { return predecessorResult }
         }
         return await readFileAutoSelectionCoordinator.drain(requirement, for: key)
+    }
+
+    /// Runs one read-file auto-selection drain, which also covers eligible `file_search` selections,
+    /// and throws unless its prerequisite completed.
+    /// Callers keep their own drain requirement and skip conditions. Two cases keep cancellation
+    /// classification (`CancellationError`): a task cancellation observed after the drain, whatever
+    /// the drain returned, and a `.cancelled` drain result, which can also come from a replayed
+    /// mirror settlement rather than this task. A deferred or invalidated prerequisite throws
+    /// `MCPSelectionPrerequisiteError`. Nothing is rolled back.
+    @MainActor
+    static func requireReadFileAutoSelectionPrerequisite(
+        _ drain: @MainActor () async throws -> MCPReadFileAutoSelectionCoordinator.DrainResult
+    ) async throws {
+        let prerequisite = try await drain()
+        try Task.checkCancellation()
+        switch prerequisite {
+        case .completed:
+            return
+        case .cancelled:
+            throw CancellationError()
+        case .deferred:
+            throw MCPSelectionPrerequisiteError.deferred
+        case .invalidated:
+            throw MCPSelectionPrerequisiteError.invalidated
+        }
     }
 
     @MainActor
@@ -6389,7 +6461,7 @@ final class MCPServerViewModel: ObservableObject {
             return DTO(code: "signature_pending", phase: "render_demand", path: pathByFileID[fileID], retryable: true, retryAfterMilliseconds: 100, attempted: nil, limit: nil, message: "Signature generation is still pending.")
         case let .unavailable(fileID, reason):
             let retryable = switch reason {
-            case .busy, .gitTransient, .staleCurrentness: true
+            case .busy, .rootTransient, .staleCurrentness: true
             default: false
             }
             return DTO(code: "signature_unavailable", phase: "render_demand", path: pathByFileID[fileID], retryable: retryable, retryAfterMilliseconds: retryable ? 100 : nil, attempted: nil, limit: nil, message: "A signature artifact is unavailable; graph data remains usable.")

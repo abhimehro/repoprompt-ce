@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptTestSupport
 import XCTest
 
 /// Cross-window oversight carries another session's transcript text, display names, and delivered

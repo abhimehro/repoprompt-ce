@@ -955,6 +955,8 @@ struct AgentApprovalRequest: Identifiable, Hashable {
     let cwd: String?
     let grantRoot: String?
     let proposedExecpolicyAmendmentJSON: String?
+    /// ACP-only snapshot of genuine one-time allow availability; submission rechecks the live request.
+    let overseerOneTimeAllowAvailable: Bool?
     let details: [AgentApprovalDetail]
 
     init(
@@ -970,6 +972,7 @@ struct AgentApprovalRequest: Identifiable, Hashable {
         cwd: String? = nil,
         grantRoot: String? = nil,
         proposedExecpolicyAmendmentJSON: String? = nil,
+        overseerOneTimeAllowAvailable: Bool? = nil,
         details: [AgentApprovalDetail] = []
     ) {
         self.id = id ?? Self.stableID(
@@ -991,6 +994,7 @@ struct AgentApprovalRequest: Identifiable, Hashable {
         self.cwd = cwd
         self.grantRoot = grantRoot
         self.proposedExecpolicyAmendmentJSON = proposedExecpolicyAmendmentJSON
+        self.overseerOneTimeAllowAvailable = overseerOneTimeAllowAvailable
         self.details = details
     }
 

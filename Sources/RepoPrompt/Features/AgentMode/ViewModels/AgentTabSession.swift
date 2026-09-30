@@ -62,6 +62,17 @@ final class AgentTabSession: ObservableObject {
     }
 
     @Published var runningStatusText: String? = nil
+    /// Ephemeral cancellation generation and managed-stop gate; never persisted.
+    var stopState = AgentRunStopState() {
+        didSet {
+            if oldValue.cancellationGeneration != stopState.cancellationGeneration
+                || oldValue.activeManagedStopID != stopState.activeManagedStopID
+            {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
     var activeAgentRunStartedAt: Date?
 
     /// Last Jev effort choice submitted for this tab, plus a transient in-flight indication.
@@ -322,8 +333,26 @@ final class AgentTabSession: ObservableObject {
     /// when MCP control is active, `.userConfigured` otherwise.
     var permissionProfile: AgentModeViewModel.AgentPermissionProfile = .userConfigured
 
+    typealias PendingInstruction = AgentRunPendingInstruction
+
+    /// An ACP fallback handed to the scheduled-start task but not yet accepted by a provider.
+    /// Stop owns every queued local recovery payload until that start is accepted or withdrawn.
+    struct ScheduledACPFollowUp {
+        struct QueuedInstruction {
+            let instruction: PendingInstruction
+            let stopFence: AgentRunStartStopFence
+        }
+
+        let id: UUID
+        let instruction: PendingInstruction
+        let stopFence: AgentRunStartStopFence
+        var queuedInstructions: [QueuedInstruction] = []
+    }
+
+    var scheduledACPFollowUp: ScheduledACPFollowUp?
+
     /// Instruction queue for when user sends while agent is not waiting (shared across all runners)
-    var pendingInstructions: [String] = [] {
+    var pendingInstructions: [PendingInstruction] = [] {
         didSet {
             if oldValue.count != pendingInstructions.count {
                 noteMonitorObservationInputsChanged()
@@ -367,6 +396,13 @@ final class AgentTabSession: ObservableObject {
     var claudeSteeringFlushTask: Task<Void, Never>?
 
     /// ACP steering queue — carries text accepted for serialized live steering.
+    struct ACPSteeringManagedContext {
+        let sink: AgentSessionLinkManagedSteerSink
+        let attributedItemID: UUID
+        let candidate: AgentSessionLinkEndpointCandidate
+        let attribution: AgentCrossSessionAttribution
+    }
+
     struct ACPSteeringInstruction: Identifiable {
         let id: UUID
         /// The ACP process run this steering message was queued against.
@@ -386,6 +422,30 @@ final class AgentTabSession: ObservableObject {
         /// The optimistic user bubble we appended (for potential removal on failure).
         let optimisticUserItemID: UUID?
         let createdAt: Date
+        var managed: ACPSteeringManagedContext?
+    }
+
+    /// Lifecycle disposal withdraws only rows from the exact binding that accepted the steer.
+    /// A queued-follow-up receipt is already settled and no longer lives in this steering queue.
+    func settlePendingManagedACPSteeringAsNotAccepted() {
+        for instruction in pendingACPSteeringInstructions {
+            guard let managed = instruction.managed else { continue }
+            let candidate = managed.candidate
+            if tabID == candidate.tabID,
+               activeAgentSessionID == candidate.sessionID,
+               persistentSessionBindingIdentity?.generation == candidate.persistentBindingGeneration,
+               bindingTransitionGeneration == candidate.bindingTransitionGeneration,
+               let index = items.firstIndex(where: {
+                   $0.id == managed.attributedItemID
+                       && $0.crossSessionAttribution == managed.attribution
+               })
+            {
+                _ = removeItem(at: index)
+            }
+            managed.sink.resolve(.notAccepted(
+                message: "The ACP steer was withdrawn before the provider accepted it."
+            ))
+        }
     }
 
     var pendingACPSteeringInstructions: [ACPSteeringInstruction] = [] {
@@ -398,6 +458,8 @@ final class AgentTabSession: ObservableObject {
 
     /// Task that drains `pendingACPSteeringInstructions` one-by-one, waiting for MCP tool idle between each.
     var acpSteeringFlushTask: Task<Void, Never>?
+    /// Identifies the owner so a cancelled old flush cannot clear a successor task on unwind.
+    var acpSteeringFlushID: UUID?
 
     /// Number of upcoming turnCompleted events that should be treated as intermediate
     /// because we successfully queued a follow-up prompt during the same run.
@@ -549,6 +611,7 @@ final class AgentTabSession: ObservableObject {
         let optimisticUserItemID: UUID?
         let origin: CodexFallbackOrigin
         let dispatchTicket: UInt64?
+        var stopFence: AgentRunStartStopFence?
     }
 
     struct CodexFallbackBlockingTurn: Equatable {
@@ -595,6 +658,7 @@ final class AgentTabSession: ObservableObject {
         var blockingTurn: CodexFallbackBlockingTurn?
         var state: CodexFallbackQueueState
         var monitoringDispatchContext: AgentSessionLinkDispatchContext?
+        var stopFence: AgentRunStartStopFence?
     }
 
     var codexPendingTurnKind: CodexTurnKind?
@@ -686,8 +750,31 @@ final class AgentTabSession: ObservableObject {
     }
 
     // Settings (per-tab)
-    var selectedAgent: AgentProviderKind = .claudeCode
-    var selectedModelRaw: String = AgentModel.defaultModel.rawValue
+
+    var selectedAgent: AgentProviderKind = .claudeCode {
+        didSet {
+            // Usage recorded under another provider must never be reported as this provider's load.
+            if selectedAgent != oldValue {
+                batchingContextVouchSignals {
+                    vouchedContextCount = nil
+                    vouchedContextWindow = nil
+                }
+            }
+        }
+    }
+
+    var selectedModelRaw: String = AgentModel.defaultModel.rawValue {
+        didSet {
+            // A different model can have a different window; wait for its own report.
+            if selectedModelRaw != oldValue {
+                batchingContextVouchSignals {
+                    vouchedContextCount = nil
+                    vouchedContextWindow = nil
+                }
+            }
+        }
+    }
+
     var selectedReasoningEffortRaw: String?
     private var acpModelParameterSelectionRevisionByIdentity: [ACPModelParameterIdentity: UInt64] = [:]
     private var nextACPModelParameterSelectionRevision: UInt64 = 0
@@ -755,8 +842,9 @@ final class AgentTabSession: ObservableObject {
     var attachmentsPendingProviderConsumptionCleanup: [AgentImageAttachment] = []
     var attachmentTurnState: AgentModeViewModel.AttachmentTurnState = .idle
 
-    // Provider session ID for resumption (e.g., Claude CLI session_id)
+    /// Provider session ID for resumption (e.g., Claude CLI session_id)
     var providerSessionID: String?
+
     var providerCleanupHandle: ProviderConversationCleanupHandle?
     var providerTokenUsageByTurn: [AgentTokenUsagePersist] = []
     var automationTurnAudit: [AgentAutomationTurnAudit] = []
@@ -785,8 +873,241 @@ final class AgentTabSession: ObservableObject {
     var codexModel: String?
     var codexReasoningEffort: String?
     @Published var codexContextUsage: AgentContextUsage? = nil
-    @Published var contextUsageSnapshot: ContextUsageSnapshot? = nil
-    var contextCompactedAt: Date?
+    @Published var contextUsageSnapshot: ContextUsageSnapshot? = nil {
+        didSet {
+            if contextUsageSnapshot == nil {
+                batchingContextVouchSignals {
+                    vouchedContextCount = nil
+                    vouchedContextWindow = nil
+                }
+            } else if contextUsageSnapshot?.used == nil {
+                // No stored count is left for a vouch to describe.
+                vouchedContextCount = nil
+            }
+        }
+    }
+
+    var contextCompactedAt: Date? {
+        didSet {
+            // A compaction invalidates the count; the window is unchanged.
+            if contextCompactedAt != oldValue { vouchedContextCount = nil }
+        }
+    }
+
+    /// A context figure and the provider whose own live usage report produced it.
+    struct ContextUsageVouch: Equatable {
+        let agent: AgentProviderKind
+        let tokens: Int
+    }
+
+    /// The context count and window the selected provider's own live usage reports produced, for
+    /// session-link oversight only (the context ring is unaffected). A stored figure is reported only
+    /// while it equals its vouch, so any later write with a different value invalidates it. A provider
+    /// change clears both, a compaction clears the count, and clearing the usage clears both. Not
+    /// persisted, so restored figures are never reported as current load.
+    private(set) var vouchedContextCount: ContextUsageVouch? {
+        didSet {
+            contextCountVouchRevision &+= 1
+            if vouchedContextCount == nil { vouchedContextCountConfidence = nil }
+            noteContextVouchTransition(from: oldValue, to: vouchedContextCount)
+            selfCompactNativeCompletion?.noteVouchedContextCount(vouchedContextCount?.tokens)
+        }
+    }
+
+    private(set) var vouchedContextWindow: ContextUsageVouch? {
+        didSet { noteContextVouchTransition(from: oldValue, to: vouchedContextWindow) }
+    }
+
+    /// How the report that vouched the count obtained it: `exact` for a reported occupancy count,
+    /// `bestEffort` for a prompt-count fallback. Estimators may relabel the stored snapshot later
+    /// without changing its figures (Claude's end-of-turn rebuild marks it `bestEffort`; a window-only
+    /// ACP update does too), so oversight reports how the vouched figure was produced instead.
+    private(set) var vouchedContextCountConfidence: ContextUsageSnapshotConfidence?
+
+    private var contextVouchSignalBatchDepth = 0
+    private var contextVouchSignalPending = false
+
+    /// A vouch appearing or disappearing changes what oversight exports even when no other
+    /// observation input moved (a model switch or compaction on an idle target withdraws one; a report
+    /// that re-confirms an unchanged stored figure establishes one), so it republishes the snapshot.
+    /// A vouch moving from one figure to another rides the report that wrote the figure.
+    ///
+    /// Invariant: every path that moves a vouch between figures does so while applying the report that
+    /// wrote the new figure into `contextUsageSnapshot`, so presence changes (and label changes, see
+    /// `noteLiveContextUsageReport`) are the only vouch-only changes to the export.
+    private func noteContextVouchTransition(from oldValue: ContextUsageVouch?, to newValue: ContextUsageVouch?) {
+        guard (oldValue == nil) != (newValue == nil) else { return }
+        noteContextExportChangedWithoutSnapshotWrite()
+    }
+
+    private func noteContextExportChangedWithoutSnapshotWrite() {
+        if contextVouchSignalBatchDepth > 0 {
+            contextVouchSignalPending = true
+        } else {
+            noteMonitorObservationInputsChanged()
+        }
+    }
+
+    /// Withdraws the count vouch (the stored figure stays in the ring) and re-evaluates the window
+    /// vouch against `modelContextWindow`, republishing at most once for both.
+    func withdrawContextCountVouch(notingWindow modelContextWindow: Int?) {
+        batchingContextVouchSignals {
+            vouchedContextCount = nil
+            noteLiveContextUsageReport(contextUsedTokens: nil, promptTokens: nil, modelContextWindow: modelContextWindow)
+        }
+    }
+
+    /// Applies several vouch changes and republishes at most once, after all of them.
+    private func batchingContextVouchSignals(_ changes: () -> Void) {
+        contextVouchSignalBatchDepth += 1
+        changes()
+        contextVouchSignalBatchDepth -= 1
+        guard contextVouchSignalBatchDepth == 0, contextVouchSignalPending else { return }
+        contextVouchSignalPending = false
+        noteMonitorObservationInputsChanged()
+    }
+
+    /// The model epoch an ACP `usage_update` occupancy report belongs to, marked for the current
+    /// turn only. Consumed at turn finalization and cleared when a turn begins; kept on the session
+    /// so it can never outlive or be inherited across session objects.
+    struct ContextOccupancyEpoch: Equatable {
+        let agent: AgentProviderKind
+        let modelRaw: String
+    }
+
+    var acpOccupancyReportThisTurn: ContextOccupancyEpoch?
+
+    /// Bumped by every write to `vouchedContextCount`, including a withdrawal that leaves it `nil`, so
+    /// a restore can prove no report touched the count since it was withdrawn.
+    private var contextCountVouchRevision: UInt64 = 0
+
+    /// A count vouch withdrawn at a compaction dispatch, with the revision the withdrawal produced.
+    struct WithdrawnContextCountVouch {
+        let vouch: ContextUsageVouch?
+        fileprivate let confidence: ContextUsageSnapshotConfidence?
+        fileprivate let revision: UInt64
+    }
+
+    /// True while an overseer-requested compaction turn runs on a runtime without a verified
+    /// compaction signal (ACP). Its billed prompt count describes the pre-compaction context, so
+    /// only an occupancy report may vouch for a count until the turn ends.
+    private(set) var contextCountVouchAwaitsOccupancyReport = false
+
+    /// Dispatching a compaction invalidates the count (the window is unchanged) and holds off
+    /// billed-count vouching for the rest of that turn. Returns the withdrawn vouch so a dispatch
+    /// that is refused before anything is sent can put it back.
+    @discardableResult
+    func beginCompactionContextCountSuspension() -> WithdrawnContextCountVouch {
+        let withdrawn = vouchedContextCount
+        let withdrawnConfidence = vouchedContextCountConfidence
+        vouchedContextCount = nil
+        contextCountVouchAwaitsOccupancyReport = true
+        return WithdrawnContextCountVouch(
+            vouch: withdrawn,
+            confidence: withdrawnConfidence,
+            revision: contextCountVouchRevision
+        )
+    }
+
+    func endCompactionContextCountSuspension() {
+        contextCountVouchAwaitsOccupancyReport = false
+    }
+
+    /// When an ACP compaction that ended its turn instantly (fire-and-forget) stops being protected.
+    ///
+    /// Until then the provider may still be compacting in the background, where the session's next
+    /// prompt cancels the work. Delivery readiness, the published `idle_for_send`, and every
+    /// automatic wake treat the session as not idle for the whole span, so a parked `when_sendable`
+    /// send, another overseer, or an Auto-wake cannot start that cancelling turn. The session's own
+    /// user is never held. Every transition — including expiry — publishes an observation change,
+    /// which is what lets parked work resume the moment the hold lifts.
+    private(set) var acpBackgroundCompactionSettlesAt: Date? {
+        didSet {
+            if oldValue != acpBackgroundCompactionSettlesAt {
+                noteMonitorObservationInputsChanged()
+            }
+        }
+    }
+
+    private var acpBackgroundCompactionSettleTask: Task<Void, Never>?
+
+    /// True while a fire-and-forget ACP compaction may still be running in the provider's background.
+    var isSettlingACPBackgroundCompaction: Bool {
+        guard let deadline = acpBackgroundCompactionSettlesAt else { return false }
+        return deadline > Date()
+    }
+
+    /// Holds automatic and overseer deliveries off this session for `duration`, then lifts the hold
+    /// and publishes the change. A newer hold replaces an older one.
+    func beginACPBackgroundCompactionSettle(duration: TimeInterval) {
+        acpBackgroundCompactionSettleTask?.cancel()
+        let deadline = Date().addingTimeInterval(max(0, duration))
+        acpBackgroundCompactionSettlesAt = deadline
+        acpBackgroundCompactionSettleTask = Task { @MainActor [weak self] in
+            let nanoseconds = UInt64(max(0, deadline.timeIntervalSinceNow) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled,
+                  let self,
+                  acpBackgroundCompactionSettlesAt == deadline
+            else { return }
+            acpBackgroundCompactionSettleTask = nil
+            acpBackgroundCompactionSettlesAt = nil
+        }
+    }
+
+    /// Lifts the hold early: a new turn already started (and would have cancelled any background
+    /// compaction), so holding further protects nothing.
+    func endACPBackgroundCompactionSettle() {
+        acpBackgroundCompactionSettleTask?.cancel()
+        acpBackgroundCompactionSettleTask = nil
+        acpBackgroundCompactionSettlesAt = nil
+    }
+
+    /// Restores a vouch withdrawn by a compaction that never reached the provider, but only if no
+    /// usage report has vouched for or withdrawn the count since, and it still describes the stored
+    /// count for the same provider.
+    func restoreContextCountVouchAfterUnsentCompaction(_ withdrawn: WithdrawnContextCountVouch) {
+        guard let vouch = withdrawn.vouch,
+              contextCountVouchRevision == withdrawn.revision,
+              vouchedContextCount == nil,
+              vouch.agent == selectedAgent,
+              contextUsageSnapshot?.used == vouch.tokens
+        else { return }
+        vouchedContextCount = vouch
+        vouchedContextCountConfidence = withdrawn.confidence
+    }
+
+    /// Records which figures a live usage report from the selected provider vouches for. The report's
+    /// context count (or, only when it carried none, its prompt count) vouches for the stored count
+    /// only if they match; a conflicting count (for example one the estimator rejected and replaced
+    /// with a carried-forward or smaller fallback value) withdraws the vouch. The window works the
+    /// same way. Reports without a positive count or window (output-only usage) change nothing, so a
+    /// reported zero stays unvouched, matching the estimators' "zero means absent" convention.
+    func noteLiveContextUsageReport(contextUsedTokens: Int?, promptTokens: Int?, modelContextWindow: Int?) {
+        let reportsOccupancy = (contextUsedTokens ?? 0) > 0
+        let reportedCount = reportsOccupancy ? contextUsedTokens : promptTokens
+        batchingContextVouchSignals {
+            if let reportedCount, reportedCount > 0 {
+                if contextUsageSnapshot?.used == reportedCount {
+                    let previousLabel = vouchedContextCount == nil ? nil : vouchedContextCountConfidence
+                    vouchedContextCount = ContextUsageVouch(agent: selectedAgent, tokens: reportedCount)
+                    vouchedContextCountConfidence = reportsOccupancy ? .exact : .bestEffort
+                    // The same figure re-vouched by a different kind of report changes only its label.
+                    if let previousLabel, previousLabel != vouchedContextCountConfidence {
+                        noteContextExportChangedWithoutSnapshotWrite()
+                    }
+                } else {
+                    vouchedContextCount = nil
+                }
+            }
+            if let window = modelContextWindow, window > 0 {
+                vouchedContextWindow = contextUsageSnapshot?.window == window
+                    ? ContextUsageVouch(agent: selectedAgent, tokens: window)
+                    : nil
+            }
+        }
+    }
+
     var codexNeedsReconnect: Bool = false
     var codexNativeStartupDisposition: AgentModeViewModel.CodexNativeStartupDisposition?
     var codexResumeTimeoutState: AgentModeViewModel.CodexResumeTimeoutState = .init()
@@ -852,6 +1173,7 @@ final class AgentTabSession: ObservableObject {
 
     var claudeController: (any NativeAgentRuntimeControlling)?
     var acpController: ACPAgentSessionController?
+
     var codexEventTask: Task<Void, Never>?
     var codexEventTaskRunID: UUID?
     var codexLastEventAt: Date?
@@ -896,6 +1218,40 @@ final class AgentTabSession: ObservableObject {
     /// Cleared only after the provider accepts the turn.
     var pendingHandoff: AgentModeViewModel.PendingHandoffState = .init()
 
+    /// Session-owned self-compaction state. No restored attempt is executable.
+    var selfCompactState = AgentSelfCompactState() {
+        didSet {
+            if oldValue != selfCompactState { isDirty = true }
+            noteMonitorObservationInputsChanged()
+        }
+    }
+
+    var selfCompactPersistenceWarning = false
+
+    /// Runtime-only fence: a same-key MCP retry cannot claim a scheduled receipt until the
+    /// original reservation's required save has completed.
+    var selfCompactAdmissionPendingID: UUID?
+
+    /// Runtime-only owner/exclusivity fence, rechecked at provider-bound send seams after startup awaits.
+    /// A restored attempt has no executable fence and cannot resume dispatch.
+    var selfCompactDispatchIsCurrent: (@MainActor () -> Bool)?
+
+    @MainActor
+    func selfCompactNoteDispatchIsCurrent(_ dispatchID: AgentSelfCompactionDispatchID) -> Bool {
+        guard selfCompactDispatchIsCurrent?() != false else {
+            selfCompactNativeCompletion?.cancelUnattemptedNoteIfOwnerLost(dispatchID)
+            return false
+        }
+        return true
+    }
+
+    /// Runtime-only timer and note worker; persisted state is deliberately inert on restore.
+    var selfCompactNativeCompletion: AgentSelfCompactNativeCompletionCoordinator?
+
+    /// Transcript item IDs present when an ACP self-compact command was issued. Rows added after
+    /// this set are the command turn. Not persisted.
+    var selfCompactACPCommandItemIDs: Set<UUID>?
+
     var isProviderSelectionLocked: Bool {
         hasSentFirstMessage && !pendingHandoff.defersProviderLockUntilSend
     }
@@ -919,6 +1275,7 @@ final class AgentTabSession: ObservableObject {
     private(set) var persistenceMutationGeneration: UInt64 = 0
     var saveRequestGeneration: UInt64 = 0
     var parentSessionID: UUID?
+    var createdByOverseerSessionID: UUID?
     var hasLoadedPersistedState: Bool = false {
         didSet {
             if oldValue != hasLoadedPersistedState {
@@ -1000,6 +1357,15 @@ final class AgentTabSession: ObservableObject {
     /// instruction, applyEditsReview, MCP control, run cancellation) remain
     /// on the VM and are called separately by each teardown path.
     func cancelEphemeralRuntimeState() {
+        selfCompactNativeCompletion?.cancelRuntimeWork()
+        selfCompactNativeCompletion = nil
+        // Without its worker, an active request could never settle and would hold overseer delivery,
+        // Auto-wake, and managed Stop until relaunch. Settle or park it before the worker is gone.
+        var selfCompact = selfCompactState
+        if selfCompact.releaseForRuntimeTeardown() {
+            selfCompactState = selfCompact
+        }
+        selfCompactACPCommandItemIDs = nil
         derivedTranscriptRefreshTask?.cancel()
         derivedTranscriptRefreshTask = nil
         pendingDerivedTranscriptRefreshReason = nil
@@ -1010,6 +1376,7 @@ final class AgentTabSession: ObservableObject {
         claudeSteeringFlushTask = nil
         acpSteeringFlushTask?.cancel()
         acpSteeringFlushTask = nil
+        acpSteeringFlushID = nil
         clearClaudeReasoningStatus(clearDisplayedStatus: true)
         assistantDeltaFlushTask?.cancel()
         assistantDeltaFlushTask = nil

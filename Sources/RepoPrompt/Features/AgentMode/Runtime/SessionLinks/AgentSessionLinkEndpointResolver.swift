@@ -25,7 +25,7 @@ struct AgentSessionRestorationBindingToken: Equatable, Hashable {
     let bindingTransitionGeneration: UInt64
 }
 
-/// Binding-qualified hydration outcome, used **only** by automatic oversight restoration.
+/// Binding-qualified hydration outcome, used by automatic restoration and fresh lane Add.
 ///
 /// `hasLoadedPersistedState` cannot serve this purpose: it is a completion latch, and a missing
 /// payload, a superseded source revision, and a thrown load error all set it true. Reauthorizing a
@@ -73,11 +73,10 @@ enum AgentSessionRestorationReadiness: Equatable {
 
 // MARK: - Restoration establishment proof
 
-/// The exact incarnations, and their binding-qualified hydration outcomes, that an *automatic*
-/// restoration was classified against.
+/// The exact incarnations and binding-qualified hydration outcomes carried into an Add.
 ///
 /// Manual Add carries none of this: pasting a UUID keeps the resolver's existing behaviour. Automatic
-/// restoration is different, because it is authorized on the strength of a proof read at
+/// restoration and fresh lane creation differ, because they are authorized on a proof read at
 /// classification time and every authority hop between then and activation is a chance for that
 /// endpoint to rebind, go terminal, or be replaced by an incarnation whose legacy
 /// `hasLoadedPersistedState` latch is true while its proof is pending or terminal. Carrying the proof
@@ -88,14 +87,16 @@ struct AgentSessionOversightRestorationProof: Equatable {
     let targetEndpoint: DomainAgentSessionLinkEndpointIdentity
     let observerReadiness: AgentSessionRestorationReadiness
     let targetReadiness: AgentSessionRestorationReadiness
+    let requireObserverAuthoritative: Bool
 
-    /// Fails rather than downgrading: a pair without two authoritative proofs is not restorable, and
-    /// a proof object that tolerated that would defeat its own purpose.
+    /// Restoration requires two authoritative proofs. Fresh lane creation can instead carry the
+    /// observer's exact current readiness while requiring the target's fresh-save proof.
     init?(
         observer: AgentSessionLinkEndpointCandidate,
-        target: AgentSessionLinkEndpointCandidate
+        target: AgentSessionLinkEndpointCandidate,
+        requireObserverAuthoritative: Bool = true
     ) {
-        guard observer.restorationReadiness.isAuthoritative,
+        guard !requireObserverAuthoritative || observer.restorationReadiness.isAuthoritative,
               target.restorationReadiness.isAuthoritative
         else {
             return nil
@@ -104,18 +105,32 @@ struct AgentSessionOversightRestorationProof: Equatable {
         targetEndpoint = target.domainEndpoint
         observerReadiness = observer.restorationReadiness
         targetReadiness = target.restorationReadiness
+        self.requireObserverAuthoritative = requireObserverAuthoritative
     }
 
-    /// Whether these two candidates are still byte-for-byte the proved incarnations, with the same
-    /// authoritative hydration outcome.
+    /// Restoration keeps both complete readiness outcomes; lane creation tolerates an observer's
+    /// pending-to-authoritative transition only when its exact endpoint and binding token persist.
     func matches(
         observer: AgentSessionLinkEndpointCandidate,
         target: AgentSessionLinkEndpointCandidate
     ) -> Bool {
         observer.domainEndpoint == observerEndpoint
             && target.domainEndpoint == targetEndpoint
-            && observer.restorationReadiness == observerReadiness
+            && (
+                observer.restorationReadiness == observerReadiness
+                    || (
+                        !requireObserverAuthoritative
+                            && isObserverHydrationAdvance(observer.restorationReadiness)
+                    )
+            )
             && target.restorationReadiness == targetReadiness
+    }
+
+    private func isObserverHydrationAdvance(_ current: AgentSessionRestorationReadiness) -> Bool {
+        guard case let .pending(before) = observerReadiness,
+              case let .authoritative(after, _) = current
+        else { return false }
+        return before == after
     }
 
     /// Whether both proved incarnations are still present in one live candidate snapshot.

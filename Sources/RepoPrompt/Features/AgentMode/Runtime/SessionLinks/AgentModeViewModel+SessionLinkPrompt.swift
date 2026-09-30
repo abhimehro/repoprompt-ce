@@ -409,7 +409,7 @@ extension AgentModeViewModel {
                 AgentSessionLinkCatalogDiagnostics.repairTransition(
                     runID: projection.runID,
                     tabID: session.tabID,
-                    outcome: projection.hasAgentSessionLink == true ? .closedCatalogPresent : .closedOutboundLost
+                    outcome: projection.hasAgentSessionLink == true ? .closedCatalogPresent : .closedLinksLost
                 )
             }
             return

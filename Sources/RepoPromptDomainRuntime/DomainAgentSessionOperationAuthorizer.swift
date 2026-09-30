@@ -21,16 +21,26 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
     case manageCleanup = "agent_manage.cleanup_sessions"
 
     case monitorList = "agent_session_link.list"
+    case monitorCreateLane = "agent_session_link.create_lane"
+    case monitorRetireLane = "agent_session_link.retire_lane"
     case monitorPoll = "agent_session_link.poll"
     case monitorWait = "agent_session_link.wait"
     case monitorRead = "agent_session_link.read"
     case monitorSend = "agent_session_link.send"
+    /// Native compaction of one exact idle target, under its existing send grant.
+    case monitorCompact = "agent_session_link.compact"
     /// Observer-local Auto-wake admission policy for one exact outbound lane.
     ///
     /// It names a target because the policy is per-lane, but it never reaches that target: nothing
     /// about the overseen session is read, written, resumed, or notified. The authority it needs is
     /// therefore the plain read grant the observer already holds over that lane.
     case monitorSnoozeAutoWake = "agent_session_link.snooze_auto_wake"
+    /// Answers the target's exact current pending prompt on the user's behalf.
+    case monitorRespond = "agent_session_link.respond"
+    /// Steers the target: injects an instruction into its active run or starts its next turn.
+    case monitorSteer = "agent_session_link.steer"
+    /// Cancels one exact target's current run or pending start under a Manage grant.
+    case monitorStop = "agent_session_link.stop"
 
     package enum Family: String, Hashable, Sendable {
         /// Existing spawn-provenance control and read operations.
@@ -45,8 +55,8 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
              .manageList, .manageGetLog, .manageExtractHandoff,
              .manageResume, .manageStop, .manageCleanup:
             .sessionControl
-        case .monitorList, .monitorPoll, .monitorWait, .monitorRead, .monitorSend,
-             .monitorSnoozeAutoWake:
+        case .monitorList, .monitorCreateLane, .monitorRetireLane, .monitorPoll, .monitorWait, .monitorRead, .monitorSend, .monitorCompact,
+             .monitorSnoozeAutoWake, .monitorRespond, .monitorSteer, .monitorStop:
             .monitor
         }
     }
@@ -55,10 +65,10 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
     /// grant set instead of a per-target proof.
     package var isObserverScoped: Bool {
         switch self {
-        case .monitorList:
+        case .monitorList, .monitorCreateLane:
             true
-        case .monitorPoll, .monitorWait, .monitorRead, .monitorSend,
-             .monitorSnoozeAutoWake,
+        case .monitorRetireLane, .monitorPoll, .monitorWait, .monitorRead, .monitorSend, .monitorCompact,
+             .monitorSnoozeAutoWake, .monitorRespond, .monitorSteer, .monitorStop,
              .runPoll, .runWait, .runCancel, .runSteer, .runRespond,
              .manageList, .manageGetLog, .manageExtractHandoff,
              .manageResume, .manageStop, .manageCleanup:
@@ -78,9 +88,11 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
             .wait
         case .monitorRead:
             .read
-        case .monitorSend:
+        case .monitorSend, .monitorCompact:
             .sendWhenIdle
-        case .monitorList,
+        case .monitorRespond, .monitorSteer, .monitorStop, .monitorRetireLane:
+            .manage
+        case .monitorList, .monitorCreateLane,
              .runPoll, .runWait, .runCancel, .runSteer, .runRespond,
              .manageList, .manageGetLog, .manageExtractHandoff,
              .manageResume, .manageStop, .manageCleanup:
@@ -91,10 +103,11 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
     /// True when the operation mutates or resumes target state rather than only reading it.
     package var mutatesTarget: Bool {
         switch self {
-        case .runCancel, .runSteer, .runRespond, .manageResume, .manageStop, .manageCleanup, .monitorSend:
+        case .runCancel, .runSteer, .runRespond, .manageResume, .manageStop, .manageCleanup, .monitorSend, .monitorCompact,
+             .monitorRespond, .monitorSteer, .monitorStop, .monitorRetireLane:
             true
         case .runPoll, .runWait, .manageList, .manageGetLog, .manageExtractHandoff,
-             .monitorList, .monitorPoll, .monitorWait, .monitorRead,
+             .monitorList, .monitorCreateLane, .monitorPoll, .monitorWait, .monitorRead,
              .monitorSnoozeAutoWake:
             false
         }
@@ -206,6 +219,7 @@ package enum DomainAgentSessionAuthorizationDenial: String, Error, Equatable, Se
     case observerScopedOperation = "observer_scoped_operation"
     case targetScopedOperation = "target_scoped_operation"
     case noActiveOutboundLink = "no_active_outbound_link"
+    case noActiveLink = "no_active_link"
 }
 
 package enum DomainAgentSessionAuthorizationDecision: Equatable, Sendable {
@@ -272,13 +286,13 @@ package enum DomainAgentSessionOperationAuthorizer {
 
     /// Authorizes a targetless oversight operation against the caller's own grant set.
     ///
-    /// `agent_session_link.list` remains outbound-only even when an inbound link keeps the shared
-    /// tool catalog entry visible. After the final outbound revocation, callers must receive the
-    /// operation-specific denial rather than probe an inventory they no longer hold.
+    /// `list` requires an outbound link; `create_lane` accepts either direction. Neither
+    /// operation may use another caller's identity or infer a grant from catalog visibility.
     package static func authorizeObserverScoped(
         operation: DomainAgentSessionTargetOperation,
         caller: DomainAgentSessionCallerIdentity,
-        hasActiveOutboundLink: Bool
+        hasActiveOutboundLink: Bool,
+        hasActiveInboundLink: Bool = false
     ) -> DomainAgentSessionAuthorizationDecision {
         guard operation.isObserverScoped else {
             return .denied(.targetScopedOperation)
@@ -286,10 +300,16 @@ package enum DomainAgentSessionOperationAuthorizer {
         guard caller.agentSessionID != nil else {
             return .denied(.monitorRequiresAgentCaller)
         }
-        guard hasActiveOutboundLink else {
+        switch operation {
+        case .monitorList where hasActiveOutboundLink:
+            return .authorized(.observerGrantSet)
+        case .monitorCreateLane where hasActiveOutboundLink || hasActiveInboundLink:
+            return .authorized(.observerGrantSet)
+        case .monitorCreateLane:
+            return .denied(.noActiveLink)
+        default:
             return .denied(.noActiveOutboundLink)
         }
-        return .authorized(.observerGrantSet)
     }
 
     /// Enumeration scope for Agent-origin discovery. Agent callers may only see sessions they

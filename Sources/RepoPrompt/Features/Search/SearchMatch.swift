@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptC
 import RepoPromptRegexCore
 
 // Wildmatch flags for pattern matching

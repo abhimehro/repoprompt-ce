@@ -486,7 +486,8 @@ final class AgentSessionLinkAutonomousPipelineTests: XCTestCase {
                 runID: runID,
                 routeToken: routeToken,
                 projectionRevision: runCatalogRevision,
-                hasAgentSessionLink: true
+                hasAgentSessionLink: true,
+                hasAnyActiveLink: true
             ),
             to: endpoint
         )
@@ -550,6 +551,7 @@ final class LiveWindowEndpointHost: AgentSessionLinkEndpointHost {
                 displayName: candidate.displayName,
                 providerDisplayName: candidate.providerDisplayName,
                 status: .idle,
+                board: .empty,
                 idleForSend: false,
                 pendingInteractionKind: nil,
                 latestVisibleAssistantPreview: nil,
@@ -723,6 +725,13 @@ final class LiveWindowEndpointHost: AgentSessionLinkEndpointHost {
         )
     }
 
+    func agentSessionLinkStartStopFence(for candidate: AgentSessionLinkEndpointCandidate) -> AgentRunStartStopFence? {
+        guard let viewModel = viewModelsByWindowID[candidate.windowID],
+              let session = viewModel.agentSessionLinkLiveSession(matching: candidate)
+        else { return nil }
+        return AgentRunStartStopFence(session: session)
+    }
+
     func agentSessionLinkPerformSend(
         to candidate: AgentSessionLinkEndpointCandidate,
         request: AgentSessionLinkSendRequest,
@@ -733,6 +742,23 @@ final class LiveWindowEndpointHost: AgentSessionLinkEndpointHost {
             return .blocked(.endpointInvalidated)
         }
         return await viewModel.agentSessionLinkPerformSend(
+            to: candidate,
+            request: request,
+            liveness: liveness,
+            commitAuthorization: commitAuthorization
+        )
+    }
+
+    func agentSessionLinkPerformCompact(
+        to candidate: AgentSessionLinkEndpointCandidate,
+        request: AgentSessionLinkCompactRequest,
+        liveness: @escaping AgentSessionLinkSendLivenessProbe,
+        commitAuthorization: @MainActor () async -> AgentSessionLinkSendCommitOutcome
+    ) async -> AgentSessionLinkSendTransactionOutcome {
+        guard let viewModel = viewModelsByWindowID[candidate.windowID] else {
+            return .blocked(.endpointInvalidated)
+        }
+        return await viewModel.agentSessionLinkPerformCompact(
             to: candidate,
             request: request,
             liveness: liveness,

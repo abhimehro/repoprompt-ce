@@ -1,7 +1,7 @@
 import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
-@testable import RepoPromptMCP
+@testable import RepoPromptMCPCore
 import XCTest
 
 #if DEBUG

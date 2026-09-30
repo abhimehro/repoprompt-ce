@@ -1,13 +1,13 @@
 import Foundation
 
 /// Vocabulary for the bounded, one-shot recovery of a Codex run whose *returned* MCP catalog is
-/// stuck saying `agent_session_link` is absent while the link authority holds a live outbound grant.
+/// stuck saying `agent_session_link` is absent while the link authority holds any exact live grant.
 ///
 /// The state is produced by ordinary code: `notifyToolListChangedForAgentSession` republishes the
-/// observation with returned presence preserved and outbound presence recomputed, so a grant restored
+/// observation with returned presence preserved and any-link presence recomputed, so a grant restored
 /// against a live run whose client has not re-read `tools/list` lands on exactly
-/// `hasAgentSessionLink == false` plus `hasActiveOutboundLink == true`. For any established run the
-/// prompt context then fails closed, and nothing else will ever republish a healed catalog.
+/// `hasAgentSessionLink == false` plus `hasAnyActiveLink == true`. An inbound-only lane needs the
+/// tool for inverse attention even though it has no outbound prompt context to repair.
 ///
 /// This file owns only the two predicates and the cycle value. The projection reconciler in
 /// `AgentModeViewModel+SessionLinkPrompt` opens and closes a cycle; `CodexAgentModeCoordinator`
@@ -47,22 +47,22 @@ enum AgentSessionLinkCodexCatalogRepair {
     }
 
     /// The exact mismatch this repair exists for: the returned catalog says the tool is absent while
-    /// the authority says this endpoint still holds a live outbound grant.
+    /// the authority says this endpoint still holds a live grant in either direction.
     ///
     /// Both halves must be *exact current observations*. An unknown (`nil`) presence on either side
     /// is not a mismatch; it is a route torn down or not yet observed, which is not evidence of
     /// anything.
     static func isStuckProjection(_ projection: AgentSessionLinkRunCatalogProjection) -> Bool {
-        projection.hasAgentSessionLink == false && projection.hasActiveOutboundLink == true
+        projection.hasAgentSessionLink == false && projection.hasAnyActiveLink == true
     }
 
     /// An exact current observation that ends any open cycle as *over* rather than spent: the tool
-    /// is back in the returned catalog, or the endpoint no longer holds an outbound grant to repair
+    /// is back in the returned catalog, or the endpoint no longer holds any exact grant to repair
     /// for.
     ///
     /// Deliberately not the negation of `isStuckProjection`: an unknown observation closes nothing
     /// and leaves a cycle pending, because it is not evidence that the catalog healed.
     static func projectionResolvesCycle(_ projection: AgentSessionLinkRunCatalogProjection) -> Bool {
-        projection.hasAgentSessionLink == true || projection.hasActiveOutboundLink == false
+        projection.hasAgentSessionLink == true || projection.hasAnyActiveLink == false
     }
 }

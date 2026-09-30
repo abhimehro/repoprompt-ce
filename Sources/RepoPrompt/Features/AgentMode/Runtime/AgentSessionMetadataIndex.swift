@@ -68,6 +68,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
     var periodicIdleWakeEnabled: Bool
     var periodicIdleWakeIntervalSeconds: Int
     var parentSessionID: UUID?
+    var createdByOverseerSessionID: UUID?
     var isMCPOriginated: Bool
     var worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary]
     var activeWorktreeMergeSummaries: [AgentSessionWorktreeMergeSummary]
@@ -144,6 +145,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
         periodicIdleWakeEnabled: Bool = false,
         periodicIdleWakeIntervalSeconds: Int = AgentSessionLinkPeriodicWakeInterval.defaultSeconds,
         parentSessionID: UUID?,
+        createdByOverseerSessionID: UUID? = nil,
         isMCPOriginated: Bool,
         worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary] = [],
         activeWorktreeMergeSummaries: [AgentSessionWorktreeMergeSummary] = [],
@@ -182,6 +184,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
         self.periodicIdleWakeEnabled = periodicIdleWakeEnabled
         self.periodicIdleWakeIntervalSeconds = AgentSessionLinkPeriodicWakeInterval.normalized(periodicIdleWakeIntervalSeconds)
         self.parentSessionID = parentSessionID
+        self.createdByOverseerSessionID = createdByOverseerSessionID
         self.isMCPOriginated = isMCPOriginated
         self.worktreeBindingSummaries = worktreeBindingSummaries
         self.activeWorktreeMergeSummaries = activeWorktreeMergeSummaries
@@ -222,6 +225,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
         case periodicIdleWakeEnabled
         case periodicIdleWakeIntervalSeconds
         case parentSessionID
+        case createdByOverseerSessionID
         case isMCPOriginated
         case worktreeBindingSummaries
         case activeWorktreeMergeSummaries
@@ -280,6 +284,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
                 ?? AgentSessionLinkPeriodicWakeInterval.defaultSeconds
         )
         parentSessionID = try container.decodeIfPresent(UUID.self, forKey: .parentSessionID)
+        createdByOverseerSessionID = try container.decodeIfPresent(UUID.self, forKey: .createdByOverseerSessionID)
         isMCPOriginated = try container.decodeIfPresent(Bool.self, forKey: .isMCPOriginated) ?? false
         worktreeBindingSummaries = try container.decodeIfPresent([AgentSessionWorktreeBindingSummary].self, forKey: .worktreeBindingSummaries) ?? []
         activeWorktreeMergeSummaries = try container.decodeIfPresent([AgentSessionWorktreeMergeSummary].self, forKey: .activeWorktreeMergeSummaries) ?? []
@@ -318,6 +323,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
             periodicIdleWakeEnabled: periodicIdleWakeEnabled,
             periodicIdleWakeIntervalSeconds: periodicIdleWakeIntervalSeconds,
             parentSessionID: parentSessionID,
+            createdByOverseerSessionID: createdByOverseerSessionID,
             hasUnknownConversationContent: hasUnknownConversationContent,
             isMCPOriginated: isMCPOriginated,
             worktreeBindingSummaries: worktreeBindingSummaries,
@@ -337,6 +343,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
             lastRunState: lastRunStateRaw,
             acpModelParameterSelections: acpModelParameterSelections,
             parentSessionID: parentSessionID,
+            createdByOverseerSessionID: createdByOverseerSessionID,
             isMCPOriginated: isMCPOriginated,
             worktreeBindingSummaries: worktreeBindingSummaries,
             activeWorktreeMergeSummaries: activeWorktreeMergeSummaries
@@ -367,6 +374,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
             && periodicIdleWakeEnabled == other.periodicIdleWakeEnabled
             && periodicIdleWakeIntervalSeconds == other.periodicIdleWakeIntervalSeconds
             && parentSessionID == other.parentSessionID
+            && createdByOverseerSessionID == other.createdByOverseerSessionID
             && isMCPOriginated == other.isMCPOriginated
             && worktreeBindingSummaries == other.worktreeBindingSummaries
             && activeWorktreeMergeSummaries == other.activeWorktreeMergeSummaries
@@ -419,6 +427,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
             periodicIdleWakeEnabled: session.periodicIdleWakeEnabled,
             periodicIdleWakeIntervalSeconds: session.periodicIdleWakeIntervalSeconds,
             parentSessionID: session.parentSessionID,
+            createdByOverseerSessionID: session.createdByOverseerSessionID,
             isMCPOriginated: session.isMCPOriginated,
             worktreeBindingSummaries: session.worktreeBindings.worktreeBindingSummaries,
             activeWorktreeMergeSummaries: session.worktreeMergeOperations.activeWorktreeMergeSummaries,

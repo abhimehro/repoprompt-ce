@@ -298,6 +298,7 @@ class _FocusedBuildParser:
                 "RepoPromptExecutable": "RepoPrompt",
                 "RepoPromptShared": "RepoPromptShared",
                 "RepoPromptMCP": "RepoPromptMCP",
+                "RepoPromptMCPCore": "RepoPromptMCPCore",
                 "RepoPromptC": "RepoPromptC",
                 "CSwiftPCRE2": "CSwiftPCRE2",
                 "TreeSitterScannerSupport": "TreeSitterScannerSupport",

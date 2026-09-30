@@ -212,6 +212,11 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
         XCTAssertEqual(row.crossSessionAttribution?.sourceSessionID, request.observerSessionID)
         XCTAssertEqual(row.crossSessionAttribution?.linkID, request.linkID)
         XCTAssertEqual(row.crossSessionAttribution?.sourceName, "Planning")
+        XCTAssertEqual(row.dispatchedProviderText, AgentSessionLinkMessageEnvelope.render(
+            sourceSessionID: request.observerSessionID, sourceName: request.observerDisplayName,
+            linkID: request.linkID, linkGeneration: request.linkGeneration,
+            message: request.message, framing: .coordination
+        ))
 
         // Persistence is the delivery linearization point: the durable payload already contained the
         // attributed row, and it committed before the provider controller was ever created.
@@ -474,6 +479,64 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
         XCTAssertNil(fixture.session.activeComposerSubmitAttempt)
     }
 
+    func testCommittedQueuedDrainCannotDispatchAfterUserStopGenerationAdvances() async throws {
+        let fixture = try makeFixture()
+        var request = makeRequest(message: "committed queue entry")
+        request.startStopFence = AgentRunStartStopFence(session: fixture.session)
+        fixture.driftHook.duringDeliveryFlush = {
+            // The queued entry crossed its commit cutoff, so Stop cannot withdraw it.
+            fixture.session.stopState.invalidateScheduledStarts()
+        }
+        let outcome = await send(fixture, request: request)
+        guard case let .delivered(delivery) = outcome else {
+            return XCTFail("expected durable-only delivery, got \(outcome)")
+        }
+        XCTAssertEqual(delivery.deliveryState, .persisted)
+        XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+    }
+
+    /// Internal lifecycle cancellations (instruction timeout, location change, runtime shutdown)
+    /// fence the target's own deferred starts but never withdraw an overseer's queued send.
+    func testQueuedSendSurvivesInternalLifecycleCancellations() async throws {
+        let fixture = try makeFixture()
+        var request = makeRequest(message: "queued before an internal cancellation")
+        let queuedFence = AgentRunStartStopFence(session: fixture.session)
+        request.startStopFence = queuedFence
+        fixture.viewModel.prepareAgentRunCancellation(
+            session: fixture.session, intent: .userStop, origin: .internalLifecycle
+        )
+        fixture.viewModel.prepareAgentRunCancellation(
+            session: fixture.session, intent: .executionLocationChange, origin: .explicitStop
+        )
+        fixture.viewModel.prepareAgentRunCancellation(
+            session: fixture.session, intent: .runtimeShutdown, origin: .internalLifecycle
+        )
+        XCTAssertFalse(queuedFence.permitsStart(of: fixture.session), "deferred starts stay fenced")
+        XCTAssertTrue(queuedFence.permitsQueuedDelivery(to: fixture.session))
+
+        let outcome = await send(fixture, request: request)
+        guard case let .delivered(delivery) = outcome else {
+            return XCTFail("expected delivery after a non-Stop cancellation, got \(outcome)")
+        }
+        XCTAssertEqual(delivery.deliveryState, .runStarted)
+    }
+
+    func testQueuedSendIsWithdrawnAfterExplicitStop() async throws {
+        let fixture = try makeFixture()
+        var request = makeRequest(message: "queued before the user pressed Stop")
+        request.startStopFence = AgentRunStartStopFence(session: fixture.session)
+        fixture.viewModel.prepareAgentRunCancellation(
+            session: fixture.session, intent: .userStop, origin: .explicitStop
+        )
+
+        let outcome = await send(fixture, request: request)
+        guard case .blocked(.targetStopped) = outcome else {
+            return XCTFail("expected target_stopped after an explicit Stop, got \(outcome)")
+        }
+        XCTAssertTrue(fixture.session.items.filter { $0.kind == .user }.isEmpty)
+        XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+    }
+
     func testEndpointDriftAfterTheCommitFenceAbortsBeforeMutating() async throws {
         let fixture = try makeFixture()
 
@@ -488,7 +551,7 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
             return .committed
         }
 
-        XCTAssertEqual(outcome, .blocked(.endpointInvalidated))
+        XCTAssertEqual(outcome, .blocked(.endpointPostSession))
         XCTAssertTrue(fixture.session.items.isEmpty, "A drifted endpoint must never receive the row")
         XCTAssertFalse(fixture.events.contains(.save))
         XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
@@ -527,6 +590,10 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
             "No provider turn may start against a binding that replaced the admitted one"
         )
         XCTAssertNil(fixture.session.activeComposerSubmitAttempt, "The composer claim must be released")
+        XCTAssertNil(
+            fixture.session.items.first(where: { $0.id == delivery.targetItemID })?.dispatchedProviderText,
+            "A persisted-only row was never handed to the provider"
+        )
     }
 
     // MARK: - Host-backed liveness across the committed send
@@ -557,11 +624,58 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .blocked(.endpointInvalidated))
+        XCTAssertEqual(outcome, .blocked(.endpointPostObserver))
         XCTAssertTrue(fixture.session.items.isEmpty, "no row may exist for a vanished observer")
         XCTAssertFalse(fixture.events.contains(.save))
         XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
         XCTAssertNil(fixture.session.activeComposerSubmitAttempt)
+    }
+
+    func testEndpointSubreasonDistinguishesWindowRoutingFromProbeTeardown() {
+        let closingWindow = AgentSessionLinkSendLiveness(
+            observerEndpointIsLive: true,
+            targetEndpointIsLive: false,
+            targetWindowIsClosing: true
+        )
+        XCTAssertEqual(AgentSessionLinkSendFailure.invalidated(closingWindow), .endpointWindow)
+        XCTAssertEqual(
+            AgentSessionLinkSendFailure.invalidated(closingWindow, postCommit: true),
+            .endpointPostWindow
+        )
+        XCTAssertEqual(AgentSessionLinkSendFailure.invalidated(.unavailable), .endpointProbeHost)
+        XCTAssertEqual(AgentSessionLinkSendFailure.endpointHost.subreason, "host")
+        XCTAssertEqual(AgentSessionLinkSendFailure.endpointProbeHost.subreason, "probe_host")
+    }
+
+    func testUnavailableHostProbeAfterCommitDeliversNothing() async throws {
+        let fixture = try makeFixture()
+        var hostAvailable = true
+
+        let outcome = await send(
+            fixture,
+            liveness: { hostAvailable ? Self.liveLiveness : .unavailable },
+            commit: {
+                hostAvailable = false
+                return .committed
+            }
+        )
+
+        XCTAssertEqual(outcome, .blocked(.endpointProbeHost))
+        XCTAssertTrue(fixture.session.items.isEmpty)
+        XCTAssertFalse(fixture.events.contains(.save))
+        XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+    }
+
+    func testClaimLostDuringCommitReportsClaimWithoutDelivering() async throws {
+        let fixture = try makeFixture()
+        let outcome = await send(fixture) { [fixture] in
+            fixture.session.activeComposerSubmitAttempt = nil
+            return .committed
+        }
+        XCTAssertEqual(outcome, .blocked(.endpointClaim))
+        XCTAssertEqual(AgentSessionLinkSendFailure.endpointClaim.wireResult, "endpoint_invalidated")
+        XCTAssertEqual(AgentSessionLinkSendFailure.endpointClaim.subreason, "claim")
+        XCTAssertTrue(fixture.session.items.isEmpty)
     }
 
     /// Regression: the target *window* entering its closing state must block before the append.
@@ -577,7 +691,7 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
             liveness: {
                 AgentSessionLinkSendLiveness(
                     observerEndpointIsLive: true,
-                    targetEndpointIsLive: true,
+                    targetEndpointIsLive: !windowIsClosing,
                     targetWindowIsClosing: windowIsClosing
                 )
             },
@@ -587,7 +701,7 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .blocked(.endpointInvalidated))
+        XCTAssertEqual(outcome, .blocked(.endpointPostWindow))
         XCTAssertTrue(fixture.session.items.isEmpty)
         XCTAssertFalse(fixture.events.contains(.save))
         XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
@@ -603,7 +717,7 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
             liveness: {
                 AgentSessionLinkSendLiveness(
                     observerEndpointIsLive: true,
-                    targetEndpointIsLive: true,
+                    targetEndpointIsLive: false,
                     targetWindowIsClosing: true
                 )
             },
@@ -613,7 +727,7 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .blocked(.endpointInvalidated))
+        XCTAssertEqual(outcome, .blocked(.endpointWindow))
         XCTAssertEqual(commitCalls, 0, "a closing target window must not even consume the commit fence")
         XCTAssertTrue(fixture.session.items.isEmpty)
         XCTAssertFalse(fixture.events.contains(.save))

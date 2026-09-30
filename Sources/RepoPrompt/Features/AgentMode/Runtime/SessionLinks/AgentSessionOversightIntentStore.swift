@@ -8,16 +8,17 @@ import Foundation
 // writes them on link creation and removal. Invariants: the durable payload carries no link IDs,
 // generations, endpoint incarnations, or Auto-wake/snooze state — those are process-local and are
 // re-derived on restore — and every mutation is token-fenced so a stale attempt cannot overwrite a
-// newer document.
+// newer document. Legacy delegation fields are ignored; live grants derive their capabilities from
+// current authority defaults, never from UUID-keyed saved data.
 
 // MARK: - Durable model
 
 /// One directed overseer → overseen relationship the user explicitly created.
 ///
-/// This is the **entire** durable payload. Link IDs, generations, endpoint incarnations, binding
-/// generations, capabilities, reservations, observations, cursors, waiters, prompt inventories, and
-/// delivery state stay process-local in `DomainAgentSessionLinkAuthority` and are never written to
-/// disk: a persisted grant would be an authorization this process never re-derived.
+/// Together with the document version, this is the **entire** durable
+/// payload. Link IDs, generations, endpoint incarnations, binding generations, reservations,
+/// observations, cursors, waiters, prompt inventories, and delivery state stay process-local in
+/// `DomainAgentSessionLinkAuthority` and are never written to disk.
 struct AgentSessionOversightIntent: Codable, Hashable {
     let observerSessionID: UUID
     let targetSessionID: UUID
@@ -41,7 +42,8 @@ struct AgentSessionOversightIntent: Codable, Hashable {
     }
 }
 
-/// Versioned on-disk envelope. Version 1 carries only the directed UUID pairs.
+/// Versioned on-disk envelope. Swift's synthesized decoder ignores the legacy `delegations`
+/// key while retaining the directed `links`, and every subsequent write omits that key.
 struct AgentSessionOversightIntentDocument: Codable {
     static let currentVersion = 1
 

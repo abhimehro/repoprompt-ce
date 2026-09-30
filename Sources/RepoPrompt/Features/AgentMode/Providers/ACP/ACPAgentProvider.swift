@@ -332,6 +332,12 @@ protocol ACPAgentProvider: Sendable {
     func cleanupLaunchArtifacts(for configuration: ACPLaunchConfiguration) async
     func normalizeError(_ error: Error) -> Error
 
+    /// Recognizes a provider-owned response ID only. After ordinary request correlation fails,
+    /// the controller requires only a string `id` and no `method` before consulting this hook.
+    /// Keep this synchronous and side-effect-free.
+    /// This must be a protocol requirement so calls through an existential reach overrides.
+    func recognizesUnmatchedResponseID(_ id: String) -> Bool
+
     /// Opts a provider into ACP's parameterized model picker capability and classifies
     /// provider-owned select options without changing their exact wire identity.
     var supportsParameterizedModelPicker: Bool { get }
@@ -344,6 +350,10 @@ protocol ACPAgentProvider: Sendable {
 }
 
 extension ACPAgentProvider {
+    func recognizesUnmatchedResponseID(_: String) -> Bool {
+        false
+    }
+
     var supportsParameterizedModelPicker: Bool {
         false
     }

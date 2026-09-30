@@ -6,13 +6,21 @@ import RepoPromptDomainRuntime
 import RepoPromptShared
 import XCTest
 
-/// Covers the production server path that turns a restored outbound grant into the false/true
-/// projection consumed by the Codex catalog repair.
+/// Covers the production server path that repairs a stale Codex catalog when an exact grant is
+/// restored, including an inbound-only created lane.
 @MainActor
 final class AgentSessionLinkCodexCatalogRepairIntegrationTests: XCTestCase {
     private let clientName = AgentProviderKind.openCodeMCPClientID
 
     func testRestoredOutboundGrantInvalidationRepairsCodexCatalogThroughServerProjection() async throws {
+        try await assertRestoredGrantRepairsCatalog(outbound: true)
+    }
+
+    func testRestoredCreatedLaneInboundGrantRepairsCodexCatalogWithoutOutboundAuthority() async throws {
+        try await assertRestoredGrantRepairsCatalog(outbound: false)
+    }
+
+    private func assertRestoredGrantRepairsCatalog(outbound: Bool) async throws {
         #if DEBUG
             let manager = ServerNetworkManager(
                 domainHost: AppDomainRuntimeComposition.shared.runtime.domainHost
@@ -56,6 +64,7 @@ final class AgentSessionLinkCodexCatalogRepairIntegrationTests: XCTestCase {
             let controller = LifecycleNoopCodexController(recorder: LifecycleRecorder())
             session.selectedAgent = .codexExec
             session.hasLoadedPersistedState = true
+            session.createdByOverseerSessionID = outbound ? nil : UUID()
             session.installRunID(runID)
             session.codexConversationID = conversationID
             session.codexRolloutPath = rolloutPath
@@ -103,14 +112,14 @@ final class AgentSessionLinkCodexCatalogRepairIntegrationTests: XCTestCase {
             let sourceGeneration = session.codexControllerGeneration
             await manager.debugSetSessionLinkCatalogEndpointsForTesting(
                 anyActive: [endpoint],
-                outbound: [endpoint]
+                outbound: outbound ? [endpoint] : []
             )
             await manager.notifyToolListChangedForAgentSession(sessionID)
 
             let stuckProjection = await manager.debugRunCatalogProjection(for: runID)
             let stuck = try XCTUnwrap(stuckProjection)
             XCTAssertEqual(stuck.hasAgentSessionLink, false)
-            XCTAssertEqual(stuck.hasActiveOutboundLink, true)
+            XCTAssertEqual(stuck.hasActiveOutboundLink, outbound)
             XCTAssertEqual(stuck.routeToken?.observerEndpoint, endpoint)
             XCTAssertFalse(stuck.isReady)
             XCTAssertNil(session.runID, "the stale process run is retired so cold bootstrap applies")

@@ -492,6 +492,11 @@ extension AgentModeViewModel {
         }
     }
 
+    enum MCPSessionCreationKind {
+        case mcpControlled
+        case oversightLane(creatorSessionID: UUID)
+    }
+
     struct MCPSessionTarget: Equatable {
         /// How this session target was obtained.
         enum Origin: Equatable {
@@ -854,6 +859,7 @@ extension AgentModeViewModel {
         let sessionID: UUID?
         let canStash: Bool
         let parentSessionID: UUID?
+        let createdByOverseerSessionID: UUID?
         let depth: Int
         let isMCPControlled: Bool
         /// Bound-worktree visual identity for this session (Item 10). Nil when
@@ -891,6 +897,7 @@ extension AgentModeViewModel {
             sessionID: UUID?,
             canStash: Bool = false,
             parentSessionID: UUID?,
+            createdByOverseerSessionID: UUID? = nil,
             depth: Int,
             isMCPControlled: Bool,
             worktree: AgentWorktreeIndicator? = nil,
@@ -912,6 +919,7 @@ extension AgentModeViewModel {
             self.sessionID = sessionID
             self.canStash = canStash
             self.parentSessionID = parentSessionID
+            self.createdByOverseerSessionID = createdByOverseerSessionID
             self.depth = depth
             self.isMCPControlled = isMCPControlled
             self.worktree = worktree

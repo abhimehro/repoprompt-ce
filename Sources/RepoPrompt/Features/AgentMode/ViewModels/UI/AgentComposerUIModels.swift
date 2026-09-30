@@ -1,10 +1,63 @@
 import Foundation
 
 struct AgentComposerDraftRestorationOperation: Equatable {
+    struct Fragment: Equatable {
+        let sequence: UInt64
+        let text: String
+    }
+
     let rejectedDraftText: String
     let draftTextBeforeRestoration: String
     let composedDraftText: String
-    let previousRestorationEventID: UUID?
+    let fragments: [Fragment]
+}
+
+struct AgentComposerDraftSnapshot {
+    let text: String
+    let restorationSequence: UInt64
+}
+
+/// The producer retains only fragments not yet acknowledged by this tab's composer.
+/// A stored snapshot carries the highest sequence already included in its text.
+struct AgentComposerDraftRestorationLedger {
+    struct TabState {
+        var nextSequence: UInt64 = 0
+        var acknowledgedSequence: UInt64 = 0
+        var storedDraftSequence: UInt64 = 0
+        var pendingFragments: [AgentComposerDraftRestorationOperation.Fragment] = []
+    }
+
+    private(set) var tabs: [UUID: TabState] = [:]
+
+    mutating func append(tabID: UUID, text: String) -> [AgentComposerDraftRestorationOperation.Fragment] {
+        var state = tabs[tabID] ?? TabState()
+        state.nextSequence += 1
+        state.pendingFragments.append(.init(sequence: state.nextSequence, text: text))
+        state.storedDraftSequence = state.nextSequence
+        tabs[tabID] = state
+        return state.pendingFragments
+    }
+
+    mutating func acknowledge(tabID: UUID, through sequence: UInt64) {
+        guard var state = tabs[tabID] else { return }
+        state.acknowledgedSequence = max(state.acknowledgedSequence, min(sequence, state.nextSequence))
+        state.pendingFragments.removeAll { $0.sequence <= state.acknowledgedSequence }
+        tabs[tabID] = state
+    }
+
+    mutating func markStoredDraft(tabID: UUID, through sequence: UInt64) {
+        guard var state = tabs[tabID] else { return }
+        state.storedDraftSequence = min(sequence, state.nextSequence)
+        tabs[tabID] = state
+    }
+
+    mutating func remove(tabID: UUID) {
+        tabs.removeValue(forKey: tabID)
+    }
+
+    mutating func removeAll() {
+        tabs.removeAll()
+    }
 }
 
 enum AgentComposerDraftRestorationReducer {
@@ -19,17 +72,18 @@ enum AgentComposerDraftRestorationReducer {
     static func apply(
         _ operation: AgentComposerDraftRestorationOperation,
         to currentLocalText: String,
-        lastAppliedRestorationEventID: UUID?
+        acknowledgedSequence: UInt64
     ) -> String {
+        let missingFragments = operation.fragments.filter { $0.sequence > acknowledgedSequence }
+        guard !missingFragments.isEmpty else { return currentLocalText }
         if currentLocalText == operation.composedDraftText
             || currentLocalText == operation.draftTextBeforeRestoration
         {
             return operation.composedDraftText
         }
-        if operation.previousRestorationEventID == lastAppliedRestorationEventID {
-            return compose(restoredText: operation.rejectedDraftText, above: currentLocalText)
+        return missingFragments.reduce(currentLocalText) { text, fragment in
+            compose(restoredText: fragment.text, above: text)
         }
-        return compose(restoredText: operation.composedDraftText, above: currentLocalText)
     }
 }
 

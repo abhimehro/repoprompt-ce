@@ -1880,16 +1880,16 @@ enum AgentModelCatalog {
         availability: AvailabilityContext
     ) -> [SelectionCandidate] {
         let lunaLow = preferredCodexFamilyModelRaw("luna", effort: .low, availability: availability)
-            ?? AgentModel.gpt56LunaLow.rawValue
+            ?? AgentModel.gpt6LunaLow.rawValue
         let solMedium = preferredCodexFamilyModelRaw("sol", effort: .medium, availability: availability)
-            ?? AgentModel.gpt56SolMedium.rawValue
+            ?? AgentModel.gpt61SolMedium.rawValue
         let solHigh = preferredCodexFamilyModelRaw("sol", effort: .high, availability: availability)
-            ?? AgentModel.gpt56SolHigh.rawValue
+            ?? AgentModel.gpt61SolHigh.rawValue
         return switch kind {
         case .explore:
             [
                 SelectionCandidate(agent: .codexExec, modelRaw: lunaLow),
-                SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.gpt56SolLow.rawValue),
+                SelectionCandidate(agent: .codexExec, modelRaw: AgentModel.gpt61SolLow.rawValue),
                 SelectionCandidate(agent: .claudeCode, modelRaw: ClaudeModelSpecifier.encodedRaw(baseModelRaw: AgentModel.claudeSonnet.rawValue, effort: .high)),
                 SelectionCandidate(agent: .claudeCode, modelRaw: AgentModel.claudeHaiku.rawValue),
                 SelectionCandidate(agent: .claudeCodeGLM, modelRaw: AgentModel.claudeHaiku.rawValue),

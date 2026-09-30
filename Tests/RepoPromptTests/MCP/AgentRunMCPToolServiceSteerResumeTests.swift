@@ -24,7 +24,10 @@ final class AgentRunMCPToolServiceSteerResumeTests: XCTestCase {
             XCTAssertIdentical(controlledSession, session)
             XCTAssertFalse(controlledSession.isMCPOriginated)
             XCTAssertTrue(controlledSession.mcpFollowUpRunPending)
-            await agentModeVM.prepareMCPWaitTrackingForRunStart(session: controlledSession)
+            await agentModeVM.prepareMCPWaitTrackingForRunStart(
+                session: controlledSession,
+                stopFence: AgentRunStartStopFence(session: controlledSession)
+            )
             let context = try XCTUnwrap(controlledSession.mcpControlContext)
             observedEpoch = try XCTUnwrap(context.currentEpoch)
             controlledSession.runState = .running

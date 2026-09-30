@@ -11,6 +11,13 @@ struct DomainWorkspaceSaveOperationIDs {
     }
 }
 
+/// Both phases of an ordinary save. `working` is nil when the document already matched the
+/// expected digest and only the save command ran; `final` is the last command executed.
+struct DomainWorkspacePhasedSaveOutcome {
+    let working: DomainCommandOutcome?
+    let final: DomainCommandOutcome
+}
+
 struct DomainWorkspaceFailClosedSaveOutcome {
     let working: DomainCommandOutcome?
     let saved: DomainCommandOutcome?
@@ -143,8 +150,27 @@ struct DomainWorkspaceAuthorityClient {
         expectedContentDigest: String?,
         operationIDs: DomainWorkspaceSaveOperationIDs = .init()
     ) async throws -> DomainCommandOutcome {
+        try await savePhased(
+            workspace,
+            fileURL: fileURL,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            expectedContentDigest: expectedContentDigest,
+            operationIDs: operationIDs
+        ).final
+    }
+
+    /// Ordinary save that also reports the working-phase outcome, so the caller can record which
+    /// canonical working revision its own bytes produced even when the save phase does not finish.
+    func savePhased(
+        _ workspace: WorkspaceModel,
+        fileURL: URL,
+        expectedWorkspaceRevision: UInt64?,
+        expectedContentDigest: String?,
+        operationIDs: DomainWorkspaceSaveOperationIDs = .init()
+    ) async throws -> DomainWorkspacePhasedSaveOutcome {
         let document = try document(for: workspace, fileURL: fileURL)
         var saveRevision = expectedWorkspaceRevision
+        var workingOutcome: DomainCommandOutcome?
         if document.contentDigest != expectedContentDigest {
             let working = await executeStable(.init(
                 operationID: operationIDs.working,
@@ -152,15 +178,37 @@ struct DomainWorkspaceAuthorityClient {
                 origin: .appPresentation(windowID: windowID),
                 command: .replaceWorkingDocument(document)
             ))
-            guard working.isSuccessfulDomainMutation else { return working }
+            guard working.isSuccessfulDomainMutation else {
+                return DomainWorkspacePhasedSaveOutcome(working: working, final: working)
+            }
+            workingOutcome = working
             saveRevision = working.after?.workingRevision
                 ?? working.workspace?.revisions.workingRevision
         }
-        return await executeStable(.init(
+        let saved = await executeStable(.init(
             operationID: operationIDs.saved,
             expectedWorkspaceRevision: saveRevision,
             origin: .appPresentation(windowID: windowID),
             command: .saveWorkspaceDocument(workspaceID: workspace.id)
+        ))
+        return DomainWorkspacePhasedSaveOutcome(working: workingOutcome, final: saved)
+    }
+
+    /// Persists the authority's current working document without submitting new bytes, and only
+    /// while it is still exactly `expectedWorkspaceRevision`. Fail-closed: any interleaved writer
+    /// turns this into a conflict instead of a CAS replay, so it can never overwrite a newer
+    /// revision. Used to finish an interrupted save of bytes this presentation already committed.
+    func saveCommittedWorkingRevision(
+        workspaceID: UUID,
+        expectedWorkspaceRevision: UInt64,
+        operationID: UUID = UUID()
+    ) async -> DomainCommandOutcome {
+        await executeStable(.init(
+            operationID: operationID,
+            expectedWorkspaceRevision: expectedWorkspaceRevision,
+            conflictRecoveryPolicy: .failClosed,
+            origin: .appPresentation(windowID: windowID),
+            command: .saveWorkspaceDocument(workspaceID: workspaceID)
         ))
     }
 

@@ -999,9 +999,13 @@ final class ClaudeAgentModeCoordinator {
         attachments _: [AgentImageAttachment],
         intent: NativeSessionIntent,
         allowsCatalogRouteControllerRecovery: Bool,
-        autoEffortSelection: AutoEffortTurnSelection? = nil
+        autoEffortSelection: AutoEffortTurnSelection? = nil,
+        providerControlCommand: AgentProviderControlCommand? = nil,
+        selfCompactDispatchID: AgentSelfCompactionDispatchID? = nil
     ) async -> NativeSendOutcome {
         guard intentIsCurrent(intent, for: session) else { return .superseded }
+        let isSelfNote = selfCompactDispatchID?.stage == .note
+        let isMaintenance = providerControlCommand != nil || isSelfNote
         let auditTurnID = session.pendingTurnRuntimeAnchors.first?.userItemID
         var handler = toolHandler(for: session)
         handler.resetTurnState(for: session)
@@ -1010,6 +1014,48 @@ final class ClaudeAgentModeCoordinator {
         // controller is a transport retry of the *same* user turn, so every attempt must carry a
         // byte-equivalent oversight supplement rather than re-deciding per attempt.
         let promptDispatchID = AgentSessionLinkPromptDispatchID.claudeNativeSend(UUID())
+        /// A control command acts only on the conversation it was admitted for and never interrupts.
+        /// A rebind, a fresh-start fallback after a failed resume (whose staged recovery handoff stays
+        /// for the next ordinary turn), or a turn in flight all refuse it.
+        func controlCommandRefusal(
+            _ command: AgentProviderControlCommand,
+            controller: any NativeAgentRuntimeControlling
+        ) async -> NativeSendOutcome? {
+            // The only suspension comes first; every identity fact is then checked synchronously, so
+            // nothing can rebind between this answer and the caller's next step.
+            let turnInFlight = await controller.hasTurnInFlight
+            guard intentIsCurrent(intent, for: session),
+                  sessionOwnsClaudeController(controller, for: session)
+            else {
+                return .superseded
+            }
+            // The admitted app-session incarnation: run preparation can suspend after the admitting
+            // transaction's last fence, and a rebind may keep the provider conversation.
+            guard session.persistentSessionBindingIdentity == command.expectedBinding,
+                  !session.bindingTransitionInProgress
+            else {
+                return recordSendFailure(
+                    "The session was rebound before the requested command could run, so it was not run.",
+                    session: session,
+                    intent: intent
+                )
+            }
+            guard session.providerSessionID == command.expectedProviderConversation else {
+                return recordSendFailure(
+                    "Claude could not resume the conversation the requested command was for, so it was not run.",
+                    session: session,
+                    intent: intent
+                )
+            }
+            guard !turnInFlight else {
+                return recordSendFailure(
+                    "Claude could not run the requested command because a provider turn is still in flight.",
+                    session: session,
+                    intent: intent
+                )
+            }
+            return nil
+        }
         /// The same refusal is reachable from three predicates that fail for different reasons and
         /// are indistinguishable in the UI, which cost a full diagnostic cycle. The bracketed code
         /// names the branch; it carries no identifiers or user content.
@@ -1018,7 +1064,16 @@ final class ClaudeAgentModeCoordinator {
         }
 
         for attempt in 0 ..< 3 {
-            switch await ensureClaudeNativeSession(session: session, intent: intent) {
+            if isSelfNote {
+                guard let selfCompactDispatchID,
+                      session.selfCompactNoteDispatchIsCurrent(selfCompactDispatchID),
+                      session.claudeController != nil,
+                      !hasEffectiveClaudeControllerLaunchSettingsMismatch(for: session),
+                      session.providerSessionID == session.selfCompactState.active?.compactProviderConversation,
+                      session.selfCompactState.active?.owner?.matchesLocalBinding(session) == true
+                else { return .superseded }
+            }
+            switch isSelfNote ? .ready : await ensureClaudeNativeSession(session: session, intent: intent) {
             case .ready:
                 break
             case let .failed(message):
@@ -1032,12 +1087,32 @@ final class ClaudeAgentModeCoordinator {
                 return .superseded
             }
 
+            // A provider control command was admitted against an idle target for one conversation. A
+            // stale admission is refused here rather than interrupting work the overseer never had
+            // authority to stop.
+            if let providerControlCommand,
+               let refusal = await controlCommandRefusal(providerControlCommand, controller: controller)
+            {
+                return refusal
+            }
+
             if hasEffectiveClaudeControllerLaunchSettingsMismatch(for: session) {
-                guard await interruptClaudeTurnIfNeeded(
-                    session: session,
-                    controller: controller,
-                    handler: handler
-                ) else {
+                if let providerControlCommand,
+                   let refusal = await controlCommandRefusal(providerControlCommand, controller: controller)
+                {
+                    return refusal
+                }
+                // A control command never interrupts: it proceeds only when nothing is in flight.
+                let turnIsClear = if isMaintenance {
+                    true
+                } else {
+                    await interruptClaudeTurnIfNeeded(
+                        session: session,
+                        controller: controller,
+                        handler: handler
+                    )
+                }
+                guard turnIsClear else {
                     guard intentIsCurrent(intent, for: session),
                           sessionOwnsClaudeController(controller, for: session)
                     else {
@@ -1079,11 +1154,22 @@ final class ClaudeAgentModeCoordinator {
                 )
             }
 
-            guard await interruptClaudeTurnIfNeeded(
-                session: session,
-                controller: controller,
-                handler: handler
-            ) else {
+            if let providerControlCommand,
+               let refusal = await controlCommandRefusal(providerControlCommand, controller: controller)
+            {
+                return refusal
+            }
+            // A control command never interrupts: it proceeds only when nothing is in flight.
+            let turnIsClear = if isMaintenance {
+                true
+            } else {
+                await interruptClaudeTurnIfNeeded(
+                    session: session,
+                    controller: controller,
+                    handler: handler
+                )
+            }
+            guard turnIsClear else {
                 guard intentIsCurrent(intent, for: session),
                       sessionOwnsClaudeController(controller, for: session)
                 else {
@@ -1114,7 +1200,11 @@ final class ClaudeAgentModeCoordinator {
                 return .superseded
             }
 
-            let catalogReadiness = await hostCapabilities.ensureAgentSessionLinkProviderInputCatalogReady(session)
+            // A control command carries no oversight supplement, so the catalog route that exists to
+            // protect supplement delivery is not required for it.
+            let catalogReadiness = !isMaintenance
+                ? await hostCapabilities.ensureAgentSessionLinkProviderInputCatalogReady(session)
+                : .notRequired
             guard intentIsCurrent(intent, for: session),
                   sessionOwnsClaudeController(controller, for: session)
             else {
@@ -1211,7 +1301,9 @@ final class ClaudeAgentModeCoordinator {
                 else { return nil }
                 return ClaudeCodeEffortLevel.parse(autoEffortSelection.effortRaw)
             }()
-            if autoEffortSelection != nil, autoEffort == nil, let auditTurnID {
+            if !isMaintenance,
+               autoEffortSelection != nil, autoEffort == nil, let auditTurnID
+            {
                 session.updateAutomationAudit(turnID: auditTurnID) {
                     if $0.autoEffort.decision == .selected {
                         $0.autoEffort.application = .fallbackToManual
@@ -1220,7 +1312,9 @@ final class ClaudeAgentModeCoordinator {
                 }
                 hostCapabilities.scheduleSave(session)
             }
-            if let desiredEffort = autoEffort ?? (appliedAutoEffortByTabID[session.tabID] == nil ? nil : manualEffort) {
+            if !isMaintenance,
+               let desiredEffort = autoEffort ?? (appliedAutoEffortByTabID[session.tabID] == nil ? nil : manualEffort)
+            {
                 do {
                     try await controller.applyModelAndEffort(
                         model: effectiveClaudeModel(for: session),
@@ -1295,13 +1389,118 @@ final class ClaudeAgentModeCoordinator {
                 }
             }
 
+            // A provider control command is exactly its fixed native text: no staged handoff, oversight
+            // supplement, dispatch claim, instruction packaging, or audit — any of those would turn it
+            // into ordinary prose. The supplement it skips stays owed to the next ordinary turn.
+            if let providerControlCommand {
+                if let dispatchID = providerControlCommand.selfCompactDispatchID {
+                    let active = session.selfCompactState.active
+                    guard dispatchID == selfCompactDispatchID,
+                          dispatchID.stage == .compact,
+                          active?.id == dispatchID.requestID,
+                          active?.compactRunID == intent.runID,
+                          active?.phase == .dispatchingCompact || active?.phase == .awaitingCompactTurn,
+                          session.selfCompactDispatchIsCurrent?() != false
+                    else { return .superseded }
+                }
+                // The last check before the write: the controller has no atomic idle-send, so this
+                // narrows the window to the send call itself.
+                if let refusal = await controlCommandRefusal(providerControlCommand, controller: controller) {
+                    return refusal
+                }
+                if providerControlCommand.selfCompactDispatchID != nil,
+                   session.selfCompactDispatchIsCurrent?() == false
+                {
+                    return .superseded
+                }
+                do {
+                    let turnID = try await controller.sendUserMessage(providerControlCommand.providerText)
+                    guard intentIsCurrent(intent, for: session),
+                          sessionOwnsClaudeController(controller, for: session)
+                    else {
+                        if !sessionOwnsClaudeController(controller, for: session) {
+                            await controller.shutdown()
+                        }
+                        return .superseded
+                    }
+                    session.claudeExpectedTurnIDs.insert(turnID)
+                    return .sent
+                } catch {
+                    guard intentIsCurrent(intent, for: session),
+                          sessionOwnsClaudeController(controller, for: session)
+                    else {
+                        if !sessionOwnsClaudeController(controller, for: session) {
+                            await controller.shutdown()
+                        }
+                        return .superseded
+                    }
+                    return recordSendFailure(
+                        "Claude native command failed: \(error.localizedDescription)",
+                        session: session,
+                        intent: intent
+                    )
+                }
+            }
+
+            if let dispatchID = selfCompactDispatchID, dispatchID.stage == .note {
+                let active = session.selfCompactState.active
+                guard active?.id == dispatchID.requestID,
+                      active?.owner?.matchesLocalBinding(session) == true,
+                      active?.phase == .dispatchingNote,
+                      active?.compactProviderConversation == session.providerSessionID,
+                      text == active.map({ AgentSelfCompactNoteEnvelope.frame($0.note) }),
+                      await !(controller.hasTurnInFlight),
+                      intentIsCurrent(intent, for: session),
+                      sessionOwnsClaudeController(controller, for: session),
+                      session.selfCompactNoteDispatchIsCurrent(dispatchID)
+                else { return .superseded }
+                var state = session.selfCompactState
+                guard state.noteWillAttempt(dispatchID) else { return .superseded }
+                session.selfCompactState = state
+                hostCapabilities.scheduleSave(session)
+                do {
+                    let turnID = try await controller.sendUserMessage(text)
+                    state = session.selfCompactState
+                    if state.noteAccepted(dispatchID) {
+                        session.appendItem(AgentChatItem.selfCompactionNoteRestored(sequenceIndex: session.nextSequenceIndex))
+                        hostCapabilities.requestUIRefresh(session, true)
+                    }
+                    session.selfCompactState = state
+                    hostCapabilities.scheduleSave(session)
+                    guard intentIsCurrent(intent, for: session),
+                          sessionOwnsClaudeController(controller, for: session)
+                    else { return .superseded }
+                    session.claudeExpectedTurnIDs.insert(turnID)
+                    return .sent
+                } catch {
+                    state = session.selfCompactState
+                    _ = state.noteTransportFailed(dispatchID)
+                    session.selfCompactState = state
+                    hostCapabilities.scheduleSave(session)
+                    return recordSendFailure(
+                        "Claude continuation note delivery is uncertain: \(error.localizedDescription)",
+                        session: session,
+                        intent: intent
+                    )
+                }
+            }
+
             do {
                 let outboundText = hostCapabilities.prependPendingHandoff(text, session)
+                var selfCompactState = session.selfCompactState
+                if selfCompactState.cancelStaleParkedNote(for: session) {
+                    session.selfCompactState = selfCompactState
+                    hostCapabilities.scheduleSave(session)
+                }
+                let parked = session.selfCompactState.parkedNote.flatMap { candidate in
+                    session.selfCompactNoteDispatchIsCurrent(candidate.dispatchID) ? candidate : nil
+                }
+                let textWithNote = parked.map { $0.frame + "\n\n" + outboundText } ?? outboundText
                 // Applied after handoff composition and before delivery-mode packaging, so the
                 // oversight supplement remains the final RepoPrompt envelope in the user-message
                 // channel regardless of native-system or XML instruction delivery.
                 let monitoring = hostCapabilities.decorateAgentSessionLinkPrompt(
-                    outboundText,
+                    textWithNote,
                     session,
                     promptDispatchID
                 )
@@ -1330,7 +1529,22 @@ final class ClaudeAgentModeCoordinator {
                     }
                     hostCapabilities.scheduleSave(session)
                 }
+                if let parked {
+                    var state = session.selfCompactState
+                    guard state.noteWillAttempt(parked.dispatchID) else { return .superseded }
+                    session.selfCompactState = state
+                    hostCapabilities.scheduleSave(session)
+                }
                 let turnID = try await controller.sendUserMessage(providerBoundText)
+                if let parked {
+                    var state = session.selfCompactState
+                    if state.noteAccepted(parked.dispatchID) {
+                        session.appendItem(AgentChatItem.selfCompactionNoteRestored(sequenceIndex: session.nextSequenceIndex))
+                        hostCapabilities.requestUIRefresh(session, true)
+                    }
+                    session.selfCompactState = state
+                    hostCapabilities.scheduleSave(session)
+                }
                 if let auditTurnID {
                     let acceptedAutoEffortRaw = appliedAutoEffortByTabID[session.tabID].flatMap { applied in
                         applied.controllerID == controllerID && applied.effort == autoEffort
@@ -1358,6 +1572,15 @@ final class ClaudeAgentModeCoordinator {
                 session.claudeExpectedTurnIDs.insert(turnID)
                 return .sent
             } catch {
+                if let parked = session.selfCompactState.active.flatMap({ attempt -> AgentSelfCompactionDispatchID? in
+                    attempt.noteWasPrepended == true && attempt.noteDispatchStarted
+                        ? .init(requestID: attempt.id, stage: .note) : nil
+                }) {
+                    var state = session.selfCompactState
+                    _ = state.noteTransportFailed(parked)
+                    session.selfCompactState = state
+                    hostCapabilities.scheduleSave(session)
+                }
                 hostCapabilities.recordAgentSessionLinkPhysicalDispatchFailure(session, promptDispatchID)
                 guard intentIsCurrent(intent, for: session),
                       sessionOwnsClaudeController(controller, for: session)

@@ -473,6 +473,47 @@ struct DomainWorkspaceAuthorityOperationError: LocalizedError {
     }
 }
 
+/// Resumes one continuation exactly once with whichever of completion or cancellation comes first,
+/// including a cancellation that arrives before the continuation is installed.
+private final class OwnSaveWaitGate: Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<Void, Error>?
+        var pending: Result<Void, Error>?
+        var finished = false
+    }
+
+    private let state = OSAllocatedUnfairLock(uncheckedState: State())
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) {
+        let pending: Result<Void, Error>? = state.withLockUnchecked { state in
+            guard !state.finished else { return nil }
+            guard let pending = state.pending else {
+                state.continuation = continuation
+                return nil
+            }
+            state.finished = true
+            return pending
+        }
+        if let pending {
+            continuation.resume(with: pending)
+        }
+    }
+
+    func resume(with result: Result<Void, Error>) {
+        let continuation: CheckedContinuation<Void, Error>? = state.withLockUnchecked { state in
+            guard !state.finished else { return nil }
+            guard let continuation = state.continuation else {
+                if state.pending == nil { state.pending = result }
+                return nil
+            }
+            state.finished = true
+            state.continuation = nil
+            return continuation
+        }
+        continuation?.resume(with: result)
+    }
+}
+
 private enum WorkspaceDirectWriteError: LocalizedError {
     case domainAuthorityRequired
     case ephemeralWorkspace
@@ -826,7 +867,41 @@ class WorkspaceManagerViewModel: ObservableObject {
     private var lastSavedVersionByWorkspaceID: [UUID: Int] = [:]
     private var domainWorkingCommitTasks: [UUID: Task<Void, Never>] = [:]
     private var domainWorkingCommitGeneration: [UUID: UInt64] = [:]
+    /// Save captures publish working documents without bumping `stateVersionByWorkspaceID`, so a
+    /// publication whose save is cancelled (or never scheduled) would otherwise look clean locally
+    /// while canonical authority stays dirty with no live save (#1089). These generations track
+    /// this presentation's own publications so the next save converges them.
+    private var workingPublicationGenerationByWorkspaceID: [UUID: UInt64] = [:]
+    private var savedWorkingPublicationGenerationByWorkspaceID: [UUID: UInt64] = [:]
+    /// The exact canonical working state produced by this presentation's latest successful working
+    /// commit. Dirty canonical state is "owned" by this window only while revision and digest both
+    /// still match; anything else (another window, a tool, an earlier app session) stays foreign.
+    private struct OwnWorkingCommitProvenance: Equatable {
+        let workingRevision: UInt64
+        let contentDigest: String
+        /// Highest publication generation included in the committed bytes, when known.
+        let publicationGeneration: UInt64?
+    }
+
+    private var ownWorkingCommitProvenanceByWorkspaceID: [UUID: OwnWorkingCommitProvenance] = [:]
     private var scheduledWorkspaceSaveTasks: [UUID: [UUID: Task<Void, Never>]] = [:]
+    /// This presentation's own background saves are never Task-cancelled by recovery or window
+    /// close (#1089): cancelling an authority save after its working commit leaves canonical dirty
+    /// with no live save. A superseding owner bumps a fence instead. A fenced save that has not yet
+    /// reached its authority write bails before writing (what cancellation achieved); one already
+    /// inside the authority runs to completion and is awaited by the superseding owner.
+    private struct OwnSaveFence: Equatable {
+        let global: UInt64
+        let workspace: UInt64
+    }
+
+    private var ownSaveFenceGeneration: UInt64 = 0
+    private var ownSaveFenceByWorkspaceID: [UUID: UInt64] = [:]
+    /// Poll-timer stops (switch, refresh, close) supersede a poll save that has not captured yet.
+    private var pollTimerSaveGeneration: UInt64 = 0
+    private var pollTimerSaveTaskID: UUID?
+    /// The workspace the running poll save was scheduled for (it may no longer be active).
+    private var pollTimerSaveWorkspaceID: UUID?
     private enum AgentAdmissionRecoveryMutation: Hashable {
         case removeTab
         case clearBinding
@@ -873,6 +948,39 @@ class WorkspaceManagerViewModel: ObservableObject {
                     await task.value
                 }
             }
+        }
+
+        /// Cancels a workspace's scheduled saves the way window close and recovery drains do,
+        /// leaving any already-published working document without a successor save. With
+        /// `join: false` the tasks stay tracked so `debugDrainScheduledSaves` can join them after a
+        /// test releases a gate the cancelled save is suspended on.
+        @discardableResult
+        func debugCancelScheduledSaves(workspaceID: UUID, join: Bool = true) async -> Int {
+            guard let scheduled = scheduledWorkspaceSaveTasks[workspaceID] else { return 0 }
+            scheduled.values.forEach { $0.cancel() }
+            guard join else { return scheduled.count }
+            scheduledWorkspaceSaveTasks.removeValue(forKey: workspaceID)
+            for task in scheduled.values {
+                await task.value
+            }
+            return scheduled.count
+        }
+
+        /// Runs after ownership is proven and immediately before the pinned convergence save.
+        var ownedWorkingConvergenceWillSaveHandlerForTesting: (@MainActor (UUID) async -> Void)?
+        /// Observes recovery draining this window's own saves (workspace, own save task count).
+        var agentAdmissionRecoveryWillDrainOwnSavesHandlerForTesting: (@MainActor (UUID, Int) -> Void)?
+        /// Observes admission awaiting this window's own saves (workspace, own save task count).
+        var agentAdmissionWillAwaitOwnSavesHandlerForTesting: (@MainActor (UUID, Int) -> Void)?
+        /// Replaces `WindowStatesManager`'s count of windows showing the active workspace.
+        var pollTimerWindowCountOverrideForTesting: Int?
+
+        func debugPerformPollTimerSave() async {
+            await performPollTimerSave()
+        }
+
+        func debugOwnWorkingCommitRevision(_ workspaceID: UUID) -> UInt64? {
+            ownWorkingCommitProvenanceByWorkspaceID[workspaceID]?.workingRevision
         }
 
         /// Observes explicit root assignment before persistence or lifecycle work can suspend.
@@ -1150,6 +1258,19 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         func debugLastSavedVersionForWorkspace(_ workspaceID: UUID) -> Int? {
             lastSavedVersionByWorkspaceID[workspaceID]
+        }
+
+        /// True while an own capture or own working commit is not known to be covered by a save.
+        func debugHasUnsavedWorkingPublication(_ workspaceID: UUID) -> Bool {
+            needsOwnWorkingPublicationResolution(workspaceID: workspaceID)
+        }
+
+        /// Reproduces a save capture whose save never completes (cancelled scheduled save or an
+        /// early-returning refresh): capture/publish the working document, settle it, no save.
+        func debugCaptureActiveWorkspaceWithoutSave(_ workspaceID: UUID) async {
+            guard let index = workspaceIndex(for: workspaceID) else { return }
+            captureActiveTabSnapshotForWorkspaceIndex(index)
+            await debugAwaitWorkingDocumentCommitToDomainAuthority(workspaceID: workspaceID)
         }
 
         func debugRepoPathBaselineForWorkspace(_ workspaceID: UUID) -> [String]? {
@@ -3668,10 +3789,15 @@ class WorkspaceManagerViewModel: ObservableObject {
         composeTabApplyTask?.cancel()
         composeTabApplyTask = nil
         composeTabApplyTaskTabID = nil
+        // A delayed working commit has not been saved by anyone; the close capture that follows in
+        // `onDisappear` includes its state and saves it.
         domainWorkingCommitTasks.values.forEach { $0.cancel() }
         domainWorkingCommitTasks.removeAll()
-        scheduledWorkspaceSaveTasks.values.flatMap(\.values).forEach { $0.cancel() }
-        scheduledWorkspaceSaveTasks.removeAll()
+        // Supersede, never cancel, this window's own saves (#1089). Saves that have not reached
+        // the authority bail before writing; saves already writing finish and are awaited by
+        // `awaitOwnSavesForWindowClose()`. Saves scheduled after this point (the final close
+        // capture) carry the new fence and persist normally.
+        ownSaveFenceGeneration &+= 1
         pendingPersistentWorkspacePublications.removeAll()
         pendingPersistentWorkspaceCreationsByWorkspaceID.removeAll()
         pendingSystemWorkspaceCreationTasks.removeAll()
@@ -3706,40 +3832,153 @@ class WorkspaceManagerViewModel: ObservableObject {
         if let activeWorkspaceID,
            agentAdmissionRecoveryOwnsWorkspace(activeWorkspaceID)
         { return }
+        // Never interrupt a previous poll save: it may already be inside its authority write.
+        guard pollTimerSaveTaskID == nil else { return }
 
-        pollTimerSaveTask?.cancel()
+        let taskID = UUID()
+        let pollGeneration = pollTimerSaveGeneration
+        let scheduledWorkspaceID = activeWorkspaceID
+        let fence = scheduledWorkspaceID.map { currentOwnSaveFence(workspaceID: $0) }
+        pollTimerSaveTaskID = taskID
+        pollTimerSaveWorkspaceID = scheduledWorkspaceID
         pollTimerSaveTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            // Skip while switching workspaces or performing a refresh
-            if isSwitchingWorkspace || isRefreshing { return }
-
-            // Check if multiple windows have the same workspace open
-            // Only check if we have a valid activeWorkspaceID
-            if let activeWorkspaceID {
-                // Safely access WindowStatesManager
-                let windowCount = WindowStatesManager.shared.countWindowsShowing(workspaceId: activeWorkspaceID)
-                if windowCount > 1 {
-                    // Skip auto-save when multiple windows have the same workspace
-                    return
+            defer {
+                if self?.pollTimerSaveTaskID == taskID {
+                    self?.pollTimerSaveTaskID = nil
+                    self?.pollTimerSaveWorkspaceID = nil
                 }
             }
-
-            // Capture current state (expanded folders, selected files, prompt, etc.)
-            // and persist it in one atomic call. The timer task is itself drained by recovery,
-            // so it must not trigger a recovery that awaits this same task.
-            _ = await pollAndSaveStateWithOutcomeAsync(
-                source: .pollTimer,
-                allowRetainedAgentAdmissionRecoveryRetry: false
-            )
+            guard let self, pollTimerSaveGeneration == pollGeneration else { return }
+            await performPollTimerSave(ownSaveFence: fence, scheduledWorkspaceID: scheduledWorkspaceID)
         }
     }
 
+    private func performPollTimerSave(
+        ownSaveFence: OwnSaveFence? = nil,
+        scheduledWorkspaceID: UUID? = nil
+    ) async {
+        // Skip while switching workspaces or performing a refresh
+        if isSwitchingWorkspace || isRefreshing { return }
+        if ownSaveFence != nil {
+            // The fence belongs to the workspace this tick was scheduled for.
+            guard let activeWorkspaceID,
+                  activeWorkspaceID == scheduledWorkspaceID,
+                  isOwnSaveFenceCurrent(ownSaveFence, workspaceID: activeWorkspaceID)
+            else { return }
+        }
+
+        // Check if multiple windows have the same workspace open
+        // Only check if we have a valid activeWorkspaceID
+        if let activeWorkspaceID {
+            // Safely access WindowStatesManager
+            #if DEBUG
+                let windowCount = pollTimerWindowCountOverrideForTesting
+                    ?? WindowStatesManager.shared.countWindowsShowing(workspaceId: activeWorkspaceID)
+            #else
+                let windowCount = WindowStatesManager.shared.countWindowsShowing(workspaceId: activeWorkspaceID)
+            #endif
+            if windowCount > 1 {
+                // Skip ordinary auto-save when multiple windows have the same workspace: a window's
+                // capture could overwrite a peer. Only finish this window's own interrupted save,
+                // which re-persists bytes it already committed and is pinned to that exact revision,
+                // so it can never overwrite a peer's newer state (#1089).
+                guard !agentAdmissionRecoveryOwnsWorkspace(activeWorkspaceID),
+                      needsOwnWorkingPublicationResolution(workspaceID: activeWorkspaceID),
+                      workspace(withID: activeWorkspaceID)?.isEphemeral == false
+                else { return }
+                let resolution = await resolveUnsavedWorkingPublication(
+                    workspaceID: activeWorkspaceID,
+                    source: .pollTimer
+                )
+                if case .canonicalClean = resolution {
+                    // Nothing of this window's is unsaved in canonical state; captures that never
+                    // landed follow the ordinary multi-window policy of not auto-saving.
+                    let current = workingPublicationGenerationByWorkspaceID[activeWorkspaceID, default: 0]
+                    markWorkingPublicationSaved(workspaceID: activeWorkspaceID, generation: current)
+                }
+                return
+            }
+        }
+
+        // Capture current state (expanded folders, selected files, prompt, etc.)
+        // and persist it in one atomic call. The timer task is itself drained by recovery,
+        // so it must not trigger a recovery that awaits this same task.
+        _ = await pollAndSaveStateWithOutcomeAsync(
+            source: .pollTimer,
+            allowRetainedAgentAdmissionRecoveryRetry: false,
+            ownSaveFence: ownSaveFence
+        )
+    }
+
+    /// Stops future ticks and supersedes a poll save that has not started. A poll save that is
+    /// already running is left to finish (see `OwnSaveFence`); recovery and close await it.
     private func stopPollTimer() {
         pollTimer?.invalidate()
         pollTimer = nil
-        pollTimerSaveTask?.cancel()
-        pollTimerSaveTask = nil
+        pollTimerSaveGeneration &+= 1
+    }
+
+    private func currentOwnSaveFence(workspaceID: UUID) -> OwnSaveFence {
+        OwnSaveFence(
+            global: ownSaveFenceGeneration,
+            workspace: ownSaveFenceByWorkspaceID[workspaceID, default: 0]
+        )
+    }
+
+    private func isOwnSaveFenceCurrent(_ fence: OwnSaveFence?, workspaceID: UUID) -> Bool {
+        guard let fence else { return true }
+        return fence == currentOwnSaveFence(workspaceID: workspaceID)
+    }
+
+    /// Waits for an own save to finish without cancelling it. If the waiting caller is cancelled
+    /// first, only the wait ends (the save keeps running under its owner) and this throws
+    /// `CancellationError`, so a cancelled admission never holds its lease on another task's write.
+    private static func awaitOwnSaveCompletion(_ task: Task<Void, Never>) async throws {
+        try Task.checkCancellation()
+        let gate = OwnSaveWaitGate()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                gate.install(continuation)
+                Task {
+                    await task.value
+                    gate.resume(with: .success(()))
+                }
+            }
+        } onCancel: {
+            gate.resume(with: .failure(CancellationError()))
+        }
+    }
+
+    /// This window's tracked background saves for `workspaceID` that may still be running.
+    private func ownTrackedSaveTasks(workspaceID: UUID) -> [Task<Void, Never>] {
+        var tasks = scheduledWorkspaceSaveTasks[workspaceID].map { Array($0.values) } ?? []
+        if let pollSave = runningPollTimerSave(for: workspaceID) {
+            tasks.append(pollSave)
+        }
+        return tasks
+    }
+
+    /// The running poll save scheduled for `workspaceID`, by its captured target rather than the
+    /// currently active workspace, so a later switch cannot hide it from recovery or ordering.
+    private func runningPollTimerSave(for workspaceID: UUID) -> Task<Void, Never>? {
+        guard pollTimerSaveTaskID != nil, pollTimerSaveWorkspaceID == workspaceID else { return nil }
+        return pollTimerSaveTask
+    }
+
+    /// Window close: let this window's own saves (including the final `onDisappear` capture)
+    /// finish instead of abandoning them mid-write. Bounded: saves scheduled while awaiting are
+    /// picked up for at most a few passes; nothing new is scheduled once teardown runs.
+    func awaitOwnSavesForWindowClose() async {
+        for _ in 0 ..< 3 {
+            var tasks = scheduledWorkspaceSaveTasks.values.flatMap(\.values)
+            if pollTimerSaveTaskID != nil, let pollTimerSaveTask {
+                tasks.append(pollTimerSaveTask)
+            }
+            guard !tasks.isEmpty else { return }
+            for task in tasks {
+                await task.value
+            }
+        }
     }
 
     // MARK: - INDEX LOAD/SAVE
@@ -6290,6 +6529,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         else { return }
         abandonAgentAdmissionRecoveryWorkingCommits(workspaceID: workspace.id)
         let workspaceID = workspace.id
+        workingPublicationGenerationByWorkspaceID[workspaceID, default: 0] &+= 1
+        let publicationGeneration = workingPublicationGenerationByWorkspaceID[workspaceID, default: 0]
         let generation = domainWorkingCommitGeneration[workspaceID, default: 0] &+ 1
         domainWorkingCommitGeneration[workspaceID] = generation
         domainWorkingCommitTasks[workspaceID]?.cancel()
@@ -6320,6 +6561,12 @@ class WorkspaceManagerViewModel: ObservableObject {
                     let abandonAfterOutcome = false
                 #endif
                 applyDomainAuthorityOutcome(outcome, workspaceID: workspaceID)
+                // The authority applied these bytes even if this task was cancelled afterward.
+                recordOwnWorkingCommit(
+                    outcome,
+                    workspaceID: workspaceID,
+                    publicationGeneration: publicationGeneration
+                )
                 guard !abandonAfterOutcome, !Task.isCancelled, outcome.errorCode != .cancelled else { return }
                 if !Self.isSuccessfulDomainOutcome(outcome) {
                     reportDomainAuthorityIssue(outcome, operation: "working_commit")
@@ -6904,6 +7151,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             domainWorkspaceRevisionsByID.removeValue(forKey: id)
             domainWorkspaceDigestsByID.removeValue(forKey: id)
             domainWorkspaceHealthByID.removeValue(forKey: id)
+            forgetWorkingPublicationTracking(workspaceID: id)
         }
         for (id, revision) in revisions where !isOlderDomainRevision(revision, workspaceID: id) {
             domainWorkspaceRevisionsByID[id] = revision
@@ -8683,22 +8931,29 @@ class WorkspaceManagerViewModel: ObservableObject {
         return applyProvisionalAdmissionRemovalFromMemory(removal, identity: identity)
     }
 
+    /// Recovery must not race pre-rollback state (which can still contain the provisional tab)
+    /// into canonical after it rolls back. It supersedes this window's own saves rather than
+    /// cancelling them (#1089): a save that has not reached its authority write bails before
+    /// writing, and one already writing completes before recovery reads canonical state, which
+    /// recovery handles whether or not those bytes contain the provisional identity.
     private func drainWorkingCommitsForAdmissionRecovery(workspaceID: UUID) async {
-        if activeWorkspaceID == workspaceID, let pendingPoll = pollTimerSaveTask {
-            pollTimerSaveTask = nil
-            pendingPoll.cancel()
-            await pendingPoll.value
+        ownSaveFenceByWorkspaceID[workspaceID, default: 0] &+= 1
+        if activeWorkspaceID == workspaceID || pollTimerSaveWorkspaceID == workspaceID {
+            pollTimerSaveGeneration &+= 1
         }
+        let ownSaves = ownTrackedSaveTasks(workspaceID: workspaceID)
+        #if DEBUG
+            agentAdmissionRecoveryWillDrainOwnSavesHandlerForTesting?(workspaceID, ownSaves.count)
+        #endif
+        // A delayed working commit is not a save and may still carry pre-rollback bytes. It is
+        // cancelled; if its bytes already landed, its provenance lets the next save converge them.
         domainWorkingCommitGeneration[workspaceID, default: 0] &+= 1
         if let pending = domainWorkingCommitTasks.removeValue(forKey: workspaceID) {
             pending.cancel()
             await pending.value
         }
-        if let scheduled = scheduledWorkspaceSaveTasks.removeValue(forKey: workspaceID) {
-            scheduled.values.forEach { $0.cancel() }
-            for task in scheduled.values {
-                await task.value
-            }
+        for task in ownSaves {
+            await task.value
         }
     }
 
@@ -9149,6 +9404,7 @@ class WorkspaceManagerViewModel: ObservableObject {
            snapshot.revisions.dirtyRevision == nil
         {
             lastSavedVersionByWorkspaceID[identity.workspaceID] = removal.stateVersion
+            markLocalModelMatchesSavedCanonical(workspaceID: identity.workspaceID)
         }
         WorkspaceFileDecodeCache.shared.invalidate(url: snapshot.document.fileURL)
     }
@@ -9284,6 +9540,7 @@ class WorkspaceManagerViewModel: ObservableObject {
            let removal
         {
             lastSavedVersionByWorkspaceID[identity.workspaceID] = removal.stateVersion
+            markLocalModelMatchesSavedCanonical(workspaceID: identity.workspaceID)
         }
         WorkspaceFileDecodeCache.shared.invalidate(url: snapshot.document.fileURL)
         return true
@@ -9380,6 +9637,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                     }
                 }
                 lastSavedVersionByWorkspaceID[identity.workspaceID] = removalBeforeWrite.stateVersion
+                markLocalModelMatchesSavedCanonical(workspaceID: identity.workspaceID)
             } else if applyProvisionalAdmissionRemovalFromMemory(
                 currentRemoval,
                 identity: identity
@@ -9388,6 +9646,110 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
             return .recovered(revision: nil, digest: nil)
         }
+    }
+
+    /// `NSError.userInfo` keys on Code 2 admission rejections. Values are fixed enum strings only.
+    static let agentAdmissionCanonicalOwnershipKey = "RepoPromptAgentAdmissionCanonicalOwnership"
+    static let agentAdmissionConvergenceFailureCategoryKey = "RepoPromptAgentAdmissionConvergenceFailureCategory"
+
+    enum AgentAdmissionDirtyOwnership: Equatable {
+        /// Dirty canonical state is not exactly this window's last own commit.
+        case notOwnedByWindow
+        /// This window's own interrupted save could not be finished.
+        case ownedConvergenceFailed(WorkspacePersistenceFailureCategory)
+
+        var userInfoValue: String {
+            switch self {
+            case .notOwnedByWindow: "not_owned_by_window"
+            case .ownedConvergenceFailed: "owned_convergence_failed"
+            }
+        }
+    }
+
+    /// One bounded attempt, no loop: prove ownership of the dirty canonical revision, finish that
+    /// save with a revision-pinned fail-closed command, then return a fresh admission read.
+    private func resolveDirtyCanonicalForAgentAdmission(
+        workspaceID: UUID,
+        client: DomainWorkspaceAuthorityClient
+    ) async -> (ownership: AgentAdmissionDirtyOwnership?, refreshed: DomainWorkspaceAdmissionSnapshot?) {
+        // Like an explicit save, this supersedes a queued capture: a delayed working commit must not
+        // land between the ownership proof and the pinned save. The capture stays unsaved locally
+        // and is persisted by the next ordinary save.
+        var awaitedPendingCommit = false
+        if let pending = domainWorkingCommitTasks.removeValue(forKey: workspaceID) {
+            pending.cancel()
+            await pending.value
+            awaitedPendingCommit = true
+        }
+        guard let current = await client.canonicalWorkspaceSnapshot(workspaceID),
+              current.health.acceptsMutations
+        else { return await (nil, client.agentAdmissionSnapshot(workspaceID)) }
+        guard current.revisions.dirtyRevision != nil else {
+            return await (nil, client.agentAdmissionSnapshot(workspaceID))
+        }
+        guard let provenance = ownedCanonicalWorkingProvenance(current, workspaceID: workspaceID) else {
+            if ownWorkingCommitProvenanceByWorkspaceID[workspaceID] != nil {
+                forgetSupersededOwnWorkingPublication(workspaceID: workspaceID)
+            }
+            recordOwnedWorkingConvergence(
+                "notOwned",
+                workspaceID: workspaceID,
+                source: .agentAdmissionOwnedWorkingConvergence
+            )
+            // Evidence must describe the state this decision saw, which a landed commit changed.
+            return await (
+                .notOwnedByWindow,
+                awaitedPendingCommit ? client.agentAdmissionSnapshot(workspaceID) : nil
+            )
+        }
+        let result = await convergeOwnedWorkingPublication(
+            workspaceID: workspaceID,
+            provenance: provenance,
+            fileURL: current.document.fileURL,
+            source: .agentAdmissionOwnedWorkingConvergence
+        )
+        let refreshed = await client.agentAdmissionSnapshot(workspaceID)
+        switch result {
+        case .converged:
+            // A write that landed after the pinned save is not this attempt's to converge.
+            let stillDirty = refreshed.snapshot?.revisions.dirtyRevision != nil
+            return (stillDirty ? .notOwnedByWindow : nil, refreshed)
+        case let .failed(category):
+            return (.ownedConvergenceFailed(category), refreshed)
+        }
+    }
+
+    private static func agentAdmissionCanonicalRejection(
+        snapshot: DomainWorkspaceSnapshot?,
+        diagnostic: DomainWorkspaceTransitionDiagnostic?,
+        ownership: AgentAdmissionDirtyOwnership?
+    ) -> NSError {
+        var userInfo: [String: Any] = [:]
+        let isDirtyAndWritable = snapshot?.health.acceptsMutations == true
+            && snapshot?.revisions.dirtyRevision != nil
+        let description = switch ownership {
+        case .notOwnedByWindow where isDirtyAndWritable:
+            "Canonical workspace has unsaved changes that are not owned by this window (they were written by another window, an agent tool, or an earlier app session) and no save is in flight; Agent admission remains blocked so they are never overwritten. Save or discard them where they were made, then retry."
+        case let .ownedConvergenceFailed(category) where isDirtyAndWritable:
+            "Canonical workspace has unsaved changes from this window whose interrupted save could not be completed (category=\(category.rawValue)); Agent admission remains blocked. Retry once the workspace persistence failure is resolved."
+        default:
+            diagnostic?.rejectionDescription
+                ?? (
+                    snapshot == nil ? "Canonical workspace snapshot is unavailable for Agent admission."
+                        : snapshot?.health.acceptsMutations != true
+                        ? "Canonical workspace authority is not mutation-safe for Agent admission."
+                        : "Canonical workspace has unsaved changes; Agent admission remains blocked."
+                )
+        }
+        if isDirtyAndWritable, let ownership {
+            userInfo[agentAdmissionCanonicalOwnershipKey] = ownership.userInfoValue
+            if case let .ownedConvergenceFailed(category) = ownership {
+                userInfo[agentAdmissionConvergenceFailureCategoryKey] = category.rawValue
+            }
+        }
+        let evidence = diagnostic.map { " Canonical diagnostic: \($0.encodedEvidence)" } ?? ""
+        userInfo[NSLocalizedDescriptionKey] = description + evidence
+        return NSError(domain: "RepoPrompt.AgentAdmission", code: 2, userInfo: userInfo)
     }
 
     private func refreshCanonicalWorkspaceForAgentAdmission(workspaceID: UUID) async throws {
@@ -9399,38 +9761,65 @@ class WorkspaceManagerViewModel: ObservableObject {
             )
         }
         guard !initialWorkspace.isEphemeral, let domainWorkspaceAuthorityClient else { return }
-        let snapshot: DomainWorkspaceSnapshot?
+        var admissionSnapshot: DomainWorkspaceSnapshot?
         var admissionDiagnostic: DomainWorkspaceTransitionDiagnostic?
         #if DEBUG
             if let agentAdmissionCanonicalSnapshotHandlerForTesting {
-                snapshot = await agentAdmissionCanonicalSnapshotHandlerForTesting(workspaceID)
+                admissionSnapshot = await agentAdmissionCanonicalSnapshotHandlerForTesting(workspaceID)
             } else {
                 let admission = await domainWorkspaceAuthorityClient.agentAdmissionSnapshot(workspaceID)
-                snapshot = admission.snapshot
+                admissionSnapshot = admission.snapshot
                 admissionDiagnostic = admission.diagnostic
             }
         #else
             let admission = await domainWorkspaceAuthorityClient.agentAdmissionSnapshot(workspaceID)
-            snapshot = admission.snapshot
+            admissionSnapshot = admission.snapshot
             admissionDiagnostic = admission.diagnostic
         #endif
         try Task.checkCancellation()
-        guard let snapshot,
+        if let state = admissionDiagnostic?.admissionState,
+           state == .dirtySaveInFlight || state == .dirtyWithoutLiveSave
+        {
+            // The live or pending save may be this window's own (e.g. the save a background tab
+            // creation scheduled just before this agent start). Await exactly those tasks once, not
+            // any foreign save, then decide from a fresh read instead of rejecting a save that is
+            // about to clean canonical state.
+            let ownSaves = ownTrackedSaveTasks(workspaceID: workspaceID)
+            if !ownSaves.isEmpty {
+                #if DEBUG
+                    agentAdmissionWillAwaitOwnSavesHandlerForTesting?(workspaceID, ownSaves.count)
+                #endif
+                for task in ownSaves {
+                    try await Self.awaitOwnSaveCompletion(task)
+                }
+                let refreshed = await domainWorkspaceAuthorityClient.agentAdmissionSnapshot(workspaceID)
+                admissionSnapshot = refreshed.snapshot
+                admissionDiagnostic = refreshed.diagnostic
+            }
+        }
+        var dirtyOwnership: AgentAdmissionDirtyOwnership?
+        if admissionDiagnostic?.admissionState == .dirtyWithoutLiveSave {
+            // Dirty with no live save may be this window's own interrupted save (#1089). Finish it
+            // once, under this admission lease, then admit only from a fresh clean read.
+            let resolution = await resolveDirtyCanonicalForAgentAdmission(
+                workspaceID: workspaceID,
+                client: domainWorkspaceAuthorityClient
+            )
+            try Task.checkCancellation()
+            dirtyOwnership = resolution.ownership
+            if let refreshed = resolution.refreshed {
+                admissionSnapshot = refreshed.snapshot
+                admissionDiagnostic = refreshed.diagnostic
+            }
+        }
+        guard let snapshot = admissionSnapshot,
               snapshot.health.acceptsMutations,
               snapshot.revisions.dirtyRevision == nil
         else {
-            let description = admissionDiagnostic?.rejectionDescription
-                ?? (
-                    snapshot == nil ? "Canonical workspace snapshot is unavailable for Agent admission."
-                        : snapshot?.health.acceptsMutations != true
-                        ? "Canonical workspace authority is not mutation-safe for Agent admission."
-                        : "Canonical workspace has unsaved changes; Agent admission remains blocked."
-                )
-            let evidence = admissionDiagnostic.map { " Canonical diagnostic: \($0.encodedEvidence)" } ?? ""
-            throw NSError(
-                domain: "RepoPrompt.AgentAdmission",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: description + evidence]
+            throw Self.agentAdmissionCanonicalRejection(
+                snapshot: admissionSnapshot,
+                diagnostic: admissionDiagnostic,
+                ownership: dirtyOwnership
             )
         }
         let canonicalIdentityEnvelope = try JSONDecoder().decode(
@@ -9732,6 +10121,197 @@ class WorkspaceManagerViewModel: ObservableObject {
         Self.agentAdmissionLogger.notice("\(fields, privacy: .public)")
     }
 
+    private func hasUnsavedWorkingPublication(workspaceID: UUID) -> Bool {
+        workingPublicationGenerationByWorkspaceID[workspaceID, default: 0]
+            != savedWorkingPublicationGenerationByWorkspaceID[workspaceID, default: 0]
+    }
+
+    /// True when this window published working state that no completed save is known to cover:
+    /// either a capture whose save never finished, or an own working commit newer than the last
+    /// saved revision this window has observed. Local state versions alone cannot see either.
+    private func needsOwnWorkingPublicationResolution(workspaceID: UUID) -> Bool {
+        if hasUnsavedWorkingPublication(workspaceID: workspaceID) { return true }
+        guard let own = ownWorkingCommitProvenanceByWorkspaceID[workspaceID] else { return false }
+        guard let baseline = domainWorkspaceRevisionsByID[workspaceID] else { return true }
+        return own.workingRevision > baseline.savedRevision
+    }
+
+    private func markWorkingPublicationSaved(workspaceID: UUID, generation: UInt64) {
+        let current = savedWorkingPublicationGenerationByWorkspaceID[workspaceID, default: 0]
+        if generation > current {
+            savedWorkingPublicationGenerationByWorkspaceID[workspaceID] = generation
+        }
+    }
+
+    /// Revisions only move forward, so once canonical dirty state is not exactly this window's last
+    /// commit it can never become this window's to save again. A later own commit re-records it.
+    private func forgetSupersededOwnWorkingPublication(workspaceID: UUID) {
+        let current = workingPublicationGenerationByWorkspaceID[workspaceID, default: 0]
+        markWorkingPublicationSaved(workspaceID: workspaceID, generation: current)
+        ownWorkingCommitProvenanceByWorkspaceID.removeValue(forKey: workspaceID)
+    }
+
+    /// Recovery replaced the local model with (or verified it against) clean saved canonical
+    /// state, which supersedes every earlier capture of this window.
+    private func markLocalModelMatchesSavedCanonical(workspaceID: UUID) {
+        let current = workingPublicationGenerationByWorkspaceID[workspaceID, default: 0]
+        markWorkingPublicationSaved(workspaceID: workspaceID, generation: current)
+    }
+
+    private func forgetWorkingPublicationTracking(workspaceID: UUID) {
+        workingPublicationGenerationByWorkspaceID.removeValue(forKey: workspaceID)
+        savedWorkingPublicationGenerationByWorkspaceID.removeValue(forKey: workspaceID)
+        ownWorkingCommitProvenanceByWorkspaceID.removeValue(forKey: workspaceID)
+    }
+
+    /// Records the canonical working state this presentation's own successful working commit
+    /// produced. Revisions only move forward, so an older outcome never replaces newer evidence.
+    private func recordOwnWorkingCommit(
+        _ outcome: DomainCommandOutcome,
+        workspaceID: UUID,
+        publicationGeneration: UInt64?
+    ) {
+        guard Self.isSuccessfulDomainOutcome(outcome),
+              let revisions = outcome.workspace?.revisions ?? outcome.after,
+              let digest = outcome.workspace?.document.contentDigest ?? outcome.resultingDigest
+        else { return }
+        if let existing = ownWorkingCommitProvenanceByWorkspaceID[workspaceID],
+           existing.workingRevision > revisions.workingRevision
+        {
+            return
+        }
+        ownWorkingCommitProvenanceByWorkspaceID[workspaceID] = OwnWorkingCommitProvenance(
+            workingRevision: revisions.workingRevision,
+            contentDigest: digest,
+            publicationGeneration: publicationGeneration
+        )
+    }
+
+    /// Dirty canonical state is this window's to save only when it is exactly the revision and
+    /// bytes this window last committed. There is no weaker fallback: foreign or unprovable dirty
+    /// state (another window, an MCP tool, an earlier app session) stays fail-closed.
+    private func ownedCanonicalWorkingProvenance(
+        _ snapshot: DomainWorkspaceSnapshot,
+        workspaceID: UUID
+    ) -> OwnWorkingCommitProvenance? {
+        guard snapshot.revisions.dirtyRevision != nil,
+              let own = ownWorkingCommitProvenanceByWorkspaceID[workspaceID],
+              own.workingRevision == snapshot.revisions.workingRevision,
+              own.contentDigest == snapshot.document.contentDigest
+        else { return nil }
+        return own
+    }
+
+    private enum OwnedWorkingConvergenceResult {
+        case converged
+        case failed(WorkspacePersistenceFailureCategory)
+    }
+
+    /// Single bounded attempt to finish this window's interrupted save. It submits no new bytes:
+    /// the authority persists its current working document only while it is still the proven
+    /// revision (fail-closed CAS), so a concurrent writer yields a conflict, never a clobber.
+    private func convergeOwnedWorkingPublication(
+        workspaceID: UUID,
+        provenance: OwnWorkingCommitProvenance,
+        fileURL: URL,
+        source: WorkspaceSaveSource
+    ) async -> OwnedWorkingConvergenceResult {
+        guard let domainWorkspaceAuthorityClient,
+              !agentAdmissionRecoveryOwnsWorkspace(workspaceID)
+        else { return .failed(.durabilityUncertain) }
+        #if DEBUG
+            await ownedWorkingConvergenceWillSaveHandlerForTesting?(workspaceID)
+        #endif
+        let outcome = await domainWorkspaceAuthorityClient.saveCommittedWorkingRevision(
+            workspaceID: workspaceID,
+            expectedWorkspaceRevision: provenance.workingRevision
+        )
+        let revisions = outcome.workspace?.revisions ?? outcome.after
+        guard Self.isSuccessfulDomainOutcome(outcome), revisions?.dirtyRevision == nil else {
+            // A conflict outcome describes a peer's newer revision. This window's model has not
+            // adopted it, so it must not become this window's CAS baseline either.
+            let category = WorkspacePersistenceFailureCategory.classify(domainErrorCode: outcome.errorCode)
+            recordOwnedWorkingConvergence(
+                "failed",
+                workspaceID: workspaceID,
+                source: source,
+                category: category
+            )
+            return .failed(category)
+        }
+        applyDomainAuthorityOutcome(outcome, workspaceID: workspaceID)
+        WorkspaceFileDecodeCache.shared.invalidate(url: fileURL)
+        if let generation = provenance.publicationGeneration {
+            markWorkingPublicationSaved(workspaceID: workspaceID, generation: generation)
+        }
+        recordOwnedWorkingConvergence("converged", workspaceID: workspaceID, source: source)
+        return .converged
+    }
+
+    private enum UnsavedWorkingPublicationResolution {
+        case converged
+        case convergenceFailed(WorkspacePersistenceFailureCategory)
+        case notOwned
+        case canonicalClean
+        case unavailable
+    }
+
+    /// Resolves an own publication whose save never completed while the local state version
+    /// already looks saved. Reads canonical state without recording admission transitions.
+    private func resolveUnsavedWorkingPublication(
+        workspaceID: UUID,
+        source: WorkspaceSaveSource
+    ) async -> UnsavedWorkingPublicationResolution {
+        guard let domainWorkspaceAuthorityClient,
+              let snapshot = await domainWorkspaceAuthorityClient.canonicalWorkspaceSnapshot(workspaceID),
+              snapshot.health.acceptsMutations
+        else { return .unavailable }
+        guard snapshot.revisions.dirtyRevision != nil else {
+            if let own = ownWorkingCommitProvenanceByWorkspaceID[workspaceID],
+               own.workingRevision <= snapshot.revisions.savedRevision
+            {
+                // A completed save (possibly a peer's) already covers this window's last commit.
+                ownWorkingCommitProvenanceByWorkspaceID.removeValue(forKey: workspaceID)
+            }
+            return .canonicalClean
+        }
+        guard let provenance = ownedCanonicalWorkingProvenance(snapshot, workspaceID: workspaceID) else {
+            // Another writer superseded this window's publication. It is not ours to persist;
+            // stop re-reading the authority for it on every poll.
+            forgetSupersededOwnWorkingPublication(workspaceID: workspaceID)
+            recordOwnedWorkingConvergence("notOwned", workspaceID: workspaceID, source: source)
+            return .notOwned
+        }
+        switch await convergeOwnedWorkingPublication(
+            workspaceID: workspaceID,
+            provenance: provenance,
+            fileURL: snapshot.document.fileURL,
+            source: source
+        ) {
+        case .converged:
+            return .converged
+        case let .failed(category):
+            return .convergenceFailed(category)
+        }
+    }
+
+    private func recordOwnedWorkingConvergence(
+        _ result: String,
+        workspaceID: UUID,
+        source: WorkspaceSaveSource,
+        category: WorkspacePersistenceFailureCategory? = nil
+    ) {
+        var fields = [
+            "event=workspaceSave.ownedWorkingConvergence.\(result)",
+            "workspace=\(WorkspaceAgentAdmissionCoordinator.redactedID(workspaceID))",
+            "source=\(Self.sanitizedAdmissionDiagnostic(source.description))"
+        ]
+        if let category {
+            fields.append("category=\(Self.sanitizedAdmissionDiagnostic(category.rawValue))")
+        }
+        Self.agentAdmissionLogger.notice("\(fields.joined(separator: " "), privacy: .public)")
+    }
+
     private static func sanitizedAdmissionDiagnostic(_ raw: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
         let scalars = raw.unicodeScalars.prefix(64).map {
@@ -9791,10 +10371,27 @@ class WorkspaceManagerViewModel: ObservableObject {
         source: WorkspaceSaveSource = .pollAndSaveStateAsync,
         allowRetainedAgentAdmissionRecoveryRetry: Bool = true
     ) async -> WorkspacePersistenceOutcome {
+        await pollAndSaveStateWithOutcomeAsync(
+            workspaceID: requestedWorkspaceID,
+            source: source,
+            allowRetainedAgentAdmissionRecoveryRetry: allowRetainedAgentAdmissionRecoveryRetry,
+            ownSaveFence: nil
+        )
+    }
+
+    private func pollAndSaveStateWithOutcomeAsync(
+        workspaceID requestedWorkspaceID: UUID? = nil,
+        source: WorkspaceSaveSource,
+        allowRetainedAgentAdmissionRecoveryRetry: Bool,
+        ownSaveFence: OwnSaveFence?
+    ) async -> WorkspacePersistenceOutcome {
         guard let wsID = requestedWorkspaceID ?? activeWorkspace?.id,
               let currentWorkspace = workspace(withID: wsID)
         else {
             return .rejected(reason: "active_workspace_unavailable")
+        }
+        guard isOwnSaveFenceCurrent(ownSaveFence, workspaceID: wsID) else {
+            return .rejected(reason: "own_save_superseded", category: .cancelled)
         }
         guard !currentWorkspace.isEphemeral else { return .notRequired(workspaceID: wsID) }
         if allowRetainedAgentAdmissionRecoveryRetry,
@@ -9811,7 +10408,34 @@ class WorkspaceManagerViewModel: ObservableObject {
         let cur = stateVersionByWorkspaceID[wsID, default: 0]
         let last = lastSavedVersionByWorkspaceID[wsID, default: -1]
 
-        guard cur != last else { return .notRequired(workspaceID: wsID) } // not dirty → nothing to do
+        if cur == last {
+            // The local state version looks saved, but a save capture publishes working state
+            // without bumping it. If that save was interrupted, canonical stays dirty with no live
+            // save (#1089): finish it only when the dirty bytes are provably this window's own.
+            guard needsOwnWorkingPublicationResolution(workspaceID: wsID) else {
+                return .notRequired(workspaceID: wsID)
+            }
+            switch await resolveUnsavedWorkingPublication(workspaceID: wsID, source: source) {
+            case .converged:
+                return .persisted(workspaceID: wsID, stateVersion: cur)
+            case let .convergenceFailed(category):
+                recordAgentAdmissionSaveFailure(
+                    WorkspacePersistenceFailure(category: category, authorityStarted: true),
+                    workspaceID: wsID,
+                    source: source
+                )
+                return .rejected(reason: "owned_working_convergence_failed", category: category)
+            case .notOwned:
+                // Foreign dirty state stays fail-closed; this window has nothing newer to save.
+                return .notRequired(workspaceID: wsID)
+            case .canonicalClean, .unavailable:
+                // A capture that never reached canonical state is saved by the ordinary path below,
+                // which re-captures it and reports any owning persistence failure.
+                guard hasUnsavedWorkingPublication(workspaceID: wsID) else {
+                    return .notRequired(workspaceID: wsID)
+                }
+            }
+        }
 
         // Post notification to allow SwiftUI views to flush pending state
         NotificationCenter.default.post(
@@ -9850,7 +10474,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         let saveResult = await saveWorkspaceAsync(
             workspaceID: wsID,
             fileURL: fileURL,
-            source: source
+            source: source,
+            ownSaveFence: ownSaveFence
         )
         let savedStateVersion: Int
         switch saveResult {
@@ -11514,6 +12139,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         domainWorkspaceRevisionsByID.removeValue(forKey: workspace.id)
         domainWorkspaceDigestsByID.removeValue(forKey: workspace.id)
         domainWorkspaceFileURLsByID.removeValue(forKey: workspace.id)
+        forgetWorkingPublicationTracking(workspaceID: workspace.id)
         workspaceRenameIntentByID.removeValue(forKey: workspace.id)
         workspaceHiddenIntentByID.removeValue(forKey: workspace.id)
         removeConsolidatedRestoreTracking(workspaceID: workspace.id)
@@ -13208,9 +13834,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         workspaceID: UUID,
         fileURL: URL,
         source: WorkspaceSaveSource = .saveWorkspaceAsync,
-        remainingRetryCount: Int = 1
+        remainingRetryCount: Int = 1,
+        ownSaveFence: OwnSaveFence? = nil
     ) async -> Result<Int, WorkspacePersistenceFailure> {
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled,
+              isOwnSaveFenceCurrent(ownSaveFence, workspaceID: workspaceID)
+        else {
             return .failure(WorkspacePersistenceFailure(category: .cancelled))
         }
         guard let initialIndex = workspaceIndex(for: workspaceID) else {
@@ -13222,6 +13851,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard !agentAdmissionRecoveryOwnsWorkspace(workspaceID) else {
             return .failure(WorkspacePersistenceFailure(category: .durabilityUncertain))
         }
+        // Publications at or before this point are included in the model this save persists.
+        let publicationGenerationAtStart = workingPublicationGenerationByWorkspaceID[workspaceID, default: 0]
         if domainWorkspaceAuthorityClient != nil {
             do {
                 let result = try await persistWorkspaceThroughDomainAuthority(
@@ -13229,9 +13860,12 @@ class WorkspaceManagerViewModel: ObservableObject {
                     targetURL: fileURL,
                     preserveDiskRepoPathsIfUnchangedSinceBaseline: true,
                     source: source,
-                    remainingRetryCount: remainingRetryCount
+                    remainingRetryCount: remainingRetryCount,
+                    ownedPublicationGeneration: publicationGenerationAtStart,
+                    ownSaveFence: ownSaveFence
                 )
                 lastSavedVersionByWorkspaceID[workspaceID] = result.savedStateVersion
+                markWorkingPublicationSaved(workspaceID: workspaceID, generation: publicationGenerationAtStart)
                 return .success(result.savedStateVersion)
             } catch let failure as WorkspacePersistenceFailure {
                 return .failure(failure)
@@ -13255,7 +13889,9 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
         }
         await WorkspaceDiskWriter.shared.flush(url: fileURL)
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled,
+              isOwnSaveFenceCurrent(ownSaveFence, workspaceID: workspaceID)
+        else {
             return .failure(WorkspacePersistenceFailure(category: .cancelled))
         }
         guard let currentIndex = workspaceIndex(for: workspaceID),
@@ -13322,7 +13958,9 @@ class WorkspaceManagerViewModel: ObservableObject {
                     remainingRetryCount
                 )
             #endif
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled,
+                  isOwnSaveFenceCurrent(ownSaveFence, workspaceID: workspaceID)
+            else {
                 return .failure(WorkspacePersistenceFailure(category: .cancelled))
             }
             guard let latestIndex = workspaceIndex(for: workspaceID),
@@ -13363,7 +14001,8 @@ class WorkspaceManagerViewModel: ObservableObject {
                     workspaceID: workspaceID,
                     fileURL: fileURL,
                     source: source,
-                    remainingRetryCount: nextRemainingCount
+                    remainingRetryCount: nextRemainingCount,
+                    ownSaveFence: ownSaveFence
                 )
             case .exhausted:
                 return .failure(WorkspacePersistenceFailure(
@@ -13406,6 +14045,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         else { return }
         abandonAgentAdmissionRecoveryWorkingCommits(workspaceID: workspaceID)
         let taskID = UUID()
+        let fence = currentOwnSaveFence(workspaceID: workspaceID)
+        // Own saves of one workspace run in order, so each starts from the previous one's authority
+        // outcome instead of racing it with a stale CAS baseline (e.g. the window-close capture
+        // following a still-running tab-creation save).
+        // An in-flight poll save of this workspace is a predecessor too.
+        let predecessors = ownTrackedSaveTasks(workspaceID: workspaceID)
         let task = Task { @MainActor [weak self] in
             defer {
                 self?.scheduledWorkspaceSaveTasks[workspaceID]?.removeValue(forKey: taskID)
@@ -13413,10 +14058,14 @@ class WorkspaceManagerViewModel: ObservableObject {
                     self?.scheduledWorkspaceSaveTasks.removeValue(forKey: workspaceID)
                 }
             }
+            for predecessor in predecessors {
+                await predecessor.value
+            }
             await self?.saveWorkspaceAsync(
                 workspaceID: workspaceID,
                 fileURL: fileURL,
-                source: source
+                source: source,
+                ownSaveFence: fence
             )
         }
         scheduledWorkspaceSaveTasks[workspaceID, default: [:]][taskID] = task
@@ -13435,7 +14084,9 @@ class WorkspaceManagerViewModel: ObservableObject {
         source: WorkspaceSaveSource,
         remainingRetryCount: Int,
         creationOperationID: UUID? = nil,
-        issueClearance: DomainAuthorityIssueClearance? = nil
+        issueClearance: DomainAuthorityIssueClearance? = nil,
+        ownedPublicationGeneration: UInt64? = nil,
+        ownSaveFence: OwnSaveFence? = nil
     ) async throws -> DomainAuthoritySaveResult {
         let issueClearance = issueClearance ?? DomainAuthorityIssueClearance(issueID: domainWorkspaceAuthorityIssue?.id)
         guard !workspace.isEphemeral else {
@@ -13590,7 +14241,9 @@ class WorkspaceManagerViewModel: ObservableObject {
                     source: source,
                     remainingRetryCount: nextRemainingCount,
                     creationOperationID: creationOperationID,
-                    issueClearance: issueClearance
+                    issueClearance: issueClearance,
+                    ownedPublicationGeneration: ownedPublicationGeneration,
+                    ownSaveFence: ownSaveFence
                 )
             case .exhausted:
                 throw WorkspacePersistenceFailure(
@@ -13648,8 +14301,13 @@ class WorkspaceManagerViewModel: ObservableObject {
             let exists = snapshot.workspaces.contains {
                 $0.document.workspaceID == workspaceToSave.id
             }
-            outcome = if exists {
-                try await domainWorkspaceAuthorityClient.save(
+            // Last point before this save writes to the authority. A superseded own save bails
+            // here; past this point it is never interrupted by its superseding owner.
+            guard isOwnSaveFenceCurrent(ownSaveFence, workspaceID: workspaceToSave.id) else {
+                throw WorkspacePersistenceFailure(category: .cancelled)
+            }
+            if exists {
+                let phased = try await domainWorkspaceAuthorityClient.savePhased(
                     workspaceToSave,
                     fileURL: targetURL,
                     expectedWorkspaceRevision: domainWorkspaceRevisionsByID[
@@ -13658,11 +14316,21 @@ class WorkspaceManagerViewModel: ObservableObject {
                     expectedContentDigest: domainWorkspaceDigestsByID[workspaceToSave.id],
                     operationIDs: .init()
                 )
+                // If the save phase is interrupted after this commit, these bytes are this
+                // window's own unsaved working state and admission may finish persisting them.
+                if let working = phased.working {
+                    recordOwnWorkingCommit(
+                        working,
+                        workspaceID: workspaceToSave.id,
+                        publicationGeneration: ownedPublicationGeneration
+                    )
+                }
+                outcome = phased.final
             } else if source == .createWorkspace {
                 // Only the explicit new-workspace path may create an authority record. Every
                 // ordinary save must fail closed when its UUID is absent; otherwise a stale save
                 // that resumes after confirmed deletion would recreate the tombstoned identity.
-                try await domainWorkspaceAuthorityClient.create(
+                outcome = try await domainWorkspaceAuthorityClient.create(
                     workspaceToSave,
                     fileURL: targetURL,
                     operationID: creationOperationID ?? UUID()

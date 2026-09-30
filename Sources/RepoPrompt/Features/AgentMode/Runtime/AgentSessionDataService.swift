@@ -30,6 +30,7 @@ struct AgentSessionMeta {
     let lastRunState: String?
     let acpModelParameterSelections: [ACPModelParameterSelection]
     let parentSessionID: UUID?
+    let createdByOverseerSessionID: UUID?
     let isMCPOriginated: Bool
     let worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary]
     let activeWorktreeMergeSummaries: [AgentSessionWorktreeMergeSummary]
@@ -250,6 +251,7 @@ actor AgentSessionDataService {
         let codexTotalTotalTokens: Int?
         let codexMcpSessionKey: String?
         let parentSessionID: UUID?
+        let createdByOverseerSessionID: UUID?
         let worktreeBindings: [AgentSessionWorktreeBinding]?
         let worktreeMergeOperations: [AgentSessionWorktreeMergeOperation]?
         let pendingHandoffPayload: String?
@@ -501,6 +503,7 @@ actor AgentSessionDataService {
             || session.itemCount != persistedSession.itemCount
             || session.transcriptProjectionCounts != persistedSession.transcriptProjectionCounts
             || session.lastUserMessageAt != persistedSession.lastUserMessageAt
+            || session.selfCompactNeedsRecoveryRewrite
         return NormalizedLoadedSession(
             runtimeSession: runtimeSession,
             persistedSessionToRewrite: needsRewrite ? persistedSession : nil
@@ -509,6 +512,20 @@ actor AgentSessionDataService {
 
     private func writeDataAtomically(_ data: Data, to fileURL: URL) async throws {
         try await diskWriter.enqueueAndWait(data: data, url: fileURL.standardizedFileURL)
+    }
+
+    /// Keep the original bytes before a load repair drops an invalid optional record.
+    /// Failure aborts the load rather than silently destroying the only recovery copy.
+    private func preserveMalformedSelfCompactRecord(_ data: Data, from fileURL: URL) throws {
+        let directory = fileURL.deletingLastPathComponent().appendingPathComponent(".self-compact-recovery", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let backupURL = directory.appendingPathComponent("\(fileURL.lastPathComponent).\(UUID().uuidString).original")
+        try data.write(to: backupURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
     }
 
     private func reconcileLoadedWorktreeMergeOperations(
@@ -847,6 +864,53 @@ actor AgentSessionDataService {
             }
         #endif
         return sorted
+    }
+
+    /// Complete disk lineage for retirement. Read raw run state: list stubs normalize active
+    /// states to idle on restore and cannot prove that a descendant's work has settled.
+    func persistedChildRetirementRecords(workspace: WorkspaceModel) throws -> [AgentSessionLaneChildRetirementRecord] {
+        let folder = resolvedWorkspaceFolderURL(for: workspace).appendingPathComponent("AgentSessions")
+        let files: [URL]
+        do {
+            files = try agentSessionFiles(in: folder)
+        } catch {
+            guard Self.isMissingDirectoryError(error), try Self.isConfirmedAbsentDirectory(at: folder)
+            else { throw error }
+            return []
+        }
+        return try files.map { file in
+            let header = try decoder.decode(AgentSessionHeader.self, from: Data(contentsOf: file, options: .mappedIfSafe))
+            return AgentSessionLaneChildRetirementRecord(
+                sessionID: header.id, parentSessionID: header.parentSessionID,
+                blocksRetirement: header.lastRunState.flatMap(AgentSessionRunState.init(rawValue:))?.isActive ?? true
+            )
+        }
+    }
+
+    private static func isMissingDirectoryError(_ error: Error) -> Bool {
+        let error = error as NSError
+        return (
+            error.domain == NSCocoaErrorDomain
+                && (error.code == NSFileReadNoSuchFileError || error.code == NSFileNoSuchFileError)
+        )
+            || (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT))
+    }
+
+    /// An ENOENT from the leaf is insufficient: an unreadable ancestor may hide a real child.
+    /// Confirm absence by enumerating the nearest readable parent, propagating access errors.
+    private static func isConfirmedAbsentDirectory(at folder: URL) throws -> Bool {
+        let parent = folder.deletingLastPathComponent()
+        guard parent.path != folder.path else { return false }
+        let siblings: [URL]
+        do {
+            siblings = try FileManager.default.contentsOfDirectory(
+                at: parent, includingPropertiesForKeys: nil
+            )
+        } catch {
+            guard isMissingDirectoryError(error) else { throw error }
+            return try isConfirmedAbsentDirectory(at: parent)
+        }
+        return !siblings.contains { $0.lastPathComponent == folder.lastPathComponent }
     }
 
     private func metadataIndexNeedsFilenameReconciliation(_ index: AgentSessionMetadataIndex, folder: URL) throws -> Bool {
@@ -1280,6 +1344,9 @@ actor AgentSessionDataService {
         do {
             let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
             let session = try decoder.decode(AgentSession.self, from: data)
+            if session.selfCompactPersistenceWarning {
+                try preserveMalformedSelfCompactRecord(data, from: fileURL)
+            }
             let normalized = normalizeLoadedSession(session, fileURL: fileURL)
             var runtimeSession = normalized.runtimeSession
             var persistedSessionToRewrite = normalized.persistedSessionToRewrite
@@ -1336,6 +1403,9 @@ actor AgentSessionDataService {
                header.lastUserMessageAt == nil || header.itemCount == nil || header.transcriptProjectionCounts == nil,
                let fullSession = try? decoder.decode(AgentSession.self, from: data)
             {
+                if fullSession.selfCompactPersistenceWarning {
+                    try preserveMalformedSelfCompactRecord(data, from: fileURL)
+                }
                 let normalized = normalizeLoadedSession(fullSession, fileURL: fileURL)
                 if let transcript = normalized.runtimeSession.transcript {
                     recoveredLastUserMessageAt = recoveredLastUserMessageAt ?? computeLastUserMessageAt(in: transcript)
@@ -1408,6 +1478,7 @@ actor AgentSessionDataService {
                 codexTotalTotalTokens: header.codexTotalTotalTokens,
                 codexMcpSessionKey: header.codexMcpSessionKey,
                 parentSessionID: header.parentSessionID,
+                createdByOverseerSessionID: header.createdByOverseerSessionID,
                 pendingHandoffPayload: header.pendingHandoffPayload,
                 pendingHandoffCreatedAt: header.pendingHandoffCreatedAt,
                 pendingHandoffSourceItemID: header.pendingHandoffSourceItemID,
@@ -1470,6 +1541,7 @@ actor AgentSessionDataService {
                         lastRunState: session.lastRunState,
                         acpModelParameterSelections: session.acpModelParameterSelections,
                         parentSessionID: session.parentSessionID,
+                        createdByOverseerSessionID: session.createdByOverseerSessionID,
                         isMCPOriginated: session.isMCPOriginated,
                         worktreeBindingSummaries: session.worktreeBindings.worktreeBindingSummaries,
                         activeWorktreeMergeSummaries: session.worktreeMergeOperations.activeWorktreeMergeSummaries
@@ -1525,6 +1597,7 @@ actor AgentSessionDataService {
                             lastRunState: session.lastRunState,
                             acpModelParameterSelections: session.acpModelParameterSelections,
                             parentSessionID: session.parentSessionID,
+                            createdByOverseerSessionID: session.createdByOverseerSessionID,
                             isMCPOriginated: session.isMCPOriginated,
                             worktreeBindingSummaries: session.worktreeBindings.worktreeBindingSummaries,
                             activeWorktreeMergeSummaries: session.worktreeMergeOperations.activeWorktreeMergeSummaries

@@ -59,6 +59,7 @@ enum MCPAppToolGroup: CaseIterable, Hashable {
             ]
         case .agentSessionControl:
             [
+                MCPWindowToolName.agentSelf,
                 MCPWindowToolName.shareThoughts,
                 MCPWindowToolName.setStatus,
                 MCPWindowToolName.waitForNextInstruction

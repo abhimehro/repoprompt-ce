@@ -208,6 +208,58 @@ final class AgentSidebarOversightMenuModelsTests: XCTestCase {
         ))
     }
 
+    func testCreatorBadgeUsesCompactIconAndRetainsFullCreatorTooltip() {
+        XCTAssertEqual(AgentSessionCreatorBadgeCopy.iconName, "rectangle.connected.to.line.below")
+        XCTAssertEqual(
+            AgentSessionCreatorBadgeCopy.tooltip(for: "RepoPrompt PM"),
+            "Created by RepoPrompt PM"
+        )
+    }
+
+    func testCreatorNavigationRequiresOneLiveMatchingRoute() {
+        let creatorID = UUID()
+        let route = AgentSessionDeepLinkRoute(
+            workspaceID: UUID(), tabID: UUID(), sessionID: creatorID
+        )
+        XCTAssertNil(AgentSidebarCreatorNavigation.uniqueRoute(for: creatorID, candidates: []))
+        XCTAssertEqual(
+            AgentSidebarCreatorNavigation.uniqueRoute(for: creatorID, candidates: [route]), route
+        )
+        let sameTabInAnotherWindow = AgentSessionDeepLinkRoute(
+            windowID: 2, workspaceID: route.workspaceID, tabID: route.tabID, sessionID: creatorID
+        )
+        XCTAssertEqual(AgentSidebarCreatorNavigation.uniqueRoute(
+            for: creatorID, candidates: [route, sameTabInAnotherWindow]
+        ), route)
+        let differentTab = AgentSessionDeepLinkRoute(
+            workspaceID: route.workspaceID, tabID: UUID(), sessionID: creatorID
+        )
+        XCTAssertNil(AgentSidebarCreatorNavigation.uniqueRoute(
+            for: creatorID, candidates: [route, differentTab]
+        ))
+        XCTAssertNil(AgentSidebarCreatorNavigation.uniqueRoute(
+            for: UUID(), candidates: [route]
+        ))
+    }
+
+    func testCreatorLabelSurvivesAnEmptyUnlinkedMenuWithoutChangingEligibility() throws {
+        let target = candidate(windowID: 1, isMCPControlled: false, isMCPOriginated: false)
+        let menu = try XCTUnwrap(AgentSidebarOversightMenuProjection.make(
+            target: target,
+            inputs: inputs(target: target),
+            candidates: [target],
+            createdByLabel: "Overseer"
+        ))
+        XCTAssertTrue(menu.isEmpty)
+        XCTAssertEqual(menu.createdByLabel, "Overseer")
+        XCTAssertNil(AgentSidebarOversightMenuProjection.make(
+            target: target,
+            inputs: inputs(target: target),
+            candidates: [target]
+        )?.createdByLabel)
+        XCTAssertFalse(target.isMCPControlled)
+    }
+
     func testMenuLabelsPrefixLiveObserverLocationAndFallBackWhenUnavailable() throws {
         let target = candidate(windowID: 10, displayName: "Target")
         let linked = candidate(

@@ -482,7 +482,7 @@ final class MCPReadAutoSelectionRecoveryTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
-        XCTFail("Bounded yield guard expired while waiting for \(description)", file: file, line: line)
+        XCTFail("Hang guard expired after \(readAutoSelectionRecoveryHangGuardTimeout) while waiting for \(description)", file: file, line: line)
         for gate in gates {
             await gate.release()
         }
@@ -511,7 +511,8 @@ final class MCPReadAutoSelectionRecoveryTests: XCTestCase {
 }
 
 /// Ordering remains continuation-driven; this bound only fails open when a regression would otherwise hang the suite.
-private let readAutoSelectionRecoveryHangGuardYieldLimit = 10000
+/// It is wall-clock time, not a `Task.yield()` count, because runner load can delay the awaited main-actor workers (#1100).
+private let readAutoSelectionRecoveryHangGuardTimeout: Duration = .seconds(30)
 
 private actor RecoveryCancellationIgnoringGate {
     private struct EnteredWaiter {
@@ -545,9 +546,10 @@ private actor RecoveryCancellationIgnoringGate {
                 }
                 enteredWaiters.append(EnteredWaiter(id: id, continuation: continuation))
                 enteredWaitGuards[id] = Task { [weak self] in
-                    for _ in 0 ..< readAutoSelectionRecoveryHangGuardYieldLimit {
-                        guard !Task.isCancelled else { return }
-                        await Task.yield()
+                    do {
+                        try await Task.sleep(for: readAutoSelectionRecoveryHangGuardTimeout)
+                    } catch {
+                        return
                     }
                     await self?.expireEnteredWaiter(id: id)
                 }
@@ -613,9 +615,10 @@ private final class RecoveryMainActorSignal {
                 }
                 waiters.append(Waiter(id: id, continuation: continuation))
                 waitGuards[id] = Task { @MainActor [weak self] in
-                    for _ in 0 ..< readAutoSelectionRecoveryHangGuardYieldLimit {
-                        guard !Task.isCancelled else { return }
-                        await Task.yield()
+                    do {
+                        try await Task.sleep(for: readAutoSelectionRecoveryHangGuardTimeout)
+                    } catch {
+                        return
                     }
                     self?.expireWaiter(id: id)
                 }
@@ -730,9 +733,10 @@ private final class RecoveryDiagnosticEventProbe: @unchecked Sendable {
                         continuation: continuation
                     ))
                     waitGuards[id] = Task { [weak self] in
-                        for _ in 0 ..< readAutoSelectionRecoveryHangGuardYieldLimit {
-                            guard !Task.isCancelled else { return }
-                            await Task.yield()
+                        do {
+                            try await Task.sleep(for: readAutoSelectionRecoveryHangGuardTimeout)
+                        } catch {
+                            return
                         }
                         self?.expireWaiter(id: id)
                     }

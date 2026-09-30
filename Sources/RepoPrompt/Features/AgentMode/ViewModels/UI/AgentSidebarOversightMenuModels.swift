@@ -32,6 +32,7 @@ struct AgentSidebarOversightMenuProps: Equatable {
     let targetSessionID: UUID
     let targetDisplayName: String
     let observerOptions: [ObserverOption]
+    var createdByLabel: String?
 
     var linkedObservers: [ObserverOption] {
         observerOptions.filter {
@@ -126,7 +127,8 @@ enum AgentSidebarOversightMenuProjection {
     static func make(
         target: AgentSessionLinkEndpointCandidate,
         inputs: DomainAgentSessionLinkEndpointProjectionInputs,
-        candidates: [AgentSessionLinkEndpointCandidate]
+        candidates: [AgentSessionLinkEndpointCandidate],
+        createdByLabel: String? = nil
     ) -> AgentSidebarOversightMenuProps? {
         guard AgentSessionLinkEndpointEligibility.targetResolveFailure(for: target) == nil else {
             return nil
@@ -218,7 +220,8 @@ enum AgentSidebarOversightMenuProjection {
             targetEndpoint: target.domainEndpoint,
             targetSessionID: target.sessionID,
             targetDisplayName: target.resolvedDisplayName,
-            observerOptions: options
+            observerOptions: options,
+            createdByLabel: createdByLabel
         )
     }
 

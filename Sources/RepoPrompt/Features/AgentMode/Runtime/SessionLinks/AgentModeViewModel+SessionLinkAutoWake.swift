@@ -55,6 +55,8 @@ struct AgentSessionLinkAutoWakeAttempt {
 
     /// Periodic admission has no queue evidence. Notification admission always supplies it.
     var queue: QueueEvidence?
+    /// Periodic producer fence captured at reservation. Notification wakes capture at preparation.
+    var stopFence: AgentRunStartStopFence?
     var queueEpoch: UUID? {
         queue?.epoch
     }
@@ -111,10 +113,12 @@ struct AgentSessionLinkAutoWakeAttempt {
         attemptedFingerprint: AgentSessionLinkPassiveStatusNotices.WakeEligibilityFingerprint?,
         physicalOutcome: AgentSessionLinkPhysicalDispatchOutcome,
         phase: Phase,
-        task: Task<Void, Never>?
+        task: Task<Void, Never>?,
+        stopFence: AgentRunStartStopFence? = nil
     ) {
         self.wakeID = wakeID
         self.observerEndpoint = observerEndpoint
+        self.stopFence = stopFence
         if let queueEpoch, let wakeFingerprint {
             queue = QueueEvidence(epoch: queueEpoch, revision: queueRevision, fingerprint: wakeFingerprint)
         }
@@ -137,6 +141,8 @@ enum AgentSessionLinkAutoWakeCancellationReason: String {
     case queueCleared = "queue_cleared"
     case naturalDeliveryWon = "natural_delivery_won"
     case localUserWon = "local_user_won"
+    /// User or managed Stop: never proves a physical provider call was absent.
+    case userStop = "user_stop"
     case eligibilityLost = "eligibility_lost"
     case shutdown
     /// The required lane claim disappeared before any provider call could begin.
@@ -473,6 +479,20 @@ extension AgentModeViewModel {
         }
     }
 
+    /// Retracts this session's current wake without acknowledging its reducer content.
+    /// The exact pending fingerprint stays suppressed until a genuinely new eligible change.
+    func agentSessionLinkRetractAutoWakeForUserStop(_ session: TabSession) {
+        session.oversight.invalidatePeriodicIdleSpan()
+        guard let endpoint = agentSessionLinkObserverEndpoint(tabID: session.tabID),
+              let attempt = session.oversight.pendingAutoWake,
+              attempt.observerEndpoint == endpoint
+        else { return }
+        if let fingerprint = attempt.wakeFingerprint {
+            session.oversight.suppressedWakeFingerprint = fingerprint
+        }
+        cancelAgentSessionLinkAutoWake(for: endpoint, reason: .userStop)
+    }
+
     /// Clears suppression so an explicit off/on cycle can retry a known failure.
     ///
     /// Suppression is the only thing it clears. Admission still has to come from somewhere — a
@@ -597,13 +617,16 @@ extension AgentModeViewModel {
                 return
             }
 
-            agentSessionLinkPrepareAutoWakeDispatch(wakeID: wakeID, endpoint: endpoint)
+            guard let startOptions = agentSessionLinkPrepareAutoWakeDispatch(wakeID: wakeID, endpoint: endpoint) else {
+                abandonAgentSessionLinkPromptClaim(reservedClaim)
+                return
+            }
             switch route {
             case .idleFollowUp:
                 let startOutcome = await startAgentRun(
                     tabID: endpoint.tabID,
                     initialMessage: "",
-                    directStartOptions: .laneUpdate(wakeID: wakeID)
+                    directStartOptions: startOptions
                 )
                 if case .some(.queuedFallback) = startOutcome {
                     // Codex owns a durable queued submission. Keep the wake identity attached until
@@ -1040,18 +1063,26 @@ extension AgentModeViewModel {
         agentSessionLinkSettleAmbiguousAutoWake(attempt, session: session)
     }
 
-    private func agentSessionLinkPrepareAutoWakeDispatch(
+    /// A notification may wait through an internal cancellation (such as changing execution location).
+    /// Fence its actual producer, not that earlier reservation. Explicit Stop retracts pre-preparation
+    /// attempts; once preparation starts, this fence is immutable across every provider suspension.
+    func agentSessionLinkPrepareAutoWakeDispatch(
         wakeID: UUID,
         endpoint: DomainAgentSessionLinkEndpointIdentity
-    ) {
+    ) -> AgentDirectRunStartOptions? {
         guard let session = sessions[endpoint.tabID],
               var attempt = session.oversight.pendingAutoWake,
-              attempt.wakeID == wakeID
-        else { return }
+              attempt.wakeID == wakeID,
+              attempt.observerEndpoint == endpoint,
+              !attempt.isPeriodic,
+              attempt.phase == .scheduled || attempt.phase == .awaitingSettlement
+        else { return nil }
+        let stopFence = AgentRunStartStopFence(session: session)
         attempt.phase = .preparingDispatch
         attempt.attemptedFingerprint = nil
         attempt.physicalOutcome = .notAttempted
         session.oversight.pendingAutoWake = attempt
+        return .laneUpdate(wakeID: wakeID, stopFence: stopFence)
     }
 
     func agentSessionLinkAwaitPhysicalDispatchSettlement(
@@ -1799,12 +1830,14 @@ extension AgentModeViewModel {
             && !session.bindingTransitionInProgress
             && !session.terminalCommitInProgress
             && !session.mcpFollowUpRunPending
+            && !session.selfCompactState.blocksAutomaticWake
             && !session.isComposerSubmissionInFlight
             && !session.isPreparingInitialWorktree
             && !session.isChangingExecutionLocation
             && session.pendingInstructions.isEmpty
             && session.pendingACPSteeringInstructions.isEmpty
             && session.pendingClaudeSteeringInstructions.isEmpty
+            && !session.isSettlingACPBackgroundCompaction
             && session.pendingAskUser == nil
             && session.pendingUserInputRequest == nil
             && session.pendingApproval == nil

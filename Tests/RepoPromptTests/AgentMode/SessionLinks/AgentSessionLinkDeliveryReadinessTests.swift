@@ -37,7 +37,9 @@ final class AgentSessionLinkDeliveryReadinessTests: XCTestCase {
         let booleanBlockers: [(String, WritableKeyPath<Snapshot, Bool>)] = [
             ("runStateIsActive", \.runStateIsActive),
             ("terminalCommitInProgress", \.terminalCommitInProgress),
+            ("stopInProgress", \.stopInProgress),
             ("mcpFollowUpRunPending", \.mcpFollowUpRunPending),
+            ("pendingSelfCompact", \.pendingSelfCompact),
             ("isComposerSubmissionInFlight", \.isComposerSubmissionInFlight),
             ("isPreparingInitialWorktree", \.isPreparingInitialWorktree),
             ("isChangingExecutionLocation", \.isChangingExecutionLocation),

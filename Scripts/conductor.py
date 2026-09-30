@@ -35,11 +35,11 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
 from debug_app_process import ProcessIdentityError, matching_processes, terminate_matching_processes
 
-PROTOCOL_VERSION = 16
+PROTOCOL_VERSION = 17
 TERMINAL_STATES = {"completed", "failed", "canceled"}
 JOB_PHASES = {
     "queued",
@@ -66,6 +66,60 @@ BUILD_CACHE_CLONE_SECONDS_PER_ENTRY = 0.005
 BUILD_CACHE_CLONE_SECONDS_PER_GIB = 5.0
 BUILD_CACHE_RETRY_OVERHEAD_SECONDS = 30.0
 BUILD_CACHE_FORCE_STOP_WAIT_SECONDS = 4 * BUILD_CACHE_CLONE_MAX_SECONDS + BUILD_CACHE_RETRY_OVERHEAD_SECONDS
+CONDUCTOR_JOB_TICKET_ENV = "REPOPROMPT_CONDUCTOR_JOB_TICKET"
+OPERATION_RUNNER_ARG = "__operation_runner"
+# SwiftPM keys its manifest cache on the full process environment, so any per-job value
+# exported to a SwiftPM process forces every package manifest to be re-evaluated and the
+# build to be re-planned (~30 s per job on this package). The job ticket is therefore
+# delivered only to conductor's own operation runner, which consumes it before spawning
+# anything else.
+_CURRENT_JOB_TICKET: Optional[str] = None
+
+
+def argv_is_operation_runner(argv: Sequence[str]) -> bool:
+    return OPERATION_RUNNER_ARG in list(argv)[:4]
+
+
+def capture_job_ticket(environ: Dict[str, str]) -> Optional[str]:
+    global _CURRENT_JOB_TICKET
+    _CURRENT_JOB_TICKET = environ.pop(CONDUCTOR_JOB_TICKET_ENV, None)
+    return _CURRENT_JOB_TICKET
+
+
+def current_job_ticket() -> Optional[str]:
+    return _CURRENT_JOB_TICKET
+
+
+# Measurement builds (build-modularization P0.5): `swift-build` and aggregate `test` accept
+# `--scratch <label>` plus extra compiler or linker flags. They build in `.build/measure/<label>`,
+# never in the shared `.build`, so a flag change cannot invalidate ordinary jobs' outputs.
+MEASURE_SCRATCH_RELATIVE = Path(".build") / "measure"
+MEASURE_LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+
+def measurement_scratch_path(repo_root: Path, label: str) -> Path:
+    if not MEASURE_LABEL_PATTERN.fullmatch(label) or ".." in label:
+        raise ConductorError("--scratch must be a short label of letters, digits, '.', '_', or '-'")
+    return repo_root / MEASURE_SCRATCH_RELATIVE / label
+
+
+def measurement_build_args(repo_root: Path, args: Dict[str, Any]) -> List[str]:
+    """SwiftPM arguments for an opt-in measurement build; empty for ordinary jobs."""
+    label = args.get("scratch")
+    swiftc_flags = [str(flag) for flag in args.get("swiftcFlags") or []]
+    linker_flags = [str(flag) for flag in args.get("linkerFlags") or []]
+    if not label:
+        if swiftc_flags or linker_flags:
+            raise ConductorError("--swiftc-flag and --linker-flag require --scratch <label>")
+        return []
+    result = ["--scratch-path", str(measurement_scratch_path(repo_root, str(label)))]
+    for flag in swiftc_flags:
+        result.extend(["-Xswiftc", flag])
+    for flag in linker_flags:
+        result.extend(["-Xlinker", flag])
+    return result
+
+
 BUILD_CACHE_ELIGIBLE_OPERATIONS = {"swift-build", "build", "package", "test", "install-debug-cli"}
 BUILD_CACHE_ENV_KEYS = (
     "ARCHS",
@@ -210,9 +264,12 @@ Operation commands:
   ./conductor check-format-tools     # fail if style tools are missing
   ./conductor install-format-tools   # explicit Homebrew install of missing style tools
   ./conductor swift-build --product RepoPrompt|repoprompt-mcp|all
+  ./conductor swift-build --product RepoPrompt|repoprompt-mcp --scratch <label> [--swiftc-flag=<flag>]... [--linker-flag=<flag>]...
+    measurement build in .build/measure/<label>; never touches the shared .build or the build cache
   ./conductor build
   ./conductor package debug|release
-  ./conductor test [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
+  ./conductor test [--module <TestTarget>] [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
+  ./conductor test [--filter <filter>] --scratch <label> [--swiftc-flag=<flag>]... [--linker-flag=<flag>]...   # aggregate-path measurement build
   ./conductor provider-test [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
   ./conductor install-debug-cli
   ./conductor debug-cli-status
@@ -278,6 +335,116 @@ XCTEST_PROGRESS_RE = re.compile(
     r"^Test Case '(.+)' (started|passed|failed|skipped)(?: \([^)]*\))?\.\s*$"
 )
 XCTEST_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9:;]*m")
+# Structured per-job phase timing (build-modularization P0.1). Marks are wall-clock epoch
+# seconds; output-derived marks are the time conductor received the line.
+JOB_TIMING_SCHEMA_VERSION = 1
+JOB_TIMING_RECORD_SUFFIX = ".timing.json"
+JOB_TIMING_MARKS = (
+    "queued",
+    "laneAdmitted",
+    "buildCachePrepareStarted",
+    "buildCachePrepareFinished",
+    "heavySlotWaitStarted",
+    "heavySlotAcquired",
+    "processStarted",
+    "cacheColdRetryStarted",
+    "buildCompleted",
+    "firstTestStarted",
+    "processFinished",
+    "cachePublicationStarted",
+    "cachePublicationFinished",
+    "finished",
+)
+TIMING_BUILD_COMPLETE_RE = re.compile(r"Build complete!\s*\((\d+(?:\.\d+)?)s\)")
+TIMING_FIRST_TEST_RE = re.compile(r"^(?:Test Suite '.+' started\b|.{0,4}Test run started\b)")
+TIMING_COLD_RETRY_TEXT = "seeded build failed; removing the proven seeded .build and retrying cold once"
+# Optional per-job peak RSS (build-modularization P0.5, input to admission v2). Heavy-slot jobs
+# sample `ps` once per interval and sum RSS over the job's process tree. The tree sum counts
+# shared pages once per process (an upper bound); sampling can miss short peaks (a lower bound).
+JOB_RSS_SAMPLE_INTERVAL_SECONDS = 1.0
+
+
+def parse_process_rss_table(text: str) -> Dict[int, Tuple[int, int, str]]:
+    """Parse `ps -axo pid=,ppid=,rss=,comm=` into pid -> (ppid, rss bytes, command name)."""
+    table: Dict[int, Tuple[int, int, str]] = {}
+    for line in text.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 3:
+            continue
+        try:
+            pid, ppid, rss_kib = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        # `ps` wraps the name in parentheses once a process is exiting and its arguments are gone.
+        raw_name = parts[3].strip() if len(parts) == 4 else ""
+        if raw_name.startswith("(") and raw_name.endswith(")"):
+            raw_name = raw_name[1:-1]
+        name = os.path.basename(raw_name)
+        table[pid] = (ppid, rss_kib * 1024, name)
+    return table
+
+
+def process_rss_snapshot() -> Optional[Dict[int, Tuple[int, int, str]]]:
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,rss=,comm="],
+            text=True,
+            capture_output=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return parse_process_rss_table(completed.stdout)
+
+
+def process_tree_rss(table: Dict[int, Tuple[int, int, str]], root_pid: int) -> Optional[Dict[str, Any]]:
+    """Sum RSS over `root_pid` and its descendants; None when the root is gone or a zombie."""
+    root = table.get(root_pid)
+    if root is None or root[1] <= 0:
+        return None
+    children: Dict[int, List[int]] = {}
+    for pid, (ppid, _, _) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    total = 0
+    count = 0
+    largest_bytes = -1
+    largest_name = ""
+    pending = [root_pid]
+    seen: set[int] = set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen or pid not in table:
+            continue
+        seen.add(pid)
+        _, rss, name = table[pid]
+        total += rss
+        count += 1
+        if rss > largest_bytes:
+            largest_bytes, largest_name = rss, name
+        pending.extend(children.get(pid, ()))
+    return {"treeBytes": total, "processes": count, "largestBytes": largest_bytes, "largestName": largest_name}
+
+
+def run_process_tree_rss_sampler(
+    root_pid: int,
+    is_running: Callable[[], bool],
+    record: Callable[[Dict[str, Any]], None],
+    *,
+    snapshot: Callable[[], Optional[Dict[int, Tuple[int, int, str]]]] = process_rss_snapshot,
+    wait: Callable[[float], None] = time.sleep,
+    interval: float = JOB_RSS_SAMPLE_INTERVAL_SECONDS,
+) -> None:
+    """Sample until the root exits. Read-only: it never signals or waits on the job's processes."""
+    while is_running():
+        table = snapshot()
+        if table is not None:
+            sample = process_tree_rss(table, root_pid)
+            if sample is None:
+                return
+            record(sample)
+        wait(interval)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -909,7 +1076,12 @@ class BuildCacheManager:
 
     @staticmethod
     def eligible(operation: str, args: Dict[str, Any]) -> bool:
-        del args
+        # Module-scoped tests build in their own Swift Build scratch path, not the seeded `.build`.
+        if operation == "test" and args.get("module"):
+            return False
+        # Measurement builds use `.build/measure/<label>`, not the seeded `.build`.
+        if args.get("scratch"):
+            return False
         return operation in BUILD_CACHE_ELIGIBLE_OPERATIONS
 
     @staticmethod
@@ -1257,7 +1429,7 @@ class BuildCacheManager:
     @staticmethod
     def _sanitize_seed(build_dir: Path) -> None:
         deadline = BuildCacheManager._tree_deadline_seconds(build_dir)
-        for relative in ("xcode", "xcode-custom", ".conductor-cache-provenance.json"):
+        for relative in ("xcode", "xcode-custom", "measure", "swiftbuild", ".conductor-cache-provenance.json"):
             target = build_dir / relative
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target, ignore_errors=True)
@@ -2401,6 +2573,52 @@ def iso_timestamp(ts: Optional[float]) -> Optional[str]:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(ts))
 
 
+def job_timing_record_path(log_path: Path) -> Path:
+    return log_path.with_suffix(JOB_TIMING_RECORD_SUFFIX)
+
+
+def job_timing_record_log_name(name: str) -> Optional[str]:
+    """Return the job log name that owns a `<ticket>.timing.json` record, else None."""
+    if not name.endswith(JOB_TIMING_RECORD_SUFFIX):
+        return None
+    return name[: -len(JOB_TIMING_RECORD_SUFFIX)] + ".log"
+
+
+def phase_timing_segments(marks: Dict[str, float], build_reported_seconds: Optional[float]) -> Dict[str, float]:
+    """Derive per-phase durations (seconds) from phase marks; segments with a missing endpoint are omitted."""
+    segments: Dict[str, float] = {}
+
+    def span(name: str, start: Optional[float], end: Optional[float]) -> None:
+        if start is not None and end is not None:
+            segments[name] = round(max(0.0, end - start), 3)
+
+    get = marks.get
+    span("queueSeconds", get("queued"), get("laneAdmitted"))
+    span("buildCachePrepareSeconds", get("buildCachePrepareStarted"), get("buildCachePrepareFinished"))
+    span("heavySlotWaitSeconds", get("heavySlotWaitStarted"), get("heavySlotAcquired"))
+    launch_from = [
+        value
+        for value in (get("laneAdmitted"), get("buildCachePrepareFinished"), get("heavySlotAcquired"))
+        if value is not None
+    ]
+    span("launchSeconds", max(launch_from) if launch_from else None, get("processStarted"))
+    span("processToBuildCompleteSeconds", get("processStarted"), get("buildCompleted"))
+    if build_reported_seconds is not None:
+        segments["buildReportedSeconds"] = round(build_reported_seconds, 3)
+        if "processToBuildCompleteSeconds" in segments:
+            segments["preBuildSeconds"] = round(
+                max(0.0, segments["processToBuildCompleteSeconds"] - build_reported_seconds), 3
+            )
+    span("buildCompleteToFirstTestSeconds", get("buildCompleted"), get("firstTestStarted"))
+    span("processToFirstTestSeconds", get("processStarted"), get("firstTestStarted"))
+    span("testSeconds", get("firstTestStarted"), get("processFinished"))
+    span("processSeconds", get("processStarted"), get("processFinished"))
+    span("finalizeSeconds", get("processFinished"), get("cachePublicationStarted") or get("finished"))
+    span("cachePublicationSeconds", get("cachePublicationStarted"), get("cachePublicationFinished"))
+    span("totalSeconds", get("queued"), get("finished"))
+    return segments
+
+
 def terminal_exit_code(payload: Dict[str, Any]) -> int:
     state = payload.get("state")
     exit_code = payload.get("exitCode")
@@ -2972,6 +3190,97 @@ class Job:
     tail_bytes: int = 0
     build_cache: Dict[str, Any] = dataclasses.field(default_factory=dict)
     tail: Deque[str] = dataclasses.field(default_factory=lambda: deque(maxlen=LOG_TAIL_LINES))
+    phase_marks: Dict[str, float] = dataclasses.field(default_factory=dict)
+    build_reported_seconds: Optional[float] = None
+    build_complete_count: int = 0
+    peak_rss: Dict[str, Any] = dataclasses.field(default_factory=dict)
+
+    def observe_rss_sample(self, sample: Dict[str, Any]) -> None:
+        """Fold one process-tree RSS sample into the job's peaks."""
+        peak = self.peak_rss
+        peak["samples"] = int(peak.get("samples", 0)) + 1
+        peak["sampleIntervalSeconds"] = JOB_RSS_SAMPLE_INTERVAL_SECONDS
+        if int(sample["treeBytes"]) > int(peak.get("treeBytes", -1)):
+            peak["treeBytes"] = int(sample["treeBytes"])
+            peak["treeProcesses"] = int(sample["processes"])
+        if int(sample["largestBytes"]) > int(peak.get("largestProcessBytes", -1)):
+            peak["largestProcessBytes"] = int(sample["largestBytes"])
+            peak["largestProcessName"] = str(sample["largestName"])
+
+    def mark_phase(self, name: str, at: Optional[float] = None) -> None:
+        """Record the first time a timing mark is reached; later calls keep the original time."""
+        if name not in JOB_TIMING_MARKS:
+            raise ConductorError(f"invalid job timing mark '{name}'")
+        self.phase_marks.setdefault(name, now() if at is None else at)
+
+    def observe_output_timing(self, text: str, at: Optional[float] = None) -> None:
+        """Derive build/test marks from process output lines as conductor receives them.
+
+        `buildCompleted` tracks the last `Build complete!` before the first test starts, so a
+        cold cache retry or a second build step reports the build that the tests actually used.
+        """
+        if "firstTestStarted" in self.phase_marks:
+            return
+        if "Build complete!" not in text and "started" not in text and "retrying cold" not in text:
+            return
+        observed_at = now() if at is None else at
+        for raw_line in text.splitlines():
+            line = XCTEST_ANSI_SGR_RE.sub("", raw_line).strip()
+            build = TIMING_BUILD_COMPLETE_RE.search(line)
+            if build is not None:
+                self.phase_marks["buildCompleted"] = observed_at
+                self.build_reported_seconds = float(build.group(1))
+                self.build_complete_count += 1
+            elif TIMING_FIRST_TEST_RE.match(line):
+                self.mark_phase("firstTestStarted", observed_at)
+                return
+            elif TIMING_COLD_RETRY_TEXT in line:
+                self.mark_phase("cacheColdRetryStarted", observed_at)
+
+    def phase_timings(self) -> Dict[str, Any]:
+        marks: Dict[str, float] = {}
+        derived = {
+            "queued": self.created_at,
+            "laneAdmitted": self.started_at,
+            "processStarted": self.process_started_at,
+            "processFinished": self.process_finished_at,
+            "finished": self.finished_at,
+        }
+        for name in JOB_TIMING_MARKS:
+            value = derived.get(name) if name in derived else self.phase_marks.get(name)
+            if value is not None:
+                marks[name] = value
+        timings: Dict[str, Any] = {
+            "schemaVersion": JOB_TIMING_SCHEMA_VERSION,
+            "marks": marks,
+            "segments": phase_timing_segments(marks, self.build_reported_seconds),
+            "buildCompleteCount": self.build_complete_count,
+            "outputMarksAreReceiptTimes": True,
+        }
+        if self.peak_rss:
+            timings["peakRss"] = dict(self.peak_rss)
+        return timings
+
+    def timing_record(self) -> Dict[str, Any]:
+        """Compact persisted record (`<ticket>.timing.json`) for retroactive timing analysis."""
+        build_cache = {
+            key: self.build_cache[key]
+            for key in ("state", "seeded", "cloneSeconds")
+            if key in self.build_cache
+        }
+        publication = self.build_cache.get("publication")
+        if isinstance(publication, dict) and "state" in publication:
+            build_cache["publicationState"] = publication["state"]
+        return {
+            "schemaVersion": JOB_TIMING_SCHEMA_VERSION,
+            "ticket": self.ticket,
+            "operation": self.operation,
+            "operationLabel": operation_display_name(self.operation, self.args),
+            "state": self.state,
+            "exitCode": self.exit_code,
+            "buildCache": build_cache,
+            "phaseTimings": self.phase_timings(),
+        }
 
     def to_payload(self, include_tail: bool = True, include_summary: bool = True) -> Dict[str, Any]:
         queue_wait_seconds = None
@@ -3051,6 +3360,7 @@ class Job:
             "lastProgressObservedAt": self.xctest_last_progress_observed_at,
             "diagnosticPaths": [str(path) for path in self.diagnostic_paths],
             "buildCache": dict(self.build_cache),
+            "phaseTimings": self.phase_timings(),
         }
         if self.diagnostics:
             payload["diagnostics"] = list(self.diagnostics)
@@ -3222,9 +3532,12 @@ class OperationRegistry:
         if operation == "swift-build":
             product = args.get("product")
             lanes = ["build"]
+            measurement = measurement_build_args(self.repo_root, args)
             if product == "all":
+                if measurement:
+                    raise ConductorError("measurement builds need a single --product")
                 return self._internal_argv("swift_build_all", {}), lanes, cwd, env, effective_timeout
-            return ["swift", "build", "--product", str(product)], lanes, cwd, env, effective_timeout
+            return ["swift", "build", "--product", str(product), *measurement], lanes, cwd, env, effective_timeout
         if operation == "build":
             return [script("package_app.sh"), "debug"], ["build", "debugArtifact"], cwd, env, effective_timeout
         if operation == "package":
@@ -3233,6 +3546,14 @@ class OperationRegistry:
             return [script("package_app.sh"), config], lanes, cwd, env, effective_timeout
         if operation == "test":
             argv = [sys.executable, script("ci_app_test_runner.py"), "--local"]
+            measurement = measurement_build_args(self.repo_root, args)
+            if measurement and args.get("module"):
+                raise ConductorError("--scratch applies to the aggregate path; --module has its own scratch path")
+            if measurement:
+                argv.extend(["--scratch-path", measurement[1]])
+                argv.extend(f"--build-arg={value}" for value in measurement[2:])
+            if args.get("module"):
+                argv.extend(["--module", str(args["module"])])
             if args.get("testProduct"):
                 argv.extend(["--test-product", str(args["testProduct"])])
             if args.get("filter"):
@@ -4027,6 +4348,7 @@ class DaemonState:
             job = self.jobs.get(ticket)
             if job is None:
                 return None
+            job.mark_phase("heavySlotWaitStarted", wait_start)
             env = dict(job.env)
             lease = self._job_lease(job)
             metadata = display_lock_metadata(
@@ -4096,6 +4418,7 @@ class DaemonState:
                 self._terminalize_canceled_global_heavy_wait_locked(current)
             else:
                 current.global_heavy_slot_wait_seconds = waited
+                current.mark_phase("heavySlotAcquired", wait_start + waited)
                 current.global_heavy_slot_path = str(acquired.lock_path)
                 current.global_heavy_slot_holder = None
                 current.global_heavy_legacy_slot_holder = None
@@ -4223,8 +4546,12 @@ class DaemonState:
                     self._append_system_line_locked(job, "job canceled before process start\n")
                     return
             argv, _lanes, cwd, env, effective_timeout = self.registry.prepare(request)
-            env["REPOPROMPT_CONDUCTOR_JOB_TICKET"] = job.ticket
+            env.pop(CONDUCTOR_JOB_TICKET_ENV, None)
+            if argv_is_operation_runner(argv):
+                env[CONDUCTOR_JOB_TICKET_ENV] = job.ticket
             if BuildCacheManager.eligible(job.operation, job.args) and (self.paths.repo_root / "Package.swift").is_file():
+                with self.condition:
+                    job.mark_phase("buildCachePrepareStarted")
                 with self._cache_write_lock:
                     cache_manager = self._build_cache_manager(env)
                 cache_context = cache_manager.prepare(job.operation, job.args, env)
@@ -4264,6 +4591,8 @@ class DaemonState:
                             job.build_cache["attemptTimeoutSeconds"] = attempt_timeout
                             job.build_cache["cleanupTimeoutSeconds"] = cleanup_timeout
                             job.build_cache["retryEnvelopeTimeoutSeconds"] = effective_timeout
+                with self.condition:
+                    job.mark_phase("buildCachePrepareFinished")
             if operation_requires_global_heavy_slot(job.operation, job.args):
                 global_heavy_slot = self._acquire_global_heavy_slot(job.ticket)
                 if global_heavy_slot is None:
@@ -4335,6 +4664,12 @@ class DaemonState:
                     daemon=True,
                 )
                 watchdog.start()
+            if global_heavy_slot is not None:
+                threading.Thread(
+                    target=self._sample_job_rss,
+                    args=(job, process),
+                    daemon=True,
+                ).start()
             try:
                 exit_code = process.wait(timeout=effective_timeout)
             except subprocess.TimeoutExpired:
@@ -4493,6 +4828,8 @@ class DaemonState:
                 with contextlib.suppress(FileNotFoundError):
                     cache_context.outcome_path.unlink()
             if job is not None and cache_publish_after_success and cache_context is not None and cache_manager is not None:
+                with self.condition:
+                    job.mark_phase("cachePublicationStarted")
                 try:
                     with self._cache_write_lock:
                         with self.condition:
@@ -4515,6 +4852,7 @@ class DaemonState:
                         self._warn_job_locked(job, "buildCachePublicationFailed", str(exc))
                 finally:
                     with self.condition:
+                        job.mark_phase("cachePublicationFinished")
                         job.state = "completed"
                         job.exit_code = 0
                         job.result_summary = (
@@ -4545,6 +4883,24 @@ class DaemonState:
                 self.condition.notify_all()
             if job is not None and refresh_after_release:
                 threading.Thread(target=self._refresh_output_summary, args=(job,), daemon=True).start()
+            if job is not None:
+                self._submit_job_timing_record(job)
+
+    def _submit_job_timing_record(self, job: Job) -> None:
+        with self.condition:
+            if job.state not in TERMINAL_STATES:
+                return
+            record = job.timing_record()
+            path = job_timing_record_path(job.log_path)
+        if not self._io_worker.submit(_atomic_write_json, path, record):
+            with self.condition:
+                self._daemon_infrastructure_warnings.append(
+                    {
+                        "kind": "timingRecordQueueFull",
+                        "message": f"timing record for {job.ticket} dropped because the state-I/O queue is full",
+                        "observedAt": now(),
+                    }
+                )
 
     def _submit_process_output_chunk(self, ticket: str, chunk: bytes) -> None:
         with self.condition:
@@ -4558,6 +4914,7 @@ class DaemonState:
             job = self.jobs.get(ticket)
             if job:
                 self._append_tail_locked(job, text)
+                job.observe_output_timing(text)
                 self._record_xctest_progress_locked(job, text)
                 self.condition.notify_all()
 
@@ -4674,6 +5031,17 @@ class DaemonState:
             wake_probe=bool(job.args.get("xctestStallWakeProbe")),
             triggered_at=timestamp,
         )
+
+    def _sample_job_rss(self, job: Job, process: subprocess.Popen[bytes]) -> None:
+        def record(sample: Dict[str, Any]) -> None:
+            with self.condition:
+                job.observe_rss_sample(sample)
+
+        try:
+            run_process_tree_rss_sampler(process.pid, lambda: process.returncode is None, record)
+        except Exception:
+            # Sampling is advisory; it must never affect the job.
+            return
 
     def _monitor_xctest_stall(self, ticket: str) -> None:
         while True:
@@ -5482,6 +5850,11 @@ class DaemonState:
                 for path in self.paths.jobs_dir.glob("*.xctest-stall.*")
                 if path.name not in retained_diagnostics
             )
+            candidates.extend(
+                path
+                for path in self.paths.jobs_dir.glob(f"*{JOB_TIMING_RECORD_SUFFIX}")
+                if job_timing_record_log_name(path.name) not in retained_logs
+            )
         for path in candidates:
             try:
                 stale = path.stat().st_mtime < cutoff
@@ -5498,7 +5871,7 @@ class DaemonState:
                     for job in self.jobs.values()
                     for diagnostic_path in job.diagnostic_paths
                 )
-                if path.name in current_names:
+                if path.name in current_names or job_timing_record_log_name(path.name) in current_names:
                     continue
             with contextlib.suppress(FileNotFoundError):
                 path.unlink()
@@ -7356,7 +7729,7 @@ def package_debug_app_under_heavy(repo_root: Path, operation_label: str) -> Tupl
     staged_bundle = staging_parent / live_bundle.name
     metadata = display_lock_metadata(
         lock_kind="global-heavy",
-        ticket=os.environ.get("REPOPROMPT_CONDUCTOR_JOB_TICKET"),
+        ticket=current_job_ticket(),
         operation=operation_label,
         operation_label=operation_label,
         repo_root=repo_root,
@@ -7448,7 +7821,7 @@ def operation_app_launch_existing(repo_root: Path, args: Dict[str, Any]) -> int:
         return 1
     metadata = display_lock_metadata(
         lock_kind="live-app",
-        ticket=os.environ.get("REPOPROMPT_CONDUCTOR_JOB_TICKET"),
+        ticket=current_job_ticket(),
         operation="app launch-existing" if staged_bundle is None else "app activate-staged-and-launch",
         operation_label="app launch-existing" if staged_bundle is None else "app activate staged and launch",
         repo_root=repo_root,
@@ -7543,7 +7916,7 @@ def operation_app_status(repo_root: Path) -> int:
 def operation_app_stop(repo_root: Path, args: Dict[str, Any]) -> int:
     metadata = display_lock_metadata(
         lock_kind="live-app",
-        ticket=os.environ.get("REPOPROMPT_CONDUCTOR_JOB_TICKET"),
+        ticket=current_job_ticket(),
         operation="app stop",
         operation_label="app stop",
         repo_root=repo_root,
@@ -8176,6 +8549,29 @@ def parse_no_args(prog: str, argv: List[str]) -> None:
     parser.parse_args(argv)
 
 
+def add_measurement_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--scratch", help="measurement build in .build/measure/<label> (plan P0.5)")
+    parser.add_argument(
+        "--swiftc-flag", action="append", default=[],
+        help="extra -Xswiftc argument for a --scratch build; write --swiftc-flag=<flag>",
+    )
+    parser.add_argument(
+        "--linker-flag", action="append", default=[],
+        help="extra -Xlinker argument for a --scratch build; write --linker-flag=<flag>",
+    )
+
+
+def apply_measurement_arguments(ns: argparse.Namespace, args: Dict[str, Any]) -> None:
+    if ns.scratch:
+        args["scratch"] = ns.scratch
+    if ns.swiftc_flag:
+        args["swiftcFlags"] = list(ns.swiftc_flag)
+    if ns.linker_flag:
+        args["linkerFlags"] = list(ns.linker_flag)
+    # Validate on the client too, so a bad label fails before enqueueing.
+    measurement_build_args(Path("."), args)
+
+
 def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
     global_flags, rest = split_operation_flags(argv)
     if global_flags.timeout is not None and global_flags.timeout < 0:
@@ -8200,8 +8596,12 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
     elif operation == "swift-build":
         parser = argparse.ArgumentParser(prog="conductor swift-build")
         parser.add_argument("--product", required=True, choices=["RepoPrompt", "repoprompt-mcp", "all"])
+        add_measurement_arguments(parser)
         ns = parser.parse_args(rest)
         args["product"] = ns.product
+        apply_measurement_arguments(ns, args)
+        if args.get("scratch") and ns.product == "all":
+            raise ConductorError("measurement builds need a single --product")
     elif operation == "package":
         parser = argparse.ArgumentParser(prog="conductor package")
         parser.add_argument("config", choices=["debug", "release"])
@@ -8211,9 +8611,20 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         parser = argparse.ArgumentParser(prog=f"conductor {operation}")
         parser.add_argument("--filter")
         parser.add_argument("--test-product")
+        if operation == "test":
+            parser.add_argument(
+                "--module",
+                help="build and run only this test target's closure with the Swift Build engine",
+            )
         parser.add_argument("--xctest-stall-seconds", type=float)
         parser.add_argument("--xctest-stall-wake-probe", action="store_true")
+        if operation == "test":
+            add_measurement_arguments(parser)
         ns = parser.parse_args(rest)
+        if operation == "test":
+            apply_measurement_arguments(ns, args)
+            if args.get("scratch") and ns.module:
+                raise ConductorError("--scratch applies to the aggregate path; --module has its own scratch path")
         if ns.xctest_stall_seconds is not None and (
             not math.isfinite(ns.xctest_stall_seconds) or ns.xctest_stall_seconds <= 0
         ):
@@ -8224,6 +8635,12 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
             args["filter"] = ns.filter
         if ns.test_product:
             args["testProduct"] = ns.test_product
+        if getattr(ns, "module", None):
+            if ns.test_product:
+                raise ConductorError("--module cannot be combined with --test-product")
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*Tests", ns.module):
+                raise ConductorError("--module must name a test target, for example RepoPromptMCPCoreTests")
+            args["module"] = ns.module
         if ns.xctest_stall_seconds is not None:
             args["xctestStallSeconds"] = ns.xctest_stall_seconds
         if ns.xctest_stall_wake_probe:
@@ -8339,9 +8756,10 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
 def main(argv: List[str]) -> int:
     repo_root = resolve_repo_root()
 
-    if argv and argv[0] == "__operation_runner":
+    if argv and argv[0] == OPERATION_RUNNER_ARG:
         if len(argv) != 2:
             raise ConductorError("__operation_runner requires one JSON payload argument")
+        capture_job_ticket(os.environ)
         return run_operation_runner(argv[1])
     if argv and argv[0] == "__cache_attempt_gate":
         if len(argv) != 3:

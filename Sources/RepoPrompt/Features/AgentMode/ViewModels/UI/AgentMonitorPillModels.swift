@@ -276,6 +276,11 @@ enum AgentMonitorAutoWakeCopy {
     static let missingReason = "That Agent session is no longer active."
 }
 
+/// The authority boundary an oversight link never crosses, surfaced as the Oversee action's tooltip.
+enum AgentMonitorOversightDisclosure {
+    static let boundary = "Session-wide approvals, hook trust, merge reviews, and secret inputs stay with you."
+}
+
 /// Why the observer's own `Wake now` cannot run, or `nil` when it can.
 ///
 /// Shared by the action result and button availability.

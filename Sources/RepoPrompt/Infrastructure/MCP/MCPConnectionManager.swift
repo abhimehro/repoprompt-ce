@@ -1484,6 +1484,7 @@ actor ServerNetworkManager {
         let routingAuthorityGeneration: UInt64?
         let connectionLifecycleGeneration: UInt64?
         let hasAgentSessionLink: Bool?
+        let hasAnyActiveLink: Bool?
         let hasActiveOutboundLink: Bool?
         let projectionRevision: UInt64
 
@@ -1508,6 +1509,7 @@ actor ServerNetworkManager {
                 routeToken: routeToken,
                 projectionRevision: projectionRevision,
                 hasAgentSessionLink: hasAgentSessionLink,
+                hasAnyActiveLink: hasAnyActiveLink,
                 hasActiveOutboundLink: hasActiveOutboundLink
             )
         }
@@ -2790,6 +2792,7 @@ actor ServerNetworkManager {
                 runID: runID,
                 routeToken: routeIsCurrent ? finalSnapshot?.routeToken : nil,
                 hasAgentSessionLink: routeIsCurrent ? returnedSessionLinkPresence : nil,
+                hasAnyActiveLink: routeIsCurrent ? liveCatalogPresence : nil,
                 hasActiveOutboundLink: routeIsCurrent ? liveOutboundPresence : nil,
                 supersedesWaiters: false
             )
@@ -2821,6 +2824,7 @@ actor ServerNetworkManager {
         runID: UUID,
         routeToken: AgentSessionLinkRunCatalogRouteToken?,
         hasAgentSessionLink: Bool?,
+        hasAnyActiveLink: Bool?,
         hasActiveOutboundLink: Bool?,
         supersedesWaiters: Bool
     ) async -> AgentSessionLinkRunCatalogProjection {
@@ -2832,6 +2836,7 @@ actor ServerNetworkManager {
             routingAuthorityGeneration: routeToken?.routingAuthorityGeneration,
             connectionLifecycleGeneration: routeToken?.connectionLifecycleGeneration,
             hasAgentSessionLink: hasAgentSessionLink,
+            hasAnyActiveLink: hasAnyActiveLink,
             hasActiveOutboundLink: hasActiveOutboundLink,
             projectionRevision: runCatalogProjectionRevision
         )
@@ -2867,6 +2872,7 @@ actor ServerNetworkManager {
             runID: runID,
             routeToken: routeToken ?? runCatalogObservationByRunID[runID]?.routeToken,
             hasAgentSessionLink: nil,
+            hasAnyActiveLink: nil,
             hasActiveOutboundLink: nil,
             supersedesWaiters: supersedesWaiters
         )
@@ -2879,6 +2885,7 @@ actor ServerNetworkManager {
                 runID: runID,
                 routeToken: nil,
                 hasAgentSessionLink: nil,
+                hasAnyActiveLink: nil,
                 hasActiveOutboundLink: nil,
                 supersedesWaiters: true
             )
@@ -2891,6 +2898,7 @@ actor ServerNetworkManager {
             runID: runID,
             routeToken: ownedObservation.routeToken,
             hasAgentSessionLink: nil,
+            hasAnyActiveLink: nil,
             hasActiveOutboundLink: nil,
             supersedesWaiters: true
         )
@@ -2924,6 +2932,7 @@ actor ServerNetworkManager {
             // would leave the old ready projection cached until the successor lists tools.
             routeToken: routeToken,
             hasAgentSessionLink: nil,
+            hasAnyActiveLink: nil,
             hasActiveOutboundLink: nil,
             supersedesWaiters: true
         )
@@ -3081,6 +3090,7 @@ actor ServerNetworkManager {
             let hasActiveOutboundLink = snapshot?.hasActiveOutboundLink
             if observation?.routeToken == routeToken,
                observation?.hasAgentSessionLink == hasAnyActiveLink,
+               observation?.hasAnyActiveLink == hasAnyActiveLink,
                observation?.hasActiveOutboundLink == hasActiveOutboundLink
             {
                 continue
@@ -3100,6 +3110,7 @@ actor ServerNetworkManager {
                 runID: runID,
                 routeToken: routeToken,
                 hasAgentSessionLink: returnedPresence,
+                hasAnyActiveLink: hasAnyActiveLink,
                 hasActiveOutboundLink: hasActiveOutboundLink,
                 supersedesWaiters: false
             )
@@ -6642,6 +6653,7 @@ actor ServerNetworkManager {
                 routeToken: runCatalogObservationByRunID[runID]?.routeToken,
                 projectionRevision: runCatalogProjectionRevision,
                 hasAgentSessionLink: nil,
+                hasAnyActiveLink: nil,
                 hasActiveOutboundLink: nil
             )
             settleRunCatalogWaiters(for: runID, projection: projection, superseded: true)
@@ -10799,6 +10811,7 @@ actor ServerNetworkManager {
                 runID: routeToken.runID,
                 routeToken: routeToken,
                 hasAgentSessionLink: hasAgentSessionLink,
+                hasAnyActiveLink: hasAgentSessionLink,
                 hasActiveOutboundLink: hasAgentSessionLink,
                 supersedesWaiters: false
             )

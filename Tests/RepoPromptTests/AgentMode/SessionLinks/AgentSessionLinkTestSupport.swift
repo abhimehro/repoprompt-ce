@@ -278,10 +278,12 @@ final class LifecycleRecorder: @unchecked Sendable {
 
 final class LifecycleNoopCodexController: CodexSessionControllerTurnDispatchTestDefaults {
     private let recorder: LifecycleRecorder
+    private let resumeGate: TestReleaseFence?
     private(set) var hasActiveThread = false
 
-    init(recorder: LifecycleRecorder) {
+    init(recorder: LifecycleRecorder, resumeGate: TestReleaseFence? = nil) {
         self.recorder = recorder
+        self.resumeGate = resumeGate
     }
 
     var events: AsyncStream<CodexNativeSessionController.Event> {
@@ -325,6 +327,7 @@ final class LifecycleNoopCodexController: CodexSessionControllerTurnDispatchTest
         reasoningEffort: String?,
         serviceTier _: String?
     ) async throws -> CodexNativeSessionController.SessionRef {
+        await resumeGate?.enterAndWait()
         hasActiveThread = true
         return CodexNativeSessionController.SessionRef(
             conversationID: "lifecycle",
@@ -377,7 +380,9 @@ final class LifecycleNoopCodexController: CodexSessionControllerTurnDispatchTest
         return CodexTurnInterruptReceipt(interruptedTurnID: expectedTurnID)
     }
 
-    func compactThread() async throws {}
+    func compactThread() async throws {
+        recorder.record("codex:compact")
+    }
 
     func getThreadGoal() async throws -> CodexNativeSessionController.ThreadGoal? {
         nil

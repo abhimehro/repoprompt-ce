@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptTestSupport
 import XCTest
 
 /// This is a deliberately small lexical guard for the two lock owners that run

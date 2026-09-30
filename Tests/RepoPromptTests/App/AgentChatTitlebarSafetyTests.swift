@@ -568,6 +568,34 @@ final class AgentChatTitlebarSafetyTests: XCTestCase {
         }
     }
 
+    func testPostPreflightStashRefusalPreservesSessionTranscriptAndTab() async throws {
+        try await withFixture { fixture in
+            fixture.sessionA.setItemsSilently([
+                .user("Keep this instruction", sequenceIndex: 0),
+                .assistant("Keep this answer", sequenceIndex: 1)
+            ], reason: .testOverride)
+            fixture.viewModel.refreshDerivedTranscriptState(for: fixture.sessionA)
+            let originalRows = fixture.sessionA.items.map(\.id)
+            let preflight = fixture.window.promptManager.setComposeTabsRemovalPreflight { _, _, _ in .proceed }
+            defer { fixture.window.promptManager.removeComposeTabsRemovalPreflight(preflight) }
+
+            let report = await fixture.window.promptManager.stashComposeTabs(
+                withIDs: [fixture.tabAID],
+                postPreflightValidation: { false },
+                expandCascade: false
+            )
+
+            XCTAssertFalse(report.rejections.isEmpty)
+            XCTAssertNotNil(fixture.tab(fixture.tabAID))
+            XCTAssertEqual(fixture.sessionA.items.map(\.id), originalRows)
+            XCTAssertEqual(fixture.sessionA.items.count, 2)
+            XCTAssertFalse(
+                fixture.window.workspaceManager.activeWorkspace?.stashedTabs
+                    .contains(where: { $0.tab.id == fixture.tabAID }) == true
+            )
+        }
+    }
+
     func testGuardedCloseCommitsTabRemovalAfterListenerCleanupInvalidatesTarget() async throws {
         try await withFixture { fixture in
             let target = try XCTUnwrap(fixture.window.agentChatTitleClusterMenuSnapshot()?.target)

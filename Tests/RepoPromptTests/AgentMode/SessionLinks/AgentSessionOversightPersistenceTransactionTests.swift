@@ -37,6 +37,7 @@ final class AgentSessionOversightPersistenceTransactionTests: XCTestCase {
                 displayName: candidate.displayName,
                 providerDisplayName: candidate.providerDisplayName,
                 status: .idle,
+                board: .empty,
                 idleForSend: true,
                 pendingInteractionKind: nil,
                 latestVisibleAssistantPreview: nil,
@@ -106,6 +107,15 @@ final class AgentSessionOversightPersistenceTransactionTests: XCTestCase {
         func agentSessionLinkPerformSend(
             to _: AgentSessionLinkEndpointCandidate,
             request _: AgentSessionLinkSendRequest,
+            liveness _: @escaping AgentSessionLinkSendLivenessProbe,
+            commitAuthorization _: @MainActor () async -> AgentSessionLinkSendCommitOutcome
+        ) async -> AgentSessionLinkSendTransactionOutcome {
+            .blocked(.shuttingDown)
+        }
+
+        func agentSessionLinkPerformCompact(
+            to _: AgentSessionLinkEndpointCandidate,
+            request _: AgentSessionLinkCompactRequest,
             liveness _: @escaping AgentSessionLinkSendLivenessProbe,
             commitAuthorization _: @MainActor () async -> AgentSessionLinkSendCommitOutcome
         ) async -> AgentSessionLinkSendTransactionOutcome {

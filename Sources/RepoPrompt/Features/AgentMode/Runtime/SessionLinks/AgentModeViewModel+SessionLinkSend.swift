@@ -27,7 +27,8 @@ extension AgentModeViewModel {
         session: TabSession,
         endpointMatchesGrant: Bool,
         isClosing: Bool,
-        ignoresComposerSubmissionInFlight: Bool = false
+        ignoresComposerSubmissionInFlight: Bool = false,
+        ignoresSelfCompactRequestID: UUID? = nil
     ) -> AgentSessionLinkDeliveryReadiness.Snapshot {
         AgentSessionLinkDeliveryReadiness.Snapshot(
             hasLoadedPersistedState: session.hasLoadedPersistedState,
@@ -46,6 +47,12 @@ extension AgentModeViewModel {
             pendingACPSteeringCount: session.pendingACPSteeringInstructions.count,
             pendingClaudeSteeringCount: session.pendingClaudeSteeringInstructions.count,
             pendingOversightAutoWake: session.oversight.pendingAutoWake != nil,
+            pendingSelfCompact: session.selfCompactState.blocksOverseerDelivery
+                && session.selfCompactState.active?.id != ignoresSelfCompactRequestID,
+            selfCompactBlocksManagedStop: session.selfCompactState.blocksManagedStop
+                && session.selfCompactState.active?.id != ignoresSelfCompactRequestID,
+            stopInProgress: session.stopState.isStopping(binding: session.persistentSessionBindingIdentity),
+            backgroundCompactionSettling: session.isSettlingACPBackgroundCompaction,
             hasWaitingPrompt: session.waitingPrompt != nil,
             hasPendingAskUser: session.pendingAskUser != nil,
             hasPendingUserInputRequest: session.pendingUserInputRequest != nil,
@@ -89,23 +96,30 @@ extension AgentModeViewModel {
         // 1. Exact endpoint incarnations. The local lookup proves the target tab; the host probe
         //    proves the observer incarnation and the target window's real closing state.
         guard let session = agentSessionLinkLiveSession(matching: candidate) else {
-            return .blocked(.endpointInvalidated)
+            return .blocked(.endpointSession)
         }
+        // A queued send is withdrawn only by an explicit Stop since it was queued; internal
+        // lifecycle cancellations must not drop it. The transaction's own start fence is taken
+        // now, so a cancellation during the drain still downgrades dispatch to persisted-only.
+        if let queuedFence = request.startStopFence, !queuedFence.permitsQueuedDelivery(to: session) {
+            return .blocked(.targetStopped)
+        }
+        let stopFence = AgentRunStartStopFence(session: session)
+        guard stopFence.permitsStart(of: session) else { return .blocked(.targetStopped) }
         let admissionLiveness = liveness()
         guard admissionLiveness.permitsDelivery else {
-            return .blocked(.endpointInvalidated)
+            return .blocked(.invalidated(admissionLiveness))
         }
 
         // 2. Pure readiness admission.
-        let admission = AgentSessionLinkDeliveryReadiness.evaluate(
+        if let failure = AgentSessionLinkDeliveryReadiness.failure(
             snapshot: Self.agentSessionLinkDeliveryReadinessSnapshot(
                 session: session,
                 endpointMatchesGrant: admissionLiveness.targetEndpointIsLive,
                 isClosing: admissionLiveness.targetWindowIsClosing
             )
-        )
-        if case let .blocked(reason) = admission {
-            return .blocked(AgentSessionLinkSendFailure(reason))
+        ) {
+            return .blocked(failure == .endpointInvalidated ? .endpointReadiness : failure)
         }
 
         // 3. Local composer claim. Losing it means a local user Send won the race, which is exactly
@@ -138,42 +152,66 @@ extension AgentModeViewModel {
         let commit = await commitAuthorization()
         guard commit == .committed else {
             releaseComposerSubmitClaim(claim)
-            return .blocked(commit == .shuttingDown ? .shuttingDown : .linkRevoked)
+            return .blocked(commit.refusal)
         }
 
         // 5. The commit awaited, so every identity and readiness fact must be re-proven — including
         //    the observer incarnation and the target window's closing state, which an observer
         //    rebind/close or a window teardown during that await would otherwise slip past.
         let postCommitLiveness = liveness()
-        guard let liveSession = agentSessionLinkLiveSession(matching: candidate),
-              liveSession === session,
-              postCommitLiveness.permitsDelivery,
-              composerSubmitClaimIsCurrent(claim)
-        else {
+        guard let liveSession = agentSessionLinkLiveSession(matching: candidate) else {
             releaseComposerSubmitClaim(claim)
-            return .blocked(.endpointInvalidated)
+            return .blocked(.endpointPostSession)
         }
-        let postCommitAdmission = AgentSessionLinkDeliveryReadiness.evaluate(
+        guard liveSession === session else {
+            releaseComposerSubmitClaim(claim)
+            return .blocked(.endpointPostSession)
+        }
+        guard postCommitLiveness.permitsDelivery else {
+            releaseComposerSubmitClaim(claim)
+            return .blocked(.invalidated(postCommitLiveness, postCommit: true))
+        }
+        guard composerSubmitClaimIsCurrent(claim) else {
+            releaseComposerSubmitClaim(claim)
+            return .blocked(.endpointClaim)
+        }
+        if let failure = AgentSessionLinkDeliveryReadiness.failure(
             snapshot: Self.agentSessionLinkDeliveryReadinessSnapshot(
                 session: liveSession,
                 endpointMatchesGrant: postCommitLiveness.targetEndpointIsLive,
                 isClosing: postCommitLiveness.targetWindowIsClosing,
                 ignoresComposerSubmissionInFlight: true
             )
-        )
-        if case let .blocked(reason) = postCommitAdmission {
+        ) {
             releaseComposerSubmitClaim(claim)
-            return .blocked(AgentSessionLinkSendFailure(reason))
+            return .blocked(failure == .endpointInvalidated ? .endpointPostReadiness : failure)
         }
-        guard let workspaceID = workspaceManager?.activeWorkspace?.id,
-              workspaceID == candidate.workspaceID
-        else {
+        guard let workspaceID = workspaceManager?.activeWorkspace?.id else {
             releaseComposerSubmitClaim(claim)
-            return .blocked(.endpointInvalidated)
+            return .blocked(.endpointMissingWorkspace)
+        }
+        guard workspaceID == candidate.workspaceID else {
+            releaseComposerSubmitClaim(claim)
+            return .blocked(.endpointWorkspace)
         }
 
-        // 6. Durable acceptance. The row carries the observer's raw text plus attribution; the
-        //    envelope is built for the provider only, so the transcript is not a rendering of XML.
+        // Freeze the exact provider payload before the durable row so an interrupted ACP turn can
+        // replay its original management envelope rather than unframed attributed words.
+        let envelope = AgentSessionLinkMessageEnvelope.render(
+            sourceSessionID: request.observerSessionID,
+            sourceName: request.observerDisplayName,
+            linkID: request.linkID,
+            linkGeneration: request.linkGeneration,
+            message: request.message,
+            framing: request.framing
+        )
+        let providerMessage = AgentSessionLinkMessageEnvelope.providerPayload(
+            envelope: envelope,
+            workflow: request.workflow,
+            includeBuiltInSessionCleanupGuidance: GlobalSettingsStore.shared
+                .showBuiltInWorkflowCleanupGuidance()
+        )
+        // 6. Durable acceptance. The bubble keeps raw words; the exact provider payload is metadata.
         let userItem = AgentChatItem.user(
             request.message,
             sequenceIndex: liveSession.nextSequenceIndex,
@@ -240,20 +278,20 @@ extension AgentModeViewModel {
         guard agentSessionLinkLiveSession(matching: candidate) === liveSession,
               dispatchLiveness.permitsDelivery,
               composerSubmitClaimIsCurrent(claim),
+              stopFence.permitsStart(of: liveSession),
               workspaceManager?.activeWorkspace?.id == candidate.workspaceID
         else {
             releaseComposerSubmitClaim(claim)
             return .delivered(persistedOnly)
         }
-        let dispatchAdmission = AgentSessionLinkDeliveryReadiness.evaluate(
+        if AgentSessionLinkDeliveryReadiness.failure(
             snapshot: Self.agentSessionLinkDeliveryReadinessSnapshot(
                 session: liveSession,
                 endpointMatchesGrant: dispatchLiveness.targetEndpointIsLive,
                 isClosing: dispatchLiveness.targetWindowIsClosing,
                 ignoresComposerSubmissionInFlight: true
             )
-        )
-        if case .blocked = dispatchAdmission {
+        ) != nil {
             releaseComposerSubmitClaim(claim)
             return .delivered(persistedOnly)
         }
@@ -270,34 +308,33 @@ extension AgentModeViewModel {
         //    additionally leaves any staged handoff untouched, so the target's next *local* send
         //    still receives the continuity it was staged for. Nothing focuses, activates, or
         //    switches the target window.
-        let envelope = AgentSessionLinkMessageEnvelope.render(
-            sourceSessionID: request.observerSessionID,
-            sourceName: request.observerDisplayName,
-            linkID: request.linkID,
-            linkGeneration: request.linkGeneration,
-            message: request.message
-        )
-        // A per-message workflow is applied to the provider payload only. `session.selectedWorkflow`
-        // is never read, written, or restored here, which is what makes preserving the target's own
-        // selection structural rather than a cleanup step some failure path could skip.
-        let providerMessage = AgentSessionLinkMessageEnvelope.providerPayload(
-            envelope: envelope,
-            workflow: request.workflow,
-            includeBuiltInSessionCleanupGuidance: GlobalSettingsStore.shared
-                .showBuiltInWorkflowCleanupGuidance()
-        )
+        // The row was durable before dispatch. Mark the exact provider text only after the final
+        // dispatch admission, so a persisted-only row cannot masquerade as an interrupted prompt.
+        if let index = liveSession.items.firstIndex(where: { $0.id == userItem.id }) {
+            var dispatchedRow = liveSession.items[index]
+            dispatchedRow.dispatchedProviderText = providerMessage
+            liveSession.replaceItem(at: index, with: dispatchedRow)
+            scheduleSave(for: candidate.tabID)
+        }
         // The run service's `nil` return is "not a Codex native send", not "started", so the
         // recorder is what distinguishes a Claude/ACP/headless pre-start failure from success.
         let startRecorder = AgentRunStartOutcomeRecorder()
         _ = await startAgentRun(
             tabID: candidate.tabID,
             initialMessage: providerMessage,
-            directStartOptions: .crossSessionDelivery,
+            directStartOptions: AgentDirectRunStartOptions(
+                ignoresPendingHandoff: true, stopFence: stopFence
+            ),
             startOutcome: startRecorder
         )
         releaseComposerSubmitClaim(claim)
         if startRecorder.outcome.didStart {
             agentSessionLinkClearWaitingOnAfterAcceptedTurn(liveSession)
+        } else if let index = liveSession.items.firstIndex(where: { $0.id == userItem.id }) {
+            var undispatchedRow = liveSession.items[index]
+            undispatchedRow.dispatchedProviderText = nil
+            liveSession.replaceItem(at: index, with: undispatchedRow)
+            scheduleSave(for: candidate.tabID)
         }
 
         let resultingRunState = sessions[candidate.tabID]?.runState ?? liveSession.runState
@@ -311,7 +348,7 @@ extension AgentModeViewModel {
 
     /// The live session for an endpoint, or `nil` unless every identity field still matches
     /// byte-for-byte and generation-for-generation.
-    private func agentSessionLinkLiveSession(
+    func agentSessionLinkLiveSession(
         matching candidate: AgentSessionLinkEndpointCandidate
     ) -> TabSession? {
         guard let session = sessions[candidate.tabID],

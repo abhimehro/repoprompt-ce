@@ -35,6 +35,9 @@ import Foundation
         let catalogGeneration: UInt64
         let ingressGeneration: UInt64
         let rootKind: String
+        /// Real execution mode of the root's Code Map session, or nil before one exists.
+        let sourceKind: WorkspaceCodemapRootSourceKind?
+        let manifestMode: WorkspaceCodemapRootManifestMode?
         let state: CodemapFullLoadRootState
         let reason: String?
         let launchPhase: String?
@@ -272,7 +275,7 @@ import Foundation
             case .setupJoining: "setup_joining"
             case .engineScheduling: "engine_scheduling"
             case .handedOff: "handed_off"
-            case .terminalNonGit: "terminal_non_git"
+            case .terminalUnavailable: "terminal_unavailable"
             case .transientRetry: "transient_retry"
             case .retryExhausted: "retry_exhausted"
             case .cancelled: "cancelled"
@@ -315,6 +318,9 @@ import Foundation
                 "graph_index_catalog_path_bytes": counters.graphIndexCatalogPathBytes,
                 "graph_index_changes_published": counters.graphIndexChangesPublished,
                 "graph_index_change_bytes": counters.graphIndexChangeBytes,
+                "graph_index_batch_nanoseconds": counters.graphIndexBatchNanoseconds,
+                "graph_index_published_slots": counters.graphIndexPublishedSlots,
+                "graph_index_publish_nanoseconds": counters.graphIndexPublishNanoseconds,
                 "graph_index_retries": counters.graphIndexRetries,
                 "graph_index_budget_rejections": counters.graphIndexBudgetRejections,
                 "manifest_writes": counters.manifestWrites,
@@ -342,6 +348,8 @@ import Foundation
                 "catalog_generation": root.catalogGeneration,
                 "ingress_generation": root.ingressGeneration,
                 "root_kind": root.rootKind,
+                "source_kind": root.sourceKind?.rawValue ?? NSNull(),
+                "manifest_mode": root.manifestMode?.rawValue ?? NSNull(),
                 "state": root.state.rawValue,
                 "reason": root.reason ?? NSNull(),
                 "launch_phase": root.launchPhase ?? NSNull(),

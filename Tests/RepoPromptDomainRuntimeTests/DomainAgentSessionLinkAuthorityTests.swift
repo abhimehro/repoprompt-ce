@@ -50,6 +50,7 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
         pendingInteractionKind: DomainAgentSessionLinkPendingInteractionKind? = nil,
         displayName: String? = "Target",
         visibleRowCount: Int = 3,
+        board: DomainAgentSessionLaneBoard = .empty,
         /// `nil` derives the ordinary case. Pass `false` for the state that motivates `until: sendable`:
         /// status-idle with no interaction, but still committing, queued, or preparing.
         idleForSend: Bool? = nil
@@ -59,6 +60,7 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
             displayName: displayName,
             providerDisplayName: "Codex CLI",
             status: status,
+            board: board,
             idleForSend: idleForSend ?? (status == .idle && pendingInteractionKind == nil),
             pendingInteractionKind: pendingInteractionKind,
             latestVisibleAssistantPreview: "preview",
@@ -515,6 +517,33 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
 
     // MARK: - Observer-scoped inventory
 
+    func testCreationDirectLinkRejectionNamesEitherDirectionRequirement() async throws {
+        let authority = makeAuthority()
+        let creator = makeEndpoint()
+        let inboundObserver = makeEndpoint(windowID: 2)
+        let newTarget = makeEndpoint(windowID: 3)
+        let noLink = await authority.reserveLink(
+            observer: creator, target: newTarget, requiresExistingDirectLink: true
+        )
+        XCTAssertEqual(noLink, .rejected(.observerHasNoActiveLink))
+        let inbound = try await activateLink(authority, observer: inboundObserver, target: creator)
+        let admitted = await authority.reserveLink(
+            observer: creator, target: newTarget, requiresExistingDirectLink: true
+        )
+        guard case let .reserved(pending, _) = admitted else {
+            return XCTFail("an inbound link should qualify: \(admitted)")
+        }
+        _ = await authority.revoke(
+            linkID: inbound.id, generation: inbound.generation, reason: .userRequested
+        )
+        let activation = await authority.activateLink(
+            reservation: pending,
+            initialSnapshot: makeSnapshot(sessionID: newTarget.sessionID),
+            sourcePublicationSequence: 1
+        )
+        XCTAssertEqual(activation, .rejected(.observerHasNoActiveLink))
+    }
+
     func testInventoryAuthorizationIsObserverScopedAndEndsWithTheLastLink() async throws {
         let authority = makeAuthority()
         let observer = makeEndpoint()
@@ -527,6 +556,11 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
         let inventory = try await authority.authorizeInventory(observerEndpoint: observer).get()
         XCTAssertEqual(inventory.items.map(\.targetSessionID), [target.sessionID])
         XCTAssertEqual(inventory.linkSetRevision, 1)
+        let createIsNotInventory = await authority.authorizeInventory(
+            operation: .monitorCreateLane,
+            observerEndpoint: observer
+        )
+        XCTAssertEqual(createIsNotInventory.failureError, .invalidRequest)
 
         // The target is not an observer, so it cannot list anything.
         let reversed = await authority.authorizeInventory(observerEndpoint: target)
@@ -1292,6 +1326,205 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
         )
         let restartedIdleState = await authority.targetState(for: lease)
         XCTAssertEqual(restartedIdleState?.snapshot.idleSince, Date(timeIntervalSince1970: 4000))
+    }
+
+    func testContextLoadDropsInvalidFiguresAndComputesAnUnclampedPercentage() throws {
+        XCTAssertNil(DomainAgentSessionContextLoad(usedTokens: nil, windowTokens: nil, confidence: .exact))
+        XCTAssertNil(DomainAgentSessionContextLoad(usedTokens: -1, windowTokens: 0, confidence: .exact))
+
+        let invalidWindow = try XCTUnwrap(
+            DomainAgentSessionContextLoad(usedTokens: 500, windowTokens: -10, confidence: .exact)
+        )
+        XCTAssertEqual(invalidWindow.usedTokens, 500)
+        XCTAssertNil(invalidWindow.windowTokens)
+        XCTAssertNil(invalidWindow.usedPercent)
+
+        let zero = try XCTUnwrap(
+            DomainAgentSessionContextLoad(usedTokens: 0, windowTokens: 200_000, confidence: .exact)
+        )
+        XCTAssertEqual(zero.usedPercent, 0, "A genuine zero stays zero")
+        XCTAssertEqual(
+            DomainAgentSessionContextLoad(usedTokens: 1, windowTokens: 3, confidence: .exact)?.usedPercent,
+            33.3
+        )
+        XCTAssertEqual(
+            DomainAgentSessionContextLoad(usedTokens: 980_376, windowTokens: 1_000_000, confidence: .exact)?
+                .usedPercent,
+            98.0
+        )
+        XCTAssertEqual(
+            DomainAgentSessionContextLoad(usedTokens: 1_020_000, windowTokens: 1_000_000, confidence: .exact)?
+                .usedPercent,
+            102.0
+        )
+        XCTAssertEqual(DomainAgentSessionContextLoad.Confidence.bestEffort.rawValue, "best_effort")
+    }
+
+    func testLaneBoardSurvivesCanonicalizationAndJoinsChangeDetection() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let target = makeEndpoint(windowID: 2)
+        _ = try await activateLink(authority, observer: observer, target: target)
+        let lease = try await authority.authorize(
+            operation: .monitorPoll,
+            observerEndpoint: observer,
+            targetSessionID: target.sessionID
+        ).get()
+        let baselineState = await authority.targetState(for: lease)
+        let baseline = try XCTUnwrap(baselineState)
+        XCTAssertEqual(baseline.snapshot.board, .empty)
+
+        let board = DomainAgentSessionLaneBoard(
+            runOutcome: .failed,
+            failureReason: .timeout,
+            sendBlockers: ["terminal_commit_in_progress"],
+            subagentRunning: 1,
+            subagentFinished: 2
+        )
+        guard case .accepted = await authority.publishTargetSnapshot(
+            endpoint: target,
+            snapshot: makeSnapshot(sessionID: target.sessionID, board: board),
+            sourcePublicationSequence: 2
+        ) else { return XCTFail("A board-only change must publish") }
+        let changedState = await authority.targetState(for: lease)
+        let changed = try XCTUnwrap(changedState)
+        XCTAssertEqual(changed.snapshot.board, board)
+        XCTAssertEqual(changed.changeSequence, baseline.changeSequence + 1)
+    }
+
+    func testContextLoadSurvivesCanonicalizationAndJoinsChangeDetection() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let target = makeEndpoint(windowID: 2)
+        _ = try await activateLink(authority, observer: observer, target: target)
+        let lease = try await authority.authorize(
+            operation: .monitorPoll,
+            observerEndpoint: observer,
+            targetSessionID: target.sessionID
+        ).get()
+        let baselineState = await authority.targetState(for: lease)
+        let baseline = try XCTUnwrap(baselineState)
+        XCTAssertNil(baseline.snapshot.context)
+
+        func loaded(_ used: Int) -> DomainAgentSessionObservationSnapshot {
+            let plain = makeSnapshot(sessionID: target.sessionID)
+            return DomainAgentSessionObservationSnapshot(
+                sessionID: plain.sessionID,
+                displayName: plain.displayName,
+                providerDisplayName: plain.providerDisplayName,
+                status: plain.status,
+                board: .empty,
+                idleForSend: plain.idleForSend,
+                pendingInteractionKind: plain.pendingInteractionKind,
+                latestVisibleAssistantPreview: plain.latestVisibleAssistantPreview,
+                visibleRowCount: plain.visibleRowCount,
+                lastActivityAt: plain.lastActivityAt,
+                context: DomainAgentSessionContextLoad(usedTokens: used, windowTokens: 200_000, confidence: .exact)
+            )
+        }
+
+        guard case .accepted = await authority.publishTargetSnapshot(
+            endpoint: target,
+            snapshot: loaded(150_000),
+            sourcePublicationSequence: 2
+        ) else { return XCTFail("A newly known load is a snapshot change") }
+        let firstState = await authority.targetState(for: lease)
+        let first = try XCTUnwrap(firstState)
+        XCTAssertEqual(first.snapshot.context?.usedTokens, 150_000)
+        XCTAssertEqual(first.snapshot.context?.windowTokens, 200_000)
+        XCTAssertEqual(first.changeSequence, baseline.changeSequence + 1)
+
+        guard case .unchanged = await authority.publishTargetSnapshot(
+            endpoint: target,
+            snapshot: loaded(150_000),
+            sourcePublicationSequence: 3
+        ) else { return XCTFail("An identical load is not a change") }
+
+        guard case .accepted = await authority.publishTargetSnapshot(
+            endpoint: target,
+            snapshot: loaded(180_000),
+            sourcePublicationSequence: 4
+        ) else { return XCTFail("A different load is a change") }
+        let secondState = await authority.targetState(for: lease)
+        let second = try XCTUnwrap(secondState)
+        XCTAssertEqual(second.snapshot.context?.usedTokens, 180_000)
+        XCTAssertEqual(second.changeSequence, first.changeSequence + 1)
+    }
+
+    /// A context-only difference is an ordinary snapshot change: it wakes `until: change`, but it
+    /// neither satisfies `idle`/`sendable` for a running target nor restarts an idle target's
+    /// `idle_since`.
+    func testContextOnlyChangeWakesChangeWaitsButNotIdleOrSendableAndKeepsIdleSince() async throws {
+        let clock = LinkTestClock(Date(timeIntervalSince1970: 1000))
+        let authority = makeAuthority(now: { clock.now })
+        let observer = makeEndpoint()
+        let target = makeEndpoint(windowID: 2)
+        try await activateLink(authority, observer: observer, target: target, status: .running)
+        let lease = try await authority.authorize(
+            operation: .monitorWait,
+            observerEndpoint: observer,
+            targetSessionID: target.sessionID
+        ).get()
+
+        func withContext(
+            _ status: DomainAgentSessionLinkStatus,
+            used: Int
+        ) -> DomainAgentSessionObservationSnapshot {
+            let plain = makeSnapshot(sessionID: target.sessionID, status: status)
+            return DomainAgentSessionObservationSnapshot(
+                sessionID: plain.sessionID,
+                displayName: plain.displayName,
+                providerDisplayName: plain.providerDisplayName,
+                status: plain.status,
+                board: .empty,
+                idleForSend: plain.idleForSend,
+                pendingInteractionKind: plain.pendingInteractionKind,
+                latestVisibleAssistantPreview: plain.latestVisibleAssistantPreview,
+                visibleRowCount: plain.visibleRowCount,
+                lastActivityAt: plain.lastActivityAt,
+                context: DomainAgentSessionContextLoad(usedTokens: used, windowTokens: 200_000, confidence: .exact)
+            )
+        }
+
+        let baselineState = await authority.targetState(for: lease)
+        let cursor = try XCTUnwrap(baselineState?.waitCursor)
+        _ = await authority.publishTargetSnapshot(
+            endpoint: target,
+            snapshot: withContext(.running, used: 120_000),
+            sourcePublicationSequence: 2
+        )
+        let changed = await authority.wait(
+            requests: [DomainAgentSessionLinkWaitRequest(lease: lease, cursor: cursor)],
+            until: .change,
+            timeoutSeconds: 0
+        )
+        XCTAssertEqual(changed.outcome, .changed(sessionID: target.sessionID))
+        XCTAssertEqual(changed.targets.first?.snapshot.context?.usedTokens, 120_000)
+        for predicate in [DomainAgentSessionLinkWaitPredicate.idle, .sendable] {
+            let result = await authority.wait(
+                requests: [DomainAgentSessionLinkWaitRequest(lease: lease, cursor: nil)],
+                until: predicate,
+                timeoutSeconds: 0
+            )
+            XCTAssertEqual(result.outcome, .timedOut, "\(predicate)")
+        }
+
+        _ = await authority.publishTargetSnapshot(
+            endpoint: target,
+            snapshot: withContext(.idle, used: 130_000),
+            sourcePublicationSequence: 3
+        )
+        let idleState = await authority.targetState(for: lease)
+        let idleSince = try XCTUnwrap(idleState?.snapshot.idleSince)
+        clock.now = Date(timeIntervalSince1970: 2000)
+        guard case .accepted = await authority.publishTargetSnapshot(
+            endpoint: target,
+            snapshot: withContext(.idle, used: 140_000),
+            sourcePublicationSequence: 4
+        ) else { return XCTFail("A context-only change on an idle target is a snapshot change") }
+        let refreshedState = await authority.targetState(for: lease)
+        XCTAssertEqual(refreshedState?.snapshot.idleSince, idleSince, "idle_since is not restarted")
+        XCTAssertEqual(refreshedState?.snapshot.context?.usedTokens, 140_000)
     }
 
     func testSemanticReplayAdvancesPublicationHighWaterWithoutAdvancingChangeSequence() async throws {
@@ -2289,6 +2522,7 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
             displayName: "Build\n\tAPI   session \(long)",
             providerDisplayName: "Codex",
             status: .running,
+            board: .empty,
             idleForSend: true,
             pendingInteractionKind: nil,
             latestVisibleAssistantPreview: long,
@@ -2325,6 +2559,7 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
             displayName: "Planning",
             providerDisplayName: nil,
             status: .idle,
+            board: .empty,
             idleForSend: true,
             pendingInteractionKind: .approval,
             latestVisibleAssistantPreview: nil,

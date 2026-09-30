@@ -297,7 +297,7 @@ enum AgentSessionLinkTextRedactor {
     private static let rules: [Rule] = {
         let specs: [(pattern: String, template: String)] = [
             // `Authorization: Bearer …` / `Authorization: Basic …` headers in pasted logs.
-            (#"(?i)\b(authorization\s*[:=]\s*)(?:bearer|basic|token)?\s*\S+"#, "$1\(placeholder)"),
+            (#"(?i)\b(authorization\s*+[:=]\s*+)(?:(?:bearer|basic|token)\s*+)?\S+"#, "$1\(placeholder)"),
             // Bare credential schemes.
             (#"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"#, "$1 \(placeholder)"),
             // `api_key = "…"`, `OPENAI_TOKEN=…`, `secret=…`, `password: …`, and JSON field forms.
@@ -307,25 +307,31 @@ enum AgentSessionLinkTextRedactor {
             // deliberately over-matches benign names such as `max_tokens`: for a cross-session
             // observer, a redacted number is a much cheaper failure than a leaked credential.
             (
-                #"(?i)("?[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|"#
-                    + #"auth[_-]?token|secret[_-]?key|client[_-]?secret|private[_-]?key|credential|"#
-                    + #"password|passwd|secret|token)[A-Za-z0-9_.-]*"?"#
-                    + #"\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;}\]]+)"#,
+                // Start only at an identifier boundary. The lookahead checks for a credential
+                // keyword, then the possessive key consumes the identifier once. Without these
+                // fences, a long non-credential token is rescanned at every character.
+                #"(?i)((?<![A-Za-z0-9_.-])"?(?=[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|"#
+                    + #"access[_-]?token|refresh[_-]?token|auth[_-]?token|secret[_-]?key|"#
+                    + #"client[_-]?secret|private[_-]?key|credential|password|passwd|secret|token))"#
+                    + #"[A-Za-z0-9_.-]++"?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;}\]]+)"#,
                 "$1\(placeholder)"
             ),
             // Well-known provider key shapes that can appear without any assignment context.
             (#"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{16,}"#, placeholder),
             (#"\bgh[pousr]_[A-Za-z0-9]{16,}"#, placeholder),
             (#"\bxox[abposr]-[A-Za-z0-9-]{10,}"#, placeholder),
-            (#"\bAKIA[0-9A-Z]{16}\b"#, placeholder),
-            // PEM blocks.
-            (#"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"#, placeholder)
+            (#"\bAKIA[0-9A-Z]{16}\b"#, placeholder)
         ]
         return specs.compactMap { spec in
             guard let regex = try? NSRegularExpression(pattern: spec.pattern) else { return nil }
             return Rule(regex: regex, template: spec.template)
         }
     }()
+
+    private static let pemBlockRegex = try? NSRegularExpression(
+        pattern: #"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"#
+    )
+    private static let pemEndRegex = try? NSRegularExpression(pattern: #"-----END [A-Z ]*PRIVATE KEY-----"#)
 
     /// Redacts secrets, then normalizes home-directory paths.
     static func redact(_ text: String, homeDirectory: String = NSHomeDirectory()) -> String {
@@ -335,6 +341,19 @@ enum AgentSessionLinkTextRedactor {
                 in: result,
                 range: NSRange(result.startIndex..., in: result),
                 withTemplate: rule.template
+            )
+        }
+        if let pemBlockRegex, let pemEndRegex,
+           let lastEnd = pemEndRegex.matches(
+               in: result, range: NSRange(result.startIndex..., in: result)
+           ).last
+        {
+            // A trailing series of unclosed BEGIN markers would otherwise rescan the remaining
+            // text from each marker. A complete block cannot end after the last closing marker.
+            result = pemBlockRegex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(location: 0, length: lastEnd.range.upperBound),
+                withTemplate: placeholder
             )
         }
         return normalizeHomePaths(result, homeDirectory: homeDirectory)

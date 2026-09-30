@@ -12,15 +12,43 @@ extension AgentModeViewModel {
         strategy: AgentModeRunService.DraftRestorationStrategy,
         operation: AgentComposerDraftRestorationOperation? = nil
     ) {
-        // Also update session draft so it persists across tab switches
-        storeDraftText(for: tabID, text)
+        // Compose against the session-owned draft now. The per-tab ledger retains
+        // fragments until that tab's composer applies them or loads this snapshot.
+        let eventID = UUID()
+        let restoredText: String
+        let restoredStrategy: AgentModeRunService.DraftRestorationStrategy
+        let baseOperation: AgentComposerDraftRestorationOperation?
+        if case .prependAlways = strategy, operation == nil {
+            let existingDraft = retrieveDraftText(for: tabID)
+            restoredText = AgentComposerDraftRestorationReducer.compose(restoredText: text, above: existingDraft)
+            restoredStrategy = .replaceAlways
+            baseOperation = AgentComposerDraftRestorationOperation(
+                rejectedDraftText: text,
+                draftTextBeforeRestoration: existingDraft,
+                composedDraftText: restoredText,
+                fragments: []
+            )
+        } else {
+            restoredText = text
+            restoredStrategy = strategy
+            baseOperation = operation
+        }
+        let restoredOperation = baseOperation.map { operation in
+            AgentComposerDraftRestorationOperation(
+                rejectedDraftText: operation.rejectedDraftText,
+                draftTextBeforeRestoration: operation.draftTextBeforeRestoration,
+                composedDraftText: operation.composedDraftText,
+                fragments: draftRestorationLedger.append(tabID: tabID, text: operation.rejectedDraftText)
+            )
+        }
+        writeDraftText(for: tabID, restoredText)
         draftRestorationEvent = DraftRestorationEvent(
-            id: UUID(),
+            id: eventID,
             tabID: tabID,
-            text: text,
+            text: restoredText,
             message: message,
-            strategy: strategy,
-            operation: operation
+            strategy: restoredStrategy,
+            operation: restoredOperation
         )
         syncComposerUIState()
     }
@@ -84,14 +112,11 @@ extension AgentModeViewModel {
             restoredText: draftText,
             above: existingDraft
         )
-        let previousRestorationEventID = draftRestorationEvent.flatMap { event in
-            event.tabID == tabID ? event.id : nil
-        }
         let operation = AgentComposerDraftRestorationOperation(
             rejectedDraftText: draftText,
             draftTextBeforeRestoration: existingDraft,
             composedDraftText: composedDraft,
-            previousRestorationEventID: previousRestorationEventID
+            fragments: []
         )
         restoreComposerDraft(
             tabID: tabID,
@@ -102,8 +127,31 @@ extension AgentModeViewModel {
         )
     }
 
-    /// Store draft text for a tab
-    func storeDraftText(for tabID: UUID, _ text: String) {
+    /// Store an editor draft. Only the caller's applied sequence is acknowledged;
+    /// still-pending fragments are composed into storage so a tab switch cannot
+    /// overwrite a recovery that has not reached the editor yet.
+    func storeDraftText(for tabID: UUID, _ text: String, acknowledgingThrough sequence: UInt64 = 0) {
+        draftRestorationLedger.acknowledge(tabID: tabID, through: sequence)
+        let pending = draftRestorationLedger.tabs[tabID]?.pendingFragments ?? []
+        let storedText = pending.reduce(text) { result, fragment in
+            AgentComposerDraftRestorationReducer.compose(restoredText: fragment.text, above: result)
+        }
+        let storedSequence = pending.last?.sequence ?? sequence
+        draftRestorationLedger.markStoredDraft(tabID: tabID, through: storedSequence)
+        writeDraftText(for: tabID, storedText)
+    }
+
+    /// Loading the stored text acknowledges exactly the fragments included in it.
+    func loadDraftSnapshotForComposer(for tabID: UUID) -> AgentComposerDraftSnapshot {
+        let snapshot = AgentComposerDraftSnapshot(
+            text: retrieveDraftText(for: tabID),
+            restorationSequence: draftRestorationLedger.tabs[tabID]?.storedDraftSequence ?? 0
+        )
+        draftRestorationLedger.acknowledge(tabID: tabID, through: snapshot.restorationSequence)
+        return snapshot
+    }
+
+    private func writeDraftText(for tabID: UUID, _ text: String) {
         let previousStagedSlashCommand = stagedSlashCommandProps(tabID: tabID)
         if let session = session(for: tabID, createIfNeeded: false) {
             guard session.draftText != text else { return }

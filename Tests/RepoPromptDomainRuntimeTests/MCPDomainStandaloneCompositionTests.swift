@@ -33,8 +33,8 @@ final class MCPDomainStandaloneCompositionTests: XCTestCase {
         )
         let canonicalNames = MCPDomainCanonicalToolDefinitions.definitions.map(\.name)
         XCTAssertEqual(canonicalNames, MCPDomainToolCatalog.orderedToolNames)
-        XCTAssertEqual(canonicalNames.count, 28)
-        XCTAssertEqual(Set(canonicalNames).count, 28)
+        XCTAssertEqual(canonicalNames.count, 29)
+        XCTAssertEqual(Set(canonicalNames).count, 29)
 
         for name in MCPGlobalToolName.orderedToolNames {
             let resolution = await runtime.toolRegistry.resolve(toolName: name, scope: .application)
@@ -46,7 +46,7 @@ final class MCPDomainStandaloneCompositionTests: XCTestCase {
         }
 
         let snapshot = await runtime.toolRegistry.snapshot()
-        XCTAssertEqual(snapshot.fingerprintsByToolName.count, 28)
+        XCTAssertEqual(snapshot.fingerprintsByToolName.count, 29)
         XCTAssertEqual(Set(snapshot.fingerprintsByToolName.keys), Set(canonicalNames))
 
         let protectedCandidate = await runtime.toolRegistry.resolve(

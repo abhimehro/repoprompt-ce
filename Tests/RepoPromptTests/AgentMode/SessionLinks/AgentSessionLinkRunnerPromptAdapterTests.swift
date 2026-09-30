@@ -495,6 +495,87 @@ final class AgentSessionLinkACPRunnerPromptAdapterTests: XCTestCase {
         MonitorSupplementAssertions.assertNotPersisted(in: fixture.session)
     }
 
+    func testActiveSteeringDropsParkedNoteWhenCompetingTabBindsDuringInterrupt() async throws {
+        let fixture = try makeFixture()
+        await startRun(fixture, message: "acp initial")
+        let session = fixture.session
+        let controller = try XCTUnwrap(session.acpController)
+        if session.persistentSessionBindingIdentity == nil {
+            session.testInstallPersistentSessionBinding(sessionID: UUID())
+        }
+        let binding = try XCTUnwrap(session.persistentSessionBindingIdentity)
+        session.runState = .running
+        let runID = AgentModeProcessRunIdentity.ensureProcessRunID(for: session)
+        let attempt = session.beginRunAttempt(source: "test.acp.steer.late-writer")
+        let owner = AgentSelfCompactOwner(
+            windowID: 1, workspaceID: UUID(), tabID: session.tabID, sessionID: binding.sessionID,
+            persistentBindingGeneration: binding.generation,
+            bindingTransitionGeneration: session.bindingTransitionGeneration,
+            runID: runID, runAttemptID: attempt.attemptID
+        )
+        XCTAssertTrue(owner.matchesLocalBinding(session))
+        let note = "private parked continuation"
+        var state = AgentSelfCompactState()
+        _ = state.reserve(note: note, idempotencyKey: "acp-steer-late-writer", owner: owner)
+        state.active?.phase = .parked
+        session.selfCompactState = state
+        let dispatchID = try AgentSelfCompactionDispatchID(
+            requestID: XCTUnwrap(state.active?.id), stage: .note
+        )
+        let host = fixture.harness.host
+        let isCurrent: @MainActor () -> Bool = {
+            owner.matchesLocalBinding(session)
+                && !host.sessions.values.contains {
+                    $0 !== session && $0.activeAgentSessionID == owner.sessionID
+                }
+        }
+        session.selfCompactDispatchIsCurrent = isCurrent
+        session.selfCompactNativeCompletion = AgentSelfCompactNativeCompletionCoordinator(
+            load: { session.selfCompactState },
+            store: { session.selfCompactState = $0 },
+            isCurrentOwner: { _ in isCurrent() },
+            dispatchNote: { _, _ in XCTFail("No second note dispatch")
+                return false
+            }
+        )
+        defer {
+            session.selfCompactNativeCompletion = nil
+            session.selfCompactDispatchIsCurrent = nil
+        }
+
+        let before = fixture.provider.promptedMessages.count
+        await controller.test_holdNextSteeringInterrupt()
+        let steering = Task {
+            await fixture.harness.service.test_submitACPActivePrompt(
+                session: session, messageForRun: "acp steering", runRequest: fixture.request,
+                controller: controller
+            )
+        }
+        await controller.test_waitForSteeringInterruptEntry()
+        let competingTabID = UUID()
+        let competing = host.session(for: competingTabID)
+        competing.installPersistentSessionBinding(AgentPersistentSessionBindingIdentity(
+            tabID: competingTabID, sessionID: binding.sessionID
+        ))
+        XCTAssertFalse(isCurrent())
+        await controller.test_releaseSteeringInterrupt()
+
+        let sent = await steering.value
+        XCTAssertTrue(sent, "The ordinary steering input may still send")
+        XCTAssertEqual(fixture.provider.promptedMessages.count, before + 1)
+        let steered = try XCTUnwrap(fixture.provider.promptedMessages.last)
+        XCTAssertTrue(steered.userMessage.contains("acp steering"))
+        XCTAssertFalse(steered.userMessage.contains(note))
+        XCTAssertFalse(steered.userMessage.contains(AgentSelfCompactNoteEnvelope.frame(note)))
+        XCTAssertFalse(steered.systemPrompt.contains(note))
+        XCTAssertNil(session.selfCompactState.active)
+        XCTAssertEqual(session.selfCompactState.latest?.requestID, dispatchID.requestID)
+        XCTAssertEqual(session.selfCompactState.latest?.outcome, .cancelled)
+        XCTAssertEqual(session.selfCompactState.latest?.noteDelivery, .notSent)
+        XCTAssertFalse(session.selfCompactState.blocksOverseerDelivery)
+        XCTAssertFalse(session.selfCompactState.blocksAutomaticWake)
+    }
+
     func testFailedSteerRequeuedAsFollowUpDeliversExactlyOneFragment() async throws {
         // The scripted server rejects any prompt carrying this marker, so the steering attempt fails
         // while the later follow-up (different text) succeeds.

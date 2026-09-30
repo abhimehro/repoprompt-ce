@@ -47,6 +47,8 @@ struct WorkspaceSaveSource: Equatable, Hashable, ExpressibleByStringLiteral, Cus
     static let normalizationWriteback = WorkspaceSaveSource("normalizationWriteback")
     static let refreshWorkspace = WorkspaceSaveSource("refreshWorkspace")
     static let mcpTabContextEndOfRun = WorkspaceSaveSource("mcpTabContextEndOfRun")
+    /// Finishes this presentation's own interrupted save during Agent admission (#1089).
+    static let agentAdmissionOwnedWorkingConvergence = WorkspaceSaveSource("agentAdmissionOwnedWorkingConvergence")
     #if DEBUG
         /// DEBUG diagnostics/fixture save attribution for workspace selection fixture apply flows.
         static let debugWorkspaceSelectionFixtureApply = WorkspaceSaveSource("debugWorkspaceSelectionFixtureApply")

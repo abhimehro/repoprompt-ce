@@ -1,5 +1,6 @@
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptTestSupport
 import XCTest
 
 final class SecureStorageAccountCatalogTests: XCTestCase {

@@ -2,6 +2,7 @@ import Foundation
 import JSONSchema
 import MCP
 import Ontology
+import RepoPromptDomainRuntime
 import RepoPromptShared
 
 @MainActor
@@ -18,10 +19,36 @@ final class MCPAgentSessionControlToolProvider: MCPAppToolProviding {
 
     func buildTools() -> [Tool] {
         [
+            agentSelfTool(),
             shareThoughtsTool(),
             setStatusTool(),
             waitForNextInstructionTool()
         ]
+    }
+
+    private func agentSelfTool() -> Tool {
+        guard let definition = MCPDomainCanonicalToolDefinitions.definition(named: MCPWindowToolName.agentSelf) else {
+            preconditionFailure("Missing canonical agent_self definition")
+        }
+        return runtime.tool(
+            name: MCPWindowToolName.agentSelf,
+            freshnessPolicy: .none,
+            description: definition.description,
+            annotations: .init(
+                readOnlyHint: false, destructiveHint: true,
+                idempotentHint: false, openWorldHint: true
+            ),
+            inputSchema: .object(
+                properties: [
+                    "op": .string(description: "Required operation: context or compact.", enum: ["context", "compact"]),
+                    "note": .string(description: "[compact] Verbatim continuation note, at most 8,192 UTF-8 bytes."),
+                    "idempotency_key": .string(description: "[compact] Required identical-retry key, at most 200 UTF-8 bytes.")
+                ],
+                required: ["op"]
+            )
+        ) { [dependencies] _, args in
+            try await dependencies.executeAgentSelf(args)
+        }
     }
 
     private func shareThoughtsTool() -> Tool {

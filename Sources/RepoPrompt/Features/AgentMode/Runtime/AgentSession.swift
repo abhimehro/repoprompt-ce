@@ -225,6 +225,9 @@ struct AgentSession: Codable, Identifiable {
     /// Parent session ID for thread nesting (child sessions spawned from another session)
     var parentSessionID: UUID?
 
+    /// Immutable creation provenance for an overseer-created top-level lane.
+    var createdByOverseerSessionID: UUID?
+
     /// Whether this session was originally created by an MCP client (vs the user in the UI).
     /// Used to scope cleanup operations to MCP-originated sessions only.
     var isMCPOriginated: Bool
@@ -243,6 +246,13 @@ struct AgentSession: Codable, Identifiable {
     var pendingHandoffCreatedAt: Date?
     var pendingHandoffSourceItemID: UUID?
     var pendingHandoffDefersProviderLockUntilSend: Bool
+
+    /// Optional recovery data. A decoded attempt is never authority to resume provider work.
+    var selfCompactState: AgentSelfCompactState?
+    /// Runtime-only: the decoded record was invalid and its original file needs preservation.
+    var selfCompactPersistenceWarning = false
+    /// Runtime-only: decode-time reconciliation should be persisted after the source is safe to rewrite.
+    var selfCompactNeedsRecoveryRewrite = false
 
     init(
         id: UUID = UUID(),
@@ -282,10 +292,12 @@ struct AgentSession: Codable, Identifiable {
         codexTotalTotalTokens: Int? = nil,
         codexMcpSessionKey: String? = nil,
         parentSessionID: UUID? = nil,
+        createdByOverseerSessionID: UUID? = nil,
         pendingHandoffPayload: String? = nil,
         pendingHandoffCreatedAt: Date? = nil,
         pendingHandoffSourceItemID: UUID? = nil,
         pendingHandoffDefersProviderLockUntilSend: Bool = false,
+        selfCompactState: AgentSelfCompactState? = nil,
         isMCPOriginated: Bool = false,
         worktreeBindings: [AgentSessionWorktreeBinding] = [],
         worktreeMergeOperations: [AgentSessionWorktreeMergeOperation] = []
@@ -327,10 +339,12 @@ struct AgentSession: Codable, Identifiable {
         self.codexTotalTotalTokens = codexTotalTotalTokens
         self.codexMcpSessionKey = codexMcpSessionKey
         self.parentSessionID = parentSessionID
+        self.createdByOverseerSessionID = createdByOverseerSessionID
         self.pendingHandoffPayload = pendingHandoffPayload
         self.pendingHandoffCreatedAt = pendingHandoffCreatedAt
         self.pendingHandoffSourceItemID = pendingHandoffSourceItemID
         self.pendingHandoffDefersProviderLockUntilSend = pendingHandoffDefersProviderLockUntilSend
+        self.selfCompactState = selfCompactState
         self.isMCPOriginated = isMCPOriginated
         self.worktreeBindings = worktreeBindings
         self.worktreeMergeOperations = worktreeMergeOperations
@@ -374,10 +388,12 @@ struct AgentSession: Codable, Identifiable {
         case codexTotalTotalTokens
         case codexMcpSessionKey
         case parentSessionID
+        case createdByOverseerSessionID
         case pendingHandoffPayload
         case pendingHandoffCreatedAt
         case pendingHandoffSourceItemID
         case pendingHandoffDefersProviderLockUntilSend
+        case selfCompactState
         case isMCPOriginated
         case worktreeBindings
         case worktreeMergeOperations
@@ -442,10 +458,27 @@ struct AgentSession: Codable, Identifiable {
         codexTotalTotalTokens = try container.decodeIfPresent(Int.self, forKey: .codexTotalTotalTokens)
         codexMcpSessionKey = try container.decodeIfPresent(String.self, forKey: .codexMcpSessionKey)
         parentSessionID = try container.decodeIfPresent(UUID.self, forKey: .parentSessionID)
+        createdByOverseerSessionID = try container.decodeIfPresent(UUID.self, forKey: .createdByOverseerSessionID)
         pendingHandoffPayload = try container.decodeIfPresent(String.self, forKey: .pendingHandoffPayload)
         pendingHandoffCreatedAt = try container.decodeIfPresent(Date.self, forKey: .pendingHandoffCreatedAt)
         pendingHandoffSourceItemID = try container.decodeIfPresent(UUID.self, forKey: .pendingHandoffSourceItemID)
         pendingHandoffDefersProviderLockUntilSend = try container.decodeIfPresent(Bool.self, forKey: .pendingHandoffDefersProviderLockUntilSend) ?? false
+        if container.contains(.selfCompactState), try !(container.decodeNil(forKey: .selfCompactState)) {
+            do {
+                var restored = try container.decode(AgentSelfCompactState.self, forKey: .selfCompactState)
+                // Every decode, including an in-process reload, reconciles: a decoded attempt has no
+                // live worker, so it becomes explicit recovery rather than resumable work.
+                selfCompactNeedsRecoveryRewrite = restored.reconcileDecodedRecord()
+                selfCompactState = restored
+            } catch {
+                // An optional maintenance record must not make the whole session unreadable.
+                selfCompactPersistenceWarning = true
+                selfCompactNeedsRecoveryRewrite = true
+                selfCompactState = AgentSelfCompactState(latest: .malformedRecovery())
+            }
+        } else {
+            selfCompactState = nil
+        }
         isMCPOriginated = try container.decodeIfPresent(Bool.self, forKey: .isMCPOriginated) ?? false
         worktreeBindings = try container.decodeIfPresent([AgentSessionWorktreeBinding].self, forKey: .worktreeBindings) ?? []
         worktreeMergeOperations = try container.decodeIfPresent([AgentSessionWorktreeMergeOperation].self, forKey: .worktreeMergeOperations) ?? []

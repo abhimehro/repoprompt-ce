@@ -82,6 +82,20 @@ final class AgentSessionOversightIntentStoreTests: XCTestCase {
 
     // MARK: - Load
 
+    func testVersionOneDocumentLoadsWithoutMigrationOrRewriting() async throws {
+        let existing = pair()
+        let encoded = try JSONEncoder().encode(AgentSessionOversightIntentDocument(version: 1, links: [existing]))
+        try encoded.write(to: fileURL, options: .atomic)
+
+        guard case let .ready(load) = await makeStore().loadForLaunch() else {
+            return XCTFail("Expected a v1 document to load")
+        }
+        XCTAssertEqual(AgentSessionOversightIntentDocument.currentVersion, 1)
+        XCTAssertEqual(load.source, .loaded)
+        XCTAssertEqual(load.pairs, [existing])
+        XCTAssertEqual(try Data(contentsOf: fileURL), encoded, "Loading v1 must not migrate or rewrite it")
+    }
+
     func testLoadDeduplicatesAndDropsSelfPairsWithoutRewritingTheFile() async throws {
         let observer = UUID()
         let target = UUID()
@@ -143,6 +157,35 @@ final class AgentSessionOversightIntentStoreTests: XCTestCase {
             return XCTFail("Expected a ready load")
         }
         XCTAssertEqual(repeatedMissing.source, .missing)
+    }
+
+    // MARK: - Legacy delegation migration
+
+    func testLegacyDelegationsAreIgnoredButDirectedLinksSurviveAndNextWriteDropsThem() async throws {
+        let observer = UUID()
+        let target = UUID()
+        let orphan = UUID()
+        try writeRawDocument("""
+        {"version":1,"links":[{"observerSessionID":"\(observer.uuidString)","targetSessionID":"\(target.uuidString)"}],
+        "delegations":[
+          {"observerSessionID":"\(observer.uuidString)","targetSessionID":"\(target.uuidString)","manage":false,"autoApprovePermissions":true},
+          {"observerSessionID":"\(orphan.uuidString)","targetSessionID":"\(target.uuidString)","manage":true}
+        ]}
+        """)
+        let store = makeStore()
+        guard case let .ready(load) = await store.loadForLaunch() else {
+            return XCTFail("Expected a ready load")
+        }
+        let legacy = AgentSessionOversightIntent(observerSessionID: observer, targetSessionID: target)
+        XCTAssertEqual(load.source, .loaded)
+        XCTAssertEqual(load.pairs, [legacy], "Legacy fields cannot reverse or create a pair")
+        XCTAssertEqual(try JSONDecoder().decode(AgentSessionOversightIntentDocument.self, from: Data(contentsOf: fileURL)).links, [legacy])
+
+        _ = await store.insert(pair())
+        let written = try String(contentsOf: fileURL, encoding: .utf8)
+        XCTAssertFalse(written.contains("delegations"), "A write discards obsolete authority data")
+        XCTAssertTrue(written.contains(observer.uuidString))
+        XCTAssertTrue(written.contains(target.uuidString))
     }
 
     // MARK: - Insert / remove

@@ -250,6 +250,7 @@ struct AgentMonitorPopoverView: View {
                 Button("Oversee session") { submit() }
                     .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
                     .disabled(!props.canAdd || preview == nil || isWorking)
+                    .hoverTooltip(AgentMonitorOversightDisclosure.boundary, .top)
             }
 
             if let reason = props.canAddReason {

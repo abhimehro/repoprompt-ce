@@ -567,6 +567,7 @@ final class AgentSessionTargetOperationAuthorizationTests: XCTestCase {
             lastRunState: AgentSessionRunState.completed.rawValue,
             acpModelParameterSelections: [],
             parentSessionID: parentSessionID,
+            createdByOverseerSessionID: nil,
             isMCPOriginated: true,
             worktreeBindingSummaries: [],
             activeWorktreeMergeSummaries: []

@@ -21,9 +21,9 @@ consumes at its current integration boundary.
 
 ## Version contract
 
-- The contract floor is **Codex CLI 0.156.1**.
-- Local validation accepts 0.156.1 or newer so a developer can detect drift before CI moves.
-- CI installs exactly `@openai/codex@0.156.1`, making the required check deterministic.
+- The contract floor is **Codex CLI 0.159.0**.
+- Local validation accepts 0.159.0 or newer so a developer can detect drift before CI moves.
+- CI installs exactly `@openai/codex@0.159.0`, making the required check deterministic.
 - The gate fails before generation when the installed CLI is older than the floor.
 
 This schema baseline and exact CI pin are distinct from
@@ -65,7 +65,7 @@ hook-key → `{trusted_hash}` object shape cannot be expressed by the current ch
 After a trust write, the post-write `hooks/list` result is the semantic success authority;
 `config/batchWrite.status` alone is not.
 
-The hardened 0.156.1 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
+The current 0.159.0 baseline checks 45 methods, 193 parameter paths, and 93 response paths. A failure names
 the union, method, and exact missing field, required field, response path, or enum value.
 
 This is intentionally not a complete protocol mirror. New upstream methods do not fail the gate
@@ -195,6 +195,23 @@ Upstream `LICENSE` and `NOTICE` and the packaged voice notice, source manifest, 
 licences are byte-identical to 0.156.0. The patch release adds GPT-6 Sol and Luna to
 Codex's model catalog; model availability remains runtime-discovered rather than
 hard-coded by RepoPrompt.
+
+## 0.159.0 rotation findings (2026-09-29)
+
+The official `rust-v0.159.0` macOS packages preserve the 52-entry layout, 30-Mach-O
+inventory, signing identities, and closed-world entitlement profile of 0.156.1.
+The exact official arm64 CLI passes the unchanged experimental app-server projection
+at 45 methods, 193 parameter paths, and 93 response paths. The bundle, schema floor,
+and exact CI pin advance together; the external-runtime floor remains 0.149.0 because
+no newly consumed protocol requirement was identified.
+
+Upstream `LICENSE` and `NOTICE` and the packaged voice notice, source manifest, and
+licences remain byte-identical to 0.156.1. A direct CLI comparison with the same
+eligible ChatGPT account established GPT-6.1 Sol discovery and execution with 0.159.0,
+while 0.156.1 omitted the model and rejected its explicit request. Model availability
+and reasoning efforts continue to come from runtime discovery. The earliest compatible
+CLI version was not established, and these artifact/schema checks alone do not prove
+upgraded-app behavior.
 
 ## Files and tests
 

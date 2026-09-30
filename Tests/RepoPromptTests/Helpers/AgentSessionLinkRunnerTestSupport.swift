@@ -246,6 +246,7 @@ final class AgentSessionLinkRunnerHarness {
             ),
             continuation: .init(
                 startFollowUpRun: { _, _ in },
+                startTypedACPFollowUpRun: { _, _ in },
                 signalMCPInstructionDelivered: { _ in }
             )
         )
@@ -361,6 +362,9 @@ final class AgentSessionLinkCapturingACPProvider: ACPAgentProvider, @unchecked S
     let providerID: ACPProviderID
     let commandPath: String
     var environment: [String: String] = [:]
+    /// Normalizes session updates with the shipped default normalizer instead of dropping them, so
+    /// `usage_update` reaches the usage estimator in view-model-level suites.
+    var usesDefaultNormalizer = false
 
     private let lock = NSLock()
     private var captured: [AgentMessage] = []
@@ -398,7 +402,7 @@ final class AgentSessionLinkCapturingACPProvider: ACPAgentProvider, @unchecked S
         mcpServer _: RepoPromptMCPServerConfiguration
     ) throws -> ACPSessionConfiguration {
         ACPSessionConfiguration(
-            mode: environment["ACP_FAIL_LOAD"] == "1"
+            mode: environment["ACP_FAIL_LOAD"] == "1" || environment["ACP_LOAD"] == "1"
                 ? request.resumeSessionID.map { .load(existingSessionID: $0) } ?? .new : .new,
             workingDirectory: request.workspacePath ?? FileManager.default.temporaryDirectory.path,
             mcpServers: []
@@ -416,10 +420,12 @@ final class AgentSessionLinkCapturingACPProvider: ACPAgentProvider, @unchecked S
     }
 
     func normalizeSessionUpdate(
-        _: [String: Any],
+        _ payload: [String: Any],
         sessionID _: String
     ) -> [NormalizedAgentRuntimeEvent] {
-        []
+        usesDefaultNormalizer
+            ? ACPDefaultSessionUpdateNormalizer.normalize(payload, providerID: providerID)
+            : []
     }
 
     func normalizeError(_ error: Error) -> Error {
@@ -465,6 +471,20 @@ final class AgentSessionLinkACPResponseGate {
 enum AgentSessionLinkACPServerScript {
     /// Minimal ACP server. `ACP_FAIL_PROMPTS_CONTAINING` makes `session/prompt` return an error when
     /// the prompt text contains that marker, which is how a test forces a failed steer.
+    ///
+    /// Synthetic slash-command fixtures, modelled on the ACP spec's shapes (no provider-recorded
+    /// traffic exists yet, so these are live-unverified):
+    /// - `ACP_ADVERTISE_COMMANDS` (comma list): an `available_commands_update` right after
+    ///   `session/new`; `__malformed__` sends a non-list `availableCommands`.
+    /// - `ACP_ADVERTISE_AFTER_PROMPT` (comma list, may be empty): a replacement list during each prompt.
+    /// - `ACP_PROMPT_LOG` (path): each `session/prompt` `prompt` array, one JSON line per prompt.
+    /// - `ACP_USAGE_UPDATE_ON_PROMPT` (`used,size`): a `usage_update` during each prompt.
+    /// - `ACP_FOREIGN_ADVERTISE_AFTER_PROMPT` (comma list): a list for another session during each prompt.
+    /// - `ACP_UNMATCHED_RESPONSE_ON_PROMPT`: a response with an unknown id during each prompt (a protocol
+    ///   violation that fails the controller).
+    /// - `ACP_ADVERTISE_ON_CANCEL` (comma list): a list for the cancelled session on each `session/cancel`.
+    /// - `ACP_LOAD` (`1`): open the request's `resumeSessionID` with a successful `session/load`, which
+    ///   also advertises `ACP_ADVERTISE_COMMANDS`.
     static func write(to directory: URL) throws -> URL {
         let scriptURL = directory.appendingPathComponent("monitor_acp_server.py")
         let script = #"""
@@ -474,6 +494,7 @@ enum AgentSessionLinkACPServerScript {
         import sys
 
         fail_marker = os.environ.get("ACP_FAIL_PROMPTS_CONTAINING")
+        prompt_log = os.environ.get("ACP_PROMPT_LOG")
         current_model = "model-a"
         current_mode = "ask"
 
@@ -498,10 +519,31 @@ enum AgentSessionLinkACPServerScript {
                     "options": [
                         {"value": "ask", "name": "Ask"},
                         {"value": "repoprompt_acp", "name": "RepoPrompt"},
-                        {"value": "repoprompt_acp_full_access", "name": "RepoPrompt Full Access"}
+                        {"value": "repoprompt_acp_full_access", "name": "RepoPrompt Full Access"},
+                        {"value": "auto_edit", "name": "Auto Edit"}
                     ]
                 }
             ]
+
+        def notify_update(session_id, update):
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"sessionId": session_id, "update": update}
+            }), flush=True)
+
+        def advertise(session_id, raw):
+            if raw == "__malformed__":
+                commands = "not-a-list"
+            else:
+                commands = [
+                    {"name": name, "description": name + " command", "input": None}
+                    for name in raw.split(",") if name
+                ]
+            notify_update(session_id, {
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": commands
+            })
 
         def respond(request_id, result=None):
             print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result or {}}), flush=True)
@@ -530,11 +572,19 @@ enum AgentSessionLinkACPServerScript {
                 respond(request.get("id"), {"agentCapabilities": {"loadSession": True}, "authMethods": []})
             elif method == "session/load" and os.environ.get("ACP_FAIL_LOAD"):
                 respond_error(request.get("id"), "session not found: invalid params")
+            elif method == "session/load":
+                respond(request.get("id"), {"configOptions": config_options()})
+                if os.environ.get("ACP_ADVERTISE_COMMANDS") is not None:
+                    advertise(params.get("sessionId"), os.environ["ACP_ADVERTISE_COMMANDS"])
             elif method == "session/new":
                 respond(request.get("id"), {
                     "sessionId": "monitor-acp-session",
                     "configOptions": config_options()
                 })
+                if os.environ.get("ACP_ADVERTISE_COMMANDS") is not None:
+                    advertise("monitor-acp-session", os.environ["ACP_ADVERTISE_COMMANDS"])
+            elif method == "session/cancel" and os.environ.get("ACP_ADVERTISE_ON_CANCEL") is not None:
+                advertise(params.get("sessionId"), os.environ["ACP_ADVERTISE_ON_CANCEL"])
             elif method == "session/set_config_option":
                 if params.get("configId") == "model":
                     current_model = params.get("value")
@@ -542,6 +592,22 @@ enum AgentSessionLinkACPServerScript {
                     current_mode = params.get("value")
                 respond(request.get("id"), {"configOptions": config_options()})
             elif method == "session/prompt":
+                if prompt_log:
+                    with open(prompt_log, "a") as log:
+                        log.write(json.dumps(params.get("prompt")) + "\n")
+                if os.environ.get("ACP_UNMATCHED_RESPONSE_ON_PROMPT"):
+                    respond(987654, {})
+                if os.environ.get("ACP_ADVERTISE_AFTER_PROMPT") is not None:
+                    advertise(params.get("sessionId"), os.environ["ACP_ADVERTISE_AFTER_PROMPT"])
+                if os.environ.get("ACP_FOREIGN_ADVERTISE_AFTER_PROMPT") is not None:
+                    advertise("foreign-session", os.environ["ACP_FOREIGN_ADVERTISE_AFTER_PROMPT"])
+                if os.environ.get("ACP_USAGE_UPDATE_ON_PROMPT"):
+                    used, size = os.environ["ACP_USAGE_UPDATE_ON_PROMPT"].split(",")
+                    notify_update(params.get("sessionId"), {
+                        "sessionUpdate": "usage_update",
+                        "used": int(used),
+                        "size": int(size)
+                    })
                 text = json.dumps(params)
                 if fail_marker and fail_marker in text:
                     respond_error(request.get("id"), "prompt rejected")
