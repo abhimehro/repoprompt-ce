@@ -477,35 +477,47 @@ public extension String {
         }
     }
 
-    /// Static regex for indentation level extraction
-    private static let indentationLevelRegex = try! NSRegularExpression(pattern: "^<([st])(\\d+)>")
-
     package static func getIndentationLevel(from line: String) -> Int {
-        guard let match = indentationLevelRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-              let countRange = Range(match.range(at: 2), in: line)
+        guard line.hasPrefix("<s") || line.hasPrefix("<t"),
+              let closeIndex = line.firstIndex(of: ">")
         else {
             return 0
         }
-        return Int(line[countRange]) ?? 0
-    }
 
-    /// Static regex for applying indentation delta
-    private static let indentationDeltaRegex = try! NSRegularExpression(pattern: "^<([st])(\\d+)>(.*)$")
+        let countStart = line.index(line.startIndex, offsetBy: 2)
+        guard countStart < closeIndex else { return 0 }
+
+        let countStr = line[countStart ..< closeIndex]
+        return Int(countStr) ?? 0
+    }
 
     /// Apply a delta to the indentation level of a line. If no tag is found, assume `<s0>`.
     package static func applyIndentationDelta(to line: String, delta: Int) -> String {
-        guard let match = indentationDeltaRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else {
+        guard (line.hasPrefix("<s") || line.hasPrefix("<t")),
+              let closeIndex = line.firstIndex(of: ">")
+        else {
             let newIndent = Swift.max(0, delta)
             return "<s\(newIndent)>\(line)"
         }
 
-        let indentType = (line as NSString).substring(with: match.range(at: 1))
-        let countStr = (line as NSString).substring(with: match.range(at: 2))
-        let content = (line as NSString).substring(with: match.range(at: 3))
+        let indentTypeChar = line[line.index(line.startIndex, offsetBy: 1)]
+        let countStart = line.index(line.startIndex, offsetBy: 2)
+        guard countStart < closeIndex else {
+            let newIndent = Swift.max(0, delta)
+            return "<s\(newIndent)>\(line)"
+        }
 
-        let oldCount = Int(countStr) ?? 0
+        let countStr = line[countStart ..< closeIndex]
+        guard let oldCount = Int(countStr) else {
+            let newIndent = Swift.max(0, delta)
+            return "<s\(newIndent)>\(line)"
+        }
+
+        let contentStart = line.index(after: closeIndex)
+        let content = line[contentStart...]
+
         let newCount = Swift.max(0, oldCount + delta)
-        return "<\(indentType)\(newCount)>\(content)"
+        return "<\(indentTypeChar)\(newCount)>\(content)"
     }
 
     /// Computes the most frequent indentation delta between two blocks.
