@@ -44,6 +44,7 @@ struct CodeBlock: View {
                 }
             }
             .hoverTooltip("Copy code to clipboard")
+            .accessibilityLabel("Copy code to clipboard")
             .padding(4)
         }
         .background(BubbleColors.codeBlockBackground)
@@ -116,6 +117,7 @@ struct SyntaxHighlightedCodeBlock: View, Equatable {
             }
         }
         .hoverTooltip("Copy code to clipboard")
+        .accessibilityLabel("Copy code to clipboard")
         .padding(4)
     }
 
@@ -227,6 +229,7 @@ struct CollapsibleCodeBlock: View {
             }
         }
         .hoverTooltip("Copy code to clipboard")
+        .accessibilityLabel("Copy code to clipboard")
         .padding(4)
     }
 
