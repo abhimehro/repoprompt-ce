@@ -837,7 +837,8 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
             head: binding.head,
             visualLabel: binding.visualLabel,
             visualColorHex: binding.visualColorHex,
-            boundAt: ISO8601DateFormatter().string(from: binding.boundAt),
+            // Direct .formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
+            boundAt: binding.boundAt.formatted(.iso8601),
             source: binding.source
         )
     }

@@ -4445,7 +4445,8 @@ actor ACPAgentSessionController {
             sessionID: String?
         ) {
             var record: [String: Any] = [
-                "capturedAt": ISO8601DateFormatter().string(from: Date()),
+                // Direct .formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
+                "capturedAt": Date().formatted(.iso8601),
                 "kind": kind,
                 "payload": sanitizeRawCaptureDictionary(payload),
                 "providerID": providerID.rawValue,

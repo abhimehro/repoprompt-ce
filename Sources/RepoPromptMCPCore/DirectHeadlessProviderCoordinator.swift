@@ -343,7 +343,8 @@ actor DirectHeadlessProviderCoordinator {
             values.append(.object([
                 "session_id": .string(metadata.sessionID.uuidString),
                 "status": .string(metadata.state.rawValue),
-                "updated_at": .string(ISO8601DateFormatter().string(from: metadata.updatedAt)),
+                // Direct .formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
+                "updated_at": .string(metadata.updatedAt.formatted(.iso8601)),
                 "resumable": .bool(metadata.resumable)
             ]))
         }
