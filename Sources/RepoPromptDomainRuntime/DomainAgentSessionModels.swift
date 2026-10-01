@@ -679,8 +679,8 @@ package struct DomainAgentRunSnapshot: Equatable, Sendable {
     }
 
     fileprivate static func timestamp(_ date: Date) -> String {
-        // Direct .formatted(.iso8601.includingFractionalSeconds()) avoids expensive ISO8601DateFormatter allocation per call.
-        date.formatted(.iso8601.includingFractionalSeconds())
+        // Direct Date.ISO8601FormatStyle(includingFractionalSeconds: true) avoids expensive ISO8601DateFormatter allocation per call.
+        date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
     }
 }
 
