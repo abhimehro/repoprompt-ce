@@ -813,6 +813,7 @@ allowed_tracked_docs=(
   "docs/migrations/build-modularization/ratchets.json"
   "docs/open-source-readiness.md"
   "docs/privacy/telemetry.md"
+  "docs/qa-review.md"
   "docs/releasing.md"
   "docs/testing.md"
   "docs/spec/headless-mcp-domain-runtime-m0-contracts.md"
