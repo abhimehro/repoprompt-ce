@@ -1523,6 +1523,7 @@ private struct ContextBuilderHeaderBar: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .hoverTooltip(presentation.headerTooltip)
+                    .accessibilityLabel(presentation.headerTooltip)
 
                 // Clear button
                 Button(action: {

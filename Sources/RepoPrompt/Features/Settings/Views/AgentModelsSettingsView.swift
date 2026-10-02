@@ -419,6 +419,7 @@ struct AgentModelsSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("Remove \(viewModel.oracleLabel(at: index))")
+                    .accessibilityLabel("Remove \(viewModel.oracleLabel(at: index))")
                 }
             }
 
