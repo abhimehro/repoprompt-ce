@@ -196,17 +196,17 @@ class ApplicationSecurity {
 
     private func environmentSignals() -> (hasInsert: Bool, hasOther: Bool) {
         let env = ProcessInfo.processInfo.environment
-        let insertKey = ProcessEnvironmentSanitizer.dynamicLoaderInsertLibrariesKey
-        if let value = env[insertKey], !value.isEmpty {
-            return (true, true)
-        }
+        var hasInsert = false
+        var hasOther = false
         for (key, value) in env {
-            guard key != insertKey, !value.isEmpty else { continue }
-            if ProcessEnvironmentSanitizer.isDynamicLoaderKey(key) {
-                return (false, true)
+            guard !value.isEmpty else { continue }
+            if ProcessEnvironmentSanitizer.isDynamicLoaderInsertKey(key) {
+                hasInsert = true
+            } else if ProcessEnvironmentSanitizer.isDynamicLoaderKey(key) {
+                hasOther = true
             }
         }
-        return (false, false)
+        return (hasInsert, hasOther)
     }
 
     private func hasInjectedLibraries() -> Bool {
