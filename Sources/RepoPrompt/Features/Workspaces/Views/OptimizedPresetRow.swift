@@ -56,18 +56,21 @@ struct OptimizedPresetRow: View {
                 }
                 .buttonStyle(CustomButtonStyle())
                 .hoverTooltip("Switch to preset")
+                .accessibilityLabel("Switch to preset")
 
                 Button(action: onRename) {
                     Image(systemName: "pencil")
                 }
                 .buttonStyle(CustomButtonStyle())
                 .hoverTooltip("Rename preset")
+                .accessibilityLabel("Rename preset")
 
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(CustomButtonStyle())
                 .hoverTooltip("Delete preset")
+                .accessibilityLabel("Delete preset")
             }
 
             // File list preview

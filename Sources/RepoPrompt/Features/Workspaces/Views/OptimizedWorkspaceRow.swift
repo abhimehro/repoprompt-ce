@@ -29,6 +29,7 @@ struct OptimizedWorkspaceRow: View {
                     }
                     .buttonStyle(CustomButtonStyle())
                     .hoverTooltip("Switch to workspace")
+                    .accessibilityLabel("Switch to workspace")
                 }
 
                 // Rename
@@ -37,6 +38,7 @@ struct OptimizedWorkspaceRow: View {
                 }
                 .buttonStyle(CustomButtonStyle())
                 .hoverTooltip("Rename workspace")
+                .accessibilityLabel("Rename workspace")
 
                 // Hide toggle
                 Button(action: onToggleHidden) {
@@ -44,6 +46,7 @@ struct OptimizedWorkspaceRow: View {
                 }
                 .buttonStyle(CustomButtonStyle())
                 .hoverTooltip(workspace.isHiddenInMenus ? "Show in workspace menu" : "Hide from workspace menu")
+                .accessibilityLabel(workspace.isHiddenInMenus ? "Show in workspace menu" : "Hide from workspace menu")
 
                 // Delete
                 Button {
@@ -53,6 +56,7 @@ struct OptimizedWorkspaceRow: View {
                 }
                 .buttonStyle(CustomButtonStyle())
                 .hoverTooltip("Delete workspace")
+                .accessibilityLabel("Delete workspace")
                 .popover(isPresented: $showingDeleteConfirmation, arrowEdge: .trailing) {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Delete workspace?")
