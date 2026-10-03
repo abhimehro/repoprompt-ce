@@ -45,6 +45,8 @@ struct PreHighlightedCodeBlock: View {
                     isCopyHovering = hovering
                 }
             }
+            .hoverTooltip("Copy code to clipboard")
+            .accessibilityLabel("Copy code to clipboard")
         }
     }
 
