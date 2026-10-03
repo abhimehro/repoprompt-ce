@@ -52,7 +52,8 @@ package enum RuntimePolicyAdministration {
                             "principal": grant.principalKey,
                             "operations": grant.allowedOperations.sorted(),
                             "roots": grant.canonicalRoots.sorted(),
-                            "expires_at": ISO8601DateFormatter().string(from: grant.expiresAt),
+                            // Direct .formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
+                            "expires_at": grant.expiresAt.formatted(.iso8601),
                             "revoked": grant.revokedAt != nil,
                             "revision": grant.revision
                         ] as [String: Any]
