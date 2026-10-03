@@ -68,7 +68,7 @@ jobs:
         run: make conductor-selftest
 
       - name: Set up Node for pinned Codex CLI
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
