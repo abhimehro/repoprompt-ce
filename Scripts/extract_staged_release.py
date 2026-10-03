@@ -95,6 +95,7 @@ def extract(archive: Path, destination: Path, app_name: str) -> None:
         output.symlink_to(target)
 
 
-if len(sys.argv) != 4:
-    fail("usage: extract_staged_release.py <archive> <destination> <app-name>")
-extract(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        fail("usage: extract_staged_release.py <archive> <destination> <app-name>")
+    extract(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])
