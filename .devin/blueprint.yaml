@@ -1,0 +1,15 @@
+runs-on: macos
+# One-time setup (e.g., install system tools, global CLIs).
+initialize: |
+  brew install gitleaks
+# Install project dependencies (runs during builds, surfaced to agent at session start).
+maintenance: |
+  true
+knowledge:
+  - name: preflight
+    contents: |
+      .agents/skills/rpce-contribution-check/scripts/preflight.sh commit   # before committing
+      .agents/skills/rpce-contribution-check/scripts/preflight.sh push     # before pushing
+  - name: guardrails
+    contents: |
+      ./Scripts/guardrails.sh   # source-layout + modularization ratchet gates
