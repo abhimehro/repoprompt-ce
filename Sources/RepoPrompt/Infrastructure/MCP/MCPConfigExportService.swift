@@ -157,9 +157,10 @@ actor MCPConfigExportService {
     func writeTempFile(prefix: String, contents: String) throws -> URL {
         let baseDir = fileManager.temporaryDirectory
             .appendingPathComponent("RepoPromptDiscover", isDirectory: true)
-        try fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        try prepareSecureDirectory(at: baseDir)
         let fileURL = baseDir.appendingPathComponent("\(prefix)-\(UUID().uuidString).txt")
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         return fileURL
     }
 
