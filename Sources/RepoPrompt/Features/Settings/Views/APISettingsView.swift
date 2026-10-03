@@ -356,6 +356,8 @@ struct APISettingsView: View {
         }
     }
 
+    /// Builds a provider settings section with key or URL input, validation controls,
+    /// optional model settings, and an accessible documentation link.
     private func apiKeySection(
         title: String,
         key: Binding<String>,
