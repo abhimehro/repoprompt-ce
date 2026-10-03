@@ -336,14 +336,14 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
           # Drive the check from the arch/sha pairs actually declared in the
           # blueprint, so added or reformatted case arms are verified too.
-          # `declared` counts every `arch = "..."` token regardless of the
-          # value's formatting, so a reformat (space, uppercase) that would
-          # shrink `pairs` also shrinks the verified set nowhere — the count
-          # mismatch fails loudly instead of dropping coverage.
-          pairs="$(sed -n 's/.*arch="\([a-z0-9_]*\)"; *sha *= *"\([^"]*\)".*/\1 \2/p' .devin/blueprint.yaml)"
-          # grep -c exits 1 on zero matches, so || true keeps set -e from
-          # swallowing the diagnostic below.
-          declared="$(grep -cE 'arch *= *"' .devin/blueprint.yaml || true)"
+          # Both counts are occurrence-level (grep -o, not grep -c): `declared`
+          # counts every `arch = "` token regardless of the value's format,
+          # while `pairs` needs the strict `arch="..."; sha="..."` shape, so a
+          # reformat (space, uppercase, collapsed line) keeps `declared` high
+          # and the count mismatch fails loudly instead of dropping coverage.
+          pairs="$(grep -oE 'arch="[a-z0-9_]+"; *sha *= *"[^"]*"' .devin/blueprint.yaml \
+            | sed 's/.*arch="\([^"]*\)"; *sha *= *"\([^"]*\)".*/\1 \2/' || true)"
+          declared="$(grep -oE 'arch *= *"' .devin/blueprint.yaml | wc -l | tr -d ' ' || true)"
           found="$(printf '%s\n' "${pairs}" | grep -c . || true)"
           unique="$(printf '%s\n' "${pairs}" | awk 'NF && !seen[$1]++ { n++ } END { print n+0 }')"
           [ "${declared}" -gt 0 ] && [ "${found}" -eq "${declared}" ] && [ "${unique}" -eq "${declared}" ] \
