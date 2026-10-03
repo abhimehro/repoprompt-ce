@@ -45,8 +45,10 @@ jobs:
           - language: python
             runs-on: ubuntu-latest
             build-mode: none
-          # C/C++: first-party RepoPromptC target and vendored C sources;
-          # buildless analysis preserves default setup's c-cpp coverage.
+          # C/C++: first-party RepoPromptC target plus vendored C sources
+          # (sljit, UniversalCharsetDetection, test fixtures). Buildless:
+          # restores the c-cpp analysis default setup had — not build-verified
+          # (no real include paths or macro expansion).
           - language: c-cpp
             runs-on: ubuntu-latest
             build-mode: none

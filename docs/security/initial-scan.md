@@ -133,11 +133,19 @@ scanned:
 
 ## Going forward
 
-- `.github/workflows/security.yml` now runs CodeQL (Swift on `macos-26`,
-  Python, C/C++, Actions) on every PR targeting `main` and push to `main`
-  plus a weekly scheduled scan — matching the language set default setup
-  analyzed — and `actions/dependency-review-action` on every PR targeting
-  `main`. CodeQL uploads are permitted on `pull_request`-triggered runs even
+- `.github/workflows/security.yml` now runs CodeQL on the repo's first-party
+  languages — Swift on `macos-26` (manual build), Python, C/C++ (buildless),
+  Actions — on every PR targeting `main` and push to `main` plus a weekly
+  scheduled scan, and `actions/dependency-review-action` on every PR
+  targeting `main`. This is intentionally narrower than default setup's nine
+  analyzed languages: the other five (`csharp`, `go`, `java-kotlin`,
+  `javascript-typescript`, `rust`) exist only as traces in vendored/test
+  code and produced zero-result analyses. The `c-cpp` leg is buildless — it
+  extracts without real include paths or macro expansion, and it has no path
+  filter, so vendored C (`sljit`, `UniversalCharsetDetection`, test
+  fixtures) lands in the same alert stream as first-party code if a
+  third-party bump ever lights up. CodeQL uploads are permitted on
+  `pull_request`-triggered runs even
   with Dependabot's read-only `GITHUB_TOKEN`, so no actor guard is needed on
   the analysis step
   ([GitHub docs](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible)).
