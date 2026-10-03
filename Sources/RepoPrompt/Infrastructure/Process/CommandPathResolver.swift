@@ -321,7 +321,7 @@ enum CommandPathResolver {
         process.standardInput = FileHandle.nullDevice
         var env = environment
         env["RP_SHELL_LOOKUP"] = "1" // lets rc files suppress banners if they want
-        process.environment = env
+        process.environment = ProcessEnvironmentSanitizer.sanitizedForChildLaunch(env)
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

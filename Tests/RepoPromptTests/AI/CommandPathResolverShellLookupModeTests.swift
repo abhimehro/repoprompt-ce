@@ -41,6 +41,46 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
         )
     }
 
+    func testLoginShellCaptureSanitizesChildEnvironment() throws {
+        let fixture = try makeResolverFixture(prefix: "resolver-sanitize-env")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let envMarker = fixture.root.appendingPathComponent("env-was-checked")
+        let checkingShell = fixture.root.appendingPathComponent("checking-shell")
+
+        try writeExecutable(
+            checkingShell,
+            contents: """
+            #!/bin/sh
+            if [ -n "$DYLD_INSERT_LIBRARIES" ]; then
+                printf 'DYLD_PRESENT' > "\(envMarker.path)"
+            else
+                printf 'DYLD_CLEARED' > "\(envMarker.path)"
+            fi
+            printf '__RP_BEGIN__\\n'
+            printf '%s\\n' "\(fixture.shellExecutable.path)"
+            printf '__RP_END__\\n'
+            exit 0
+            """
+        )
+
+        var testEnv = fixture.environment
+        testEnv["SHELL"] = checkingShell.path
+        testEnv["DYLD_INSERT_LIBRARIES"] = "/tmp/malicious.dylib"
+
+        let resolved = CommandPathResolver.resolve(
+            "codex",
+            environment: testEnv,
+            additionalPaths: [],
+            preferredBasenames: ["codex"],
+            shellLookupMode: .preferShell
+        )
+
+        XCTAssertEqual(resolved, fixture.shellExecutable.path)
+        let envResult = try? String(contentsOf: envMarker, encoding: .utf8)
+        XCTAssertEqual(envResult, "DYLD_CLEARED")
+    }
+
     private struct ResolverFixture {
         let root: URL
         let pathExecutable: URL
@@ -77,6 +117,7 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
             """
         )
 
+        let systemPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
         return ResolverFixture(
             root: root,
             pathExecutable: pathExecutable,
@@ -84,7 +125,7 @@ final class CommandPathResolverShellLookupModeTests: XCTestCase {
             shellInvocationMarker: shellInvocationMarker,
             environment: [
                 "HOME": root.path,
-                "PATH": pathBin.path,
+                "PATH": "\(pathBin.path):\(systemPath)",
                 "SHELL": fakeShell.path
             ]
         )
