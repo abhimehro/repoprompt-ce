@@ -102,7 +102,7 @@ jobs:
         run: ./trusted-control-plane/Scripts/release.sh stage-publish
 
       - name: Upload staged release source
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: RepoPrompt-CE-staged-release
           path: |
@@ -335,7 +335,7 @@ jobs:
           rm -rf "$RUNNER_TEMP/repoprompt-release-secrets"
 
       - name: Upload signed release ZIP for secret-free smoke
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: RepoPrompt-CE-signed-release-zip
           path: |

@@ -386,7 +386,7 @@ jobs:
         run: ./trusted-control-plane/Scripts/main_tip_release.sh stage
 
       - name: Upload staged tip source
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: RepoPrompt-CE-staged-tip
           path: |
@@ -708,7 +708,7 @@ jobs:
         run: ./trusted-control-plane/Scripts/main_tip_release.sh validate-assets
 
       - name: Upload signed tip assets for smoke and publish
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: RepoPrompt-CE-signed-tip
           path: tip-source/dist/
@@ -791,7 +791,7 @@ jobs:
 
       - name: Upload Tip smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: RepoPrompt-CE-tip-smoke-diagnostics
           path: ${{ runner.temp }}/tip-smoke-diagnostics
