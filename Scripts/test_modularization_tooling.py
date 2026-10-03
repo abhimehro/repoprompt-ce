@@ -306,7 +306,7 @@ class CatalogTests(unittest.TestCase):
         ci = (SCRIPT_DIR.parent / '.github/workflows/ci.yml').read_text()
         final = ci.split('  style:', 1)[1].split('  secret-scan:', 1)[0]
         self.assertIn('name: Style', final)
-        self.assertIn('needs: [build-test-bundles, build-and-test, secret-scan]', final)
+        self.assertIn('needs: [build-test-bundles, build-and-test, secret-scan, blueprint-pin-check]', final)
         self.assertIn('if: always()', final)
         self.assertIn('ci_test_coverage.py', final)
         self.assertEqual(ci.count('runs-on: macos-26'), 2)  # one shared job + 4 matrix children
