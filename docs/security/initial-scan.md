@@ -33,14 +33,40 @@ manual `swift build`, which compiles the package's products
 ## Open findings (5, all HIGH)
 
 All five open alerts are the same CodeQL Actions rule —
-`actions/cache-poisoning/poisonable-step`. Per the alert messages, each flagged
-`run:` step executes in a privileged (`push` to `main` / `workflow_dispatch`)
-workflow after a checkout whose ref arrives through a caller-controlled channel
-— `needs.validate-ref.outputs.commit`, `needs.validate-ref.outputs.tooling-commit`,
-and `needs.setup.outputs.*` in `release.yml` / `main-tip.yml`. If an attacker can
-influence that input ref, their code runs (and can poison caches) in a default-
-branch-privileged context. The alerted lines are the steps consuming the
-checkout, not cache steps — neither workflow uses `actions/cache` directly.
+`actions/cache-poisoning/poisonable-step`. What the rule flags on these
+workflows: a `run:` step in a privileged workflow consumes a checkout (or
+artifact lineage) whose ref arrives through cross-job output channels —
+`needs.validate-ref.outputs.commit`, `needs.validate-ref.outputs.tooling-commit`,
+and `needs.setup.outputs.*` in `release.yml` / `main-tip.yml`. The rule models
+job outputs as potentially attacker-influenced, so a step that checks out a ref
+taken from them and then runs code in a privileged context is alerted.
+("cache-poisoning" is the rule name — neither file uses `actions/cache`; `rg
+-n cache` over both returns zero matches.)
+
+Actual triggers — neither workflow runs on `push`: `release.yml` is
+`workflow_dispatch` only, and its `validate-ref` job additionally requires
+`github.ref == 'refs/heads/main'`; `main-tip.yml` runs on `workflow_run`
+after CI completes on `main` plus `workflow_dispatch`.
+
+Guards that already narrow the exposure (CodeQL cannot see them, so the
+alerts remain open rather than auto-resolved):
+
+- `release.yml:42` — "Require a tag reachable from protected main":
+  `Scripts/verify_release_ref.sh` resolves the dispatch tag to a commit and
+  rejects anything outside protected-`main` ancestry.
+- `main-tip.yml:92-108` — the setup job compares the tip candidate against
+  live protected `main` via `git merge-base`, pins `tooling_commit` to the
+  workflow-definition commit, and marks `eligible=false` (publishing skipped)
+  for any candidate outside protected-`main` ancestry.
+- Both workflows check out with `persist-credentials: false`, so no token is
+  carried into the consumed source.
+
+Residual risk: these guards run *inside* the workflow and verify ancestry of
+whatever ref the outputs carry — they do not attest the outputs themselves.
+A compromised or spoofed upstream job output could still inject an arbitrary
+(but ancestry-valid) ref, so the findings are real-but-mitigated, not false
+positives. Remediation would need a mechanism the guard cannot spoof (e.g.,
+recomputing the ref from the event payload inside the consuming job).
 
 - #10 `main-tip.yml:742` — high — [alert](https://github.com/abhimehro/repoprompt-ce/security/code-scanning/10)
 - #9 `release.yml:75` — high — [alert](https://github.com/abhimehro/repoprompt-ce/security/code-scanning/9)
@@ -62,8 +88,8 @@ All five closed alerts are `actions/missing-workflow-permissions` (medium):
 
 None of the open Sentinel PRs remediates a code-scanning alert — each fixes a
 separate finding reported by the Jules "Sentinel" pass, not a CodeQL rule.
-The five open CodeQL alerts (workflow cache poisoning) are unaddressed by all
-three.
+The five open CodeQL alerts (untrusted-ref checkouts in privileged workflows)
+are unaddressed by all three.
 
 - [#339](https://github.com/abhimehro/repoprompt-ce/pull/339) — HIGH — relaxed
   POSIX permissions on the MCP IPC socket directory
@@ -105,6 +131,13 @@ scanned:
 - `.github/workflows/security.yml` now runs CodeQL (Swift on `macos-26`,
   Python, Actions) on every PR targeting `main` and push to `main` plus a
   weekly scheduled scan, and `actions/dependency-review-action` on every PR
-  targeting `main`.
-- Remediation owners still needed for the 5 open HIGH cache-poisoning alerts
+  targeting `main`. CodeQL uploads are permitted on `pull_request`-triggered
+  runs even with Dependabot's read-only `GITHUB_TOKEN`, so no actor guard is
+  needed on the analysis step
+  ([GitHub docs](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible)).
+- `.github/dependabot.yml` refreshes SHA-pinned GitHub Actions only — it
+  covers no SwiftPM (Dependabot has no SwiftPM ecosystem), no npm globals
+  like `@openai/codex` installed without a lockfile in `ci.yml`, and no
+  runner labels such as `macos-26`; those stay manual.
+- Remediation owners still needed for the 5 open HIGH poisonable-step alerts
   in `release.yml` / `main-tip.yml`.

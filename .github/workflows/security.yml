@@ -60,6 +60,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Resolve deps before Initialize CodeQL so git/download children stay
+      # outside the traced build window; both SwiftPM steps run through the
+      # token scrubber, matching the repo's other build entry points
+      # (run_without_github_tokens.sh covers package resolution too).
+      - name: Resolve Swift package dependencies
+        if: matrix.language == 'swift'
+        run: Scripts/run_without_github_tokens.sh python3 Scripts/ci_resolve_packages.py
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
@@ -67,18 +75,16 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
 
       # Manual Swift build, single architecture per GitHub's CodeQL guidance.
-      # Dependencies resolve through the repo's bounded-retry helper (same as
-      # ci.yml); the compiled cache is intentionally NOT restored because the
-      # compiler must actually run during this job or the database is empty.
-      # run_without_github_tokens.sh keeps ambient credentials out of the
-      # build, matching the repo's other build entry points.
-      - name: Resolve Swift package dependencies
-        if: matrix.language == 'swift'
-        run: python3 Scripts/ci_resolve_packages.py
+      # The compiled cache is intentionally NOT restored because the compiler
+      # must actually run during this job or the database is empty.
       - name: Build Swift package for analysis
         if: matrix.language == 'swift'
         run: Scripts/run_without_github_tokens.sh swift build --arch arm64 --force-resolved-versions
 
+      # No dependabot actor guard here: GitHub permits security-events uploads
+      # on pull_request-triggered runs even with Dependabot's read-only
+      # GITHUB_TOKEN (docs.github.com/en/code-security/reference/code-scanning/
+      # troubleshoot-analysis-errors/resource-not-accessible).
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
