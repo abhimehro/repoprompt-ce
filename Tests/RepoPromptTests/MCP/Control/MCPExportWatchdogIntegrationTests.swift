@@ -67,6 +67,375 @@ import XCTest
             }
         }
 
+        func testCanonicalNetworkContextSurvivesMainActorContinuationAndInverseCompletion() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(
+                    lease: lease,
+                    domainRuntime: AppDomainRuntimeComposition.shared.runtime
+                )
+                let manager = fixture.networkManager
+                let endpointA = try fixture.endpointA()
+                let gateA = MCPExecutionIgnoringCancellationGate()
+                let gateB = MCPExecutionIgnoringCancellationGate()
+                let enteredA = expectation(description: "A reached canonical MainActor resolver")
+                let enteredB = expectation(description: "B reached canonical MainActor resolver")
+                let probeA = PR4CanonicalInvocationProbe()
+                let probeB = PR4CanonicalInvocationProbe()
+                var endpointB: PersistentMCPTestEndpoint?
+                var taskA: Task<PersistentMCPTestRPCResponse, Error>?
+                var taskB: Task<PersistentMCPTestRPCResponse, Error>?
+                var pendingError: Error?
+
+                @MainActor
+                func cleanup() async throws {
+                    fixture.contextA.window.mcpServer.setBeforeDomainReadContextResolutionForTesting(nil)
+                    fixture.contextB.window.mcpServer.setBeforeDomainReadContextResolutionForTesting(nil)
+                    await gateA.release()
+                    await gateB.release()
+                    taskA?.cancel()
+                    taskB?.cancel()
+                    if let taskA { _ = try? await taskA.value }
+                    if let taskB { _ = try? await taskB.value }
+                    MCPLifecycleDiagnostics.shared.endCapture(connectionID: endpointA.connectionID)
+                    if let endpointB {
+                        MCPLifecycleDiagnostics.shared.endCapture(connectionID: endpointB.connectionID)
+                        await manager.clearClientConnectionPolicy(for: endpointB.clientName)
+                        await Self.cleanupEndpoint(endpointB, manager: manager)
+                    }
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                }
+
+                do {
+                    let sibling = try await PersistentMCPTestEndpoint.make(
+                        label: "pr4-context-inverse-b", networkManager: manager
+                    )
+                    endpointB = sibling
+                    try await Self.prepareCanonicalReadFixture(fixture, endpoint: endpointA, context: fixture.contextA)
+                    try await Self.prepareCanonicalReadFixture(fixture, endpoint: sibling, context: fixture.contextB)
+                    MCPLifecycleDiagnostics.shared.beginCapture(connectionID: endpointA.connectionID)
+                    MCPLifecycleDiagnostics.shared.beginCapture(connectionID: sibling.connectionID)
+                    let authorityA = try XCTUnwrap(
+                        fixture.contextA.window.mcpServer.tabContextByConnectionID[endpointA.connectionID]?.frozenFileToolAuthority
+                    )
+                    let authorityB = try XCTUnwrap(
+                        fixture.contextB.window.mcpServer.tabContextByConnectionID[sibling.connectionID]?.frozenFileToolAuthority
+                    )
+                    let rootsA = await fixture.contextA.window.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace)
+                    let rootsB = await fixture.contextB.window.workspaceFileContextStore.rootRefs(scope: .visibleWorkspace)
+                    XCTAssertEqual(authorityA.canonicalRoots, Set(rootsA))
+                    XCTAssertEqual(authorityB.canonicalRoots, Set(rootsB))
+                    XCTAssertFalse(authorityA.canonicalRoots.isEmpty)
+                    XCTAssertFalse(authorityB.canonicalRoots.isEmpty)
+                    XCTAssertTrue(authorityA.canonicalRoots.isDisjoint(with: authorityB.canonicalRoots))
+                    fixture.contextA.window.mcpServer.setBeforeDomainReadContextResolutionForTesting { packet in
+                        // Resolver entry follows manager -> DomainHost -> materialized
+                        // binding -> runTool start gate/context restoration. Unlike the
+                        // worktree-cache hook, it also reaches frozen-authority reads.
+                        MainActor.assertIsolated()
+                        Self.assertCanonicalPacket(packet, endpoint: endpointA, context: fixture.contextA)
+                        probeA.capture(toolName: MCPWindowToolName.readFile, windowID: fixture.contextA.window.windowID)
+                        await Self.assertCanonicalReadAuthority(authorityA, packet: packet, context: fixture.contextA)
+                        enteredA.fulfill()
+                        await gateA.enterAndWait()
+                        probeA.capture(toolName: MCPWindowToolName.readFile, windowID: fixture.contextA.window.windowID)
+                        if let resumed = probeA.packets().last { Self.assertSameCanonicalPacket(packet, resumed) }
+                        await Self.assertCanonicalReadAuthority(authorityA, packet: packet, context: fixture.contextA)
+                    }
+                    fixture.contextB.window.mcpServer.setBeforeDomainReadContextResolutionForTesting { packet in
+                        MainActor.assertIsolated()
+                        Self.assertCanonicalPacket(packet, endpoint: sibling, context: fixture.contextB)
+                        probeB.capture(toolName: MCPWindowToolName.readFile, windowID: fixture.contextB.window.windowID)
+                        await Self.assertCanonicalReadAuthority(authorityB, packet: packet, context: fixture.contextB)
+                        enteredB.fulfill()
+                        await gateB.enterAndWait()
+                        probeB.capture(toolName: MCPWindowToolName.readFile, windowID: fixture.contextB.window.windowID)
+                        if let resumed = probeB.packets().last { Self.assertSameCanonicalPacket(packet, resumed) }
+                        await Self.assertCanonicalReadAuthority(authorityB, packet: packet, context: fixture.contextB)
+                    }
+                    let activeA = Task {
+                        try await endpointA.callTool(name: MCPWindowToolName.readFile, arguments: [
+                            "path": fixture.contextA.fileURL.path,
+                            "context_id": fixture.contextA.tabID.uuidString
+                        ])
+                    }
+                    taskA = activeA
+                    await fulfillment(of: [enteredA], timeout: 5)
+                    let activeB = Task {
+                        try await sibling.callTool(name: MCPWindowToolName.readFile, arguments: [
+                            "path": fixture.contextB.fileURL.path,
+                            "context_id": fixture.contextB.tabID.uuidString
+                        ])
+                    }
+                    taskB = activeB
+                    await fulfillment(of: [enteredB], timeout: 5)
+                    XCTAssertTrue(probeA.failures().isEmpty)
+                    XCTAssertTrue(probeB.failures().isEmpty)
+                    let beforeA = try XCTUnwrap(probeA.packets().first)
+                    let beforeB = try XCTUnwrap(probeB.packets().first)
+                    Self.assertCanonicalPacket(beforeA, endpoint: endpointA, context: fixture.contextA)
+                    Self.assertCanonicalPacket(beforeB, endpoint: sibling, context: fixture.contextB)
+                    XCTAssertNotEqual(beforeA.invocationID, beforeB.invocationID)
+                    XCTAssertNotEqual(beforeA.dispatchAuthorization?.connectionIdentity, beforeB.dispatchAuthorization?.connectionIdentity)
+
+                    // Resume a checked continuation in the opposite order to request
+                    // entry. B must settle while A still owns its original context.
+                    await gateB.release()
+                    let responseB = try await activeB.value
+                    taskB = nil
+                    let textB = try Self.toolResultText(responseB)
+                    XCTAssertTrue(textB.contains(fixture.contextB.sentinel), textB)
+                    XCTAssertFalse(textB.contains(fixture.contextA.sentinel), textB)
+                    let aStillActive = await manager.hasInFlightCalls(for: endpointA.connectionID)
+                    XCTAssertTrue(aStillActive)
+                    XCTAssertEqual(probeA.packets().count, 1)
+                    XCTAssertEqual(beforeB.requestID, .number(Int64(responseB.id)))
+                    XCTAssertEqual(
+                        MCPLifecycleDiagnostics.shared.snapshot(connectionID: sibling.connectionID).map(\.phase),
+                        [.requestEntered, .providerEntered, .providerReturning, .handlerReturning]
+                    )
+                    await gateA.release()
+                    let responseA = try await activeA.value
+                    taskA = nil
+                    let textA = try Self.toolResultText(responseA)
+                    XCTAssertTrue(textA.contains(fixture.contextA.sentinel), textA)
+                    XCTAssertFalse(textA.contains(fixture.contextB.sentinel), textA)
+                    XCTAssertEqual(beforeA.requestID, .number(Int64(responseA.id)))
+                    for (probe, endpoint, context) in [
+                        (probeA, endpointA, fixture.contextA), (probeB, sibling, fixture.contextB)
+                    ] {
+                        XCTAssertTrue(probe.failures().isEmpty)
+                        let packets = probe.packets()
+                        XCTAssertEqual(packets.count, 2)
+                        let before = try XCTUnwrap(packets.first)
+                        let after = try XCTUnwrap(packets.last)
+                        Self.assertCanonicalPacket(after, endpoint: endpoint, context: context)
+                        Self.assertSameCanonicalPacket(before, after)
+                        let lifecycle = MCPLifecycleDiagnostics.shared.snapshot(connectionID: endpoint.connectionID)
+                        XCTAssertEqual(Set(lifecycle.map(\.invocationID)), [before.invocationID])
+                        XCTAssertEqual(lifecycle.map(\.phase), [.requestEntered, .providerEntered, .providerReturning, .handlerReturning])
+                    }
+                } catch {
+                    pendingError = error
+                }
+                do { try await cleanup() } catch {
+                    if pendingError == nil { pendingError = error }
+                }
+                if let pendingError { throw pendingError }
+            }
+        }
+
+        private static func assertCanonicalReadAuthority(
+            _ expected: MCPFrozenFileToolAuthority,
+            packet: ToolInvocationContext,
+            context: PersistentMCPTestContext,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) async {
+            do {
+                let connectionID = try XCTUnwrap(packet.connectionID, file: file, line: line)
+                let bound = try XCTUnwrap(
+                    context.window.mcpServer.tabContextByConnectionID[connectionID]?.frozenFileToolAuthority,
+                    file: file, line: line
+                )
+                XCTAssertTrue(bound.hasSameRoutingAuthority(as: expected), file: file, line: line)
+                // Exercise the existing frozen-authority consumer with the captured
+                // packet metadata; no cache-miss path or synthetic local scope.
+                let consumed = try await context.window.mcpServer.requiredFileToolLookupContext(from: packet.metadata)
+                XCTAssertTrue(consumed.hasSameRoutingAuthority(as: expected), file: file, line: line)
+                XCTAssertEqual(consumed.rootCatalogSnapshot, expected.rootCatalogSnapshot, file: file, line: line)
+                XCTAssertEqual(consumed.canonicalRoots, expected.canonicalRoots, file: file, line: line)
+                XCTAssertEqual(consumed.sourceIdentity, expected.sourceIdentity, file: file, line: line)
+            } catch {
+                XCTFail("Canonical read lost its bound frozen authority: \(error)", file: file, line: line)
+            }
+        }
+
+        private static func assertCanonicalPacket(
+            _ packet: ToolInvocationContext,
+            endpoint: PersistentMCPTestEndpoint,
+            context: PersistentMCPTestContext,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            switch packet.origin {
+            case .network: break
+            case .trustedLocal: XCTFail("Canonical socket dispatch must never manufacture trusted-local authority", file: file, line: line)
+            }
+            XCTAssertEqual(packet.toolName, MCPWindowToolName.readFile, file: file, line: line)
+            XCTAssertEqual(packet.connectionID, endpoint.connectionID, file: file, line: line)
+            XCTAssertEqual(packet.metadata.clientName, endpoint.clientName, file: file, line: line)
+            XCTAssertEqual(packet.metadata.runPurpose, .unknown, file: file, line: line)
+            XCTAssertEqual(packet.metadata.windowID, context.window.windowID, file: file, line: line)
+            XCTAssertEqual(packet.metadata.invocationID, packet.invocationID, file: file, line: line)
+            XCTAssertEqual(packet.metadata.requestID, packet.requestID, file: file, line: line)
+            XCTAssertNotNil(packet.requestID, file: file, line: line)
+            XCTAssertEqual(packet.metadata.tabContextHint, MCPTabContextHint(
+                tabID: context.tabID, workspaceID: context.workspaceID, windowID: context.window.windowID
+            ), file: file, line: line)
+            XCTAssertEqual(packet.dispatchAuthorization?.connectionID, endpoint.connectionID, file: file, line: line)
+            XCTAssertEqual(packet.dispatchAuthorization?.windowIdentity?.windowID, context.window.windowID, file: file, line: line)
+            XCTAssertEqual(packet.dispatchAuthorization?.windowIdentity?.windowStateIdentity, ObjectIdentifier(context.window), file: file, line: line)
+            XCTAssertEqual(packet.dispatchAuthorization?.windowIdentity?.serverViewModelIdentity, ObjectIdentifier(context.window.mcpServer), file: file, line: line)
+        }
+
+        private static func assertSameCanonicalPacket(
+            _ before: ToolInvocationContext,
+            _ after: ToolInvocationContext,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            XCTAssertEqual(before.invocationID, after.invocationID, file: file, line: line)
+            XCTAssertEqual(before.requestID, after.requestID, file: file, line: line)
+            XCTAssertEqual(before.toolName, after.toolName, file: file, line: line)
+            XCTAssertEqual(before.metadata.connectionID, after.metadata.connectionID, file: file, line: line)
+            XCTAssertEqual(before.metadata.clientName, after.metadata.clientName, file: file, line: line)
+            XCTAssertEqual(before.metadata.windowID, after.metadata.windowID, file: file, line: line)
+            XCTAssertEqual(before.metadata.runPurpose, after.metadata.runPurpose, file: file, line: line)
+            XCTAssertEqual(before.metadata.invocationID, after.metadata.invocationID, file: file, line: line)
+            XCTAssertEqual(before.metadata.requestID, after.metadata.requestID, file: file, line: line)
+            XCTAssertEqual(before.metadata.tabContextHint, after.metadata.tabContextHint, file: file, line: line)
+            XCTAssertEqual(before.metadata.explicitWindowRoutingHint, after.metadata.explicitWindowRoutingHint, file: file, line: line)
+            XCTAssertEqual(before.dispatchAuthorization?.connectionID, after.dispatchAuthorization?.connectionID, file: file, line: line)
+            XCTAssertEqual(before.dispatchAuthorization?.connectionIdentity, after.dispatchAuthorization?.connectionIdentity, file: file, line: line)
+            XCTAssertEqual(before.dispatchAuthorization?.windowIdentity?.windowID, after.dispatchAuthorization?.windowIdentity?.windowID, file: file, line: line)
+            XCTAssertEqual(before.dispatchAuthorization?.windowIdentity?.windowStateIdentity, after.dispatchAuthorization?.windowIdentity?.windowStateIdentity, file: file, line: line)
+            XCTAssertEqual(before.dispatchAuthorization?.windowIdentity?.serverViewModelIdentity, after.dispatchAuthorization?.windowIdentity?.serverViewModelIdentity, file: file, line: line)
+            XCTAssertEqual(before.dispatchAuthorization?.lifecycleGeneration, after.dispatchAuthorization?.lifecycleGeneration, file: file, line: line)
+            XCTAssertEqual(before.dispatchAuthorization?.windowIdentity?.catalogRegistrationHandle, after.dispatchAuthorization?.windowIdentity?.catalogRegistrationHandle, file: file, line: line)
+        }
+
+        func testCancellationBeforeCanonicalProviderEntryPreservesParkedSiblingAndConnection() async throws {
+            try await MCPSharedServerTestLease.shared.withLease { lease in
+                let fixture = try await PersistentMCPTestFixture.make(
+                    lease: lease,
+                    domainRuntime: AppDomainRuntimeComposition.shared.runtime
+                )
+                let manager = fixture.networkManager
+                let endpoint = try fixture.endpointA()
+                let admissionGate = MCPExecutionIgnoringCancellationGate()
+                let siblingGate = MCPExecutionIgnoringCancellationGate()
+                let admitted = expectation(description: "cancelled request owns its admission permit")
+                let siblingParked = expectation(description: "canonical sibling read reached formatting")
+                var siblingEndpoint: PersistentMCPTestEndpoint?
+                var cancelledTask: Task<PersistentMCPTestRPCResponse, Error>?
+                var siblingTask: Task<PersistentMCPTestRPCResponse, Error>?
+                var pendingError: Error?
+
+                @MainActor
+                func cleanup() async throws {
+                    await manager.debugSetAfterConnectionCallPermitAcquiredForTesting(nil)
+                    await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                    await admissionGate.release()
+                    await siblingGate.release()
+                    if let cancelledTask {
+                        cancelledTask.cancel()
+                        _ = try? await cancelledTask.value
+                    }
+                    if let siblingTask {
+                        siblingTask.cancel()
+                        _ = try? await siblingTask.value
+                    }
+                    MCPLifecycleDiagnostics.shared.endCapture(connectionID: endpoint.connectionID)
+                    if let siblingEndpoint {
+                        MCPLifecycleDiagnostics.shared.endCapture(connectionID: siblingEndpoint.connectionID)
+                        await manager.clearClientConnectionPolicy(for: siblingEndpoint.clientName)
+                        await Self.cleanupEndpoint(siblingEndpoint, manager: manager)
+                    }
+                    await fixture.cleanup()
+                    try await fixture.assertCleanedUp()
+                }
+
+                do {
+                    try await Self.prepareProtectedExportFixture(fixture, endpoint: endpoint)
+                    let sibling = try await PersistentMCPTestEndpoint.make(
+                        label: "pr4-pre-entry-sibling",
+                        networkManager: manager
+                    )
+                    siblingEndpoint = sibling
+                    try await Self.prepareCanonicalReadFixture(
+                        fixture, endpoint: sibling, context: fixture.contextB
+                    )
+                    MCPLifecycleDiagnostics.shared.beginCapture(connectionID: endpoint.connectionID)
+                    MCPLifecycleDiagnostics.shared.beginCapture(connectionID: sibling.connectionID)
+                    await manager.debugSetBeforeToolResultFormattingForTesting { connectionID, toolName in
+                        guard connectionID == sibling.connectionID,
+                              toolName == MCPWindowToolName.readFile
+                        else { return }
+                        siblingParked.fulfill()
+                        await siblingGate.enterAndWait()
+                    }
+                    let activeSibling = Task {
+                        try await sibling.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: ["path": fixture.contextB.fileURL.path]
+                        )
+                    }
+                    siblingTask = activeSibling
+                    await fulfillment(of: [siblingParked], timeout: 5)
+                    let siblingPhasesBeforeCancellation = MCPLifecycleDiagnostics.shared
+                        .snapshot(connectionID: sibling.connectionID).map(\.phase)
+                    XCTAssertEqual(siblingPhasesBeforeCancellation, [.requestEntered, .providerEntered, .providerReturning])
+                    await manager.debugSetAfterConnectionCallPermitAcquiredForTesting { connectionID in
+                        guard connectionID == endpoint.connectionID else { return }
+                        admitted.fulfill()
+                        await admissionGate.enterAndWait()
+                        // Cancel the real request owner after permit acquisition but before
+                        // canonical host/provider entry, not merely the test client's waiter.
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    }
+                    let activeCancelled = Task {
+                        try await endpoint.callTool(
+                            name: MCPWindowToolName.readFile,
+                            arguments: ["path": fixture.contextA.fileURL.path, "_rawJSON": true]
+                        )
+                    }
+                    cancelledTask = activeCancelled
+                    await fulfillment(of: [admitted], timeout: 5)
+                    await admissionGate.release()
+                    let cancelledResponse = try await activeCancelled.value
+                    cancelledTask = nil
+                    let payload = try Self.toolResultObject(cancelledResponse)
+                    XCTAssertEqual(payload["code"] as? String, "tool_execution_connection_terminal")
+                    let cancelledPhases = MCPLifecycleDiagnostics.shared
+                        .snapshot(connectionID: endpoint.connectionID).map(\.phase)
+                    XCTAssertEqual(cancelledPhases, [.requestEntered, .handlerReturning])
+                    let siblingStillActive = await manager.hasInFlightCalls(for: sibling.connectionID)
+                    XCTAssertTrue(siblingStillActive)
+                    XCTAssertEqual(
+                        MCPLifecycleDiagnostics.shared.snapshot(connectionID: sibling.connectionID).map(\.phase),
+                        siblingPhasesBeforeCancellation
+                    )
+
+                    await manager.debugSetAfterConnectionCallPermitAcquiredForTesting(nil)
+                    await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                    await siblingGate.release()
+                    let siblingResponse = try await activeSibling.value
+                    siblingTask = nil
+                    let siblingText = try Self.toolResultText(siblingResponse)
+                    XCTAssertTrue(siblingText.contains(fixture.contextB.sentinel), siblingText)
+                    XCTAssertFalse(siblingText.contains(fixture.contextA.sentinel), siblingText)
+                    XCTAssertEqual(
+                        MCPLifecycleDiagnostics.shared.snapshot(connectionID: sibling.connectionID).map(\.phase),
+                        [.requestEntered, .providerEntered, .providerReturning, .handlerReturning]
+                    )
+                    let followUp = try await endpoint.callTool(
+                        name: MCPWindowToolName.readFile,
+                        arguments: ["path": fixture.contextA.fileURL.path]
+                    )
+                    let followUpText = try Self.toolResultText(followUp)
+                    XCTAssertTrue(followUpText.contains(fixture.contextA.sentinel), followUpText)
+                    XCTAssertFalse(followUpText.contains(fixture.contextB.sentinel), followUpText)
+                } catch {
+                    pendingError = error
+                }
+                do { try await cleanup() } catch {
+                    if pendingError == nil { pendingError = error }
+                }
+                if let pendingError { throw pendingError }
+            }
+        }
+
         func testExpiredClientEnvelopeRejectsBeforeProviderAndJournalForBothPublicTools() async throws {
             for toolName in ["prompt", "workspace_context"] {
                 try await MCPSharedServerTestLease.shared.withLease { lease in
@@ -437,6 +806,17 @@ import XCTest
                     let observerProbe = MCPToolEventObserverProbe()
                     let recorder = MCPExecutionTraceRecorder()
                     let operationID = "provider-entry-cancellation-\(toolName)-\(UUID().uuidString)"
+                    let invocationProbe = PR4CanonicalInvocationProbe()
+                    let installationEntered = expectation(description: "canonical provider entry owns installation gap")
+                    let physicalProviderEntered = expectation(description: "physical provider reached pre-write continuation")
+                    let installationCancelled = expectation(description: "request cancelled inside installation gap")
+                    let watchdogCancelled = expectation(description: "watchdog retained request cancellation")
+                    let settlementPublished = expectation(description: "physical cancellation settlement published once")
+                    let providerResumed = expectation(description: "cancelled physical provider resumed its continuation")
+                    let siblingGate = MCPExecutionIgnoringCancellationGate()
+                    let siblingParked = expectation(description: "canonical sibling remains parked during cancellation settlement")
+                    var siblingEndpoint: PersistentMCPTestEndpoint?
+                    var siblingTask: Task<PersistentMCPTestRPCResponse, Error>?
                     let exportURL = context.rootURL.appendingPathComponent("\(operationID).md")
                     let runID = UUID()
                     let initialHostActiveInvocationCount = await domainHost.snapshot().activeInvocationCount
@@ -453,6 +833,17 @@ import XCTest
                             _ = try? await responseTask.value
                         }
                         await manager.debugSetAfterPromptExportProviderEntryForTesting(nil)
+                        await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                        await siblingGate.release()
+                        if let siblingTask {
+                            siblingTask.cancel()
+                            _ = try? await siblingTask.value
+                        }
+                        if let siblingEndpoint {
+                            MCPLifecycleDiagnostics.shared.endCapture(connectionID: siblingEndpoint.connectionID)
+                            await manager.clearClientConnectionPolicy(for: siblingEndpoint.clientName)
+                            await Self.cleanupEndpoint(siblingEndpoint, manager: manager)
+                        }
                         MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting(nil)
                         MCPToolExecutionTracer.setTestSink(nil)
                         if let observerToken {
@@ -494,17 +885,34 @@ import XCTest
                             guard hookedConnectionID == connectionID,
                                   hookedToolName == toolName
                             else { return }
+                            installationEntered.fulfill()
                             await watchdogInstallationGate.enterAndWait()
                             // This hook runs inline on the server handler, placing cancellation
                             // after provider entry and before watchdog construction.
                             withUnsafeCurrentTask { $0?.cancel() }
                             await cancellationProbe.recordEntry()
+                            installationCancelled.fulfill()
                         }
                         MCPAppPhysicalCapabilityAdapters.setPromptExportPhaseHookForTesting { phase in
                             guard phase == .beforeDurableWrite else { return }
+                            MainActor.assertIsolated()
+                            invocationProbe.capture(toolName: toolName, windowID: context.window.windowID)
+                            physicalProviderEntered.fulfill()
                             await providerGate.enterAndWait()
+                            invocationProbe.capture(toolName: toolName, windowID: context.window.windowID)
+                            providerResumed.fulfill()
                         }
-                        MCPToolExecutionTracer.setTestSink { recorder.append($0) }
+                        MCPToolExecutionTracer.setTestSink { event in
+                            recorder.append(event)
+                            guard event.connectionID == connectionID,
+                                  event.toolName == toolName,
+                                  event.cancellationOrigin == .requestCancellation
+                            else { return }
+                            if event.phase == .cancellationRequested { watchdogCancelled.fulfill() }
+                            if event.phase == .handlerCompleted,
+                               event.cancellationOutcome == MCPToolExecutionSettlement.cancellation.rawValue
+                            { settlementPublished.fulfill() }
+                        }
                         await manager.debugSetToolExecutionWatchdogEnvironment(clock.environment)
 
                         let activeResponseTask = Task {
@@ -514,31 +922,57 @@ import XCTest
                                     "op": "export",
                                     "path": exportURL.path,
                                     "operation_id": operationID,
+                                    "context_id": context.tabID.uuidString,
                                     "_rawJSON": true
                                 ]
                             )
                         }
                         responseTask = activeResponseTask
-                        try await watchdogInstallationGate.waitUntilEntered(count: 1)
-                        try await providerGate.waitUntilEntered(count: 1)
+                        await fulfillment(of: [installationEntered, physicalProviderEntered], timeout: 5)
                         let preWatchdogSleeperCount = await clock.sleeperCount()
                         XCTAssertEqual(preWatchdogSleeperCount, 0)
+                        XCTAssertTrue(invocationProbe.failures().isEmpty)
+                        let admittedPacket = try XCTUnwrap(invocationProbe.packets().first)
+                        switch admittedPacket.origin {
+                        case .network: break
+                        case .trustedLocal: XCTFail("Physical export must retain the admitted network packet")
+                        }
+                        XCTAssertEqual(admittedPacket.connectionID, connectionID)
+                        XCTAssertEqual(admittedPacket.toolName, toolName)
+                        XCTAssertEqual(admittedPacket.metadata.invocationID, admittedPacket.invocationID)
+                        XCTAssertEqual(admittedPacket.metadata.clientName, endpoint.clientName)
+                        XCTAssertEqual(admittedPacket.metadata.windowID, context.window.windowID)
+                        XCTAssertEqual(admittedPacket.metadata.tabContextHint?.tabID, context.tabID)
+                        XCTAssertEqual(admittedPacket.metadata.tabContextHint?.workspaceID, context.workspaceID)
+                        XCTAssertEqual(admittedPacket.dispatchAuthorization?.connectionID, connectionID)
+                        let sibling = try await PersistentMCPTestEndpoint.make(
+                            label: "pr4-post-entry-sibling-\(toolName)", networkManager: manager
+                        )
+                        siblingEndpoint = sibling
+                        try await Self.prepareCanonicalReadFixture(
+                            fixture, endpoint: sibling, context: fixture.contextB
+                        )
+                        MCPLifecycleDiagnostics.shared.beginCapture(connectionID: sibling.connectionID)
+                        await manager.debugSetBeforeToolResultFormattingForTesting { connectionID, observedToolName in
+                            guard connectionID == sibling.connectionID,
+                                  observedToolName == MCPWindowToolName.readFile
+                            else { return }
+                            siblingParked.fulfill()
+                            await siblingGate.enterAndWait()
+                        }
+                        let activeSibling = Task {
+                            try await sibling.callTool(
+                                name: MCPWindowToolName.readFile,
+                                arguments: ["path": fixture.contextB.fileURL.path]
+                            )
+                        }
+                        siblingTask = activeSibling
+                        await fulfillment(of: [siblingParked], timeout: 5)
 
                         await watchdogInstallationGate.release()
-                        let cancellationReachedInstallationGap = await Self.waitUntil {
-                            await cancellationProbe.entryCount() == 1
-                        }
-                        XCTAssertTrue(cancellationReachedInstallationGap)
-
-                        let watchdogOwnedCancellation = await Self.waitUntil {
-                            recorder.snapshot().contains {
-                                $0.connectionID == connectionID
-                                    && $0.toolName == toolName
-                                    && $0.phase == .cancellationRequested
-                                    && $0.cancellationOrigin == .requestCancellation
-                            }
-                        }
-                        XCTAssertTrue(watchdogOwnedCancellation)
+                        await fulfillment(of: [installationCancelled, watchdogCancelled], timeout: 5)
+                        let cancellationReachedInstallationGap = await cancellationProbe.entryCount()
+                        XCTAssertEqual(cancellationReachedInstallationGap, 1)
                         XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
                         _ = try? await activeResponseTask.value
                         responseTask = nil
@@ -546,33 +980,24 @@ import XCTest
                         XCTAssertEqual(cancellationCompletionCount, 1)
 
                         await providerGate.release()
+                        await fulfillment(of: [providerResumed], timeout: 5)
+                        XCTAssertTrue(invocationProbe.failures().isEmpty)
+                        XCTAssertEqual(invocationProbe.packets().count, 2)
+                        let resumedPacket = try XCTUnwrap(invocationProbe.packets().last)
+                        Self.assertSameCanonicalPacket(admittedPacket, resumedPacket)
 
-                        let hostDrained = await Self.waitUntil {
-                            await domainHost.snapshot().activeInvocationCount == initialHostActiveInvocationCount
-                        }
-                        XCTAssertTrue(hostDrained)
-                        let settlementPublished = await Self.waitUntil {
-                            recorder.snapshot().contains {
-                                $0.connectionID == connectionID
-                                    && $0.toolName == toolName
-                                    && $0.phase == .handlerCompleted
-                                    && $0.cancellationOrigin == .requestCancellation
-                                    && $0.cancellationOutcome == MCPToolExecutionSettlement.cancellation.rawValue
-                            }
-                        }
-                        XCTAssertTrue(settlementPublished)
+                        await fulfillment(of: [settlementPublished], timeout: 5)
+                        let settledHostActiveCount = await domainHost.snapshot().activeInvocationCount
+                        XCTAssertEqual(settledHostActiveCount, initialHostActiveInvocationCount)
                         let lifecycle = MCPLifecycleDiagnostics.shared.snapshot(connectionID: connectionID)
                         let invocation = try XCTUnwrap(lifecycle.first { $0.phase == .providerEntered }?.invocationID)
+                        XCTAssertEqual(invocation, admittedPacket.invocationID)
                         let phases = lifecycle.filter { $0.invocationID == invocation }.map(\.phase)
                         XCTAssertEqual(phases.count { $0 == .requestCancellation }, 1)
                         XCTAssertEqual(phases.count { $0 == .abandonedSettlement }, 1)
                         XCTAssertTrue(phases.contains(.handlerReturning))
                         XCTAssertLessThan(try XCTUnwrap(phases.firstIndex(of: .providerEntered)), try XCTUnwrap(phases.firstIndex(of: .requestCancellation)))
                         XCTAssertLessThan(try XCTUnwrap(phases.firstIndex(of: .providerReturning)), try XCTUnwrap(phases.firstIndex(of: .abandonedSettlement)))
-                        let completionPublished = await Self.waitUntil {
-                            await observerProbe.completedCount() == 1
-                        }
-                        XCTAssertTrue(completionPublished)
                         let calledCount = await observerProbe.calledCount()
                         let completedCount = await observerProbe.completedCount()
                         XCTAssertEqual(calledCount, 1)
@@ -591,16 +1016,31 @@ import XCTest
                         }
                         XCTAssertEqual(requestCancellationEvents, 1)
                         XCTAssertEqual(settlementEvents, 1)
+                        let siblingStillActive = await manager.hasInFlightCalls(for: sibling.connectionID)
+                        XCTAssertTrue(siblingStillActive)
+                        XCTAssertEqual(
+                            MCPLifecycleDiagnostics.shared.snapshot(connectionID: sibling.connectionID).map(\.phase),
+                            [.requestEntered, .providerEntered, .providerReturning]
+                        )
+                        await manager.debugSetBeforeToolResultFormattingForTesting(nil)
+                        await siblingGate.release()
+                        let siblingResponse = try await activeSibling.value
+                        siblingTask = nil
+                        let siblingText = try Self.toolResultText(siblingResponse)
+                        XCTAssertTrue(siblingText.contains(fixture.contextB.sentinel), siblingText)
+                        XCTAssertFalse(siblingText.contains(fixture.contextA.sentinel), siblingText)
+                        XCTAssertEqual(
+                            MCPLifecycleDiagnostics.shared.snapshot(connectionID: sibling.connectionID).map(\.phase),
+                            [.requestEntered, .providerEntered, .providerReturning, .handlerReturning]
+                        )
                         XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
                         let record = try await Self.journalRecord(operationID: operationID)
                         XCTAssertEqual(
                             record.status.rawValue,
                             DomainMutationJournalStatus.cancelledBeforeCommit.rawValue
                         )
-                        let sleepersDrained = await Self.waitUntil {
-                            await clock.sleeperCount() == 0
-                        }
-                        XCTAssertTrue(sleepersDrained)
+                        let remainingSleepers = await clock.sleeperCount()
+                        XCTAssertEqual(remainingSleepers, 0)
                     } catch {
                         pendingError = error
                     }
@@ -3007,6 +3447,30 @@ import XCTest
             "prompt_export.publication:completed"
         ]
 
+        private static func prepareCanonicalReadFixture(
+            _ fixture: PersistentMCPTestFixture,
+            endpoint: PersistentMCPTestEndpoint,
+            context: PersistentMCPTestContext
+        ) async throws {
+            try await fixture.registerDomainWorkspace(context)
+            await fixture.networkManager.debugSetDomainPeerIdentityForTesting(
+                connectionID: endpoint.connectionID,
+                identity: .verified(
+                    processID: Int(getpid()),
+                    fingerprint: "test:verified:pr4-canonical-read"
+                )
+            )
+            try await activateWorkspace(for: context)
+            let bind = try await endpoint.callTool(
+                name: "bind_context",
+                arguments: ["op": "bind", "context_id": context.tabID.uuidString]
+            )
+            let object = try responseObject(from: bind)
+            let result = try XCTUnwrap(object["result"] as? [String: Any])
+            XCTAssertNotEqual(result["isError"] as? Bool, true)
+            await context.window.mcpServer.domainRoutingPublishTask?.value
+        }
+
         private static func prepareProtectedExportFixture(
             _ fixture: PersistentMCPTestFixture,
             endpoint: PersistentMCPTestEndpoint
@@ -3419,6 +3883,33 @@ import XCTest
 
         func advance(to instant: Duration) {
             lock.withLock { now = max(now, instant) }
+        }
+    }
+
+    private final class PR4CanonicalInvocationProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var capturedPackets: [ToolInvocationContext] = []
+        private var capturedFailures: [MCPInvocationContextFailure] = []
+
+        func capture(toolName: String, windowID: Int) {
+            do {
+                let packet = try MCPInvocationContextBridge.require(toolName: toolName, expectedWindowID: windowID)
+                lock.withLock { capturedPackets.append(packet) }
+            } catch {
+                if let failure = error as? MCPInvocationContextFailure {
+                    lock.withLock { capturedFailures.append(failure) }
+                } else {
+                    XCTFail("Unexpected invocation capture error: \(error)")
+                }
+            }
+        }
+
+        func packets() -> [ToolInvocationContext] {
+            lock.withLock { capturedPackets }
+        }
+
+        func failures() -> [MCPInvocationContextFailure] {
+            lock.withLock { capturedFailures }
         }
     }
 

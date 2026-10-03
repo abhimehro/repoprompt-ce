@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -134,6 +135,114 @@ class RatchetCommandTests(unittest.TestCase):
                 self.run_main("update", "--root", tmp, "--baseline", str(baseline), "--allow-regression"), 0
             )
             self.assertEqual(json.loads(baseline.read_text())["metrics"]["app_target_swift_lines"], before + 1500)
+
+    def run_cli(self, root: Path, baseline: Path, command: str = "check") -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "modularization_metrics.py"), command,
+             "--root", str(root), "--baseline", str(baseline)],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_check_reports_app_line_excess_as_advisory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_fixture(root)
+            baseline = root / "ratchets.json"
+            self.assertEqual(self.run_main("update", "--root", tmp, "--baseline", str(baseline)), 0)
+            original = baseline.read_bytes()
+            before = json.loads(original)["metrics"]["app_target_swift_lines"]
+            # Separate files keep every per-file mandatory ratchet unchanged.
+            write(root, "Sources/RepoPrompt/Features/Chat/GrowthA.swift", "let growth = 0\n" * 1000)
+            write(root, "Sources/RepoPrompt/Features/Chat/GrowthB.swift", "let growth = 0\n" * 1000)
+            at_reference = self.run_cli(root, baseline)
+            self.assertEqual(at_reference.returncode, 0, at_reference.stderr)
+            self.assertNotIn("modularization advisory:", at_reference.stdout)
+
+            write(root, "Sources/RepoPrompt/Features/Chat/GrowthB.swift", "let growth = 0\n" * 1001)
+            over_reference = self.run_cli(root, baseline)
+            self.assertEqual(over_reference.returncode, 0, over_reference.stderr)
+            self.assertEqual(over_reference.stderr, "")
+            self.assertIn(
+                f"modularization advisory: app_target_swift_lines: {before + 2001} > "
+                f"reference {before + 2000} (excess 1; not gated)", over_reference.stdout,
+            )
+            self.assertIn("modularization ratchets: ok", over_reference.stdout)
+            self.assertEqual(baseline.read_bytes(), original)
+            # Making `check` advisory does not authorize raising recorded baselines.
+            update = self.run_cli(root, baseline, "update")
+            self.assertEqual(update.returncode, 1)
+            self.assertIn("refusing to raise baseline", update.stderr)
+            self.assertEqual(baseline.read_bytes(), original)
+
+    def test_check_retains_each_mandatory_ratchet_failure_with_app_advisory(self) -> None:
+        cases = (
+            ("app_files_over_5000_lines", "Sources/RepoPrompt/Features/Chat/Large.swift",
+             "let value = 0\n" * 4999, "let value = 0\n" * 5001),
+            ("app_files_over_2000_lines", "Sources/RepoPrompt/Features/Chat/Large.swift",
+             "let value = 0\n" * 1999, "let value = 0\n" * 2001),
+            ("tests_testable_import_app_files", "Tests/RepoPromptTests/MoreTests.swift",
+             "", "@testable import RepoPromptApp\n"),
+            ("app_static_shared_declarations", "Sources/RepoPrompt/Features/Chat/More.swift",
+             "", "struct MoreThing { static let shared = MoreThing() }\n"),
+        )
+        for name, path, before_text, after_text in cases:
+            with self.subTest(metric=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                make_fixture(root)
+                write(root, path, before_text)
+                baseline = root / "ratchets.json"
+                self.assertEqual(self.run_main("update", "--root", tmp, "--baseline", str(baseline)), 0)
+                original = baseline.read_bytes()
+                recorded = json.loads(original)["metrics"]
+                write(root, "Sources/RepoPrompt/Features/Chat/GrowthA.swift", "let growth = 0\n" * 1000)
+                write(root, "Sources/RepoPrompt/Features/Chat/GrowthB.swift", "let growth = 0\n" * 1001)
+                write(root, path, after_text)
+                result = self.run_cli(root, baseline)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("modularization advisory: app_target_swift_lines:", result.stdout)
+                self.assertIn("not gated", result.stdout)
+                self.assertEqual(
+                    result.stderr,
+                    f"modularization ratchets regressed:\n  - {name}: "
+                    f"{recorded[name] + 1} > baseline {recorded[name]}\n",
+                )
+                self.assertEqual(baseline.read_bytes(), original)
+
+    def test_check_missing_baseline_keys_remain_cli_failures(self) -> None:
+        for name in ("app_target_swift_lines",) + mm.RATCHETED_METRICS:
+            with self.subTest(metric=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                make_fixture(root)
+                baseline = root / "ratchets.json"
+                metrics, _ = mm.collect(root)
+                del metrics[name]
+                baseline.write_text(json.dumps({"metrics": metrics}), encoding="utf-8")
+                original = baseline.read_bytes()
+                result = self.run_cli(root, baseline)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(
+                    result.stderr,
+                    f"modularization ratchets regressed:\n  - {name}: missing from baseline\n",
+                )
+                self.assertEqual(baseline.read_bytes(), original)
+
+    def test_check_invalid_baseline_documents_remain_cli_failures(self) -> None:
+        cases = (
+            ("invalid JSON", "{", "JSONDecodeError"),
+            ("missing metrics", "{}", "KeyError"),
+            ("invalid metric value", '{"metrics": {"app_target_swift_lines": "invalid"}}', "ValueError"),
+        )
+        for label, document, error in cases:
+            with self.subTest(document=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                make_fixture(root)
+                baseline = root / "ratchets.json"
+                baseline.write_text(document, encoding="utf-8")
+                result = self.run_cli(root, baseline)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(error, result.stderr)
+                self.assertNotIn("modularization ratchets: ok", result.stdout)
+                self.assertEqual(baseline.read_text(encoding="utf-8"), document)
 
     def test_baseline_raises_covers_tracked_metrics(self) -> None:
         baseline = {name: 5 for name in mm.RATCHETED_METRICS + mm.TRACKED_METRICS}

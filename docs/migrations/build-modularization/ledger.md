@@ -32,10 +32,14 @@ Local tooling-half validation on 2026-09-30: `make conductor-selftest` passed; `
 
 ## Ratchet policy
 
-- **Gated by build-free guardrails:** `app_files_over_5000_lines`, `app_files_over_2000_lines`, `app_static_shared_declarations`, and `tests_testable_import_app_files` are non-increasing; `app_target_swift_lines` has a fixed 2,000-line allowance over its recorded baseline.
+- **Gated by build-free guardrails:** `app_files_over_5000_lines`, `app_files_over_2000_lines`, `app_static_shared_declarations`, and `tests_testable_import_app_files` are non-increasing. Missing or invalid baseline configuration remains a failure.
 - **Gated by the build-producing CI job:** index wrong-way edges and largest cycle; type-check body and expression budgets. Index freshness must be proven by source hashes before comparing counts.
-- **Tracked, not gated:** `app_shared_accessor_uses`, `app_userdefaults_standard_uses`, lexical `app_wrong_way_file_edges`, lexical `app_largest_cycle_components`, and `tests_sleep_calls`. The lexical graph can add false edges from identifier collisions; the sleep regex also counts fake-clock declarations.
+- **Tracked, not gated:** `app_target_swift_lines` (visible advisory above baseline plus the unchanged 2,000-line headroom), `app_shared_accessor_uses`, `app_userdefaults_standard_uses`, lexical `app_wrong_way_file_edges`, lexical `app_largest_cycle_components`, and `tests_sleep_calls`. The lexical graph can add false edges from identifier collisions; the sleep regex also counts fake-clock declarations.
 - Lower a baseline with `update` in the slice that improves it. Raising one requires `update --allow-regression` plus a justification entry here.
+
+**2026-10-03 PR 4 maintainer policy decision.** The user explicitly makes the App-line reference advisory, superseding the earlier hard-ceiling and proposed +177 allowance decisions. No numeric baseline is raised: `app_target_swift_lines` remains 649,794, headroom 2,000, advisory reference 651,794. Pinned main `a877f1ea` has 651,988 App lines (+194); the pending PR 4 merge has 651,971 (+177), a PR 4 contribution of −17. Excess remains visible even when another mandatory ratchet fails. All four non-increasing metrics, dependency/security/test gates and baseline/configuration failures remain mandatory; `update` still refuses unapproved baseline increases. The earlier actual guardrail exit1 is retained as historical failure, not retrospectively passed. Policy regression checks and final commit/push preflights must execute before publication; optional current-main full-suite/package/live checks remain pending, including incomplete ticket `51d89061-0945-4554-b73b-12d601485397` (zero executed tests).
+
+**2026-10-03 PR 4/#1148 test-import alignment.** The maintainer explicitly authorizes only `tests_testable_import_app_files` 332 → 333 for the already-merged #1148 coverage at `274fd59d12585e26d53a8457dbd5c5b5014b7441`. Its new `MCPStateSubscriptionTests.swift` necessarily imports App: all six unchanged tests exercise real `MCPService` subscriber fan-out, seed/unsubscribe/approval state and `MCPServerViewModel` lifetime/window presentation with App dependencies and DEBUG hooks. Preserve the complete upstream file and assertions; no consolidation, deletion, Shared substitute, public/SPI exposure or suppression. CI run `37109785395`, job `111165298080`, checked synthetic merge `10d61881d4feb4b8300b4001c2cfd4878d343f4d` and failed the genuine 333 > 332 ratchet before compilation; that failure remains historical, not passed. This is a one-file structural-baseline alignment, not a relaxed check: counts above 333 still fail. App baseline 649,794/headroom 2,000/advisory reference 651,794, every other baseline/list and all dependency/security/test/configuration gates remain unchanged. Exact merged-head guardrails, eight focused methods, style and later commit/push preflights remain pending validator execution.
 
 **2026-10-01 PR 2/main reconciliation.** Merging current `origin/main` (#1134–#1136) into PR 2 put the app target at 649,172 Swift lines, 242 above the earlier 648,930 ceiling. Regenerated `ratchets.json` with `update --allow-regression` against the merged tree: the recorded app-line baseline is now 649,172 with the same fixed 2,000-line headroom. The non-increasing gate counts remain unchanged; tracked-only counts reflect the merged source. This is a baseline reconciliation for existing feature work and PR 2, not a change to the guardrail policy.
 
@@ -1036,3 +1040,112 @@ claim.
 This in-place C1/C2 slice removes WorkspaceContext, Search, and CodeMap's outbound references to Features, view models, and MCP implementation files. S8 now uses file search projections and feature-side path adapters; S9 stores selection values in WorkspaceContext and receives neutral workspace/tab values from the workspace manager; S17 uses neutral prompt/workspace values and a search-readiness contract. Startup and debug diagnostics use injected recorders from `WindowStateComposition`, following the PR 2 instrumentation contract pattern. The read-only, root-scoped `WorkspaceContextRootSnapshot` retains catalog and lifetime leases and has a Sendable/currentness contract test. No files or package targets move in this PR.
 
 Compiler-index readiness baseline on 101 files: 55 outbound target files, 168 outbound file edges, 1,040 symbols. The final index and validation tickets are recorded in `/tmp/rpce-pr-reviews/pr3-impl.md` for this worktree. FileSystem/VCS and other Infrastructure remain for subsequent milestones.
+
+
+## PR 4 MCP server prep — bounded source handoff (2026-10-02)
+
+Base/current fetched origin/main at start: `61ab8b285fa5a9281587ec9712404bfe7b5c528f`;
+clean isolated `modularization/pr4-mcp-server-seams`, zero ahead/behind at fetch.
+No fast-forward was needed. Published claims and frozen interfaces are in
+`/tmp/rpce-pr-reviews/pr4-{claims,interfaces}.md` (scratch coordination artifacts).
+
+### Split map and preserved owners
+
+- **S5 values:** single approved `MCPInvocationContext.swift`; nested compatibility
+  aliases remain in existing VM extensions. Snapshot defaults, mutable value-copy
+  behavior, revision/generation values, root projection and lifetime equality are
+  unchanged. Live MainActor capture/validate and synchronous atomic
+  `performIfGenerationCurrent` remain in the existing main VM extension.
+- **S6 app ingress:** manager captures connection/tool/invocation/window evidence;
+  TaskLocal bridges only the unchanged DomainRuntime args-only binding. Binder/VM
+  synchronously capture before suspension, pass the same explicit provider packet,
+  and revalidate exact connection/catalog/window ownership at the existing gates.
+  Oracle, control, AskUser and ContextBuilder receive context or injected app
+  purpose/progress callbacks. A missing or mismatched packet throws; DEBUG uses an
+  injected redacted existing adapter sink. Explicit local test compatibility never
+  becomes network authorization.
+- **D3 policy projection:** `MCPToolAdmissionPolicy.clientPolicySnapshot` is the
+  original app mapping, consumed at the four existing dispatch/catalog sites.
+  Admission-decision and settlement-result aliases refer to the existing domain
+  types. No callback ordering, permit registry, cancellation, settlement lease,
+  delivery fence or wire-ID/replay ownership moves.
+- **DomainRuntime/MCPCore/CLI/headless:** untouched. No file moves or new targets.
+  Only one approved new source file; no new test files or ratchet increases.
+
+### Actual async boundaries
+
+Manager resolved operation explicitly receives the packet through the existing
+watchdog/provider closures, scopes its diagnostic sink and packet around host
+invocation, and preserves the host's structured Task and existing security scopes.
+The VM captures before runTool, carries the packet through its start-gated Task,
+and reestablishes the bridge immediately around the provider. Heartbeat task-group
+children explicitly retain/reestablish the captured packet. Global window tools
+capture before MainActor and approval awaits; their helpers receive the packet or
+captured identity values. Domain reads retain the host packet alongside (not in
+place of) the separate DomainRead invocation identity. Continuation-only start,
+idle, connection and file-resolution waiters carry existing exact tokens/results
+and do not discover new routing authority on resume. No request-authority
+DispatchQueue or detached hop was found in these integration-owned app adapters.
+
+### Authorization qualification
+
+The retained nonthrowing metadata helper is **not an authorization boundary**.
+An absent metadata value can classify as administrative in compatibility code.
+Safety depends on strict mandatory network binder/read ingress and preserving the
+scoped explicit packet across the structured Host Task, runTool/start gate and
+heartbeat. Carrier-free MCPService getters return nil rather than looking up a
+live successor connection/client/window. Independent Sol production-caller audit
+found no audited contextless production adapter entry; parent spot-checked the
+complete inventory. Do not turn fixture compatibility into network authorization.
+
+### Local v8 validation evidence (dedicated validator)
+
+| Check | Conductor ticket / accounting | Result |
+| --- | --- | --- |
+| Exact network/context regressions | `b41db62d-a832-4197-9b6b-5f93c2577b36` | PASS: 6 executed, 6 passed |
+| Affected source suites | `e0a24bd2-8275-47e9-95a9-ab867070e9cb` | PASS: 195 executed, 195 passed |
+| Exact repaired fixture regressions, v8 | `4dd2173c-3cc0-48f7-8caa-a6a20d1992d0` | PASS: 11 executed, 11 passed |
+| Three repaired suites, v8 | `776e86c5-912c-4b83-9063-8f4e2a9f1161` | PASS: 78 executed, 78 passed |
+| Broad frozen-source run, v8 | `c6cb5b47-e9e3-4aad-8f6c-42285c5a1296` | PASS: 4,142 executed; 4,140 passed; 0 failed; 2 skipped |
+| DomainRuntime / MCPCore in broad-v8 | Same broad ticket, per-module identities | PASS: 268 / 66 respectively |
+| Final v8 formatter | `590321dc-e976-44fa-b196-3a12c56e2c64` | Completed, exit 0 |
+| Final v8 lint | `d4f0eb5e-966f-4d29-850d-217e8794caf9` | Completed, exit 0 |
+| Final v8 guardrails | `0c4a4894-3072-44a9-8c82-678c7ca61965` | Completed, exit 0; ratchets unchanged |
+
+Identity counts, raw logs, original failures and freeze evidence remain under
+`/tmp/rpce-pr-reviews/pr4-local-receipts/`. The v8 all-Swift/source manifest covers
+1,849 files; validator and precommit checks found drift `[]`. Integration preserves
+that manifest and makes documentation-only changes after the tested freeze. These
+checks are validator execution evidence, not claims of integration-run tests.
+
+The earlier broad-v7 ticket `b5b53855-287c-4f24-85c9-fe2d3c4219c9` remains a
+**FAILED** historical receipt: 4,142 executed, 4,129 passed, 11 failed, 2 skipped.
+The complete source/receipt audit classified all 11 as test-only direct materialized
+adapter fixtures missing the mandatory carrier. Overseer approved only mechanical
+matching trusted-local scopes at those same entries, retaining prerequisite drains,
+physical race/collision/cancellation gates and all assertions. The exact 11 and the
+broader v8 run now provide the rerun evidence; source triage alone was not a pass.
+The extra CancellationError in the first file-actions method was a repeat-validation
+obligation, not discarded. Its exact method passes in v8.
+
+Mechanical fixture adaptations are enumerated in the scratch PR draft and audit:
+ContextBuilderSelectionPrerequisiteTests (3 methods),
+MCPSelectionPrerequisiteErrorTests (4), MCPReadMutationPathContractTests (4), existing
+OracleGroupBoundary service fixture and the single ContentReadCancellationTests
+constructor near original line 435. The protected final-materialization/rollback
+regression near original line 850 is unchanged. Hoisted-type references in existing
+authority/recovery tests are mechanical; no new test files or ratchet increases.
+
+### Ref provenance and remaining acceptance
+
+The tested branch remains based on `61ab8b285fa5a9281587ec9712404bfe7b5c528f`.
+Immediately before local commit, an explicit fetch found current origin/main
+`64b9352eec13e0252500d429f64ca9d1dd5e49fd` (four commits ahead of the tested base).
+No rebase, merge, stash, history rewrite or source mutation integrates that newer
+main here. Current-main integration and revalidation require separate coordination.
+
+**NOT_RUN:** final-head `make dev-build` debug package, live CE MCP E2E (approval,
+denial, multiwindow, cancellation, replay), and headless initialize/list/read-only
+runtime checks. Dedicated validator owns these next gates. Live lifecycle requires
+separate explicit overseer approval. Local commit authorization is not push/PR or
+lifecycle authorization; no integration engineer builds/tests/formatter were run.

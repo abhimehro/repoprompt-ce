@@ -6,6 +6,50 @@ import XCTest
 #if DEBUG
     @MainActor
     final class AgentAdmissionRecoveryTests: XCTestCase {
+        func testToolAdmissionPolicySnapshotPreservesTaskRoleMapping() {
+            let cases: [(AgentModelCatalog.TaskLabelKind?, MCPClientTaskRole)] = [
+                (nil, .direct), (.explore, .explore), (.engineer, .engineer),
+                (.pair, .engineer), (.design, .engineer)
+            ]
+            for (taskLabelKind, expectedRole) in cases {
+                let snapshot = MCPToolAdmissionPolicy.clientPolicySnapshot(
+                    restricted: ["git"],
+                    additional: ["ask_user"],
+                    taskLabelKind: taskLabelKind,
+                    allowsAgentExternalControlTools: false
+                )
+                XCTAssertEqual(snapshot, MCPDomainClientPolicySnapshot(
+                    restrictedToolNames: ["git"],
+                    additionalToolNames: ["ask_user"],
+                    role: expectedRole,
+                    allowsAgentExternalControlTools: false,
+                    hasExactAgentSessionLinkGrant: false
+                ))
+            }
+        }
+
+        func testToolAdmissionPolicySnapshotDoesNotPromoteAdditionalGrantToExactLinkAuthority() {
+            let ordinaryGrant = MCPToolAdmissionPolicy.clientPolicySnapshot(
+                restricted: ["agent_session_link"],
+                additional: ["agent_session_link"],
+                taskLabelKind: .explore,
+                allowsAgentExternalControlTools: true
+            )
+            XCTAssertFalse(ordinaryGrant.hasExactAgentSessionLinkGrant)
+            let exactGrant = MCPToolAdmissionPolicy.clientPolicySnapshot(
+                restricted: ordinaryGrant.restrictedToolNames,
+                additional: ordinaryGrant.additionalToolNames,
+                taskLabelKind: .explore,
+                allowsAgentExternalControlTools: true,
+                hasExactAgentSessionLinkGrant: true
+            )
+            XCTAssertTrue(exactGrant.hasExactAgentSessionLinkGrant)
+            XCTAssertEqual(exactGrant.role, ordinaryGrant.role)
+            XCTAssertEqual(exactGrant.restrictedToolNames, ordinaryGrant.restrictedToolNames)
+            XCTAssertEqual(exactGrant.additionalToolNames, ordinaryGrant.additionalToolNames)
+            XCTAssertEqual(exactGrant.allowsAgentExternalControlTools, ordinaryGrant.allowsAgentExternalControlTools)
+        }
+
         private actor RecoveryCoalescingGate {
             private var firstCallerSuspended = false
             private var firstCallerReleased = false

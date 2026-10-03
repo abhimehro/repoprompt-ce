@@ -116,8 +116,8 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
                 ],
                 required: ["op"]
             )
-        ) { [self] _, args in
-            try await Value(executeManageWorktree(args: args))
+        ) { [self] invocation, args in
+            try await Value(executeManageWorktree(args: args, invocationContext: invocation.context))
         }
     }
 
@@ -128,7 +128,7 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         case preview, apply, status, `continue`, abort
     }
 
-    private func executeManageWorktree(args: [String: Value]) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
+    private func executeManageWorktree(args: [String: Value], invocationContext: ToolInvocationContext) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
         guard let opRaw = trimmedString(args["op"])?.lowercased() else {
             throw MCPError.invalidParams("op is required. Valid ops: list, show, create, bind, select, unbind, preview, apply, status, continue, abort")
         }
@@ -141,22 +141,22 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
 
         switch op {
         case .list:
-            return try await executeList(args: args)
+            return try await executeList(args: args, invocationContext: invocationContext)
         case .show:
-            return try await executeShow(args: args)
+            return try await executeShow(args: args, invocationContext: invocationContext)
         case .create:
-            return try await executeCreate(args: args)
+            return try await executeCreate(args: args, invocationContext: invocationContext)
         case .bind, .select:
-            return try await executeBind(op: op, args: args)
+            return try await executeBind(op: op, args: args, invocationContext: invocationContext)
         case .unbind:
-            return try await executeUnbind(args: args)
+            return try await executeUnbind(args: args, invocationContext: invocationContext)
         case .preview, .apply, .status, .continue, .abort:
             return try await executeMerge(op: op, args: args)
         }
     }
 
-    private func executeList(args: [String: Value]) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
-        let context = try await resolveRepositoryContext(args: args)
+    private func executeList(args: [String: Value], invocationContext: ToolInvocationContext) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
+        let context = try await resolveRepositoryContext(args: args, invocationContext: invocationContext)
         let allWorktrees = try await vcsService.listGitWorktrees(at: context.repo.rootURL)
         // Stale (git-prunable) worktrees have a gitdir pointing to a non-existent location and are
         // not usable checkouts. Exclude them so a model never discovers/selects one; binding to a
@@ -195,8 +195,8 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         )
     }
 
-    private func executeShow(args: [String: Value]) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
-        let context = try await resolveRepositoryContext(args: args)
+    private func executeShow(args: [String: Value], invocationContext: ToolInvocationContext) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
+        let context = try await resolveRepositoryContext(args: args, invocationContext: invocationContext)
         let worktree = try await resolveWorktree(
             args: args,
             repo: context.repo,
@@ -223,10 +223,10 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         )
     }
 
-    private func executeCreate(args: [String: Value]) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
-        let context = try await resolveRepositoryContext(args: args)
+    private func executeCreate(args: [String: Value], invocationContext: ToolInvocationContext) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
+        let context = try await resolveRepositoryContext(args: args, invocationContext: invocationContext)
         let bindAfterCreate = parseBool(args["bind"]) ?? false
-        let bindingRequest = bindAfterCreate ? try await resolveBindingRequest(args: args) : nil
+        let bindingRequest = bindAfterCreate ? try await resolveBindingRequest(args: args, invocationContext: invocationContext) : nil
         let sessionID = bindingRequest?.sessionID
 
         if let sessionID {
@@ -339,8 +339,8 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         )
     }
 
-    private func executeBind(op: Operation, args: [String: Value]) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
-        let context = try await resolveRepositoryContext(args: args)
+    private func executeBind(op: Operation, args: [String: Value], invocationContext: ToolInvocationContext) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
+        let context = try await resolveRepositoryContext(args: args, invocationContext: invocationContext)
         let worktree = try await resolveWorktree(
             args: args,
             repo: context.repo,
@@ -348,7 +348,7 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
             visibleRoots: context.visibleRoots,
             requireExplicit: true
         )
-        let bindingRequest = try await resolveBindingRequest(args: args)
+        let bindingRequest = try await resolveBindingRequest(args: args, invocationContext: invocationContext)
         let sessionID = bindingRequest.sessionID
         try validateLiveSession(sessionID, in: dependencies.execution.requireTargetWindow())
         let repositoryRoot = try await logicalRoot(for: context)
@@ -379,8 +379,8 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         )
     }
 
-    private func executeUnbind(args: [String: Value]) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
-        let bindingRequest = try await resolveBindingRequest(args: args)
+    private func executeUnbind(args: [String: Value], invocationContext: ToolInvocationContext) async throws -> ToolResultDTOs.ManageWorktreeReplyDTO {
+        let bindingRequest = try await resolveBindingRequest(args: args, invocationContext: invocationContext)
         let sessionID = bindingRequest.sessionID
         let targetWindow = try dependencies.execution.requireTargetWindow()
         let agentModeVM = targetWindow.agentModeViewModel
@@ -395,7 +395,7 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
             removed = existing
             authorizationRoots = existing.map(\.logicalRootPath)
         } else if hasWorktreeSelector(args) {
-            let context = try await resolveRepositoryContext(args: args)
+            let context = try await resolveRepositoryContext(args: args, invocationContext: invocationContext)
             let worktree = try await resolveWorktree(
                 args: args,
                 repo: context.repo,
@@ -408,7 +408,7 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
             let logicalRoot = try await logicalRoot(for: context)
             authorizationRoots = removed.isEmpty ? [logicalRoot.standardizedFullPath] : removed.map(\.logicalRootPath)
         } else {
-            let context = try await resolveRepositoryContext(args: args)
+            let context = try await resolveRepositoryContext(args: args, invocationContext: invocationContext)
             let logicalRoot = try await logicalRoot(for: context)
             let normalized = standardizedPath(logicalRoot.standardizedFullPath)
             removed = existing.filter { standardizedPath($0.logicalRootPath) == normalized }
@@ -504,8 +504,8 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         let invocation: AgentModeViewModel.WorktreeBindingMutationInvocationIdentity?
     }
 
-    private func resolveBindingRequest(args: [String: Value]) async throws -> BindingRequest {
-        let metadata = await dependencies.context.captureRequestMetadata()
+    private func resolveBindingRequest(args: [String: Value], invocationContext: ToolInvocationContext) async throws -> BindingRequest {
+        let metadata = invocationContext.metadata
         let explicitSessionID: UUID?
         if let raw = trimmedString(args["session_id"]) {
             guard let uuid = UUID(uuidString: raw) else {
@@ -516,7 +516,7 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
             explicitSessionID = nil
         }
 
-        let resolved: MCPServerViewModel.ResolvedTabContextSnapshot? = if explicitSessionID == nil {
+        let resolved: MCPResolvedTabContextSnapshot? = if explicitSessionID == nil {
             try dependencies.context.resolveTabContextSnapshot(
                 metadata,
                 MCPWindowToolName.manageWorktree
@@ -562,12 +562,12 @@ final class MCPWorktreeToolProvider: MCPAppToolProviding {
         let explicitLogicalRoot: WorkspaceRootRef?
     }
 
-    private func resolveRepositoryContext(args: [String: Value]) async throws -> RepositoryContext {
+    private func resolveRepositoryContext(args: [String: Value], invocationContext: ToolInvocationContext) async throws -> RepositoryContext {
         guard dependencies.context.workspaceManager?.activeWorkspace != nil else {
             throw MCPError.invalidParams("No active workspace in this window. Load a workspace before using manage_worktree.")
         }
 
-        let metadata = await dependencies.context.captureRequestMetadata()
+        let metadata = invocationContext.metadata
         let lookupContext = await dependencies.selection.resolveFileToolLookupContext(metadata)
         let visibleRoots = await dependencies.context.promptVM.workspaceFileContextStore.rootRefs(scope: lookupContext.rootScope)
         let allRepos = try await discoverAllGitRepos(rootScope: lookupContext.rootScope)

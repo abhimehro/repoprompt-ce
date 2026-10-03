@@ -479,17 +479,17 @@ final class MCPGitToolProvider {
 
         // Generic callers retain first-root compatibility. Exact Agent Context Builder Discover
         // runs instead use the immutable selected-repository target carried by their tab snapshot.
-        let metadata: MCPServerViewModel.RequestMetadata = if let appContext {
+        let metadata: MCPRequestMetadata = if let appContext {
             appContext.metadata
         } else {
             await dependencies.context.captureRequestMetadata()
         }
         let hasExplicitPathspecs = !(args["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             || (args["paths"]?.arrayValue?.contains { !($0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) } ?? false)
-        let preLookupSelectedPublicationContext: MCPServerViewModel.ResolvedTabContextSnapshot? = if op == .diff,
-                                                                                                     args["artifacts"]?.boolValue == true,
-                                                                                                     !hasExplicitPathspecs,
-                                                                                                     (args["scope"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "all") == "selected"
+        let preLookupSelectedPublicationContext: MCPResolvedTabContextSnapshot? = if op == .diff,
+                                                                                     args["artifacts"]?.boolValue == true,
+                                                                                     !hasExplicitPathspecs,
+                                                                                     (args["scope"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "all") == "selected"
         {
             try appContext?.resolvedTabContext ?? dependencies.context.resolveTabContextSnapshot(
                 metadata,

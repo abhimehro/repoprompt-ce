@@ -9,6 +9,175 @@ import XCTest
 #if DEBUG
     final class BindContextFileAuthorityTests: XCTestCase {
         @MainActor
+        func testRequestMetadataProjectsCapturedPacketWithoutLivePurposeRediscovery() async throws {
+            let fixture = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            let metadata = MCPRequestMetadata(
+                connectionID: UUID(),
+                clientName: "Captured client",
+                windowID: fixture.window.windowID,
+                runPurpose: .agentModeRun,
+                tabContextHint: MCPTabContextHint(
+                    tabID: fixture.contextID,
+                    workspaceID: fixture.workspace.id,
+                    windowID: fixture.window.windowID
+                ),
+                invocationID: UUID(),
+                requestID: .string("captured-request")
+            )
+            let invocation = ToolInvocationContext.trustedLocal(toolName: "metadata_test", metadata: metadata)
+            let captured = await MCPInvocationContextBridge.withInvocation(invocation) {
+                await fixture.window.mcpServer.captureRequestMetadata()
+            }
+            XCTAssertEqual(captured.connectionID, metadata.connectionID)
+            XCTAssertEqual(captured.clientName, metadata.clientName)
+            XCTAssertEqual(captured.windowID, metadata.windowID)
+            XCTAssertEqual(captured.runPurpose, .agentModeRun)
+            XCTAssertEqual(captured.tabContextHint, metadata.tabContextHint)
+            XCTAssertEqual(captured.invocationID, metadata.invocationID)
+            XCTAssertEqual(captured.requestID, metadata.requestID)
+            XCTAssertNil(captured.explicitWindowRoutingHint)
+        }
+
+        @MainActor
+        func testCurrentTabContextRejectsAmbientConnectionWithoutCapturedInvocation() async throws {
+            let fixture = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            try fixture.window.mcpServer.bindTabForConnection(
+                connectionID: fixture.connectionID,
+                clientName: "BindContextFileAuthorityTests",
+                tabID: fixture.contextID,
+                workspaceID: fixture.workspace.id,
+                windowID: fixture.window.windowID
+            )
+            do {
+                _ = try await ServerNetworkManager.$currentConnectionID.withValue(fixture.connectionID) {
+                    try await MCPInvocationContextBridge.$current.withValue(nil) {
+                        try await fixture.window.mcpServer.requireCurrentTabContext(toolName: "metadata_test")
+                    }
+                }
+                XCTFail("Ambient connection affinity must not replace a captured invocation")
+            } catch let MCPError.invalidParams(message) {
+                XCTAssertEqual(message, "No active connection for metadata_test")
+            } catch {
+                XCTFail("Unexpected missing-invocation error: \(error)")
+            }
+        }
+
+        @MainActor
+        func testTabContextSnapshotPreservesDefaultsAndMutableCopyIsolation() {
+            let tabID = UUID()
+            let workspaceID = UUID()
+            let sessionID = UUID()
+            func snapshot(
+                activeAgentSessionID: UUID? = nil,
+                worktreeBindingState: AgentSessionWorktreeBindingState? = nil
+            ) -> MCPTabContextSnapshot {
+                MCPTabContextSnapshot(
+                    tabID: tabID,
+                    windowID: 41,
+                    workspaceID: workspaceID,
+                    promptText: "original",
+                    selection: StoredSelection(selectedPaths: ["Original.swift"]),
+                    selectedMetaPromptIDs: [],
+                    tabName: "Context",
+                    runID: nil,
+                    activeAgentSessionID: activeAgentSessionID,
+                    worktreeBindingState: worktreeBindingState,
+                    explicitlyBound: true
+                )
+            }
+            let original = snapshot()
+            XCTAssertFalse(original.usedAgentOutputAsPrompt)
+            XCTAssertEqual(original.selectionRevision, 0)
+            XCTAssertEqual(original.selectedContextBuilderPromptIDs, [])
+            XCTAssertEqual(original.readFileAutoSelectionGeneration, 0)
+            XCTAssertEqual(original.worktreeBindingState, .notApplicable)
+            XCTAssertNil(original.frozenFileToolAuthority)
+            XCTAssertNil(original.frozenLookupContext)
+            XCTAssertNil(original.contextBuilderReviewTargetResolution)
+            XCTAssertEqual(snapshot(activeAgentSessionID: sessionID).worktreeBindingState, .hydrated([]))
+            XCTAssertEqual(
+                snapshot(activeAgentSessionID: sessionID, worktreeBindingState: .unhydrated).worktreeBindingState,
+                .unhydrated
+            )
+
+            var copy = original
+            copy.promptText = "changed"
+            copy.selection = StoredSelection(selectedPaths: ["Changed.swift"])
+            copy.selectionRevision = 7
+            copy.readFileAutoSelectionGeneration = 9
+            copy.worktreeBindings = []
+            XCTAssertEqual(copy.worktreeBindingState, .hydrated([]))
+            XCTAssertEqual(copy.promptText, "changed")
+            XCTAssertEqual(copy.selection.selectedPaths, ["Changed.swift"])
+            XCTAssertEqual(copy.selectionRevision, 7)
+            XCTAssertEqual(copy.readFileAutoSelectionGeneration, 9)
+            XCTAssertEqual(original.promptText, "original")
+            XCTAssertEqual(original.selection.selectedPaths, ["Original.swift"])
+            XCTAssertEqual(original.selectionRevision, 0)
+            XCTAssertEqual(original.readFileAutoSelectionGeneration, 0)
+            XCTAssertEqual(original.worktreeBindingState, .notApplicable)
+            XCTAssertEqual(copy.tabID, original.tabID)
+            XCTAssertEqual(copy.workspaceID, original.workspaceID)
+            XCTAssertEqual(copy.explicitlyBound, original.explicitlyBound)
+        }
+
+        @MainActor
+        func testFrozenLookupReplacementInvalidatesOnlyTheChangedSnapshotCopy() async throws {
+            let fixture = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            let authority = try await fixture.window.mcpServer.resolveFileToolAuthority(
+                tabID: fixture.contextID,
+                workspaceID: fixture.workspace.id
+            )
+            let original = MCPTabContextSnapshot(
+                tabID: fixture.contextID,
+                windowID: fixture.window.windowID,
+                workspaceID: fixture.workspace.id,
+                promptText: "",
+                selection: StoredSelection(),
+                selectedMetaPromptIDs: [],
+                tabName: "Context",
+                runID: nil,
+                frozenFileToolAuthority: authority,
+                explicitlyBound: true
+            )
+            var copy = original
+            copy.frozenLookupContext = authority.lookupContext
+            XCTAssertTrue(try XCTUnwrap(copy.frozenFileToolAuthority).hasSameRoutingAuthority(as: authority))
+            copy.frozenLookupContext = nil
+            XCTAssertNil(copy.frozenFileToolAuthority)
+            XCTAssertNil(copy.frozenLookupContext)
+            XCTAssertEqual(original.frozenLookupContext, authority.lookupContext)
+            XCTAssertTrue(try XCTUnwrap(original.frozenFileToolAuthority).hasSameRoutingAuthority(as: authority))
+        }
+
+        @MainActor
+        func testFrozenAuthorityCommitPropagatesOperationErrorAndFencesSupersededTicket() async throws {
+            let fixture = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
+            let authority = try await fixture.window.mcpServer.resolveFileToolAuthority(
+                tabID: fixture.contextID,
+                workspaceID: fixture.workspace.id
+            )
+            var attempts = 0
+            do {
+                _ = try authority.performIfCurrent(workspaceManager: fixture.window.workspaceManager) {
+                    attempts += 1
+                    throw AffinityFailure.injected
+                }
+                XCTFail("A current-authority operation error must propagate")
+            } catch AffinityFailure.injected {
+                XCTAssertEqual(attempts, 1)
+            } catch {
+                XCTFail("Unexpected operation error: \(error)")
+            }
+            fixture.window.workspaceManager.republishReadyRootCatalogWithNextGenerationForTesting()
+            let performed = try authority.performIfCurrent(workspaceManager: fixture.window.workspaceManager) {
+                attempts += 1
+            }
+            XCTAssertFalse(performed)
+            XCTAssertEqual(attempts, 1, "A superseded ticket must not enter the mutation body")
+        }
+
+        @MainActor
         func testBindStoresAuthorityConsumedByNextFileOperation() async throws {
             let fixture = try await makeFixture(rootPaths: [makeTemporaryRoot().path])
             let authority = try await fixture.window.mcpServer.resolveFileToolAuthority(
@@ -119,7 +288,7 @@ import XCTest
                     store: fixture.window.promptManager.workspaceFileContextStore
                 )
                 XCTFail("A superseded readiness ticket must not remain usable")
-            } catch let failure as MCPServerViewModel.FileToolAuthorityFailure {
+            } catch let failure as MCPFileToolAuthorityFailure {
                 XCTAssertEqual(failure, .superseded)
             }
 
@@ -157,7 +326,7 @@ import XCTest
                     store: fixture.window.promptManager.workspaceFileContextStore
                 )
                 XCTFail("A changed canonical root set must invalidate captured authority")
-            } catch let failure as MCPServerViewModel.FileToolAuthorityFailure {
+            } catch let failure as MCPFileToolAuthorityFailure {
                 XCTAssertEqual(failure, .mismatchedProjection)
             }
         }
@@ -445,7 +614,7 @@ import XCTest
                 )]
             )
             let context = WorkspaceLookupContext(rootScope: projection.lookupRootScope, bindingProjection: projection)
-            let authority = try await MCPServerViewModel.FrozenFileToolAuthority.capture(
+            let authority = try await MCPFrozenFileToolAuthority.capture(
                 lookupContext: context, rootCatalogSnapshot: canonical.rootCatalogSnapshot,
                 store: store, sourceIdentity: canonical.sourceIdentity
             )
@@ -689,11 +858,11 @@ import XCTest
             addTeardownBlock { @MainActor in
                 fixture.window.mcpServer.connectionIDToRunID.removeValue(forKey: fixture.connectionID)
             }
-            let metadata = MCPServerViewModel.RequestMetadata(
+            let metadata = MCPRequestMetadata(
                 connectionID: fixture.connectionID,
                 clientName: "BindContextFileAuthorityTests",
                 windowID: fixture.window.windowID,
-                tabContextHint: MCPServerViewModel.TabContextHint(
+                tabContextHint: MCPTabContextHint(
                     tabID: fixture.contextID,
                     workspaceID: fixture.workspace.id,
                     windowID: fixture.window.windowID
@@ -703,7 +872,7 @@ import XCTest
             do {
                 _ = try await fixture.window.mcpServer.requiredFileToolLookupContext(from: metadata)
                 XCTFail("A run-scoped hint without a connection binding must fail closed")
-            } catch let failure as MCPServerViewModel.FileToolAuthorityFailure {
+            } catch let failure as MCPFileToolAuthorityFailure {
                 XCTAssertEqual(failure, .superseded)
             }
         }
@@ -790,8 +959,8 @@ import XCTest
         }
 
         @MainActor
-        private func metadata(for fixture: Fixture) -> MCPServerViewModel.RequestMetadata {
-            MCPServerViewModel.RequestMetadata(
+        private func metadata(for fixture: Fixture) -> MCPRequestMetadata {
+            MCPRequestMetadata(
                 connectionID: fixture.connectionID,
                 clientName: "BindContextFileAuthorityTests",
                 windowID: fixture.window.windowID

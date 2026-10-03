@@ -356,12 +356,12 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
                 ],
                 required: []
             )
-        ) { [dependencies] _, args in
-            let connectionID = ServerNetworkManager.currentConnectionID
+        ) { [dependencies] invocation, args in
+            let invocationContext = invocation.context
             do {
                 let result = try await Self.executeContextBuilder(
                     args: args,
-                    connectionID: connectionID,
+                    invocationContext: invocationContext,
                     dependencies: dependencies
                 )
                 return result.toMCPValue()
@@ -398,7 +398,7 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
 
     private static func executeContextBuilder(
         args: [String: Value],
-        connectionID: UUID?,
+        invocationContext: ToolInvocationContext,
         dependencies: Dependencies
     ) async throws -> ContextBuilderToolResult {
         guard args["context_pack_ref"] == nil else {
@@ -407,7 +407,8 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
             )
         }
         let instructions = args["instructions"]?.stringValue ?? ""
-        let metadata = await dependencies.context.captureRequestMetadata()
+        let metadata = invocationContext.metadata
+        let connectionID = invocationContext.connectionID
         let responseType = try ContextBuilderResponseType.parse(from: args["response_type"])
         let oraclePreset = try parseOraclePreset(args["oracle_preset"], responseType: responseType)
         let exportResponse: Bool
@@ -467,7 +468,7 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
         let contextBuilderVM = targetWindow.contextBuilderAgentViewModel
 
         if tabResolution.bindCaller, let connectionID {
-            let clientName = await ServerNetworkManager.shared.clientIdentifier(forConnection: connectionID)
+            let clientName = metadata.clientName
             try dependencies.execution.bindTabForConnection(
                 connectionID,
                 clientName,
@@ -477,17 +478,19 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
             )
         }
 
-        let targetMetadata = MCPServerViewModel.RequestMetadata(
+        let targetMetadata = MCPRequestMetadata(
             connectionID: connectionID ?? metadata.connectionID,
             clientName: metadata.clientName,
             windowID: targetWindow.windowID,
             runPurpose: metadata.runPurpose,
-            tabContextHint: MCPServerViewModel.TabContextHint(
+            tabContextHint: MCPTabContextHint(
                 tabID: resolvedIdentity.tabID,
                 workspaceID: resolvedIdentity.workspaceID,
                 windowID: targetWindow.windowID
             ),
-            explicitWindowRoutingHint: metadata.explicitWindowRoutingHint
+            explicitWindowRoutingHint: metadata.explicitWindowRoutingHint,
+            invocationID: metadata.invocationID,
+            requestID: metadata.requestID
         )
         let selectionPrerequisite = try await dependencies.files.drainReadFileAutoSelection(
             targetMetadata,
@@ -589,7 +592,8 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
                 )
                 let snapshot = try await withTimelinePhaseCompletion(progressTimeline) {
                     try await withHeartbeat(
-                        connectionID: connectionID,
+                        invocationContext: invocationContext,
+                        execution: dependencies.execution,
                         tool: MCPWindowToolName.contextBuilder,
                         stage: "discovering",
                         message: "Still building context...",
@@ -625,7 +629,8 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
                 )>()
                 try await withTimelinePhaseCompletion(progressTimeline) {
                     try await withHeartbeat(
-                        connectionID: connectionID,
+                        invocationContext: invocationContext,
+                        execution: dependencies.execution,
                         tool: MCPWindowToolName.contextBuilder,
                         stage: "processing",
                         message: "Still rendering Context Builder selection...",
@@ -771,7 +776,8 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
                             ContextBuilderTimelinePhaseValue<ContextBuilderFinalReviewAuthorization>()
                         try await withTimelinePhaseCompletion(progressTimeline) {
                             try await withHeartbeat(
-                                connectionID: connectionID,
+                                invocationContext: invocationContext,
+                                execution: dependencies.execution,
                                 tool: MCPWindowToolName.contextBuilder,
                                 stage: "generating",
                                 message: "Still authorizing Context Builder review selection...",
@@ -862,7 +868,8 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
 
                     let reply = try await withTimelinePhaseCompletion(progressTimeline) {
                         try await withHeartbeat(
-                            connectionID: connectionID,
+                            invocationContext: invocationContext,
+                            execution: dependencies.execution,
                             tool: MCPWindowToolName.contextBuilder,
                             stage: "generating",
                             message: "Still generating \(modeLabel)...",
@@ -1057,7 +1064,8 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
     }
 
     private static func withHeartbeat<T: Sendable>(
-        connectionID: UUID?,
+        invocationContext: ToolInvocationContext,
+        execution: MCPAppPhysicalCapabilityAdapters.Execution,
         tool: String,
         stage: String,
         message: String,
@@ -1065,10 +1073,10 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
         interval: Duration = .seconds(30),
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        guard let connectionID else {
+        guard let connectionID = invocationContext.connectionID else {
             return try await operation()
         }
-        let shouldSendProgress = await ServerNetworkManager.shared.supportsProgressNotifications(connectionID: connectionID)
+        let shouldSendProgress = await execution.supportsProgressNotifications(connectionID)
         guard shouldSendProgress else {
             return try await operation()
         }
@@ -1086,12 +1094,11 @@ final class MCPContextBuilderToolProvider: MCPAppToolProviding {
                     } else {
                         (stage, message)
                     }
-                    await ServerNetworkManager.shared.sendProgress(
-                        for: connectionID,
-                        tool: tool,
-                        kind: .heartbeat,
-                        stage: heartbeat.stage,
-                        message: heartbeat.message
+                    await execution.sendHeartbeatProgress(
+                        connectionID,
+                        tool,
+                        heartbeat.stage,
+                        heartbeat.message
                     )
                 }
             } catch {

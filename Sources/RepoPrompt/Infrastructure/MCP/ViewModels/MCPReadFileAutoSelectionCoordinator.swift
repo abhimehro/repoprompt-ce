@@ -274,7 +274,7 @@ final class MCPReadFileAutoSelectionCoordinator {
     }
 
     struct CanonicalBatch {
-        let authority: MCPServerViewModel.FrozenFileToolAuthority
+        let authority: MCPFrozenFileToolAuthority
         private(set) var fullPaths: [String] = []
         private(set) var sliceEntries: [WorkspaceSelectionSliceInput] = []
         private(set) var coverageIdentity: CoverageIdentity?
@@ -288,7 +288,7 @@ final class MCPReadFileAutoSelectionCoordinator {
 
         init(
             intent: Intent,
-            authority: MCPServerViewModel.FrozenFileToolAuthority,
+            authority: MCPFrozenFileToolAuthority,
             coverageIdentity: CoverageIdentity? = nil
         ) {
             self.authority = authority
@@ -578,7 +578,7 @@ final class MCPReadFileAutoSelectionCoordinator {
     @discardableResult
     func enqueue(
         intent: Intent,
-        authority: MCPServerViewModel.FrozenFileToolAuthority,
+        authority: MCPFrozenFileToolAuthority,
         coverageIdentity: CoverageIdentity? = nil,
         for key: ContextKey,
         lifecycleCorrelation: EditFlowPerf.LifecycleCorrelation? = EditFlowPerf.currentLifecycleCorrelation

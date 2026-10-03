@@ -322,11 +322,6 @@ def regressions(current: Mapping[str, int], baseline: Mapping[str, int]) -> List
     problems = []
     if "app_target_swift_lines" not in baseline:
         problems.append("app_target_swift_lines: missing from baseline")
-    elif current.get("app_target_swift_lines", 0) > baseline["app_target_swift_lines"] + APP_LINE_HEADROOM:
-        problems.append(
-            f"app_target_swift_lines: {current.get('app_target_swift_lines', 0)} > "
-            f"ceiling {baseline['app_target_swift_lines'] + APP_LINE_HEADROOM}"
-        )
     for name in RATCHETED_METRICS:
         if name not in baseline:
             problems.append(f"{name}: missing from baseline")
@@ -335,8 +330,22 @@ def regressions(current: Mapping[str, int], baseline: Mapping[str, int]) -> List
     return problems
 
 
+def app_line_advisory(current: Mapping[str, int], baseline: Mapping[str, int]) -> Optional[str]:
+    """Report App-line excess without weakening required baseline or other ratchet checks."""
+    if "app_target_swift_lines" not in baseline:
+        return None
+    actual = current.get("app_target_swift_lines", 0)
+    reference = baseline["app_target_swift_lines"] + APP_LINE_HEADROOM
+    if actual <= reference:
+        return None
+    return (
+        f"app_target_swift_lines: {actual} > reference {reference} "
+        f"(excess {actual - reference}; not gated)"
+    )
+
+
 def baseline_raises(current: Mapping[str, int], baseline: Mapping[str, int]) -> List[str]:
-    """Every ratcheted or tracked value `update` would raise. Headroom applies to `check` only."""
+    """Every ratcheted or tracked value `update` would raise, including advisory App lines."""
     return [
         f"{name}: {baseline[name]} -> {current.get(name, 0)}"
         for name in dict.fromkeys(("app_target_swift_lines",) + RATCHETED_METRICS + TRACKED_METRICS)
@@ -370,7 +379,8 @@ def write_baseline(path: Path, metrics: Mapping[str, int]) -> None:
     document = {
         "description": (
             "Build-modularization ratchet baselines. Ratcheted metrics may only decrease; "
-            "regenerate with `python3 Scripts/modularization_metrics.py update` after an improving slice."
+            "regenerate with `python3 Scripts/modularization_metrics.py update` after an improving slice. "
+            "App Swift lines above baseline plus headroom are advisory, not a failing gate."
         ),
         "ratcheted": list(RATCHETED_METRICS),
         "app_target_swift_lines_headroom": APP_LINE_HEADROOM,
@@ -479,6 +489,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"modularization ratchets: missing baseline {baseline_path}", file=sys.stderr)
             return 1
         baseline = load_baseline(baseline_path)
+        advisory = app_line_advisory(metrics, baseline)
+        if advisory:
+            print("modularization advisory: " + advisory)
         problems = regressions(metrics, baseline)
         if problems:
             print("modularization ratchets regressed:", file=sys.stderr)

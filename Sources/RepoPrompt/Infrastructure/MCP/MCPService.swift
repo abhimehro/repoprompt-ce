@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Logging
 import RepoPromptShared
 import SwiftUI
 
@@ -315,12 +316,19 @@ actor MCPService: Sendable {
         }
     #endif
 
+    nonisolated func captureInvocationContext(
+        toolName: String,
+        expectedWindowID: Int? = nil
+    ) throws -> ToolInvocationContext {
+        try MCPInvocationContextBridge.require(toolName: toolName, expectedWindowID: expectedWindowID)
+    }
+
     func currentRequestConnectionID() async -> UUID? {
-        await ServerNetworkManager.shared.currentConnectionUUID()
+        MCPInvocationContextBridge.current?.connectionID
     }
 
     func currentRequestClientName() async -> String? {
-        await ServerNetworkManager.shared.currentClientIdentifier()
+        MCPInvocationContextBridge.current?.metadata.clientName
     }
 
     func currentRequestClientID() async -> String? {
@@ -328,11 +336,11 @@ actor MCPService: Sendable {
     }
 
     func currentRequestWindowID() async -> Int? {
-        await ServerNetworkManager.shared.currentConnectionWindowID()
+        MCPInvocationContextBridge.current?.metadata.windowID
     }
 
     func currentRequestExplicitWindowRoutingHint() -> MCPExplicitWindowRoutingHint? {
-        ServerNetworkManager.currentExplicitWindowRoutingHint
+        MCPInvocationContextBridge.current?.metadata.explicitWindowRoutingHint
     }
 
     // ──────────────────────────────────────────────
@@ -485,5 +493,17 @@ actor MCPService: Sendable {
         for (_, continuation) in dashboardSubscribers {
             continuation.yield(())
         }
+    }
+}
+
+/// Existing app adapter owns redacted diagnostics, not the neutral carrier.
+/// A fresh fallback is injected at ingress so a missing TaskLocal cannot suppress DEBUG evidence.
+struct MCPInvocationDiagnosticAdapter {
+    private let logger = Logger(label: "com.repoprompt.mcp.invocation")
+
+    func report(_ failure: MCPInvocationContextFailure) {
+        #if DEBUG
+            logger.error("MCP invocation adapter rejected context: \(String(describing: failure))")
+        #endif
     }
 }

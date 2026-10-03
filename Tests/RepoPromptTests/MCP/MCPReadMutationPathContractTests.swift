@@ -307,8 +307,8 @@ final class MCPReadMutationPathContractTests: XCTestCase {
             let root = try await store.loadRoot(path: rootURL.path)
             let loadedService = await store.fileSystemServiceForTesting(rootID: root.id)
             let service = try XCTUnwrap(loadedService)
-            let (server, _) = try makeInProcessMCPFileActionsServer(store: store, root: rootURL)
-            let tool = try await inProcessFileActionsTool(from: server)
+            let (server, connectionID) = try makeInProcessMCPFileActionsServer(store: store, root: rootURL)
+            let tool = try await inProcessFileActionsTool(from: server, connectionID: connectionID)
             let deletion = MCPPathContractReleaseGate(name: "public create deletion")
             let progress = MCPPathContractReleaseGate(name: "public create progress")
             progress.release()
@@ -2931,13 +2931,13 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         let loserContent = "public loser bytes must never replace\n"
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        let (server, _) = try makeInProcessMCPFileActionsServer(store: store, root: root)
+        let (server, connectionID) = try makeInProcessMCPFileActionsServer(store: store, root: root)
         guard let rootID = await store.rootRefs(scope: .visibleWorkspace).first?.id,
               let service = await store.fileSystemServiceForTesting(rootID: rootID)
         else {
             return XCTFail("The isolated root must expose its filesystem service")
         }
-        let tool = try await inProcessFileActionsTool(from: server)
+        let tool = try await inProcessFileActionsTool(from: server, connectionID: connectionID)
         let gate = Issue859CreateGate()
         await service.setCreateFileDataPreparationForTesting { content in
             await gate.wait()
@@ -3007,13 +3007,13 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         let overwriteContent = "explicit overwrite content\n"
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        let (server, _) = try makeInProcessMCPFileActionsServer(store: store, root: root)
+        let (server, connectionID) = try makeInProcessMCPFileActionsServer(store: store, root: root)
         guard let rootID = await store.rootRefs(scope: .visibleWorkspace).first?.id,
               let service = await store.fileSystemServiceForTesting(rootID: rootID)
         else {
             return XCTFail("The isolated root must expose its filesystem service")
         }
-        let tool = try await inProcessFileActionsTool(from: server)
+        let tool = try await inProcessFileActionsTool(from: server, connectionID: connectionID)
         let gate = Issue859CreateGate()
         await service.setCreateFileDataPreparationForTesting { content in
             await gate.wait()
@@ -3070,13 +3070,13 @@ final class MCPReadMutationPathContractTests: XCTestCase {
         let destination = root.appendingPathComponent("nested/NewFile.swift")
         let store = WorkspaceFileContextStore()
         _ = try await store.loadRoot(path: root.path)
-        let (server, _) = try makeInProcessMCPFileActionsServer(store: store, root: root)
+        let (server, connectionID) = try makeInProcessMCPFileActionsServer(store: store, root: root)
         guard let rootID = await store.rootRefs(scope: .visibleWorkspace).first?.id,
               let service = await store.fileSystemServiceForTesting(rootID: rootID)
         else {
             return XCTFail("The isolated root must expose its filesystem service")
         }
-        let tool = try await inProcessFileActionsTool(from: server)
+        let tool = try await inProcessFileActionsTool(from: server, connectionID: connectionID)
         await service.setCreateFileDataPreparationForTesting { content in
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
             return Data(content.utf8)
@@ -3284,9 +3284,32 @@ final class MCPReadMutationPathContractTests: XCTestCase {
     }
 
     @MainActor
-    private func inProcessFileActionsTool(from server: MCPServerViewModel) async throws -> RepoPromptApp.Tool {
+    private func inProcessFileActionsTool(
+        from server: MCPServerViewModel,
+        connectionID: UUID
+    ) async throws -> RepoPromptApp.Tool {
         let tools = await server.windowMCPTools
-        return try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.fileActions })
+        let tool = try XCTUnwrap(tools.first { $0.name == MCPWindowToolName.fileActions })
+        return RepoPromptApp.Tool(
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            annotations: tool.annotations,
+            isEnabledByDefault: tool.isEnabledByDefault,
+            returnsValue: { arguments in
+                let context = ToolInvocationContext.trustedLocal(
+                    toolName: tool.name,
+                    metadata: MCPRequestMetadata(
+                        connectionID: connectionID,
+                        clientName: nil,
+                        windowID: -859
+                    )
+                )
+                return try await MCPInvocationContextBridge.withInvocation(context) {
+                    try await tool(arguments)
+                }
+            }
+        )
     }
 
     private func fileActionArguments(

@@ -424,7 +424,7 @@ final class MCPReadAutoSelectionRecoveryTests: XCTestCase {
 
     /// Recovery tests replace file application with callbacks, but enqueue still receives
     /// authority captured from a genuinely activated catalog rather than a fabricated ticket.
-    private func makeAuthority() async throws -> MCPServerViewModel.FrozenFileToolAuthority {
+    private func makeAuthority() async throws -> MCPFrozenFileToolAuthority {
         let files = WorkspaceFilesViewModel()
         let keyManager = KeyManager(
             secureService: SecureKeysService(secureStorage: TestSecureStorageBackend())
@@ -454,7 +454,7 @@ final class MCPReadAutoSelectionRecoveryTests: XCTestCase {
         let result = await manager.switchWorkspace(to: target, saveState: false, reason: "recovery-authority-test")
         XCTAssertTrue(result.didSwitch)
         let snapshot = try await manager.awaitWorkspaceRootCatalogSnapshot(workspaceID: target.id, timeout: .seconds(5))
-        let authority = try await MCPServerViewModel.FrozenFileToolAuthority.capture(
+        let authority = try await MCPFrozenFileToolAuthority.capture(
             lookupContext: .visibleWorkspace,
             rootCatalogSnapshot: snapshot,
             store: files.workspaceFileContextStore
@@ -464,7 +464,7 @@ final class MCPReadAutoSelectionRecoveryTests: XCTestCase {
     }
 
     private func contextKey(
-        authority: MCPServerViewModel.FrozenFileToolAuthority,
+        authority: MCPFrozenFileToolAuthority,
         tabID: UUID = UUID(),
         bindingGeneration: UInt64 = 1
     ) -> MCPReadFileAutoSelectionCoordinator.ContextKey {

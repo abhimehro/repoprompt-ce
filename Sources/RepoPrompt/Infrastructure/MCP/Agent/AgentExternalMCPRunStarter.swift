@@ -8,8 +8,8 @@ enum AgentExternalMCPRunStarter {
         let delivery: AgentModeViewModel.MCPInstructionDispatch
     }
 
-    typealias RequestMetadata = MCPServerViewModel.RequestMetadata
-    typealias BindCurrentRequestToTab = (_ tabID: UUID, _ metadata: RequestMetadata) async throws -> Void
+    typealias RequestMetadata = MCPRequestMetadata
+    typealias BindCurrentRequestToTab = (_ tabID: UUID, _ metadata: MCPRequestMetadata) async throws -> Void
     typealias DispatchInstruction = @MainActor (
         _ sessionID: UUID,
         _ tabID: UUID,
@@ -43,7 +43,7 @@ enum AgentExternalMCPRunStarter {
     static func startPreservingCallerBinding(
         target: AgentModeViewModel.MCPSessionTarget,
         message: String,
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         agentModeVM: AgentModeViewModel,
         agentRaw: String?,
         modelRaw: String?,
@@ -76,7 +76,7 @@ enum AgentExternalMCPRunStarter {
     static func startApplyingRequestBindingPolicy(
         target: AgentModeViewModel.MCPSessionTarget,
         message: String,
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         bindCurrentRequestToTab: @escaping BindCurrentRequestToTab,
         agentModeVM: AgentModeViewModel,
         agentRaw: String?,
@@ -110,7 +110,7 @@ enum AgentExternalMCPRunStarter {
     private static func startWithBindingDisposition(
         target: AgentModeViewModel.MCPSessionTarget,
         message: String,
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         bindingDisposition: RequestBindingDisposition,
         agentModeVM: AgentModeViewModel,
         agentRaw: String?,

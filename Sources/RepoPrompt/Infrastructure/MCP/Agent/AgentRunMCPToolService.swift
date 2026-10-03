@@ -254,7 +254,7 @@ private let agentRunExpiredHandleRecoveryNote = [
 
 @MainActor
 struct AgentRunMCPToolService {
-    typealias RequestMetadata = MCPServerViewModel.RequestMetadata
+    typealias RequestMetadata = MCPRequestMetadata
     typealias HeartbeatOperation = @Sendable () async throws -> Value
 
     static func requireWritableWorkspaceAuthority(_ issue: DomainWorkspaceAuthorityIssue?) throws {

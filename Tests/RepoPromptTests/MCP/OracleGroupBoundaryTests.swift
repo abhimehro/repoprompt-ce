@@ -13,7 +13,7 @@ import XCTest
             defer { fixture.cleanup() }
 
             await assertStopsAfterRoute(
-                fixture.service,
+                fixture,
                 args: [
                     "message": .string("start fresh"),
                     "chat_id": .string("existing-chat"),
@@ -32,7 +32,7 @@ import XCTest
                     "message": .string("continue"),
                     "chat_id": .string("existing-chat"),
                     "model": .string("override-model")
-                ])
+                ], invocationContext: fixture.invocationContext)
                 XCTFail("Expected invalid continuation route")
             } catch OracleBoundaryTestStop.afterRoute {
                 XCTFail("Invalid route reached tab resolution")
@@ -47,7 +47,7 @@ import XCTest
             defer { fixture.cleanup() }
 
             await assertStopsAfterRoute(
-                fixture.service,
+                fixture,
                 args: [
                     "message": .string("continue"),
                     "chat_id": .string("  existing-chat  ")
@@ -61,7 +61,7 @@ import XCTest
             defer { fixture.cleanup() }
 
             await assertStopsAfterRoute(
-                fixture.service,
+                fixture,
                 args: ["message": .string("continue selected")]
             )
             XCTAssertEqual(fixture.rebindRecorder.count, 0)
@@ -75,7 +75,7 @@ import XCTest
                 _ = try await fixture.service.executeOracleSend(args: [
                     "message": .string("continue selected"),
                     "model": .string("override-model")
-                ])
+                ], invocationContext: fixture.invocationContext)
                 XCTFail("Expected implicit continuation model rejection")
             } catch OracleBoundaryTestStop.afterRoute {
                 XCTFail("Invalid route reached tab resolution")
@@ -90,7 +90,7 @@ import XCTest
             defer { fixture.cleanup() }
 
             await assertStopsAfterRoute(
-                fixture.service,
+                fixture,
                 args: [
                     "message": .string("start"),
                     "new_chat": .bool(true),
@@ -106,7 +106,7 @@ import XCTest
 
             _ = try await fixture.service.executeOracleSend(args: [
                 "message": .string("continue selected")
-            ])
+            ], invocationContext: fixture.invocationContext)
 
             XCTAssertEqual(fixture.sendRecorder.calls.count, 1)
             XCTAssertEqual(fixture.sendRecorder.calls[0]["message"], .string("continue selected"))
@@ -117,21 +117,16 @@ import XCTest
         }
 
         func testAgentModeOracleSendDoesNotCompatibilityRebind() async {
-            let fixture = makeOracleSendFixture()
+            let fixture = makeOracleSendFixture(connectionID: UUID(), livePurpose: .agentModeRun)
             defer { fixture.cleanup() }
-            let connectionID = UUID()
-            await ServerNetworkManager.shared.setRunPurpose(.agentModeRun, for: connectionID)
 
-            await ServerNetworkManager.withConnectionID(connectionID) {
-                await assertStopsAfterRoute(
-                    fixture.service,
-                    args: [
-                        "message": .string("continue"),
-                        "chat_id": .string("existing-chat")
-                    ]
-                )
-            }
-            await ServerNetworkManager.shared.setRunPurpose(.unknown, for: connectionID)
+            await assertStopsAfterRoute(
+                fixture,
+                args: [
+                    "message": .string("continue"),
+                    "chat_id": .string("existing-chat")
+                ]
+            )
             XCTAssertEqual(fixture.rebindRecorder.count, 0)
         }
 
@@ -321,11 +316,11 @@ import XCTest
         }
 
         private func assertStopsAfterRoute(
-            _ service: MCPOracleToolService,
+            _ fixture: OracleSendBoundaryFixture,
             args: [String: Value]
         ) async {
             do {
-                _ = try await service.executeOracleSend(args: args)
+                _ = try await fixture.service.executeOracleSend(args: args, invocationContext: fixture.invocationContext)
                 XCTFail("Expected test stop after route validation")
             } catch OracleBoundaryTestStop.afterRoute {
             } catch {
@@ -333,14 +328,18 @@ import XCTest
             }
         }
 
-        private func makeOracleSendFixture(stopAfterRoute: Bool = true) -> OracleSendBoundaryFixture {
+        private func makeOracleSendFixture(
+            stopAfterRoute: Bool = true,
+            connectionID: UUID? = nil,
+            livePurpose: MCPRunPurpose = .unknown
+        ) -> OracleSendBoundaryFixture {
             let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
             GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
             let window = WindowState()
             WindowStatesManager.shared.registerWindowState(window)
             GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
 
-            let snapshot = MCPServerViewModel.TabContextSnapshot(
+            let snapshot = MCPTabContextSnapshot(
                 tabID: UUID(),
                 windowID: window.windowID,
                 workspaceID: UUID(),
@@ -352,8 +351,8 @@ import XCTest
                 frozenLookupContext: .visibleWorkspace,
                 explicitlyBound: true
             )
-            let metadata = MCPServerViewModel.RequestMetadata(
-                connectionID: nil,
+            let metadata = MCPRequestMetadata(
+                connectionID: connectionID,
                 clientName: "oracle-boundary-test",
                 windowID: window.windowID
             )
@@ -365,7 +364,9 @@ import XCTest
                 oracleChatLogToolName: "oracle_chat_log",
                 promptVM: window.promptManager,
                 oracleVM: window.oracleViewModel,
-                captureRequestMetadata: { metadata },
+                liveRunPurpose: { requestedConnectionID in
+                    requestedConnectionID == connectionID ? livePurpose : .unknown
+                },
                 resolveTabContextSnapshot: { _ in .init(snapshot: snapshot) },
                 requireCurrentTabContext: { _ in
                     if stopAfterRoute { throw OracleBoundaryTestStop.afterRoute }
@@ -391,6 +392,7 @@ import XCTest
             return OracleSendBoundaryFixture(
                 window: window,
                 service: service,
+                invocationContext: .trustedLocal(toolName: "oracle_send", metadata: metadata),
                 rebindRecorder: recorder,
                 sendRecorder: sendRecorder
             )
@@ -556,6 +558,7 @@ import XCTest
     private struct OracleSendBoundaryFixture {
         let window: WindowState
         let service: MCPOracleToolService
+        let invocationContext: ToolInvocationContext
         let rebindRecorder: OracleRebindRecorder
         let sendRecorder: OracleSendArgsRecorder
 

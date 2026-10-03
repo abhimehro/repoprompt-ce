@@ -4,18 +4,18 @@ import RepoPromptInstrumentation
 
 @MainActor
 struct AgentExploreMCPToolService {
-    typealias RequestMetadata = MCPServerViewModel.RequestMetadata
+    typealias RequestMetadata = MCPRequestMetadata
     typealias HeartbeatOperation = AgentRunMCPToolService.HeartbeatOperation
     typealias StartRun = AgentRunMCPToolService.StartRun
 
     let toolName: String
     var perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()
-    let captureRequestMetadata: () async -> RequestMetadata
+    let captureRequestMetadata: () async -> MCPRequestMetadata
     let requireTargetWindow: () throws -> WindowState
-    let resolveSpawnSourceTabID: (_ metadata: RequestMetadata) async -> UUID?
-    let resolveSpawnParentSessionID: (_ metadata: RequestMetadata, _ targetWindow: WindowState) async -> UUID?
+    let resolveSpawnSourceTabID: (_ metadata: MCPRequestMetadata) async -> UUID?
+    let resolveSpawnParentSessionID: (_ metadata: MCPRequestMetadata, _ targetWindow: WindowState) async -> UUID?
     let withHeartbeat: (_ connectionID: UUID?, _ tool: String, _ stage: String, _ message: String, _ operation: @escaping HeartbeatOperation) async throws -> Value
-    var beginAgentRunWait: (_ metadata: RequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval) async -> AgentRunWaitScopeRegistration? = { _, _, _ in nil }
+    var beginAgentRunWait: (_ metadata: MCPRequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval) async -> AgentRunWaitScopeRegistration? = { _, _, _ in nil }
     var endAgentRunWait: (_ token: UUID, _ completion: AgentRunWaitScopeCompletion) async -> Void = { _, _ in }
     let startRun: StartRun
     #if DEBUG
@@ -176,7 +176,7 @@ struct AgentExploreMCPToolService {
     }
 
     private struct ExploreStartContext {
-        let metadata: RequestMetadata
+        let metadata: MCPRequestMetadata
         let targetWindow: WindowState
         let agentModeVM: AgentModeViewModel
         let expectedWorkspaceID: UUID
@@ -219,7 +219,7 @@ struct AgentExploreMCPToolService {
         return .batch(messages)
     }
 
-    private func resolveStartContext(metadata: RequestMetadata) async throws -> ExploreStartContext {
+    private func resolveStartContext(metadata: MCPRequestMetadata) async throws -> ExploreStartContext {
         let targetWindow = try requireTargetWindow()
         guard let workspace = targetWindow.workspaceManager.activeWorkspace else {
             throw MCPError.invalidParams("No active workspace available for agent_explore.start.")
@@ -435,7 +435,7 @@ struct AgentExploreMCPToolService {
     }
 
     private func resolveExploreCaller(
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         agentModeVM: AgentModeViewModel
     ) async throws -> (sourceTabID: UUID, sourceSessionID: UUID) {
         guard let sourceTabID = await resolveSpawnSourceTabID(metadata),

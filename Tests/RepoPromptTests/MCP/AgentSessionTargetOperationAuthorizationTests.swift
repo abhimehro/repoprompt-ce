@@ -13,6 +13,84 @@ import XCTest
 final class AgentSessionTargetOperationAuthorizationTests: XCTestCase {
     private let callerSessionID = UUID()
 
+    private final class InvocationDiagnostics: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [MCPInvocationContextFailure] = []
+
+        func record(_ failure: MCPInvocationContextFailure) {
+            lock.lock()
+            defer { lock.unlock() }
+            recorded.append(failure)
+        }
+
+        var failures: [MCPInvocationContextFailure] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recorded
+        }
+    }
+
+    func testInvocationBridgeMissingContextFailsClosedWithInjectedDiagnostic() throws {
+        let diagnostics = InvocationDiagnostics()
+        try MCPInvocationContextBridge.$diagnosticSink.withValue({ diagnostics.record($0) }) {
+            try MCPInvocationContextBridge.$current.withValue(nil) {
+                XCTAssertThrowsError(try MCPInvocationContextBridge.require(toolName: "ask_oracle")) { error in
+                    XCTAssertEqual(error as? MCPInvocationContextFailure, .missingExpectedContext)
+                }
+            }
+        }
+        #if DEBUG
+            XCTAssertEqual(diagnostics.failures, [.missingExpectedContext])
+        #endif
+    }
+
+    func testInvocationBridgeRejectsForeignConnectionAuthority() throws {
+        let connection = NSObject()
+        let invocationID = UUID()
+        let context = ToolInvocationContext(
+            origin: .network,
+            invocationID: invocationID,
+            requestID: nil,
+            toolName: "ask_oracle",
+            metadata: MCPRequestMetadata(
+                connectionID: UUID(), clientName: "test", windowID: nil,
+                invocationID: invocationID
+            ),
+            dispatchAuthorization: MCPToolDispatchAuthorization(
+                connectionID: UUID(), connectionIdentity: ObjectIdentifier(connection),
+                lifecycleGeneration: 1, windowIdentity: nil
+            )
+        )
+        try MCPInvocationContextBridge.$current.withValue(context) {
+            XCTAssertThrowsError(try MCPInvocationContextBridge.require(toolName: "ask_oracle")) { error in
+                XCTAssertEqual(error as? MCPInvocationContextFailure, .connectionMismatch)
+            }
+        }
+    }
+
+    func testInvocationBridgeRejectsWrongToolAndMissingNetworkWindowAuthorization() throws {
+        let invocationID = UUID()
+        let context = ToolInvocationContext(
+            origin: .network,
+            invocationID: invocationID,
+            requestID: nil,
+            toolName: "ask_oracle",
+            metadata: MCPRequestMetadata(
+                connectionID: UUID(), clientName: "test", windowID: 42,
+                invocationID: invocationID
+            ),
+            dispatchAuthorization: nil
+        )
+        try MCPInvocationContextBridge.$current.withValue(context) {
+            XCTAssertThrowsError(try MCPInvocationContextBridge.require(toolName: "ask_user")) { error in
+                XCTAssertEqual(error as? MCPInvocationContextFailure, .toolMismatch)
+            }
+            XCTAssertThrowsError(try MCPInvocationContextBridge.require(toolName: "ask_oracle", expectedWindowID: 42)) { error in
+                XCTAssertEqual(error as? MCPInvocationContextFailure, .missingAuthorization)
+            }
+        }
+    }
+
     // MARK: - agent_run
 
     func testAgentOriginCallerCannotPollAnUnrelatedSessionByFullUUID() async throws {

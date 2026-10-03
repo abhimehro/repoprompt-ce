@@ -108,6 +108,150 @@ import XCTest
             }
         }
 
+        func testCancellationBeforeProviderEntryReleasesOnlyItsOwnAdmissionPermit() async throws {
+            let limiter = MCPDomainAsyncLimiter(limit: 2)
+            let siblingGate = AdmissionDeadlineGate()
+            let handoffGate = AdmissionDeadlineGate()
+            let siblingEntered = expectation(description: "sibling owns its admission permit")
+            let cancelledPermitAcquired = expectation(description: "cancelled call acquired a permit before provider entry")
+            let cancelledBody = AdmissionDeadlineFlag()
+            let sibling = Task {
+                try await limiter.withPermit {
+                    siblingEntered.fulfill()
+                    await siblingGate.wait()
+                    try Task.checkCancellation()
+                    return "sibling"
+                }
+            }
+            var cancelled: Task<Void, Error>?
+
+            do {
+                await fulfillment(of: [siblingEntered], timeout: 5)
+                await limiter.setDebugImmediatePermitAcquiredHandler {
+                    cancelledPermitAcquired.fulfill()
+                    await handoffGate.wait()
+                }
+                let call = Task {
+                    try await limiter.withPermit {
+                        await cancelledBody.mark()
+                    }
+                }
+                cancelled = call
+                await fulfillment(of: [cancelledPermitAcquired], timeout: 5)
+                let acquired = await limiter.debugSnapshot()
+                XCTAssertEqual(acquired.activePermitCount, 2)
+                XCTAssertEqual(acquired.permits, 0)
+
+                call.cancel()
+                await handoffGate.release()
+                do {
+                    try await call.value
+                    XCTFail("Expected cancellation before provider entry")
+                } catch is CancellationError {
+                    // The acquired permit must be released without entering the provider.
+                }
+                await limiter.setDebugImmediatePermitAcquiredHandler(nil)
+                let bodyEntered = await cancelledBody.value()
+                XCTAssertFalse(bodyEntered)
+                let survivor = await limiter.debugSnapshot()
+                XCTAssertEqual(survivor.activePermitCount, 1)
+                XCTAssertEqual(survivor.permits, 1)
+                XCTAssertEqual(survivor.inFlight, 1)
+                XCTAssertEqual(survivor.waiterCount, 0)
+
+                // A replacement can consume exactly the freed permit while the sibling
+                // remains parked. This distinguishes both a leak and an over-release.
+                let replacementActiveCount = try await limiter.withPermit {
+                    await limiter.debugSnapshot().activePermitCount
+                }
+                XCTAssertEqual(replacementActiveCount, 2)
+                await siblingGate.release()
+                let siblingResult = try await sibling.value
+                XCTAssertEqual(siblingResult, "sibling")
+                let settled = await limiter.debugSnapshot()
+                XCTAssertEqual(settled.activePermitCount, 0)
+                XCTAssertEqual(settled.permits, 2)
+                XCTAssertEqual(settled.inFlight, 0)
+                XCTAssertEqual(settled.waiterCount, 0)
+                XCTAssertTrue(settled.isIdle)
+            } catch {
+                await limiter.setDebugImmediatePermitAcquiredHandler(nil)
+                cancelled?.cancel()
+                sibling.cancel()
+                await handoffGate.release()
+                await siblingGate.release()
+                if let cancelled { _ = try? await cancelled.value }
+                _ = try? await sibling.value
+                throw error
+            }
+        }
+
+        func testCancellationAfterProviderEntrySettlesOnceWithoutReleasingSiblingPermit() async throws {
+            let limiter = MCPDomainAsyncLimiter(limit: 2)
+            let siblingGate = AdmissionDeadlineGate()
+            let cancellationGate = ExportContractCancellationGate()
+            let siblingEntered = expectation(description: "sibling provider entered")
+            let cancelledEntered = expectation(description: "cancelled provider entered")
+            let settlements = PR4AdmissionSettlementCounter()
+            let sibling = Task {
+                try await limiter.withPermit {
+                    siblingEntered.fulfill()
+                    await siblingGate.wait()
+                    try Task.checkCancellation()
+                    return "sibling"
+                }
+            }
+            let cancelled = Task {
+                try await limiter.withPermit {
+                    defer { settlements.record() }
+                    cancelledEntered.fulfill()
+                    try await cancellationGate.waitUntilCancelled()
+                }
+            }
+
+            do {
+                await fulfillment(of: [siblingEntered, cancelledEntered], timeout: 5)
+                let entered = await limiter.debugSnapshot()
+                XCTAssertEqual(entered.activePermitCount, 2)
+                XCTAssertEqual(entered.permits, 0)
+                cancelled.cancel()
+                do {
+                    try await cancelled.value
+                    XCTFail("Expected cancellation after provider entry")
+                } catch is CancellationError {
+                    // Provider cleanup and permit release belong to this call only.
+                }
+                XCTAssertEqual(settlements.value(), 1)
+                let survivor = await limiter.debugSnapshot()
+                XCTAssertEqual(survivor.activePermitCount, 1)
+                XCTAssertEqual(survivor.permits, 1)
+                XCTAssertEqual(survivor.inFlight, 1)
+                XCTAssertEqual(survivor.waiterCount, 0)
+                let replacementActiveCount = try await limiter.withPermit {
+                    await limiter.debugSnapshot().activePermitCount
+                }
+                XCTAssertEqual(replacementActiveCount, 2)
+                XCTAssertEqual(settlements.value(), 1)
+                await siblingGate.release()
+                let siblingResult = try await sibling.value
+                XCTAssertEqual(siblingResult, "sibling")
+                let settled = await limiter.debugSnapshot()
+                XCTAssertEqual(settled.activePermitCount, 0)
+                XCTAssertEqual(settled.permits, 2)
+                XCTAssertEqual(settled.inFlight, 0)
+                XCTAssertEqual(settled.waiterCount, 0)
+                XCTAssertTrue(settled.isIdle)
+                XCTAssertEqual(settlements.value(), 1)
+            } catch {
+                cancelled.cancel()
+                sibling.cancel()
+                await siblingGate.release()
+                _ = try? await cancelled.value
+                _ = try? await sibling.value
+                throw error
+            }
+        }
+
         func testConnectionPermitReleasedWhenDeadlineExpiresImmediatelyAfterHandoff() async throws {
             let limiter = MCPDomainAsyncLimiter(limit: 1)
             let holderGate = AdmissionDeadlineGate()
@@ -2001,6 +2145,19 @@ import XCTest
                 handlerCancelled: handlerCancelled,
                 ignoredCancellationRelease: ignoredCancellationRelease
             )
+        }
+    }
+
+    private final class PR4AdmissionSettlementCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        func record() {
+            lock.withLock { count += 1 }
+        }
+
+        func value() -> Int {
+            lock.withLock { count }
         }
     }
 

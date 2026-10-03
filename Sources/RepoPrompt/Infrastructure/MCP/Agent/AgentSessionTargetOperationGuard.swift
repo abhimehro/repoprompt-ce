@@ -14,11 +14,11 @@ import RepoPromptDomainRuntime
 /// from a nonexistent one.
 @MainActor
 enum AgentSessionTargetOperationGuard {
-    typealias RequestMetadata = MCPServerViewModel.RequestMetadata
-    typealias SpawnParentSessionResolver = (RequestMetadata, WindowState) async -> UUID?
+    typealias RequestMetadata = MCPRequestMetadata
+    typealias SpawnParentSessionResolver = (MCPRequestMetadata, WindowState) async -> UUID?
     /// Resolves the caller's **exact endpoint incarnation** from server-owned run routing.
     typealias ObserverEndpointResolver =
-        (RequestMetadata, WindowState) async -> DomainAgentSessionLinkEndpointIdentity?
+        (MCPRequestMetadata, WindowState) async -> DomainAgentSessionLinkEndpointIdentity?
 
     static func denialError(reference: String) -> MCPError {
         MCPError.invalidParams("Session '\(reference)' was not found in the active workspace.")
@@ -42,7 +42,7 @@ enum AgentSessionTargetOperationGuard {
     /// `.administrativePrincipal` is the permissive outcome, so it is selected only when *every*
     /// run-scoped signal is absent rather than merely inconclusive.
     static func resolveCaller(
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         targetWindow: WindowState,
         resolveSpawnParentSessionID: SpawnParentSessionResolver
     ) async -> DomainAgentSessionCallerIdentity {
@@ -66,7 +66,7 @@ enum AgentSessionTargetOperationGuard {
     /// Every non-Agent principal, every Agent run whose routing does not resolve exactly, and every
     /// tab without a live durable binding fails closed to `nil`.
     static func resolveObserverEndpoint(
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         targetWindow: WindowState,
         resolveObserverEndpoint: ObserverEndpointResolver
     ) async -> DomainAgentSessionLinkEndpointIdentity? {
@@ -101,7 +101,7 @@ enum AgentSessionTargetOperationGuard {
     /// - Parameter targetWindow: the routed window, used only to consult its server-owned tab-context
     ///   store. Omitting it narrows the check to the purpose triple.
     static func isAgentOriginConnection(
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         targetWindow: WindowState? = nil
     ) async -> Bool {
         guard metadata.connectionID != nil else {
@@ -114,7 +114,7 @@ enum AgentSessionTargetOperationGuard {
     }
 
     /// The captured/live/cached run-purpose triple, reconciled with a rehydration attempt.
-    private static func hasAuthoritativeAgentRunPurpose(metadata: RequestMetadata) async -> Bool {
+    private static func hasAuthoritativeAgentRunPurpose(metadata: MCPRequestMetadata) async -> Bool {
         guard let connectionID = metadata.connectionID else {
             return metadata.runPurpose.map { $0 != .unknown } ?? false
         }

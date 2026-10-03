@@ -6,7 +6,7 @@ import RepoPromptDomainRuntime
 /// the immutable registration-time run attempt; tool arguments cannot name a target.
 @MainActor
 struct AgentSelfMCPToolService {
-    typealias RequestMetadata = MCPServerViewModel.RequestMetadata
+    typealias RequestMetadata = MCPRequestMetadata
     typealias Endpoint = DomainAgentSessionLinkEndpointIdentity
     typealias ObserverEndpointResolver = AgentSessionTargetOperationGuard.ObserverEndpointResolver
 
@@ -17,7 +17,7 @@ struct AgentSelfMCPToolService {
         case unavailable
     }
 
-    let captureRequestMetadata: () async -> RequestMetadata
+    let captureRequestMetadata: () async -> MCPRequestMetadata
     let requireTargetWindow: () throws -> WindowState
     let resolveObserverEndpoint: ObserverEndpointResolver
     let captureCallOrigin: () -> AgentSelfMCPCallOrigin?

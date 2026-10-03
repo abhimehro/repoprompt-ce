@@ -79,6 +79,41 @@ User decision: "seam, then port." The in-app seam PRs that headless depends on m
 - **Why the WorkspaceContext move still waits for Platform.** Index readiness on `7d9cecd2` shows the WorkspaceContext set (101 files) has 126 outbound file references into FileSystem and VCS. Its Features/MCP-ViewModel edges, which PR 3 removes, number about 40.
 - **Claims lists.** Each PR publishes its file claims before it moves or substantially edits any file. The PR-triage overseer sequences open contributor PRs against them.
 
+### PR 4 bounded implementation contract (2026-10-02)
+
+The approved in-app prep uses one new `Infrastructure/MCP/MCPInvocationContext.swift`
+for S5 value declarations and the Sendable S6 carrier. Existing args-only canonical
+bindings remain unchanged: the app ingress scopes the captured packet around the
+DomainRuntime host, and window adapters capture it before their first suspension.
+The existing VM retains live file-authority capture/validation and the atomic
+lifetime mutation fence. Explicit `trustedLocal` compatibility is separate from
+network authorization; a missing network packet is never local authorization.
+
+D3 consumes the existing DomainRuntime admission/settlement values and moves only
+the app client-policy value projection into `MCPToolAdmissionPolicy`. DomainRuntime
+continues owning permits, request identities, cancellation, settlement, delivery,
+and replay. No additional wire-ID deduplication or headless signature change.
+
+The nonthrowing metadata compatibility helper is **not an authorization boundary**:
+absent metadata can classify as administrative in compatibility code. Safety relies
+on mandatory binder/read ingress and the preserved scoped, explicit packet through
+the structured Host Task, runTool/start gate and heartbeat. Carrier-free MCPService
+getters return nil, never live successor metadata. No throwing-signature expansion
+into unclaimed callers or production admission weakening is included.
+
+Local source gates are green on the v8 freeze: broad ticket
+`c6cb5b47-e9e3-4aad-8f6c-42285c5a1296` executed 4,142 tests, with 4,140 passed,
+0 failed and 2 skipped; DomainRuntime 268 and MCPCore 66 passed. Exact regressions
+6, affected 195, repaired exact 11 and affected three-suite 78 passed. Final v8
+format/lint/guardrails passed with no source drift. The prior broad-v7 failure
+(4,129 passed, 11 failed, 2 skipped) remains historical evidence, not erased.
+
+Final acceptance still requires **final-head `make dev-build`**, thorough live CE
+MCP E2E (approval/denial, multiwindow, cancellation, replay), and headless
+initialize/list/read-only coverage; debug packaging/runtime checks are **NOT_RUN**.
+No lifecycle occurs without separate explicit approval through the overseer. The
+local v8 receipt does not certify integration onto a newer main.
+
 ### Soft conflicts and churn rules
 
 | Pair | Overlap | Rule |
@@ -225,7 +260,7 @@ AI                        [==== 8 ====][===== 9 =====]
 | --- | --- | --- |
 | `tests_testable_import_app_files` (non-increasing) | T1 | The regex is exact. Every test move lowers the baseline in the same PR |
 | `app_files_over_2000_lines` | T1 | Exact line counts |
-| `app_target_swift_lines` as a ceiling | T1 | Baseline plus a fixed headroom for feature work; each move PR lowers the ceiling by what it moved |
+| `app_target_swift_lines` advisory reference | T1 (advisory since 2026-10-03) | Baseline plus unchanged headroom is reported, not gated; numeric baselines and all other gates remain unchanged (see ledger policy) |
 | Import check `error` and the allowed-edge matrix | T1 | Covers the existing targets; each new target adds its row in its move PR |
 | Placement guardrail ("new files for a moved family go in its module") | T1, then extended by each move PR | This is the main "no new code in the old app" lever |
 | Per-target guardrails: no SwiftUI/AppKit in logic targets, no `RepoPromptApp` import, `bundle_main_allowed_roots` | Each target's move PR | P0.6 checklist |

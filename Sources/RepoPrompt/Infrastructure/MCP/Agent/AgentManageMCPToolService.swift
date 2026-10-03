@@ -4,7 +4,7 @@ import RepoPromptInstrumentation
 
 @MainActor
 struct AgentManageMCPToolService {
-    typealias RequestMetadata = MCPServerViewModel.RequestMetadata
+    typealias RequestMetadata = MCPRequestMetadata
 
     static let maxCleanupSessionIDs = 256
 
@@ -56,11 +56,11 @@ struct AgentManageMCPToolService {
 
     let toolName: String
     let perfRecorder: any AgentModePerfRecording
-    let captureRequestMetadata: () async -> RequestMetadata
+    let captureRequestMetadata: () async -> MCPRequestMetadata
     let requireTargetWindow: () throws -> WindowState
-    let resolveSpawnSourceTabID: (_ metadata: RequestMetadata) async -> UUID?
-    let resolveSpawnParentSessionID: (_ metadata: RequestMetadata, _ targetWindow: WindowState) async -> UUID?
-    let bindCurrentRequestToTab: (_ tabID: UUID, _ metadata: RequestMetadata) async throws -> Void
+    let resolveSpawnSourceTabID: (_ metadata: MCPRequestMetadata) async -> UUID?
+    let resolveSpawnParentSessionID: (_ metadata: MCPRequestMetadata, _ targetWindow: WindowState) async -> UUID?
+    let bindCurrentRequestToTab: (_ tabID: UUID, _ metadata: MCPRequestMetadata) async throws -> Void
     let restrictDiscoveryToRoleLabels: @MainActor (_ workspaceID: UUID?) -> Bool
     let cleanupDependencies: CleanupDependencies
     /// One-shot demand-scoped OpenCode observation source for explicit model-parameter
@@ -76,11 +76,11 @@ struct AgentManageMCPToolService {
     init(
         toolName: String,
         perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder(),
-        captureRequestMetadata: @escaping () async -> RequestMetadata,
+        captureRequestMetadata: @escaping () async -> MCPRequestMetadata,
         requireTargetWindow: @escaping () throws -> WindowState,
-        resolveSpawnSourceTabID: @escaping (_ metadata: RequestMetadata) async -> UUID?,
-        resolveSpawnParentSessionID: @escaping (_ metadata: RequestMetadata, _ targetWindow: WindowState) async -> UUID?,
-        bindCurrentRequestToTab: @escaping (_ tabID: UUID, _ metadata: RequestMetadata) async throws -> Void,
+        resolveSpawnSourceTabID: @escaping (_ metadata: MCPRequestMetadata) async -> UUID?,
+        resolveSpawnParentSessionID: @escaping (_ metadata: MCPRequestMetadata, _ targetWindow: WindowState) async -> UUID?,
+        bindCurrentRequestToTab: @escaping (_ tabID: UUID, _ metadata: MCPRequestMetadata) async throws -> Void,
         restrictDiscoveryToRoleLabels: @escaping @MainActor (_ workspaceID: UUID?) -> Bool = { workspaceID in
             GlobalSettingsStore.shared.effectiveAgentModelsProfile(workspaceID: workspaceID).restrictMCPAgentDiscoveryToRoleLabels
         },
@@ -127,7 +127,7 @@ struct AgentManageMCPToolService {
     /// Agent-origin caller may only reach a session it directly spawned. An oversight grant is never a
     /// valid basis here.
     private func operationCaller(
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         targetWindow: WindowState
     ) async -> DomainAgentSessionCallerIdentity {
         await AgentSessionTargetOperationGuard.resolveCaller(
@@ -150,7 +150,7 @@ struct AgentManageMCPToolService {
     private func authorizeSessionReference(
         operation: DomainAgentSessionTargetOperation,
         reference: String,
-        metadata: RequestMetadata,
+        metadata: MCPRequestMetadata,
         targetWindow: WindowState,
         agentModeVM: AgentModeViewModel,
         workspace: WorkspaceModel

@@ -57,7 +57,7 @@ struct AgentSessionLinkListCursor: Equatable {
 /// observer session UUID solely to disambiguate an already-authorized inbound grant.
 @MainActor
 struct AgentSessionLinkMCPToolService {
-    typealias RequestMetadata = MCPServerViewModel.RequestMetadata
+    typealias RequestMetadata = MCPRequestMetadata
     typealias HeartbeatOperation = AgentRunMCPToolService.HeartbeatOperation
     typealias ObserverEndpointResolver = AgentSessionTargetOperationGuard.ObserverEndpointResolver
 
