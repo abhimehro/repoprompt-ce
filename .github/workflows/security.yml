@@ -12,6 +12,10 @@ on:
     - cron: '37 3 * * 2'
   workflow_dispatch:
 
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -75,8 +79,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      # Needed so the action can post its dependency-change report on the PR.
-      pull-requests: write
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
