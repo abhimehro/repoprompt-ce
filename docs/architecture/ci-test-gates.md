@@ -2,8 +2,10 @@
 
 `CI` uses five macOS jobs total: one **Build and Static Gates** job, then four
 **Test Root Shard (No Build)** jobs. The exact required check **Style** runs last
-on Linux. It depends on the shared job, all shards, and Secret Scan; every
-prerequisite must succeed (failed, skipped, or cancelled is not success).
+on Linux. It depends on the shared job, all shards, Secret Scan, and the
+blueprint pin check (a drift check verifying the `.devin/blueprint.yaml` darwin
+gitleaks SHA-256 pins against the release checksums); every prerequisite must
+succeed (failed, skipped, or cancelled is not success).
 All former style/static/provider/import/index gates remain blocking. Compiler
 warning timing remains report-only on PRs and enforced on main, as before.
 
