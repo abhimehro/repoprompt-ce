@@ -25,7 +25,7 @@ initialize: |
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "${tmpdir}"' EXIT
   archive="${tmpdir}/${asset}"
-  curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}" -o "$archive"
+  curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}" -o "$archive"
   echo "${sha}  ${archive}" | shasum -a 256 -c -
   tar -xzf "$archive" -C "${tmpdir}" gitleaks
   bindir="$(brew --prefix 2>/dev/null || echo /usr/local)/bin"

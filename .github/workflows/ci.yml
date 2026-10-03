@@ -290,7 +290,7 @@ jobs:
           version="$(awk 'match($0, /gitleaks_[0-9.]+_linux_x64\.tar\.gz/) {
             print substr($0, RSTART + 9, RLENGTH - 26); exit }' .github/workflows/ci.yml)"
           [ -n "${version}" ] || { echo "could not parse gitleaks version from ci.yml" >&2; exit 1; }
-          sums="$(curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
+          sums="$(curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
           for arch in arm64 x64; do
             pinned="$(sed -n "s/.*arch=\"${arch}\"; *sha=\"\([0-9a-f]*\)\".*/\1/p" .devin/blueprint.yaml)"
             [ "$(echo "${pinned}" | wc -l)" -eq 1 ] && [ -n "${pinned}" ] \
