@@ -55,18 +55,23 @@ alerts remain open rather than auto-resolved):
   `Scripts/verify_release_ref.sh` resolves the dispatch tag to a commit and
   rejects anything outside protected-`main` ancestry.
 - `main-tip.yml:92-108` — the setup job compares the tip candidate against
-  live protected `main` via `git merge-base`, pins `tooling_commit` to the
-  workflow-definition commit, and marks `eligible=false` (publishing skipped)
-  for any candidate outside protected-`main` ancestry.
+  live protected `main` via `git merge-base` and pins `tooling_commit` to the
+  workflow-definition commit. It exits for candidates outside protected-`main`
+  ancestry, emits `eligible=false` (publishing skipped) for an ancestor
+  superseded by live `main`, and `eligible=true` only when the candidate
+  equals live `main`.
 - Both workflows check out with `persist-credentials: false`, so no token is
   carried into the consumed source.
 
-Residual risk: these guards run *inside* the workflow and verify ancestry of
-whatever ref the outputs carry — they do not attest the outputs themselves.
-A compromised or spoofed upstream job output could still inject an arbitrary
-(but ancestry-valid) ref, so the findings are real-but-mitigated, not false
-positives. Remediation would need a mechanism the guard cannot spoof (e.g.,
-recomputing the ref from the event payload inside the consuming job).
+Residual risk: the two workflows differ in what passes validation — the
+normal `main-tip` path admits only the live `main` candidate, while the
+release workflow accepts a selected version tag whose commit is anywhere in
+protected-`main` ancestry. In both, downstream jobs trust the validator's
+outputs and do not repeat the ref check, so a compromised or spoofed
+`validate-ref`/`setup` output could still direct a consuming job to another
+(ancestry-valid) commit. The findings are real-but-mitigated, not false
+positives; remediation would recompute the requested ref inside the
+consuming job.
 
 - #10 `main-tip.yml:742` — high — [alert](https://github.com/abhimehro/repoprompt-ce/security/code-scanning/10)
 - #9 `release.yml:75` — high — [alert](https://github.com/abhimehro/repoprompt-ce/security/code-scanning/9)
@@ -129,15 +134,17 @@ scanned:
 ## Going forward
 
 - `.github/workflows/security.yml` now runs CodeQL (Swift on `macos-26`,
-  Python, Actions) on every PR targeting `main` and push to `main` plus a
-  weekly scheduled scan, and `actions/dependency-review-action` on every PR
-  targeting `main`. CodeQL uploads are permitted on `pull_request`-triggered
-  runs even with Dependabot's read-only `GITHUB_TOKEN`, so no actor guard is
-  needed on the analysis step
+  Python, C/C++, Actions) on every PR targeting `main` and push to `main`
+  plus a weekly scheduled scan — matching the language set default setup
+  analyzed — and `actions/dependency-review-action` on every PR targeting
+  `main`. CodeQL uploads are permitted on `pull_request`-triggered runs even
+  with Dependabot's read-only `GITHUB_TOKEN`, so no actor guard is needed on
+  the analysis step
   ([GitHub docs](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible)).
-- `.github/dependabot.yml` refreshes SHA-pinned GitHub Actions only — it
-  covers no SwiftPM (Dependabot has no SwiftPM ecosystem), no npm globals
-  like `@openai/codex` installed without a lockfile in `ci.yml`, and no
-  runner labels such as `macos-26`; those stay manual.
+- `.github/dependabot.yml` refreshes SHA-pinned GitHub Actions only — this
+  configuration does not enable Swift updates (a `swift` ecosystem entry
+  exists but is intentionally left off as a maintainer decision), covers no
+  npm globals like `@openai/codex` installed without a lockfile in `ci.yml`,
+  and no runner labels such as `macos-26`; those stay manual.
 - Remediation owners still needed for the 5 open HIGH poisonable-step alerts
   in `release.yml` / `main-tip.yml`.

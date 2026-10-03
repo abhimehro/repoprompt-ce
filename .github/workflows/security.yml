@@ -45,6 +45,11 @@ jobs:
           - language: python
             runs-on: ubuntu-latest
             build-mode: none
+          # C/C++: first-party RepoPromptC target and vendored C sources;
+          # buildless analysis preserves default setup's c-cpp coverage.
+          - language: c-cpp
+            runs-on: ubuntu-latest
+            build-mode: none
           # GitHub Actions workflow analysis (the same rules that produced
           # the current cache-poisoning alerts under default setup).
           - language: actions
