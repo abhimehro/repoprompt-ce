@@ -226,7 +226,7 @@ jobs:
   style:
     # Protect main requires exactly Style: it must be the FINAL gate, not an early green row.
     name: Style
-    needs: [build-test-bundles, build-and-test, secret-scan]
+    needs: [build-test-bundles, build-and-test, secret-scan, blueprint-pin-check]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -240,7 +240,8 @@ jobs:
           BUILD_RESULT: ${{ needs.build-test-bundles.result }}
           SECRET_RESULT: ${{ needs.secret-scan.result }}
           SHARD_RESULT: ${{ needs.build-and-test.result }}
-        run: test "$BUILD_RESULT" = success && test "$SHARD_RESULT" = success && test "$SECRET_RESULT" = success
+          PIN_RESULT: ${{ needs.blueprint-pin-check.result }}
+        run: test "$BUILD_RESULT" = success && test "$SHARD_RESULT" = success && test "$SECRET_RESULT" = success && test "$PIN_RESULT" = success
 
       - name: Download expected coverage
         uses: actions/download-artifact@v4
@@ -298,3 +299,75 @@ jobs:
 
       - name: Scan checked-in source tree
         run: gitleaks dir --redact .
+
+  # Drift detection only — kept out of secret-scan so a transient fetch or a
+  # wrong pin can never suppress the security scans. It still gates the merge:
+  # `style` (the required check) lists this job in `needs:`.
+  blueprint-pin-check:
+    name: Verify blueprint gitleaks pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Verify blueprint darwin gitleaks pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # .devin/blueprint.yaml installs gitleaks on macOS snapshots with
+          # version parsed from this file and per-arch darwin SHA-256s pinned
+          # in-repo. Recompute the expected digests from the release's own
+          # checksums file and fail on drift instead of letting a wrong pin
+          # brick macOS setup on a developer machine.
+          version="$(awk 'match($0, /gitleaks_[0-9.]+_linux_x64\.tar\.gz/) {
+            print substr($0, RSTART + 9, RLENGTH - 26); exit }' .github/workflows/ci.yml)"
+          [ -n "${version}" ] || { echo "could not parse gitleaks version from ci.yml" >&2; exit 1; }
+          # ~4 KB checksums file: --max-time is per-attempt (30s each),
+          # --retry-max-time caps the retry window at 60s — worst case ≈90s,
+          # well inside the job's 5-minute timeout.
+          sums="$(curl --proto '=https' --tlsv1.2 -fsSL \
+            --retry 3 --retry-delay 2 --retry-max-time 60 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
+          # Drive the check from the arch/sha pairs actually declared in the
+          # blueprint, so added or reformatted case arms are verified too.
+          # The two counters deliberately read different inputs so a lossy
+          # step can never drop an arm from both at once:
+          # - `declared` counts every `arch = "` token in the RAW file — it
+          #   can only over-count (e.g. a `#` comment mentioning the shape),
+          #   which is fail-closed.
+          # - `pairs` needs the strict `arch="..."; sha="..."` shape on
+          #   comment-stripped text. The strip is a quote-unaware shell/YAML
+          #   approximation (whitespace/line-start-anchored `#`): a literal
+          #   `#` mid-token is kept, but `#` inside a quoted string on those
+          #   lines would still truncate — `declared` on the raw file is what
+          #   catches that as found < declared.
+          # A reformat that breaks the strict shape (spacing around `=`,
+          # non-lowercase arch, arch/sha split across lines, a sed-truncated
+          # line) keeps `declared` high and fails loudly instead of dropping
+          # coverage; two arms collapsed onto one line stay covered since
+          # grep -o extracts both digests.
+          stripped="$(sed 's/\(^\|[[:space:]]\)#.*/\1/' .devin/blueprint.yaml)"
+          pairs="$(printf '%s\n' "${stripped}" | grep -oE 'arch="[a-z0-9_]+"; *sha *= *"[^"]*"' \
+            | sed 's/.*arch="\([^"]*\)"; *sha *= *"\([^"]*\)".*/\1 \2/' || true)"
+          declared="$(grep -oE 'arch *= *"' .devin/blueprint.yaml | wc -l | tr -d ' ' || true)"
+          found="$(printf '%s\n' "${pairs}" | grep -c . || true)"
+          unique="$(printf '%s\n' "${pairs}" | awk 'NF && !seen[$1]++ { n++ } END { print n+0 }')"
+          [ "${declared}" -gt 0 ] && [ "${found}" -eq "${declared}" ] && [ "${unique}" -eq "${declared}" ] \
+            || { echo "expected one arch/sha pair per arch= declaration (${declared}); got ${found} pairs / ${unique} unique" >&2; exit 1; }
+          while read -r arch pinned; do
+            printf '%s' "${pinned}" | grep -qiE '^[0-9a-f]{64}$' \
+              || { echo "invalid SHA-256 pin for darwin_${arch}: ${pinned}" >&2; exit 1; }
+            pinned="$(printf '%s' "${pinned}" | tr 'A-F' 'a-f')"
+            asset="gitleaks_${version}_darwin_${arch}.tar.gz"
+            expected="$(echo "${sums}" | awk -v a="${asset}" '$2 == a { print $1 }')"
+            [ -n "${expected}" ] || { echo "no checksum published for ${asset}" >&2; exit 1; }
+            [ "${pinned}" = "${expected}" ] \
+              || { echo "blueprint darwin_${arch} digest mismatch: pinned=${pinned} expected=${expected}" >&2; exit 1; }
+            echo "darwin_${arch} digest verified for gitleaks ${version}"
+          done <<< "${pairs}"
