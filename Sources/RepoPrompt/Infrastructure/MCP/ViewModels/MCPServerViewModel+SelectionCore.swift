@@ -1,5 +1,7 @@
 import Foundation
 import MCP
+import RepoPromptFoundation
+import RepoPromptWorkspaceCore
 
 extension MCPServerViewModel {
     nonisolated static let codeMapsGloballyDisabledMCPMessage = "Code Maps are globally disabled in Advanced Settings; codemap-only selection modes and get_code_structure are unavailable."

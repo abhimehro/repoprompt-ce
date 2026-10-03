@@ -718,6 +718,66 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         XCTAssertNil(session.mcpControlContext)
     }
 
+    func testListAgentsPublishesUnpersistedLiveCodexCatalogueNotWindowOverride() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let window = try await makeWindow(name: "Live Codex catalogue", root: fixture.root)
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        let api = window.apiSettingsViewModel
+        api.isCursorConnected = false
+        api.isClaudeCodeConnected = false
+        api.isCodexConnected = true
+        api.isOpenCodeConnected = false
+        api.isGrokBuildConnected = false
+        api.compatibleBackendSecretPresence = [:]
+        let registry = AgentCodexModelRegistry.shared
+        let catalogue = AgentAdvertisedModelCatalog.shared
+        let originalModels = registry.currentLiveModels()
+        let persistenceKey = "CodexDynamicModelRecords"
+        let originalPersistence = UserDefaults.standard.object(forKey: persistenceKey)
+        defer {
+            registry.updateLiveModels(originalModels)
+            UserDefaults.standard.set(originalPersistence, forKey: persistenceKey)
+            catalogue.invalidate(.codexExec)
+        }
+        func model(_ name: String) -> CodexAppServerClient.RemoteModel {
+            .init(
+                id: name,
+                model: name,
+                displayName: name,
+                description: "",
+                isDefault: true,
+                supportedReasoningEfforts: [],
+                defaultReasoningEffort: nil
+            )
+        }
+        registry.updateLiveModels([model("live-unpersisted-codex")])
+        // Remove persistence AFTER publishing the live snapshot: list_agents must use memory.
+        UserDefaults.standard.removeObject(forKey: persistenceKey)
+        catalogue.invalidate(.codexExec)
+        let service = makeManageService(window: window, openCodeOneShotObservationProvider: { _, _, _ in
+            XCTFail("This Codex-only discovery test must not probe a provider")
+            throw CocoaError(.featureUnsupported)
+        })
+        let listed = try await service.execute(args: ["op": .string("list_agents")])
+        let agents = try XCTUnwrap(listed.objectValue?["agents"]?.arrayValue)
+        let ids = agents.flatMap { agent in
+            agent.objectValue?["models"]?.arrayValue?.compactMap { $0.objectValue?["model_id"]?.stringValue } ?? []
+        }
+        XCTAssertTrue(ids.contains("codexExec:live-unpersisted-codex"))
+        XCTAssertEqual(
+            try catalogue.selection("codexExec:live-unpersisted-codex", availability: api.agentModeAvailabilityContext).storedModelRaw,
+            "live-unpersisted-codex"
+        )
+        _ = AgentModelCatalog.options(
+            for: .codexExec, availability: api.agentModeAvailabilityContext,
+            codexDynamicModels: [model("window-only-codex")]
+        )
+        XCTAssertThrowsError(try catalogue.selection("codexExec:window-only-codex", availability: api.agentModeAvailabilityContext))
+        XCTAssertNoThrow(try catalogue.selection("codexExec:live-unpersisted-codex", availability: api.agentModeAvailabilityContext))
+        XCTAssertNil(UserDefaults.standard.object(forKey: persistenceKey), "Discovery must not need a persisted copy")
+    }
+
     func testAgentManageListCreateAndResumeUseReleaseCatalogMetadata() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }

@@ -2,6 +2,7 @@ import Combine
 import Foundation
 @_spi(TestSupport) @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptSecureStorage
 import XCTest
 
 // Overseer compaction on ACP sessions.

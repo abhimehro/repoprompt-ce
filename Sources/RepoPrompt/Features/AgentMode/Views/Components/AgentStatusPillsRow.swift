@@ -1,6 +1,8 @@
+import RepoPromptInstrumentation
 import SwiftUI
 
 struct AgentStatusPillsRow: View {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     let agentModeVM: AgentModeViewModel
     @ObservedObject var statusPillsUI: AgentStatusPillsUIStore
     let openContextDrawerFiles: () -> Void
@@ -16,7 +18,7 @@ struct AgentStatusPillsRow: View {
 
     var body: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.statusPillsRow")
+            let _ = perfRecorder.increment("ui.body.statusPillsRow")
         #endif
         HStack(spacing: 12) {
             HStack(spacing: 6) {

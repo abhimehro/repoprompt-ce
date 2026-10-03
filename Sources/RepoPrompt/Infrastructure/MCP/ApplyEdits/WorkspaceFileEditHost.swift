@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptFoundation
 
 struct WorkspaceFileEditHost: FileEditHost {
     enum Target {

@@ -324,11 +324,11 @@ struct AgentComposerProps: Equatable {
     let isGlobalModelRouterControllingFreshTask: Bool
     let unavailableSelectedAgentMessage: String?
     let selectedAgent: AgentProviderKind
-    let selectedModelRaw: String
-    let selectedModelDisplayName: String
-    let selectedReasoningEffortRaw: String?
-    let selectedReasoningEffortDisplayName: String
-    let acpModelParameterControls: [AgentComposerModelParameterControlProps]
+    var selectedModelRaw: String
+    var selectedModelDisplayName: String
+    var selectedReasoningEffortRaw: String?
+    var selectedReasoningEffortDisplayName: String
+    var acpModelParameterControls: [AgentComposerModelParameterControlProps]
     let availableAgents: [AgentProviderKind]
     let isProviderPickerLockedForCurrentTab: Bool
     let lockedAgentSelectionMessage: String?

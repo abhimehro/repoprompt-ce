@@ -15,6 +15,7 @@ import ctypes
 import dataclasses
 import errno
 import fcntl
+import functools
 import hashlib
 import itertools
 import json
@@ -39,7 +40,42 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
 from debug_app_process import ProcessIdentityError, matching_processes, terminate_matching_processes
 
-PROTOCOL_VERSION = 17
+INDEX_SOURCE_FINGERPRINT = Path(".build/modularization/app-source-sha256.json")
+
+
+def app_source_hashes(repo_root: Path) -> Dict[str, str]:
+    source_root = repo_root / "Sources/RepoPrompt"
+    return {
+        path.relative_to(source_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(source_root.rglob("*.swift"))
+    }
+
+
+def job_builds_app_index(operation: str, args: Dict[str, Any]) -> bool:
+    if args.get("scratch") or (operation == "test" and args.get("module")):
+        return False
+    return operation in {"build", "run", "test", "ci-build-tests", "install-debug-cli"} or (
+        operation == "swift-build" and args.get("product") in {"RepoPrompt", "all"}
+    ) or (operation == "package" and args.get("config") == "debug")
+
+
+def save_app_index_fingerprint(repo_root: Path, before: Dict[str, str]) -> bool:
+    """Publish only if source bytes were stable across a successful coordinated build."""
+    if app_source_hashes(repo_root) != before:
+        return False
+    path = repo_root / INDEX_SOURCE_FINGERPRINT
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps({"source_sha256": before}, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+    return True
+
+
+PROTOCOL_VERSION = 18
 TERMINAL_STATES = {"completed", "failed", "canceled"}
 JOB_PHASES = {
     "queued",
@@ -170,6 +206,8 @@ APP_STOP_DELAYED_LAUNCH_CONFIRM_TIMEOUT_SECONDS = 25.0
 GLOBAL_HEAVY_SLOT_POLL_SECONDS = 0.2
 MACHINE_LOCK_POLL_SECONDS = 0.2
 MAX_GLOBAL_HEAVY_SLOTS = 64
+HEAVY_RSS_UNIT_BYTES = 1536 * 1024 * 1024
+HEAVY_RSS_HISTORY_LIMIT = 20
 EXTERNAL_IO_QUEUE_DEPTH = 4096
 MAX_INFRASTRUCTURE_WARNINGS = 16
 INFRASTRUCTURE_WARNING_TTL_SECONDS = 5 * 60.0
@@ -222,6 +260,8 @@ IMPLEMENTED_OPERATIONS = {
     "build",
     "package",
     "test",
+    "ci-build-tests",
+    "ci-shard",
     "provider-test",
     "install-debug-cli",
     "debug-cli-status",
@@ -269,6 +309,8 @@ Operation commands:
   ./conductor build
   ./conductor package debug|release
   ./conductor test [--module <TestTarget>] [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
+  ./conductor ci-build-tests                         # one clean bundle build with import/type-check gates
+  ./conductor ci-shard --shard-count N --shard-index I # run transferred bundle without build
   ./conductor test [--filter <filter>] --scratch <label> [--swiftc-flag=<flag>]... [--linker-flag=<flag>]...   # aggregate-path measurement build
   ./conductor provider-test [--filter <filter>] [--test-product <product>] [--xctest-stall-seconds <seconds>] [--xctest-stall-wake-probe]
   ./conductor install-debug-cli
@@ -1654,10 +1696,20 @@ def machine_lock_dir() -> Path:
     return Path("/tmp") / f"repoprompt-ce-dev-locks-{uid}"
 
 
+@functools.lru_cache(maxsize=1)
+def default_global_heavy_slots() -> int:
+    try:
+        physical = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, stderr=subprocess.DEVNULL))
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        # Never opt into parallel heavy jobs when physical capacity is unknown.
+        return 1
+    return max(1, min(4, physical // (2 * HEAVY_RSS_UNIT_BYTES)))
+
+
 def configured_global_heavy_slots(env: Optional[Dict[str, str]] = None) -> int:
     raw = (env or os.environ).get("REPOPROMPT_DEV_HEAVY_SLOTS")
     if raw is None or raw == "":
-        return 1
+        return default_global_heavy_slots()
     try:
         slots = int(raw)
     except ValueError as exc:
@@ -1665,6 +1717,73 @@ def configured_global_heavy_slots(env: Optional[Dict[str, str]] = None) -> int:
     if slots < 1 or slots > MAX_GLOBAL_HEAVY_SLOTS:
         raise ConductorError(f"REPOPROMPT_DEV_HEAVY_SLOTS must be between 1 and {MAX_GLOBAL_HEAVY_SLOTS}")
     return slots
+
+
+def heavy_job_class(operation: str, args: Dict[str, Any]) -> str:
+    if operation == "test" and args.get("module"):
+        return f"module:{args['module']}"
+    if operation == "provider-test":
+        return "module:provider"
+    return "app-or-aggregate"
+
+
+def heavy_rss_history_path() -> Path:
+    return machine_lock_dir() / "heavy-rss-history.json"
+
+
+def read_heavy_rss_history() -> Dict[str, List[int]]:
+    try:
+        data = json.loads(heavy_rss_history_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("classes"), dict):
+        return {}
+    return {
+        name: [value for value in values if type(value) is int and value > 0][-HEAVY_RSS_HISTORY_LIMIT:]
+        for name, values in data["classes"].items()
+        if isinstance(name, str) and isinstance(values, list)
+    }
+
+
+def heavy_estimated_rss(operation: str, args: Dict[str, Any]) -> int:
+    samples = sorted(read_heavy_rss_history().get(heavy_job_class(operation, args), []))
+    if samples:
+        # Deterministic nearest-rank p90 with 384 MiB safety headroom.
+        return samples[math.ceil(0.9 * len(samples)) - 1] + HEAVY_RSS_UNIT_BYTES // 4
+    return HEAVY_RSS_UNIT_BYTES if heavy_job_class(operation, args).startswith("module:") else 5 * 1024**3
+
+
+def heavy_required_slots(operation: str, args: Dict[str, Any], env: Optional[Dict[str, str]]) -> int:
+    return max(1, min(configured_global_heavy_slots(env), math.ceil(
+        heavy_estimated_rss(operation, args) / HEAVY_RSS_UNIT_BYTES
+    )))
+
+
+def record_heavy_rss_sample(operation: str, args: Dict[str, Any], tree_bytes: int) -> None:
+    if tree_bytes <= 0:
+        return
+    root = machine_lock_dir()
+    ensure_private_dir(root)
+    lock_path = root / "heavy-rss-history.lock"
+    with lock_path.open("a+") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        classes = read_heavy_rss_history()
+        key = heavy_job_class(operation, args)
+        classes[key] = (classes.get(key, []) + [tree_bytes])[-HEAVY_RSS_HISTORY_LIMIT:]
+        temporary = root / f".heavy-rss-history.{uuid.uuid4().hex}.tmp"
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump({"version": 1, "classes": classes}, stream, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, heavy_rss_history_path())
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                temporary.unlink()
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def global_heavy_slot_paths(env: Optional[Dict[str, str]] = None) -> List[Path]:
@@ -1780,6 +1899,7 @@ class FairHeavyLease:
     lock_file: Any
     lock_path: Path
     waiter_id: str
+    extra_locks: Tuple[Tuple[Any, Path], ...] = ()
 
     def release(self) -> None:
         self.coordinator.release(self)
@@ -1799,6 +1919,10 @@ class FairHeavyAdmission:
     ) -> None:
         self.metadata = dict(metadata)
         self.env = dict(env or {})
+        self.required_slots = max(1, min(
+            configured_global_heavy_slots(self.env), int(self.metadata.get("requiredSlots") or configured_global_heavy_slots(self.env))
+        ))
+        self.reservation_bytes = int(self.metadata.get("reservationBytes") or self.required_slots * HEAVY_RSS_UNIT_BYTES)
         self._clock = clock
         self._on_warning = on_warning or (lambda _kind, _message: None)
         self._remote_process_snapshot: Optional[Dict[int, Tuple[int, str]]] = None
@@ -2029,10 +2153,25 @@ class FairHeavyAdmission:
                     "worktree": self.metadata.get("worktree"),
                     "enqueuedAt": now(),
                     "acquiredSlotPath": None,
+                    "acquiredSlotPaths": [],
+                    "requiredSlots": self.required_slots,
+                    "reservationBytes": self.reservation_bytes,
                     "notifySocketPath": str(self.notify_path),
                 }
             )
             self._write_queue(payload)
+
+    def _slots_for_waiter(self, waiter: Dict[str, Any]) -> int:
+        capacity = configured_global_heavy_slots(self.env)
+        reservation = waiter.get("reservationBytes")
+        if type(reservation) is int and reservation > 0:
+            return min(capacity, math.ceil(reservation / HEAVY_RSS_UNIT_BYTES))
+        # Legacy queue records used a single exclusive slot, regardless of
+        # how many slots the new daemon now advertises.
+        return capacity
+
+    def _weighted_eligible(self, ordered: List[Dict[str, Any]], index: int) -> bool:
+        return sum(self._slots_for_waiter(item) for item in ordered[:index + 1]) <= configured_global_heavy_slots(self.env)
 
     def _queue_snapshot(self) -> Tuple[Dict[str, Any], Dict[str, Any], int, List[Dict[str, Any]]]:
         with self._queue_lock():
@@ -2141,7 +2280,7 @@ class FairHeavyAdmission:
                 }
                 for item in ordered[: max(0, position - 1)]
             ]
-            eligible = position <= configured_global_heavy_slots(self.env)
+            eligible = self._weighted_eligible(ordered, position - 1)
             if eligible:
                 observed_at = self._clock()
                 if self._eligible_since is None:
@@ -2159,49 +2298,66 @@ class FairHeavyAdmission:
                 self._legacy_slot_holder_observed_at = None
             update(position, earlier)
             if eligible:
-                explained_slots = {
-                    str(item.get("acquiredSlotPath"))
-                    for item in ordered[: max(0, position - 1)]
-                    if item.get("state") == "acquired" and item.get("acquiredSlotPath")
-                }
-                observed_unexplained_holder = False
-                for slot_path in slot_paths:
-                    lock_file = slot_path.open("a+", encoding="utf-8")
-                    try:
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        lock_file.close()
-                        if str(slot_path) not in explained_slots and not observed_unexplained_holder:
-                            self._observe_legacy_slot_holder(slot_path)
-                            observed_unexplained_holder = True
-                        continue
-                    except OSError as exc:
-                        lock_file.close()
-                        if exc.errno == errno.EINTR:
-                            continue
-                        raise
-                    with self._queue_lock():
-                        payload = self._load_queue()
-                        ordered_now = sorted(payload["waiters"], key=lambda item: int(item.get("sequence", 0)))
-                        matching = [item for item in ordered_now if item.get("waiterID") == self.waiter_id]
-                        eligible = bool(
-                            matching
-                            and matching[0].get("ownerPID") == self.owner_pid
-                            and matching[0].get("ownerStartToken") == self.owner_start
-                            and ordered_now.index(matching[0]) < configured_global_heavy_slots(self.env)
-                        )
-                        if eligible:
-                            matching[0]["state"] = "acquired"
-                            matching[0]["acquiredSlotPath"] = str(slot_path)
-                            payload["generation"] += 1
-                            self._write_queue(payload)
-                            write_display_lock_metadata(lock_file, self.metadata)
-                            self.legacy_slot_holder = None
-                            self._legacy_slot_holder_observed_at = None
-                            return FairHeavyLease(self, lock_file, slot_path, self.waiter_id)
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                    lock_file.close()
-                if observed_unexplained_holder:
+                # Claim all reservation units under the queue lock. Partial flocks are
+                # released before another waiter can inspect the queue. An unexplained
+                # holder (older conductor or direct lock user) fences *all* new work.
+                with self._queue_lock():
+                    payload = self._load_queue()
+                    ordered_now = sorted(payload["waiters"], key=lambda item: int(item.get("sequence", 0)))
+                    matching = [item for item in ordered_now if item.get("waiterID") == self.waiter_id]
+                    still_eligible = bool(
+                        matching
+                        and matching[0].get("ownerPID") == self.owner_pid
+                        and matching[0].get("ownerStartToken") == self.owner_start
+                        and self._weighted_eligible(ordered_now, ordered_now.index(matching[0]))
+                    )
+                    if still_eligible:
+                        explained = {
+                            path
+                            for item in ordered_now
+                            if item.get("state") == "acquired"
+                            for path in (item.get("acquiredSlotPaths") or [item.get("acquiredSlotPath")])
+                            if path
+                        }
+                        held: List[Tuple[Any, Path]] = []
+                        unexplained = False
+                        committed = False
+                        try:
+                            for slot_path in slot_paths:
+                                lock_file = slot_path.open("a+", encoding="utf-8")
+                                try:
+                                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                except BlockingIOError:
+                                    lock_file.close()
+                                    if str(slot_path) not in explained:
+                                        self._observe_legacy_slot_holder(slot_path)
+                                        unexplained = True
+                                    continue
+                                held.append((lock_file, slot_path))
+                            if not unexplained and len(held) >= self.required_slots:
+                                selected = held[:self.required_slots]
+                                for extra_file, _ in held[self.required_slots:]:
+                                    fcntl.flock(extra_file.fileno(), fcntl.LOCK_UN)
+                                    extra_file.close()
+                                held = selected
+                                matching[0]["state"] = "acquired"
+                                matching[0]["acquiredSlotPath"] = str(selected[0][1])
+                                matching[0]["acquiredSlotPaths"] = [str(path) for _, path in selected]
+                                payload["generation"] += 1
+                                self._write_queue(payload)
+                                for lock_file, _ in selected:
+                                    write_display_lock_metadata(lock_file, self.metadata)
+                                self.legacy_slot_holder = None
+                                self._legacy_slot_holder_observed_at = None
+                                committed = True
+                                return FairHeavyLease(self, selected[0][0], selected[0][1],
+                                                      self.waiter_id, tuple(selected[1:]))
+                        finally:
+                            if not committed:
+                                for lock_file, _ in held:
+                                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                                    lock_file.close()
+                if self.legacy_slot_holder:
                     update(position, earlier)
             self.notify_socket.settimeout(self.current_rescan_seconds)
             with contextlib.suppress(socket.timeout, BlockingIOError, OSError):
@@ -2221,14 +2377,15 @@ class FairHeavyAdmission:
     def release(self, lease: FairHeavyLease) -> None:
         if lease.waiter_id != self.waiter_id:
             raise ConductorError("refusing to release a different global-heavy waiter")
-        with contextlib.suppress(OSError):
-            lease.lock_file.seek(0)
-            lease.lock_file.truncate()
-            lease.lock_file.flush()
-        with contextlib.suppress(OSError):
-            fcntl.flock(lease.lock_file.fileno(), fcntl.LOCK_UN)
-        with contextlib.suppress(OSError):
-            lease.lock_file.close()
+        for lock_file, _ in ((lease.lock_file, lease.lock_path), *lease.extra_locks):
+            with contextlib.suppress(OSError):
+                lock_file.seek(0)
+                lock_file.truncate()
+                lock_file.flush()
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                lock_file.close()
         try:
             self._remove_own_waiter()
         finally:
@@ -3058,7 +3215,7 @@ def job_consumes_unlaned_capacity(operation: str, lanes: Sequence[str]) -> bool:
 
 
 def operation_requires_global_heavy_slot(operation: str, args: Dict[str, Any]) -> bool:
-    if operation in {"swift-build", "build", "package", "test", "provider-test", "install-debug-cli"}:
+    if operation in {"swift-build", "build", "package", "test", "ci-build-tests", "provider-test", "install-debug-cli"}:
         return True
     if operation in {"sleep", "fake-sleep"} and "build" in set(args.get("lanes") or []):
         return True
@@ -3150,6 +3307,7 @@ class Job:
     global_heavy_legacy_slot_holder: Optional[Dict[str, Any]] = None
     global_heavy_admission_state: str = "notRequired"
     global_heavy_queue_position: Optional[int] = None
+    global_heavy_required_slots: Optional[int] = None
     global_heavy_waiter_id: Optional[str] = None
     global_heavy_rescan_seconds: Optional[float] = None
     exit_code: Optional[int] = None
@@ -3326,6 +3484,7 @@ class Job:
                 "displayOnly": True,
                 "state": self.global_heavy_admission_state,
                 "configuredSlots": configured_global_heavy_slots(self.env),
+                "requiredSlots": self.global_heavy_required_slots,
                 "queuePosition": self.global_heavy_queue_position,
                 "waiterID": self.global_heavy_waiter_id,
                 "rescanSeconds": self.global_heavy_rescan_seconds,
@@ -3397,6 +3556,7 @@ class OperationRegistry:
         "REPOPROMPT_DEBUG_CLI_INSTALL_PATH",
     ]
     BUILD_ENV_KEYS = [
+        "TYPECHECK_RATCHET_ENFORCE",
         "PATH",
         "DEVELOPER_DIR",
         "TOOLCHAINS",
@@ -3544,6 +3704,11 @@ class OperationRegistry:
             config = str(args.get("config"))
             lanes = ["build", "debugArtifact"] + (["release"] if config == "release" else [])
             return [script("package_app.sh"), config], lanes, cwd, env, effective_timeout
+        if operation == "ci-build-tests":
+            return [sys.executable, script("modularization_ci_build.py")], ["build"], cwd, env, effective_timeout
+        if operation == "ci-shard":
+            return [sys.executable, script("ci_app_test_runner.py"), "--skip-build",
+                    "--shard-count", str(args["shardCount"]), "--shard-index", str(args["shardIndex"])], ["build"], cwd, env, effective_timeout
         if operation == "test":
             argv = [sys.executable, script("ci_app_test_runner.py"), "--local"]
             measurement = measurement_build_args(self.repo_root, args)
@@ -4359,6 +4524,8 @@ class DaemonState:
                 repo_root=self.paths.repo_root,
                 repo_hash=self.paths.repo_hash,
             )
+            metadata["reservationBytes"] = heavy_estimated_rss(job.operation, job.args)
+            metadata["requiredSlots"] = heavy_required_slots(job.operation, job.args, env)
         def admission_warning(kind: str, message: str) -> None:
             with self.condition:
                 current = self._job_matches_lease_locked(lease)
@@ -4374,6 +4541,7 @@ class DaemonState:
             current = self._job_matches_lease_locked(lease)
             if current is not None:
                 current.global_heavy_waiter_id = coordinator.waiter_id
+                current.global_heavy_required_slots = coordinator.required_slots
 
         def cancel_check() -> bool:
             with self.condition:
@@ -4419,7 +4587,7 @@ class DaemonState:
             else:
                 current.global_heavy_slot_wait_seconds = waited
                 current.mark_phase("heavySlotAcquired", wait_start + waited)
-                current.global_heavy_slot_path = str(acquired.lock_path)
+                current.global_heavy_slot_path = ",".join(str(path) for _, path in ((acquired.lock_file, acquired.lock_path), *acquired.extra_locks))
                 current.global_heavy_slot_holder = None
                 current.global_heavy_legacy_slot_holder = None
                 current.global_heavy_admission_state = "acquired"
@@ -4427,7 +4595,8 @@ class DaemonState:
                 self._set_phase_locked(current, "startingProcess")
                 self._append_system_line_locked(
                     current,
-                    f"acquired fair global heavy slot {acquired.lock_path} after {format_duration(waited)}\n",
+                    f"acquired fair global heavy reservation {current.global_heavy_required_slots}/"
+                    f"{configured_global_heavy_slots(env)} slots after {format_duration(waited)}\n",
                 )
                 self.condition.notify_all()
         if release_stale_acquisition:
@@ -4527,6 +4696,7 @@ class DaemonState:
         cache_publish_after_success = False
         cache_wrapper_gate_read = -1
         cache_wrapper_gate_write = -1
+        app_index_source_before: Optional[Dict[str, str]] = None
         try:
             with self.lock:
                 job = self.jobs[ticket]
@@ -4597,6 +4767,10 @@ class DaemonState:
                 global_heavy_slot = self._acquire_global_heavy_slot(job.ticket)
                 if global_heavy_slot is None:
                     return
+            if job_builds_app_index(job.operation, job.args):
+                app_index_source_before = app_source_hashes(self.paths.repo_root)
+                with contextlib.suppress(FileNotFoundError):
+                    (self.paths.repo_root / INDEX_SOURCE_FINGERPRINT).unlink()
             start_line = f"$ {format_argv(argv)}\n"
             with self.condition:
                 self._append_system_line_locked(job, start_line)
@@ -4771,6 +4945,9 @@ class DaemonState:
                         self._append_system_line_locked(job, job.error + "\n")
             with self.condition:
                 self._finalize_process_exit_locked(job, exit_code)
+                if job.state == "completed" and app_index_source_before is not None:
+                    if not save_app_index_fingerprint(self.paths.repo_root, app_index_source_before):
+                        self._append_system_line_locked(job, "index freshness unknown: app sources changed during build\n")
                 cache_publish_after_success = bool(
                     job.state == "completed" and cache_context is not None and cache_manager is not None
                 )
@@ -4812,6 +4989,13 @@ class DaemonState:
             # build lane through immutable publication. Coordinated mutators of
             # this checkout's .build remain blocked without stalling unrelated
             # worktrees behind the global heavy slot.
+            if (global_heavy_slot is not None and job is not None and
+                    (job.state == "completed" or cache_publish_after_success) and job.peak_rss.get("treeBytes")):
+                try:
+                    record_heavy_rss_sample(job.operation, job.args, int(job.peak_rss["treeBytes"]))
+                except (OSError, ValueError) as exc:
+                    with self.condition:
+                        self._append_system_line_locked(job, f"heavy RSS history not recorded: {exc}\n")
             self._release_global_heavy_slot(global_heavy_slot)
             released_heavy_slot = global_heavy_slot is not None
             global_heavy_slot = None
@@ -8583,6 +8767,7 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "guardrails",
         "codex-schema-check",
         "build",
+        "ci-build-tests",
         "install-debug-cli",
         "debug-cli-status",
         "format",
@@ -8593,6 +8778,15 @@ def handle_real_operation(paths: Paths, operation: str, argv: List[str]) -> int:
         "install-format-tools",
     }:
         parse_no_args(f"conductor {operation}", rest)
+    elif operation == "ci-shard":
+        parser = argparse.ArgumentParser(prog="conductor ci-shard")
+        parser.add_argument("--shard-count", type=int, required=True)
+        parser.add_argument("--shard-index", type=int, required=True)
+        ns = parser.parse_args(rest)
+        if ns.shard_count < 1 or not 1 <= ns.shard_index <= ns.shard_count:
+            raise ConductorError("ci-shard requires 1 <= --shard-index <= --shard-count")
+        args["shardCount"] = ns.shard_count
+        args["shardIndex"] = ns.shard_index
     elif operation == "swift-build":
         parser = argparse.ArgumentParser(prog="conductor swift-build")
         parser.add_argument("--product", required=True, choices=["RepoPrompt", "repoprompt-mcp", "all"])

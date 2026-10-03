@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptCodeMapCore
+import RepoPromptWorkspaceCore
 
 /// Catalog paths retain the user's loaded spelling; capabilities use physical root paths.
 /// Equality is evaluated at use time so a retargeted symlink cannot keep serving old evidence.

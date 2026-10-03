@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 extension AgentModeViewModel {
     func makeComposerProps(tabID explicitTabID: UUID? = nil) -> AgentComposerProps {
@@ -160,8 +161,8 @@ extension AgentModeViewModel {
 
     func syncAllActiveUIState(tabID: UUID? = nil) {
         #if DEBUG
-            AgentModePerfDiagnostics.increment("ui.syncAllActiveUIState", tabID: tabID)
-            AgentModePerfDiagnostics.event("ui.syncAllActiveUIState", tabID: tabID)
+            perfRecorder.increment("ui.syncAllActiveUIState", tabID: tabID)
+            perfRecorder.event("ui.syncAllActiveUIState", tabID: tabID)
         #endif
         syncComposerUIState(tabID: tabID)
         syncStatusPillsUIState()
@@ -179,8 +180,8 @@ extension AgentModeViewModel {
     func syncActiveUIState(tabID: UUID? = nil, invalidation: ActiveUIInvalidation) {
         guard !invalidation.isEmpty else { return }
         #if DEBUG
-            AgentModePerfDiagnostics.increment("ui.syncActiveUIState", tabID: tabID)
-            AgentModePerfDiagnostics.event(
+            perfRecorder.increment("ui.syncActiveUIState", tabID: tabID)
+            perfRecorder.event(
                 "ui.syncActiveUIState",
                 tabID: tabID,
                 fields: [

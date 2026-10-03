@@ -3,6 +3,8 @@ import JSONSchema
 import MCP
 import Ontology
 import RepoPromptDomainRuntime
+import RepoPromptFoundation
+import RepoPromptWorkspaceCore
 
 /// An unsatisfied prerequisite rejects discovery without rolling back earlier selection or binding effects.
 enum MCPContextBuilderSelectionPrerequisiteError: Error, Equatable, LocalizedError, CustomStringConvertible {

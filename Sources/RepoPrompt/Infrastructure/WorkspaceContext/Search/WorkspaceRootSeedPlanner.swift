@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RepoPromptInstrumentation
 
 enum WorkspaceRootSeedServingPlanningOutcome {
     case planned(
@@ -411,7 +412,7 @@ actor WorkspaceRootSeedPlanner {
                     ? nil
                     : .compatibilityMismatch
             #if DEBUG
-                WorktreeStartupInstrumentation.recordDeltaCompatibilityEvaluation(
+                WorkspaceContextStartupInstrumentation.recordDeltaCompatibilityEvaluation(
                     correlationID: hint.correlationID,
                     evaluation: compatibilityEvaluation,
                     policyCanonicalizationComparison: GitWorkspacePolicyCanonicalizationDiagnostics.comparison(
@@ -466,7 +467,7 @@ actor WorkspaceRootSeedPlanner {
         let provenance = Self.creationCutProvenance(receipt)
 
         #if DEBUG
-            let benchmarkMetricTag = WorktreeStartupInstrumentation.currentBenchmarkMetricTag
+            let benchmarkMetricTag = WorkspaceContextStartupInstrumentation.currentBenchmarkMetricTag
             var benchmarkPhaseStarted = DispatchTime.now().uptimeNanoseconds
         #endif
         let namespace = try await service.workspaceRootNamespaceManifest(
@@ -475,7 +476,7 @@ actor WorkspaceRootSeedPlanner {
         )
         #if DEBUG
             var benchmarkPhaseFinished = DispatchTime.now().uptimeNanoseconds
-            WorktreeStartupInstrumentation.recordBenchmarkPlannerPhase(
+            WorkspaceContextStartupInstrumentation.recordBenchmarkPlannerPhase(
                 tag: benchmarkMetricTag,
                 phase: .targetNamespace,
                 durationMicroseconds: (benchmarkPhaseFinished - benchmarkPhaseStarted) / 1000,
@@ -504,7 +505,7 @@ actor WorkspaceRootSeedPlanner {
         )
         #if DEBUG
             benchmarkPhaseFinished = DispatchTime.now().uptimeNanoseconds
-            WorktreeStartupInstrumentation.recordBenchmarkPlannerPhase(
+            WorkspaceContextStartupInstrumentation.recordBenchmarkPlannerPhase(
                 tag: benchmarkMetricTag,
                 phase: .treeEvidence,
                 durationMicroseconds: (benchmarkPhaseFinished - benchmarkPhaseStarted) / 1000,
@@ -523,7 +524,7 @@ actor WorkspaceRootSeedPlanner {
         )
         #if DEBUG
             benchmarkPhaseFinished = DispatchTime.now().uptimeNanoseconds
-            WorktreeStartupInstrumentation.recordBenchmarkPlannerPhase(
+            WorkspaceContextStartupInstrumentation.recordBenchmarkPlannerPhase(
                 tag: benchmarkMetricTag,
                 phase: .indexEvidence,
                 durationMicroseconds: (benchmarkPhaseFinished - benchmarkPhaseStarted) / 1000,
@@ -542,7 +543,7 @@ actor WorkspaceRootSeedPlanner {
         )
         #if DEBUG
             benchmarkPhaseFinished = DispatchTime.now().uptimeNanoseconds
-            WorktreeStartupInstrumentation.recordBenchmarkPlannerPhase(
+            WorkspaceContextStartupInstrumentation.recordBenchmarkPlannerPhase(
                 tag: benchmarkMetricTag,
                 phase: .statusEvidence,
                 durationMicroseconds: (benchmarkPhaseFinished - benchmarkPhaseStarted) / 1000,
@@ -564,7 +565,7 @@ actor WorkspaceRootSeedPlanner {
         )
         #if DEBUG
             benchmarkPhaseFinished = DispatchTime.now().uptimeNanoseconds
-            WorktreeStartupInstrumentation.recordBenchmarkPlannerPhase(
+            WorkspaceContextStartupInstrumentation.recordBenchmarkPlannerPhase(
                 tag: benchmarkMetricTag,
                 phase: .reconcile,
                 durationMicroseconds: (benchmarkPhaseFinished - benchmarkPhaseStarted) / 1000,

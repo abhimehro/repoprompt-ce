@@ -2,6 +2,8 @@ import AppKit
 import Darwin
 import Foundation
 import Logging
+import RepoPromptProcess
+import RepoPromptSecureStorage
 import Sparkle
 import SwiftUI
 
@@ -76,6 +78,13 @@ struct RepoPromptSwiftUIApp: App {
 
         SentryTelemetryBootstrap.start()
 
+        AgentSessionDataService.shared.installRestorePerfRecorder(AppWorkspaceRestorePerfRecorder())
+        AgentSessionDataService.shared.installPerfRecorder(AppAgentModePerfRecorder())
+        AgentRunCoordinator.shared.installPerfRecorder(AppAgentModePerfRecorder())
+        AIProviderFactory.installPerfRecorder(AppAgentModePerfRecorder())
+        AgentSessionDeletionRegistry.shared.installRestorePerfRecorder(AppWorkspaceRestorePerfRecorder())
+        AgentSessionLinkRuntimeBridge.shared.installRestorePerfRecorder(AppWorkspaceRestorePerfRecorder())
+
         ProcessDebugLogging.log(
             prefix: "MCPStartup",
             "RepoPromptApp.init scheduling ServerNetworkManager.start",
@@ -89,6 +98,10 @@ struct RepoPromptSwiftUIApp: App {
                 flushStdout: true
             )
             do {
+                await ServerNetworkManager.shared.installPerfRecorder(AppAgentModePerfRecorder())
+                await ServerNetworkManager.shared.installCatalogDiagnosticsSink(AppAgentSessionLinkCatalogEventSink())
+                await ServerNetworkManager.shared.installExecutionDiagnosticsSink(AppMCPToolExecutionEventSink())
+                await ServerNetworkManager.shared.installPhaseRecorderFactory(AppMCPToolExecutionHandlerPhaseRecorderFactory())
                 try await ServerController.shared.startServer()
                 SentryTelemetryBootstrap.addBreadcrumb(.mcpBootstrap, action: .mcpServerStarted)
             } catch {
@@ -111,8 +124,13 @@ struct RepoPromptSwiftUIApp: App {
     /// Global version manager for the entire app
     @StateObject private var versionManager = VersionManager()
 
-    /// Tracks all WindowState objects across multiple windows (singleton)
-    @StateObject private var windowStatesManager = WindowStatesManager.shared
+    /// Tracks all WindowState objects across multiple windows (singleton).
+    /// Deliberately not observed: the scene and commands only read it inside actions, and observing
+    /// it here re-evaluated the whole App scene body on every window open/close. Computed rather than
+    /// stored so the singleton is still first created after `init()` bootstraps logging/telemetry.
+    private var windowStatesManager: WindowStatesManager {
+        WindowStatesManager.shared
+    }
 
     /// Root font scaling source so inherited SwiftUI text updates when the preset changes.
     @StateObject private var fontScale = FontScaleManager.shared

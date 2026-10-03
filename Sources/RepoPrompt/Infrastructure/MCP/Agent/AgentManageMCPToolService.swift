@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import RepoPromptInstrumentation
 
 @MainActor
 struct AgentManageMCPToolService {
@@ -54,6 +55,7 @@ struct AgentManageMCPToolService {
     }
 
     let toolName: String
+    let perfRecorder: any AgentModePerfRecording
     let captureRequestMetadata: () async -> RequestMetadata
     let requireTargetWindow: () throws -> WindowState
     let resolveSpawnSourceTabID: (_ metadata: RequestMetadata) async -> UUID?
@@ -73,6 +75,7 @@ struct AgentManageMCPToolService {
 
     init(
         toolName: String,
+        perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder(),
         captureRequestMetadata: @escaping () async -> RequestMetadata,
         requireTargetWindow: @escaping () throws -> WindowState,
         resolveSpawnSourceTabID: @escaping (_ metadata: RequestMetadata) async -> UUID?,
@@ -85,6 +88,7 @@ struct AgentManageMCPToolService {
         openCodeOneShotObservationProvider: @escaping AgentMCPModelParameterSupport.OneShotObservationProvider = AgentMCPModelParameterSupport.liveOneShotObservationProvider
     ) {
         self.toolName = toolName
+        self.perfRecorder = perfRecorder
         self.captureRequestMetadata = captureRequestMetadata
         self.requireTargetWindow = requireTargetWindow
         self.resolveSpawnSourceTabID = resolveSpawnSourceTabID
@@ -1216,7 +1220,7 @@ struct AgentManageMCPToolService {
         }
 
         #if DEBUG
-            let cleanupStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+            let cleanupStartMS = perfRecorder.timestampMSIfEnabled()
             var debugOpenDeletedCount = 0
             var debugPersistedDeletedCount = 0
         #endif
@@ -1263,11 +1267,11 @@ struct AgentManageMCPToolService {
                     )
                 } else {
                     #if DEBUG
-                        let persistedLoadStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+                        let persistedLoadStartMS = perfRecorder.timestampMSIfEnabled()
                     #endif
                     let meta = try await cleanupDependencies.loadPersistedMetadata(sessionID, workspace)
                     #if DEBUG
-                        AgentModePerfDiagnostics.durationEvent(
+                        perfRecorder.durationEvent(
                             "cleanup.sessions.loadPersistedMeta",
                             startMS: persistedLoadStartMS,
                             fields: [
@@ -1382,7 +1386,7 @@ struct AgentManageMCPToolService {
                 if let openTabID {
                     usedOpenTabAuthority = true
                     #if DEBUG
-                        let deleteOpenStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+                        let deleteOpenStartMS = perfRecorder.timestampMSIfEnabled()
                     #endif
                     mutationStarted = true
                     providerCleanupOutcome = try await cleanupDependencies.deleteOpenSession(
@@ -1393,7 +1397,7 @@ struct AgentManageMCPToolService {
                     durableDeletionCommitted = true
                     await AgentSessionDurableDeletionReporter.didCommitDurableDeletion(deletionAttempt)
                     #if DEBUG
-                        AgentModePerfDiagnostics.durationEvent(
+                        perfRecorder.durationEvent(
                             "cleanup.sessions.deleteOpen",
                             startMS: deleteOpenStartMS,
                             tabID: openTabID,
@@ -1410,14 +1414,14 @@ struct AgentManageMCPToolService {
                     let persistedSession = try await cleanupDependencies.loadPersistedSession(sessionID, workspace)
                     try cleanupDependencies.checkCancellation()
                     #if DEBUG
-                        let deletePersistedStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+                        let deletePersistedStartMS = perfRecorder.timestampMSIfEnabled()
                     #endif
                     mutationStarted = true
                     try await cleanupDependencies.deletePersistedSession(sessionID, workspace)
                     durableDeletionCommitted = true
                     await AgentSessionDurableDeletionReporter.didCommitDurableDeletion(deletionAttempt)
                     #if DEBUG
-                        AgentModePerfDiagnostics.durationEvent(
+                        perfRecorder.durationEvent(
                             "cleanup.sessions.deletePersisted",
                             startMS: deletePersistedStartMS,
                             fields: ["sessionID": sessionID.uuidString]
@@ -1425,7 +1429,7 @@ struct AgentManageMCPToolService {
                         debugPersistedDeletedCount += 1
                     #endif
                     #if DEBUG
-                        let finalizeStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+                        let finalizeStartMS = perfRecorder.timestampMSIfEnabled()
                     #endif
                     let affectedTabCount = await cleanupDependencies.finalizePersistedReferences(
                         agentModeVM,
@@ -1433,7 +1437,7 @@ struct AgentManageMCPToolService {
                         workspace.id
                     )
                     #if DEBUG
-                        AgentModePerfDiagnostics.durationEvent(
+                        perfRecorder.durationEvent(
                             "cleanup.sessions.finalize",
                             startMS: finalizeStartMS,
                             fields: [
@@ -1570,7 +1574,7 @@ struct AgentManageMCPToolService {
         }
 
         #if DEBUG
-            AgentModePerfDiagnostics.durationEvent(
+            perfRecorder.durationEvent(
                 "cleanup.sessions.execute",
                 startMS: cleanupStartMS,
                 fields: [

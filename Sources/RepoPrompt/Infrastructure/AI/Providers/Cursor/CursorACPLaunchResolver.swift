@@ -1,4 +1,6 @@
 import Foundation
+import RepoPromptFoundation
+import RepoPromptProcess
 
 enum CursorACPLaunchCandidate: CaseIterable, Equatable {
     case cursorAgentACP

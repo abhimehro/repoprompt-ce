@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 @testable import RepoPromptApp
 import RepoPromptCodeMapCore
+import RepoPromptFoundation
 import XCTest
 
 final class CodeMapArtifactContainerTests: XCTestCase {

@@ -1,5 +1,6 @@
 import CoreServices
 import Foundation
+import RepoPromptWorkspaceCore
 
 /// A position in the persistent macOS FSEvents journal.
 ///

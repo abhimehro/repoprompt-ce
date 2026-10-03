@@ -3,6 +3,7 @@ import JSONSchema
 import MCP
 import Ontology
 import RepoPromptDomainRuntime
+import RepoPromptWorkspaceCore
 import SwiftUI
 
 #if DEBUG
@@ -332,6 +333,49 @@ final class WindowRoutingService: Service {
 
     nonisolated static func shouldBindConnectionAfterStandardWorkspaceSwitch(explicitWindowIDProvided: Bool) -> Bool {
         explicitWindowIDProvided
+    }
+
+    /// A synchronous local model is not a create receipt, even when no switch was requested.
+    static func createWorkspaceForRouting(
+        workspaceManager: WorkspaceManagerViewModel,
+        name: String,
+        repoPaths: [String],
+        windowID: Int,
+        switchToCreated: Bool,
+        openedNewWindow: Bool
+    ) async throws -> (workspace: WorkspaceModel, operationID: UUID) {
+        let windowNote = openedNewWindow
+            ? " A new window \(windowID) was opened before creation; this failure does not confirm a loaded workspace. No automatic close was performed."
+            : ""
+        let creation: PendingPersistentWorkspaceCreation
+        do {
+            try Task.checkCancellation()
+            creation = try workspaceManager.createPersistentWorkspace(name: name, repoPaths: repoPaths, savedInLibrary: false)
+        } catch {
+            throw MCPError.invalidRequest("Workspace creation could not start in window \(windowID): \(error.localizedDescription)\(windowNote)")
+        }
+
+        var creationCommitted = false
+        do {
+            let workspace = try await creation.publishedWorkspace()
+            creationCommitted = true
+            try Task.checkCancellation()
+            if switchToCreated {
+                let switchResult = await workspaceManager.requestWorkspaceSwitch(to: workspace, saveState: true)
+                guard switchResult.didSwitch else {
+                    throw MCPError.invalidRequest(switchResult.message ?? "Workspace switch was cancelled.")
+                }
+            }
+            try Task.checkCancellation()
+            return (workspace, creation.operationID)
+        } catch {
+            let state = creationCommitted
+                ? "Workspace creation committed, but the create request did not complete. Activation is not acknowledged by this response."
+                : "Workspace creation was not confirmed; it may have committed. Activation was not attempted."
+            throw MCPError.invalidRequest(
+                "\(state) Workspace \(creation.workspaceID), creation operation \(creation.operationID), window \(windowID). Original failure: \(error.localizedDescription) No automatic rollback or deletion was performed.\(windowNote)"
+            )
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -2693,19 +2737,22 @@ final class WindowRoutingService: Service {
                         // Wait for initial workspace setup before creating
                         await newWindow.workspaceManager.awaitInitialized()
 
-                        // Create the workspace in the new window
-                        let newWorkspace = await MainActor.run {
-                            newWindow.workspaceManager.createWorkspace(name: workspaceName, repoPaths: initialRepoPaths, savedInLibrary: false)
-                        }
-                        if switchToCreated {
-                            let switchResult = await newWindow.workspaceManager.requestWorkspaceSwitch(to: newWorkspace, saveState: true)
-                            if !switchResult.didSwitch {
-                                throw MCPError.invalidRequest(switchResult.message ?? "Workspace switch was cancelled.")
-                            }
-                        }
+                        let created = try await Self.createWorkspaceForRouting(
+                            workspaceManager: newWindow.workspaceManager,
+                            name: workspaceName,
+                            repoPaths: initialRepoPaths,
+                            windowID: newWindow.windowID,
+                            switchToCreated: switchToCreated,
+                            openedNewWindow: true
+                        )
+                        let newWorkspace = created.workspace
 
-                        // Bind this MCP connection to the new window
-                        try await routingService.networkMgr.setActiveWindowForCurrentConnection(newWindow.windowID)
+                        // Bind only after confirmed creation and any requested activation.
+                        do {
+                            try await routingService.networkMgr.setActiveWindowForCurrentConnection(newWindow.windowID)
+                        } catch {
+                            throw MCPError.invalidRequest("Workspace \(newWorkspace.id) creation operation \(created.operationID) committed in new window \(newWindow.windowID), but connection binding failed: \(error.localizedDescription) No automatic close, rollback or deletion was performed.")
+                        }
 
                         let summary = MCPWorkspaceSummary(
                             id: newWorkspace.id,
@@ -2722,17 +2769,15 @@ final class WindowRoutingService: Service {
                         )
                     }
 
-                    // Create the workspace in the target window
-                    let newWorkspace = await MainActor.run {
-                        approvalWindow.workspaceManager.createWorkspace(name: workspaceName, repoPaths: initialRepoPaths, savedInLibrary: false)
-                    }
-
-                    if switchToCreated {
-                        let switchResult = await approvalWindow.workspaceManager.requestWorkspaceSwitch(to: newWorkspace, saveState: true)
-                        if !switchResult.didSwitch {
-                            throw MCPError.invalidRequest(switchResult.message ?? "Workspace switch was cancelled.")
-                        }
-                    }
+                    let created = try await Self.createWorkspaceForRouting(
+                        workspaceManager: approvalWindow.workspaceManager,
+                        name: workspaceName,
+                        repoPaths: initialRepoPaths,
+                        windowID: approvalWindow.windowID,
+                        switchToCreated: switchToCreated,
+                        openedNewWindow: false
+                    )
+                    let newWorkspace = created.workspace
 
                     let summary = MCPWorkspaceSummary(
                         id: newWorkspace.id,

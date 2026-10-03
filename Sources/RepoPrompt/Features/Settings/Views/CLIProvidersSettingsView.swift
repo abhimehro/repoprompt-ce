@@ -1,4 +1,5 @@
 import AppKit
+import RepoPromptProcess
 import SwiftUI
 
 struct CLIProvidersSettingsView: View {

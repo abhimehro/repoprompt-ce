@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct WorkspacePublishedGitArtifactIngressRequest {
     let root: WorkspaceRootRef

@@ -11,8 +11,22 @@ extension DomainOracleConversationStore: DirectHeadlessOracleStore {}
 actor DirectHeadlessOracleAdapter {
     enum AdapterError: Error, LocalizedError, Equatable {
         case contextPackRequired
+        case contextPackRequiresOracleGroup
+        case unsupportedContextBuilderArgument(String)
+        case unsupportedContextBuilderDiscovery
+        case invalidContextBuilderResponseType
+        case invalidContextBuilderArguments
+        case invalidContextPackReference
+        case contextPackUnavailable
+        case invalidContextPack
+        case contextPackModeMismatch
+        case continuationMissing
+        case continuationChanged
+        case invalidPreparedTurn
+        case singleLaneBypassRequired
         case appOnlyOraclePreset
         case unsupportedProviderOverride
+        case unsupportedImageAttachments
         case unknownChatID
         case rosterConflict
         case missingPreparedInvocation
@@ -22,14 +36,42 @@ actor DirectHeadlessOracleAdapter {
             switch self {
             case .contextPackRequired:
                 "context_pack_required: grouped Context Builder execution requires a frozen canonical context pack."
+            case .contextPackRequiresOracleGroup:
+                "context_pack_requires_oracle_group: a supplied frozen pack is supported only with multiple configured Oracles; use instructions for a single Oracle."
+            case let .unsupportedContextBuilderArgument(key):
+                "context_builder_unsupported_argument: '\(key)' is unsupported in direct-headless Context Builder; discovery, exports, and app presets require the app-backed tool."
+            case .unsupportedContextBuilderDiscovery:
+                "context_builder_discovery_unsupported: direct-headless Context Builder does not discover files or commit selections. Use the app-backed tool for clarify/discovery."
+            case .invalidContextBuilderResponseType:
+                "context_builder_invalid_response_type: use question, plan, or review; omitted response_type defaults to question (one-shot inference, not discovery)."
+            case .invalidContextBuilderArguments:
+                "context_builder_invalid_arguments: supply exactly one non-empty string instructions or canonical context_pack_ref, with an optional string model."
+            case .invalidContextPackReference:
+                "context_pack_invalid_reference: use oracle-pack:sha256:<64 lowercase hexadecimal characters>, not a file URI or app export path."
+            case .contextPackUnavailable:
+                "context_pack_unavailable: the canonical frozen pack could not be loaded from this headless profile's artifact store."
+            case .invalidContextPack:
+                "context_pack_invalid: the stored artifact is not a current canonical frozen Context Builder pack."
+            case .contextPackModeMismatch:
+                "context_pack_mode_mismatch: response_type must match the frozen pack's response mode."
+            case .continuationMissing:
+                "oracle_continuation_missing: the durable Oracle conversation was removed. Start a new chat with new_chat=true."
+            case .continuationChanged:
+                "oracle_continuation_changed: the durable Oracle conversation changed between preparation and execution ownership validation; inspect its state before continuing."
+            case .invalidPreparedTurn:
+                "oracle_invalid_prepared_turn: the durable Oracle conversation is not prepared for this invocation."
+            case .singleLaneBypassRequired:
+                "oracle_single_lane_bypass_required: a single Oracle must use the direct conversation route."
             case .appOnlyOraclePreset:
                 "oracle_preset is available only through the app-backed Context Builder."
             case .unsupportedProviderOverride:
                 "Direct Oracle provider overrides are unsupported; select a model or start a new chat."
+            case .unsupportedImageAttachments:
+                "Oracle `images` require the app backend; the direct headless backend cannot attach images."
             case .unknownChatID:
                 "Unknown Oracle chat_id. Start a new chat with ask_oracle and new_chat=true."
             case .rosterConflict:
-                "The configured Oracle roster differs from this durable conversation. Start a new chat with new_chat=true."
+                "oracle_roster_conflict: the configured Oracle roster differs from this durable conversation. Start a new chat with new_chat=true."
             case .missingPreparedInvocation:
                 "Oracle launch preparation was not available for this invocation."
             case .childCarrierMismatch:
@@ -199,39 +241,46 @@ actor DirectHeadlessOracleAdapter {
         invocationID: UUID,
         runID: UUID
     ) async throws -> InvocationPlan {
-        if toolName == "context_builder", arguments["oracle_preset"] != nil {
-            throw AdapterError.appOnlyOraclePreset
+        if toolName == "context_builder" {
+            try Self.validateContextBuilderArguments(arguments)
         }
         if arguments["provider"] != nil { throw AdapterError.unsupportedProviderOverride }
+        if arguments["images"] != nil { throw AdapterError.unsupportedImageAttachments }
         let route: OracleConversationRoute
         let input: OracleInput
         let resolvedStartRoster: OracleRoster?
         if toolName == "context_builder" {
-            let mode = Self.contextBuilderMode(arguments["response_type"]?.stringValue)
+            let mode = try Self.contextBuilderMode(arguments["response_type"]?.stringValue)
             let roster = try await rosterResolver.resolveRoster(for: OracleRosterResolutionRequest(
                 primaryModelOverride: arguments["model"]?.stringValue,
                 newChat: true
             ))
-            if roster.count == 1, arguments["context_pack_ref"]?.stringValue != nil {
-                throw AdapterError.contextPackRequired
+            if roster.count == 1, arguments["context_pack_ref"] != nil {
+                throw AdapterError.contextPackRequiresOracleGroup
             }
 
             if let rawReference = arguments["context_pack_ref"]?.stringValue {
-                guard arguments["instructions"]?.stringValue?
-                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
-                else {
-                    throw MCPError.invalidParams(
-                        "context_builder accepts either instructions or context_pack_ref, not both."
-                    )
+                let reference: OracleFrozenPackReference
+                do {
+                    reference = try OracleFrozenPackReference(rawValue: rawReference)
+                } catch {
+                    throw AdapterError.invalidContextPackReference
                 }
-                let reference = try OracleFrozenPackReference(rawValue: rawReference)
-                let data = try await store.loadArtifact(id: reference.artifactID)
-                let pack = try OracleFrozenContextPack.decodeCanonical(data)
-                guard pack.mode == mode else {
-                    throw MCPError.invalidParams(
-                        "context_pack_ref response mode does not match response_type."
-                    )
+                let data: Data
+                do {
+                    data = try await store.loadArtifact(id: reference.artifactID)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw AdapterError.contextPackUnavailable
                 }
+                let pack: OracleFrozenContextPack
+                do {
+                    pack = try OracleFrozenContextPack.decodeCanonical(data)
+                } catch {
+                    throw AdapterError.invalidContextPack
+                }
+                guard pack.mode == mode else { throw AdapterError.contextPackModeMismatch }
                 input = try OracleInput(
                     mode: mode,
                     userMessage: pack.content,
@@ -495,9 +544,16 @@ actor DirectHeadlessOracleAdapter {
         switch error {
         case .settlementFailed:
             error
-        case .singleLaneBypassRequired, .continuationMissing, .continuationChanged, .rosterConflict,
-             .invalidPreparedTurn:
+        case .rosterConflict:
             AdapterError.rosterConflict
+        case .continuationMissing:
+            AdapterError.continuationMissing
+        case .continuationChanged:
+            AdapterError.continuationChanged
+        case .invalidPreparedTurn:
+            AdapterError.invalidPreparedTurn
+        case .singleLaneBypassRequired:
+            AdapterError.singleLaneBypassRequired
         }
     }
 
@@ -587,11 +643,43 @@ actor DirectHeadlessOracleAdapter {
         return mode
     }
 
-    private static func contextBuilderMode(_ raw: String?) -> OracleMode {
+    static let contextBuilderArgumentNames: Set<String> = [
+        "instructions", "context_pack_ref", "response_type", "model"
+    ]
+
+    /// Validate before route/launch preparation so unsupported app capabilities never
+    /// cause provider work or changes to durable conversation state.
+    nonisolated static func validateContextBuilderArguments(_ arguments: [String: Value]) throws {
+        if arguments["oracle_preset"] != nil { throw AdapterError.appOnlyOraclePreset }
+        if arguments["provider"] != nil { throw AdapterError.unsupportedProviderOverride }
+        if let unsupported = arguments.keys.sorted().first(where: { !contextBuilderArgumentNames.contains($0) }) {
+            throw AdapterError.unsupportedContextBuilderArgument(unsupported)
+        }
+        for key in contextBuilderArgumentNames where arguments[key] != nil {
+            guard arguments[key]?.stringValue != nil else { throw AdapterError.invalidContextBuilderArguments }
+        }
+        if let model = arguments["model"]?.stringValue,
+           model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            throw AdapterError.invalidContextBuilderArguments
+        }
+        _ = try contextBuilderMode(arguments["response_type"]?.stringValue)
+        let hasInstructions = arguments["instructions"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let hasPack = arguments["context_pack_ref"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        guard hasInstructions != hasPack,
+              !(arguments["instructions"] != nil && arguments["context_pack_ref"] != nil)
+        else { throw AdapterError.invalidContextBuilderArguments }
+    }
+
+    private nonisolated static func contextBuilderMode(_ raw: String?) throws -> OracleMode {
         switch raw {
+        case nil, "question": .chat
         case "plan": .plan
         case "review": .review
-        default: .chat
+        case "clarify": throw AdapterError.unsupportedContextBuilderDiscovery
+        default: throw AdapterError.invalidContextBuilderResponseType
         }
     }
 

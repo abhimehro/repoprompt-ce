@@ -14,12 +14,15 @@ Usage:
   modularization_metrics.py report [--root DIR] [--details]
   modularization_metrics.py check  [--root DIR] [--baseline FILE]
   modularization_metrics.py update [--root DIR] [--baseline FILE] [--allow-regression]
+  modularization_metrics.py edit-locality [--root DIR] [--days 60] [--ref main]
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import datetime as dt
+import subprocess
 import json
 import os
 import re
@@ -39,6 +42,8 @@ FIRST_PARTY_SOURCE_DIRS = (Path("Sources"), Path("Packages"))
 # Gated: ordinary feature work never needs to worsen these, so CI fails on any increase.
 RATCHETED_METRICS: Tuple[str, ...] = (
     "app_files_over_5000_lines",
+    "app_files_over_2000_lines",
+    "tests_testable_import_app_files",
     "app_static_shared_declarations",
 )
 # Tracked: reported against the baseline but not gated until the owning wave provides an
@@ -46,14 +51,14 @@ RATCHETED_METRICS: Tuple[str, ...] = (
 # too noisy to gate and the index-store count needs a build (ledger, P0.2).
 TRACKED_METRICS: Tuple[str, ...] = (
     "app_target_swift_lines",
-    "app_files_over_2000_lines",
     "app_shared_accessor_uses",
     "app_userdefaults_standard_uses",
     "app_wrong_way_file_edges",
     "app_largest_cycle_components",
     "tests_sleep_calls",
-    "tests_testable_import_app_files",
 )
+
+APP_LINE_HEADROOM = 2000
 
 _STRIP_PATTERNS = (
     re.compile(r'"""[\s\S]*?"""'),
@@ -315,12 +320,28 @@ def collect(root: Path) -> Tuple[Dict[str, int], Dict[str, object]]:
 
 def regressions(current: Mapping[str, int], baseline: Mapping[str, int]) -> List[str]:
     problems = []
+    if "app_target_swift_lines" not in baseline:
+        problems.append("app_target_swift_lines: missing from baseline")
+    elif current.get("app_target_swift_lines", 0) > baseline["app_target_swift_lines"] + APP_LINE_HEADROOM:
+        problems.append(
+            f"app_target_swift_lines: {current.get('app_target_swift_lines', 0)} > "
+            f"ceiling {baseline['app_target_swift_lines'] + APP_LINE_HEADROOM}"
+        )
     for name in RATCHETED_METRICS:
         if name not in baseline:
             problems.append(f"{name}: missing from baseline")
         elif current.get(name, 0) > baseline[name]:
             problems.append(f"{name}: {current.get(name, 0)} > baseline {baseline[name]}")
     return problems
+
+
+def baseline_raises(current: Mapping[str, int], baseline: Mapping[str, int]) -> List[str]:
+    """Every ratcheted or tracked value `update` would raise. Headroom applies to `check` only."""
+    return [
+        f"{name}: {baseline[name]} -> {current.get(name, 0)}"
+        for name in dict.fromkeys(("app_target_swift_lines",) + RATCHETED_METRICS + TRACKED_METRICS)
+        if name in baseline and current.get(name, 0) > baseline[name]
+    ]
 
 
 def improvements(current: Mapping[str, int], baseline: Mapping[str, int]) -> List[str]:
@@ -352,23 +373,98 @@ def write_baseline(path: Path, metrics: Mapping[str, int]) -> None:
             "regenerate with `python3 Scripts/modularization_metrics.py update` after an improving slice."
         ),
         "ratcheted": list(RATCHETED_METRICS),
+        "app_target_swift_lines_headroom": APP_LINE_HEADROOM,
         "tracked": list(TRACKED_METRICS),
         "metrics": dict(sorted(metrics.items())),
     }
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
+def edit_locality(root: Path, ref: str = "origin/main", days: int = 60) -> Dict[str, object]:
+    """Classify trailing Swift touches by *current* owner, following Git renames backward."""
+    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).isoformat()
+    completed = subprocess.run(
+        ["git", "log", ref, f"--since={since}", "-M", "--format=commit:%H", "--name-status", "--", "Sources"],
+        cwd=root, check=True, capture_output=True, text=True,
+    )
+    catalog = json.loads((root / "Scripts/modularization/modules.json").read_text(encoding="utf-8"))
+    modules = catalog["modules"]
+    roots = sorted(
+        ((entry["source_root"].rstrip("/") + "/", name) for name, entry in modules.items()
+         if entry.get("source_root", "").startswith("Sources/")),
+        key=lambda row: -len(row[0]),
+    )
+
+    def path_owner(path: str) -> Optional[str]:
+        return next((name for prefix, name in roots if path.startswith(prefix)), None)
+
+    # A moved file's old app path belongs to its new module for this metric.
+    owners = {
+        path.relative_to(root).as_posix(): name
+        for prefix, name in roots
+        for path in swift_files(root / prefix.rstrip('/'))
+    }
+    touches = collections.Counter()
+    commits = 0
+    changes: List[Tuple[str, List[str]]] = []
+
+    def count_commit() -> None:
+        nonlocal changes
+        if not changes:
+            return
+        for status, paths in changes:
+            current_path = paths[-1]
+            if not current_path.endswith('.swift'):
+                continue
+            owner = owners.get(current_path) or path_owner(current_path)
+            if owner:
+                touches[owner] += 1
+        for status, paths in changes:
+            if status.startswith(('R', 'C')) and len(paths) == 2:
+                old, new = paths
+                owner = owners.pop(new, None)
+                if owner:
+                    owners[old] = owner
+            elif status.startswith('A'):
+                owners.pop(paths[-1], None)
+        changes = []
+
+    for line in completed.stdout.splitlines():
+        if line.startswith('commit:'):
+            count_commit()
+            commits += 1
+        elif line and '\t' in line:
+            status, *paths = line.split('\t')
+            changes.append((status, paths))
+    count_commit()
+    local = sum(count for name, count in touches.items() if modules[name].get("app_free_tests"))
+    total = sum(touches.values())
+    return {
+        "ref": ref, "days": days, "commits": commits, "swift_file_touches": total,
+        "app_free_test_touches": local, "edit_locality_percent": round(100 * local / total, 2) if total else 0.0,
+        "by_module": dict(sorted(touches.items())),
+    }
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("report", "check", "update"))
+    parser.add_argument("command", choices=("report", "check", "update", "edit-locality"))
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--baseline", type=Path, default=None)
     parser.add_argument("--details", action="store_true", help="report: include top offenders")
     parser.add_argument("--allow-regression", action="store_true", help="update: accept a worse baseline")
+    parser.add_argument("--days", type=int, default=60, help="edit-locality: trailing days")
+    parser.add_argument("--ref", default="origin/main", help="edit-locality: Git ref (default origin/main)")
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
     baseline_path = args.baseline or (root / DEFAULT_BASELINE)
+    if args.command == "edit-locality":
+        if args.days < 1:
+            parser.error("--days must be positive")
+        print(json.dumps(edit_locality(root, args.ref, args.days), indent=2))
+        return 0
+
     metrics, details = collect(root)
 
     if args.command == "report":
@@ -397,7 +493,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if baseline_path.is_file() and not args.allow_regression:
-        problems = regressions(metrics, load_baseline(baseline_path))
+        baseline = load_baseline(baseline_path)
+        problems = regressions(metrics, baseline) + baseline_raises(metrics, baseline)
         if problems:
             print("refusing to raise baseline (use --allow-regression with justification):", file=sys.stderr)
             for problem in problems:

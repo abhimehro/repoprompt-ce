@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import RepoPromptInstrumentation
 
 private func acpLeaseLog(_ message: @autoclosure () -> String) {
     guard AgentRuntimeProviderService.enableDebugLogging else { return }
@@ -164,6 +165,7 @@ actor MCPBootstrapLease {
     private let log = Logger(subsystem: "com.repoprompt.mcp", category: "BootstrapLease")
 
     private var spec: MCPBootstrapLeaseSpec
+    private let perfRecorder: any AgentModePerfRecording
     private let mcpServerEnabler: (() async -> Bool)?
     private let policyInstaller: (MCPBootstrapLeaseSpec) async -> Void
     private let expectedPIDPolicyArmer: (MCPBootstrapLeaseSpec) async -> Bool
@@ -208,6 +210,7 @@ actor MCPBootstrapLease {
     ///     Defaults to `ServerNetworkManager.shared.confirmCommittedRunRouteOrFenceRevocation(...)`.
     init(
         spec: MCPBootstrapLeaseSpec,
+        perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder(),
         mcpServerEnabler: (() async -> Bool)? = nil,
         policyInstaller: ((MCPBootstrapLeaseSpec) async -> Void)? = nil,
         expectedPIDPolicyArmer: ((MCPBootstrapLeaseSpec) async -> Bool)? = nil,
@@ -215,6 +218,7 @@ actor MCPBootstrapLease {
         routeAuthorityResolver: ((MCPBootstrapLeaseSpec) async -> MCPRunRouteAuthorityDecision)? = nil
     ) {
         self.spec = spec
+        self.perfRecorder = perfRecorder
         self.mcpServerEnabler = mcpServerEnabler
         self.policyInstaller = policyInstaller ?? Self.defaultPolicyInstaller
         self.expectedPIDPolicyArmer = expectedPIDPolicyArmer ?? Self.defaultExpectedPIDPolicyArmer
@@ -788,7 +792,7 @@ actor MCPBootstrapLease {
                 event: event,
                 fields: diagnosticFields
             )
-            AgentModePerfDiagnostics.event(
+            perfRecorder.event(
                 "mcp.routing.\(event)",
                 tabID: spec.tabID,
                 fields: diagnosticFields

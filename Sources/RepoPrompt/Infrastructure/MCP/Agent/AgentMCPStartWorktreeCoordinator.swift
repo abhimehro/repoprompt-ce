@@ -1,5 +1,8 @@
 import Foundation
 import MCP
+import RepoPromptInstrumentation
+import RepoPromptProcess
+import RepoPromptWorkspaceCore
 
 @MainActor
 struct AgentMCPStartWorktreeCoordinator {
@@ -68,19 +71,22 @@ struct AgentMCPStartWorktreeCoordinator {
     let gitTargetResolver: GitRepoTargetResolver
     private let transitionObserver: TransitionObserver?
     private let preBindingCommitObserver: PreBindingCommitObserver?
+    private let startupPhaseEventSink: any WorktreeStartupPhaseEventSink
 
     init(
         operationName: String,
         vcsService: VCSService,
         gitTargetResolver: GitRepoTargetResolver,
         transitionObserver: TransitionObserver? = nil,
-        preBindingCommitObserver: PreBindingCommitObserver? = nil
+        preBindingCommitObserver: PreBindingCommitObserver? = nil,
+        startupPhaseEventSink: any WorktreeStartupPhaseEventSink
     ) {
         self.operationName = operationName
         self.vcsService = vcsService
         self.gitTargetResolver = gitTargetResolver
         self.transitionObserver = transitionObserver
         self.preBindingCommitObserver = preBindingCommitObserver
+        self.startupPhaseEventSink = startupPhaseEventSink
     }
 
     func containsArguments(_ args: [String: Value]) -> Bool {
@@ -169,7 +175,10 @@ struct AgentMCPStartWorktreeCoordinator {
             guard startupContext.agentSessionID == targetSessionID else {
                 throw MCPError.internalError("\(operationName) startup context does not belong to the target Agent session.")
             }
-            WorktreeStartupInstrumentation.record(.worktreePreparationStarted, context: startupContext)
+            startupPhaseEventSink.record(WorktreeStartupPhaseEvent(
+                phase: .worktreePreparationStarted,
+                context: startupContext
+            ))
         }
         try Task.checkCancellation()
         if request.hasExplicitWorktreeArgs {
@@ -435,12 +444,20 @@ struct AgentMCPStartWorktreeCoordinator {
             workingDirectory: repository.rootPath,
             enableDebugLogging: false
         ))
-        let result = try await runner.run(
-            args: ["worktree", "remove", "--force", "--", worktree.path],
-            stdin: nil,
-            outputMode: .none,
-            timeout: 30
-        )
+        let result: CLIProcessRunner.Result
+        do {
+            result = try await runner.run(
+                args: ["worktree", "remove", "--force", "--", worktree.path],
+                stdin: nil,
+                outputMode: .none,
+                timeout: 30
+            )
+        } catch {
+            await vcsService.invalidateCache(for: URL(fileURLWithPath: worktree.path))
+            throw error
+        }
+        // The removal bypasses VCSService; drop the removed path's caches and all shared listings.
+        await vcsService.invalidateCache(for: URL(fileURLWithPath: worktree.path))
         guard result.status == 0 else {
             let stderr = String(data: result.stderr, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)

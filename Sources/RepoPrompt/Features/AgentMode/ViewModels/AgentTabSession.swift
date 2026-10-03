@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import RepoPromptInstrumentation
 
 // MARK: - Agent Tab Session
 
@@ -12,6 +13,7 @@ import Foundation
 @MainActor
 final class AgentTabSession: ObservableObject {
     let tabID: UUID
+    let perfRecorder: any AgentModePerfRecording
     private var suppressSourceItemsChanged = false
 
     /// Canonical runtime source-item suffix. Coordinators and tests mutate this list,
@@ -728,6 +730,25 @@ final class AgentTabSession: ObservableObject {
         activeRunOwnership?.attemptID
     }
 
+    /// Acceptance installs this before provider branching. It only forwards an observational wake.
+    var observerWaitRelease: (runID: UUID?, attemptID: UUID?, task: Task<Void, Never>)?
+
+    func awaitObserverWaitRelease(runID: UUID, runAttemptID: UUID?) async throws {
+        try Task.checkCancellation()
+        guard self.runID == runID, activeRunAttemptID == runAttemptID else { throw CancellationError() }
+        while let release = observerWaitRelease,
+              release.runID == runID, release.attemptID == runAttemptID
+        {
+            await release.task.value
+            try Task.checkCancellation()
+            guard self.runID == runID, activeRunAttemptID == runAttemptID else { throw CancellationError() }
+            // Input accepted during this suspension installs a newer forwarding barrier.
+            if observerWaitRelease?.task == release.task { break }
+        }
+        try Task.checkCancellation()
+        guard self.runID == runID, activeRunAttemptID == runAttemptID else { throw CancellationError() }
+    }
+
     var activeRunLiveness: AgentRunLivenessSnapshot? {
         runLifecycle.liveness
     }
@@ -1332,8 +1353,9 @@ final class AgentTabSession: ObservableObject {
         return result
     }
 
-    init(tabID: UUID) {
+    init(tabID: UUID, perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()) {
         self.tabID = tabID
+        self.perfRecorder = perfRecorder
         // The lifecycle facade owns terminal-commit phase state, so bridge it into the explicit
         // oversight change channel from that authority.
         runLifecycle.onTerminalCommitPhaseChange = { [weak self] in
@@ -1607,18 +1629,18 @@ final class AgentTabSession: ObservableObject {
             attemptID: attemptID
         )
         #if DEBUG
-            AgentModePerfDiagnostics.increment("run.lifecycle.attempt.started")
-            AgentModePerfDiagnostics.increment("run.lifecycle.attempt.started.source.\(source)")
-            AgentModePerfDiagnostics.event(
+            perfRecorder.increment("run.lifecycle.attempt.started")
+            perfRecorder.increment("run.lifecycle.attempt.started.source.\(source)")
+            perfRecorder.event(
                 "run.lifecycle.attemptStarted",
                 tabID: tabID,
                 fields: [
                     "source": source,
-                    "attemptID": AgentModePerfDiagnostics.shortID(ownership.attemptID),
-                    "bindingGeneration": AgentModePerfDiagnostics.shortID(ownership.binding.generation),
-                    "persistentBindingGeneration": AgentModePerfDiagnostics.shortID(ownership.binding.persistentBindingGeneration),
+                    "attemptID": perfRecorder.shortID(ownership.attemptID),
+                    "bindingGeneration": perfRecorder.shortID(ownership.binding.generation),
+                    "persistentBindingGeneration": perfRecorder.shortID(ownership.binding.persistentBindingGeneration),
                     "bindingTransitionGeneration": String(ownership.binding.bindingTransitionGeneration),
-                    "persistentSessionID": AgentModePerfDiagnostics.shortID(ownership.binding.persistentSessionID)
+                    "persistentSessionID": perfRecorder.shortID(ownership.binding.persistentSessionID)
                 ]
             )
         #endif
@@ -1690,14 +1712,14 @@ final class AgentTabSession: ObservableObject {
 
     private func recordRunAttemptEnded(_ ownership: AgentRunOwnership, source: String) {
         #if DEBUG
-            AgentModePerfDiagnostics.increment("run.lifecycle.attempt.ended")
-            AgentModePerfDiagnostics.increment("run.lifecycle.attempt.ended.source.\(source)")
-            AgentModePerfDiagnostics.event(
+            perfRecorder.increment("run.lifecycle.attempt.ended")
+            perfRecorder.increment("run.lifecycle.attempt.ended.source.\(source)")
+            perfRecorder.event(
                 "run.lifecycle.attemptEnded",
                 tabID: tabID,
                 fields: [
                     "source": source,
-                    "attemptID": AgentModePerfDiagnostics.shortID(ownership.attemptID)
+                    "attemptID": perfRecorder.shortID(ownership.attemptID)
                 ]
             )
         #endif
@@ -1712,11 +1734,11 @@ final class AgentTabSession: ObservableObject {
             switch result {
             case .accepted:
                 if kind == .stageTransition {
-                    AgentModePerfDiagnostics.increment("run.lifecycle.stage.\(stage.rawValue)", tabID: tabID)
+                    perfRecorder.increment("run.lifecycle.stage.\(stage.rawValue)", tabID: tabID)
                 }
             case let .rejected(reason):
-                AgentModePerfDiagnostics.increment("run.lifecycle.progress.rejected.\(reason.rawValue)", tabID: tabID)
-                AgentModePerfDiagnostics.event(
+                perfRecorder.increment("run.lifecycle.progress.rejected.\(reason.rawValue)", tabID: tabID)
+                perfRecorder.event(
                     "run.lifecycle.progressRejected",
                     tabID: tabID,
                     fields: ["reason": reason.rawValue, "kind": kind.rawValue, "stage": stage.rawValue]

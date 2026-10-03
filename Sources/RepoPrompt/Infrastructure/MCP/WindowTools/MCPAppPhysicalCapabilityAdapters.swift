@@ -1,6 +1,7 @@
 import Foundation
 import MCP
 import RepoPromptDomainRuntime
+import RepoPromptWorkspaceCore
 
 /// Explicit app-process physical capability adapters used by domain-owned tool bindings.
 /// Presentation and AppKit interactions remain on MainActor; schema, policy, and catalog

@@ -41,6 +41,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
     case monitorSteer = "agent_session_link.steer"
     /// Cancels one exact target's current run or pending start under a Manage grant.
     case monitorStop = "agent_session_link.stop"
+    case monitorSetModel = "agent_session_link.set_model"
 
     package enum Family: String, Hashable, Sendable {
         /// Existing spawn-provenance control and read operations.
@@ -56,7 +57,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
              .manageResume, .manageStop, .manageCleanup:
             .sessionControl
         case .monitorList, .monitorCreateLane, .monitorRetireLane, .monitorPoll, .monitorWait, .monitorRead, .monitorSend, .monitorCompact,
-             .monitorSnoozeAutoWake, .monitorRespond, .monitorSteer, .monitorStop:
+             .monitorSnoozeAutoWake, .monitorRespond, .monitorSteer, .monitorStop, .monitorSetModel:
             .monitor
         }
     }
@@ -68,7 +69,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
         case .monitorList, .monitorCreateLane:
             true
         case .monitorRetireLane, .monitorPoll, .monitorWait, .monitorRead, .monitorSend, .monitorCompact,
-             .monitorSnoozeAutoWake, .monitorRespond, .monitorSteer, .monitorStop,
+             .monitorSnoozeAutoWake, .monitorRespond, .monitorSteer, .monitorStop, .monitorSetModel,
              .runPoll, .runWait, .runCancel, .runSteer, .runRespond,
              .manageList, .manageGetLog, .manageExtractHandoff,
              .manageResume, .manageStop, .manageCleanup:
@@ -90,7 +91,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
             .read
         case .monitorSend, .monitorCompact:
             .sendWhenIdle
-        case .monitorRespond, .monitorSteer, .monitorStop, .monitorRetireLane:
+        case .monitorRespond, .monitorSteer, .monitorStop, .monitorSetModel, .monitorRetireLane:
             .manage
         case .monitorList, .monitorCreateLane,
              .runPoll, .runWait, .runCancel, .runSteer, .runRespond,
@@ -104,7 +105,7 @@ package enum DomainAgentSessionTargetOperation: String, CaseIterable, Hashable, 
     package var mutatesTarget: Bool {
         switch self {
         case .runCancel, .runSteer, .runRespond, .manageResume, .manageStop, .manageCleanup, .monitorSend, .monitorCompact,
-             .monitorRespond, .monitorSteer, .monitorStop, .monitorRetireLane:
+             .monitorRespond, .monitorSteer, .monitorStop, .monitorSetModel, .monitorRetireLane:
             true
         case .runPoll, .runWait, .manageList, .manageGetLog, .manageExtractHandoff,
              .monitorList, .monitorCreateLane, .monitorPoll, .monitorWait, .monitorRead,

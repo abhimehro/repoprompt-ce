@@ -5,6 +5,7 @@
 //  Created by Eric Provencher on 2024-10-30.
 //
 
+import RepoPromptInstrumentation
 import SwiftUI
 
 struct TrashButton: View {
@@ -140,6 +141,7 @@ enum CancelButtonSource: String {
 }
 
 struct CancelButton: View {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     let source: CancelButtonSource
     let action: () -> Void
     @State private var isHovered = false
@@ -178,18 +180,18 @@ struct CancelButton: View {
 
     private func recordAppear() {
         #if DEBUG
-            visibleStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+            visibleStartMS = perfRecorder.timestampMSIfEnabled()
             let sourceName = source.rawValue
-            AgentModePerfDiagnostics.increment(AgentModePerfDiagnostics.counterKey("cancelButton.visible.appear", source: sourceName))
-            AgentModePerfDiagnostics.event("cancelButton.visible.appear", fields: ["source": sourceName])
+            perfRecorder.increment(perfRecorder.counterKey("cancelButton.visible.appear", source: sourceName))
+            perfRecorder.event("cancelButton.visible.appear", fields: ["source": sourceName])
         #endif
     }
 
     private func recordDisappear() {
         #if DEBUG
             let sourceName = source.rawValue
-            AgentModePerfDiagnostics.increment(AgentModePerfDiagnostics.counterKey("cancelButton.visible.disappear", source: sourceName))
-            AgentModePerfDiagnostics.durationEvent(
+            perfRecorder.increment(perfRecorder.counterKey("cancelButton.visible.disappear", source: sourceName))
+            perfRecorder.durationEvent(
                 "cancelButton.visibleDuration",
                 startMS: visibleStartMS,
                 fields: ["source": sourceName]

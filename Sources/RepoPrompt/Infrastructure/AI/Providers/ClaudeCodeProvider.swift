@@ -1,4 +1,6 @@
 import Foundation
+import RepoPromptDomainRuntime
+import RepoPromptProcess
 
 struct ClaudeCodeCLIModelSelection: Equatable {
     let modelArgument: String?
@@ -17,6 +19,7 @@ struct ClaudeCLIOptions {
     var effortLevel: ClaudeCodeEffortLevel?
     var mcpConfigPath: String?
     var systemPromptOverride: String?
+    var inputFormat: String?
     var timeout: TimeInterval?
     var environmentOverrides: [String: String] = [:]
     var removedEnvironmentKeys: Set<String> = []
@@ -40,6 +43,7 @@ struct ClaudeCLIOptions {
         if let permissionMode { tokens.append(contentsOf: ["--permission-mode", permissionMode]) }
         if let model { tokens.append(contentsOf: ["--model", model]) }
         if let systemPromptOverride { tokens.append(contentsOf: ["--system-prompt", systemPromptOverride]) }
+        if let inputFormat { tokens.append(contentsOf: ["--input-format", inputFormat]) }
         if let mcpConfigPath {
             tokens.append(contentsOf: ["--mcp-config", mcpConfigPath])
             // Use strict mode to ignore project-level MCP configs from ~/.claude.json
@@ -96,13 +100,15 @@ final class ClaudeCodeProvider: AIProvider {
     private let initialBackoff: TimeInterval = 1.0
     private let maxBackoff: TimeInterval = 8.0
 
+    /// An injected runner owns process configuration; otherwise the normal CLI configuration is built.
     init(
         workingDirectory: String? = nil,
         enableDebugLogging: Bool = false,
         defaultRequestTimeout: TimeInterval? = nil,
         testRequestTimeout: TimeInterval? = nil,
         maxRetries: Int? = nil,
-        logCollector: CLIProcessLogCollector? = nil
+        logCollector: CLIProcessLogCollector? = nil,
+        runner: CLIProcessRunner? = nil
     ) {
         var config = CLIProcessConfiguration(
             workingDirectory: workingDirectory,
@@ -112,7 +118,7 @@ final class ClaudeCodeProvider: AIProvider {
         config.enableDebugLogging = enableDebugLogging
         config.logCollector = logCollector
         config.ensureAdditionalPaths(CLIPathHints.claudeCode)
-        runner = CLIProcessRunner(config: config)
+        self.runner = runner ?? CLIProcessRunner(config: config)
         decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
 
@@ -156,6 +162,15 @@ final class ClaudeCodeProvider: AIProvider {
         if options.timeout == nil {
             options.timeout = defaultRequestTimeout
         }
+        let usesStreamJSONOutput = !aiMessage.transientImages.isEmpty
+        let stdin: String
+        if aiMessage.transientImages.isEmpty {
+            stdin = prompt
+        } else {
+            Self.applyStreamJSONImageTransport(to: &options)
+            stdin = try Self.makeStreamJSONInput(prompt: prompt, images: aiMessage.transientImages)
+        }
+        let outputFormat: CLIOutputFormat = usesStreamJSONOutput ? .streamJson : .json
         let args = options.toTokens()
 
         var attempt = 0
@@ -166,11 +181,12 @@ final class ClaudeCodeProvider: AIProvider {
             do {
                 result = try await runner.run(
                     args: args,
-                    stdin: prompt,
-                    outputMode: .auto(.json),
+                    stdin: stdin,
+                    outputMode: .auto(outputFormat),
                     timeout: options.timeout,
                     additionalEnvironment: options.additionalEnvironment,
-                    additionalRemovedKeys: options.removedEnvironmentKeys
+                    additionalRemovedKeys: options.removedEnvironmentKeys,
+                    cancelChildOnTaskCancellation: true
                 )
             } catch {
                 throw mapProcessError(error)
@@ -181,13 +197,16 @@ final class ClaudeCodeProvider: AIProvider {
                     throw AIProviderError.invalidResponse(detail: "Claude CLI returned no output")
                 }
                 do {
-                    return try parseCompletionPayload(result.stdout)
+                    return try parseCompletionPayload(result.stdout, isStreamJSON: usesStreamJSONOutput)
                 } catch {
                     throw AIProviderError.apiError(source: error)
                 }
             }
 
-            if let humanMessage = extractCLIErrorDetail(fromStdout: result.stdout) {
+            if let humanMessage = extractCLIErrorDetail(
+                fromStdout: result.stdout,
+                isStreamJSON: usesStreamJSONOutput
+            ) {
                 // Check for credit balance error and provide helpful guidance
                 let lowerMessage = humanMessage.lowercased()
                 if lowerMessage.contains("credit balance") || lowerMessage.contains("balance too low") || lowerMessage.contains("api balance") {
@@ -217,7 +236,34 @@ final class ClaudeCodeProvider: AIProvider {
         await runner.cancelAll()
     }
 
+    #if DEBUG
+        static func test_parseStreamJSONCompletionPayload(_ data: Data) throws -> AICompletionResult {
+            let provider = ClaudeCodeProvider()
+            return try provider.parseCompletionPayload(data, isStreamJSON: true)
+        }
+
+        static func test_extractStreamJSONErrorDetail(from data: Data) -> String? {
+            let provider = ClaudeCodeProvider()
+            return provider.extractCLIErrorDetail(fromStdout: data, isStreamJSON: true)
+        }
+    #endif
+
     // MARK: - Private Helpers
+
+    /// stream-json input requires `--verbose` alongside `--input-format`/`--output-format
+    /// stream-json` in print mode, matching the Agent Mode Claude session runner.
+    static func applyStreamJSONImageTransport(to options: inout ClaudeCLIOptions) {
+        options.inputFormat = "stream-json"
+        options.verbose = true
+    }
+
+    static func makeStreamJSONInput(prompt: String, images: [AITransientImage]) throws -> String {
+        do {
+            return try ClaudeStreamJSONImageTransport.input(prompt: prompt, images: images)
+        } catch {
+            throw AIProviderError.invalidConfiguration(detail: "Unable to encode Claude image input.")
+        }
+    }
 
     static func resolveCLIModelSelection(for model: AIModel) throws -> ClaudeCodeCLIModelSelection {
         guard model.providerType == .claudeCode else {
@@ -344,7 +390,10 @@ final class ClaudeCodeProvider: AIProvider {
         return prompt
     }
 
-    private func parseCompletionPayload(_ data: Data) throws -> AICompletionResult {
+    private func parseCompletionPayload(_ data: Data, isStreamJSON: Bool = false) throws -> AICompletionResult {
+        if isStreamJSON {
+            return try parseStreamJSONCompletionPayload(data)
+        }
         if let message = try? decoder.decode(ClaudeResultMessage.self, from: data) {
             return AICompletionResult(
                 text: message.result ?? "",
@@ -369,6 +418,17 @@ final class ClaudeCodeProvider: AIProvider {
         } else {
             throw AIProviderError.invalidResponse(detail: "Claude CLI returned unsupported JSON payload")
         }
+    }
+
+    private func parseStreamJSONCompletionPayload(_ data: Data) throws -> AICompletionResult {
+        guard let terminal = ClaudeStreamJSONImageTransport.terminalEvent(in: data) else {
+            throw AIProviderError.invalidResponse(detail: "Claude CLI returned stream JSON without completion payload")
+        }
+        if terminal.type == "error" || ClaudeStreamJSONImageTransport.indicatesError(terminal.payload) {
+            let detail = ClaudeStreamJSONImageTransport.errorMessage(from: terminal.payload) ?? "Claude CLI returned an error"
+            throw AIProviderError.invalidResponse(detail: detail)
+        }
+        return parseCompletionDictionary(terminal.payload)
     }
 
     private func parseCompletionDictionary(_ dict: [String: Any]) -> AICompletionResult {
@@ -566,8 +626,11 @@ final class ClaudeCodeProvider: AIProvider {
 
     /// Attempts to decode a human-readable error exposed by the Claude CLI when it exits non-zero.
     /// Returns nil if stdout is empty or decoding fails.
-    private func extractCLIErrorDetail(fromStdout data: Data) -> String? {
+    private func extractCLIErrorDetail(fromStdout data: Data, isStreamJSON: Bool = false) -> String? {
         guard !data.isEmpty else { return nil }
+        if isStreamJSON {
+            return ClaudeStreamJSONImageTransport.errorDetail(in: data)
+        }
 
         // First pass: look for structured JSON errors
         if let message = try? decoder.decode(ClaudeResultMessage.self, from: data),

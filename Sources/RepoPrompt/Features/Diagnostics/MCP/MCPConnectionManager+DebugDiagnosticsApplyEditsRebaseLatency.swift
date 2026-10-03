@@ -3,7 +3,9 @@
 import CryptoKit
 import Foundation
 import MCP
+import RepoPromptFoundation
 import RepoPromptShared
+import RepoPromptWorkspaceCore
 
 #if DEBUG
     final class MCPApplyEditsRebaseProbeState: @unchecked Sendable {
@@ -1149,6 +1151,20 @@ import RepoPromptShared
             return content.reduce(into: 1) { count, character in
                 if character == "\n" { count += 1 }
             }
+        }
+    }
+
+    struct AppWorkspaceApplyEditsRebaseProbeRecorder: WorkspaceApplyEditsRebaseProbeRecording {
+        func recordPublisherIngress(rootID: UUID, source: FileSystemDeltaPublicationSource, deltas: [FileSystemDelta]) {
+            MCPApplyEditsRebaseProbeRecorder.recordPublisherIngress(rootID: rootID, source: source, deltas: deltas)
+        }
+
+        func recordStoreModification(rootID: UUID, fileID: UUID, generation: UInt64) {
+            MCPApplyEditsRebaseProbeRecorder.recordStoreModification(rootID: rootID, fileID: fileID, generation: generation)
+        }
+
+        func recordAppliedIndexModification(rootID: UUID, fileIDs: [UUID], generation: UInt64) {
+            MCPApplyEditsRebaseProbeRecorder.recordAppliedIndexModification(rootID: rootID, fileIDs: fileIDs, generation: generation)
         }
     }
 #endif

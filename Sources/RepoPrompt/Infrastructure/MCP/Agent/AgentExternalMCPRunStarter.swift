@@ -137,7 +137,7 @@ enum AgentExternalMCPRunStarter {
             throw MCPError.internalError("Failed to resolve target agent session ID.")
         }
         #if DEBUG
-            AgentModePerfDiagnostics.event("mcp.routing.externalRunStarterActivate", tabID: target.tabID, fields: [
+            agentModeVM.perfRecorder.event("mcp.routing.externalRunStarterActivate", tabID: target.tabID, fields: [
                 "sessionID": sessionID.uuidString,
                 "connectionID": metadata.connectionID?.uuidString ?? "nil",
                 "clientName": metadata.clientName ?? "nil",
@@ -176,7 +176,7 @@ enum AgentExternalMCPRunStarter {
             switch bindingDisposition {
             case .preserveCallerBinding:
                 #if DEBUG
-                    AgentModePerfDiagnostics.event("mcp.routing.externalRunStarterPreservedCallerBinding", tabID: target.tabID, fields: [
+                    agentModeVM.perfRecorder.event("mcp.routing.externalRunStarterPreservedCallerBinding", tabID: target.tabID, fields: [
                         "sessionID": sessionID.uuidString,
                         "connectionID": metadata.connectionID?.uuidString ?? "nil",
                         "windowID": metadata.windowID.map(String.init) ?? "nil"
@@ -185,7 +185,7 @@ enum AgentExternalMCPRunStarter {
             case let .applyRequestBindingPolicy(bindCurrentRequestToTab):
                 try await bindCurrentRequestToTab(target.tabID, metadata)
                 #if DEBUG
-                    AgentModePerfDiagnostics.event("mcp.routing.externalRunStarterBoundRequest", tabID: target.tabID, fields: [
+                    agentModeVM.perfRecorder.event("mcp.routing.externalRunStarterBoundRequest", tabID: target.tabID, fields: [
                         "sessionID": sessionID.uuidString,
                         "connectionID": metadata.connectionID?.uuidString ?? "nil",
                         "windowID": metadata.windowID.map(String.init) ?? "nil"
@@ -211,7 +211,7 @@ enum AgentExternalMCPRunStarter {
 
             let snapshot = await resolveInitialSnapshot(sessionID: sessionID, agentModeVM: agentModeVM)
             #if DEBUG
-                AgentModePerfDiagnostics.event("mcp.routing.externalRunStarterDispatched", tabID: target.tabID, fields: [
+                agentModeVM.perfRecorder.event("mcp.routing.externalRunStarterDispatched", tabID: target.tabID, fields: [
                     "sessionID": sessionID.uuidString,
                     "connectionID": metadata.connectionID?.uuidString ?? "nil",
                     "snapshotStatus": snapshot.status.rawValue

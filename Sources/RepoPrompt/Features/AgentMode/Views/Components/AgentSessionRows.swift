@@ -1563,10 +1563,12 @@ struct AgentStashedSessionRow: View {
 struct AgentRowActivityArc: View {
     var tint: Color = .accentColor
 
+    @Environment(\.windowIsPresentationVisible) private var isWindowPresentationVisible
+
     var body: some View {
         // Spun by the render server (see `AgentRowActivityArcLayerView`): a SwiftUI `repeatForever`
         // rotation here re-rendered the row's whole window on the main thread every frame.
-        AgentRowAnimatedActivityArc(tint: tint)
+        AgentRowAnimatedActivityArc(tint: tint, isPresentationVisible: isWindowPresentationVisible)
             .frame(width: AgentRowActivityArcLayerView.diameter, height: AgentRowActivityArcLayerView.diameter)
             // An AppKit view is not an accessibility element on its own; this keeps the arc one
             // element carrying the "Running" label.

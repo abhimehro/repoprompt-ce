@@ -2,6 +2,8 @@ import Foundation
 import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptInstrumentation
+import RepoPromptWorkspaceCore
 import XCTest
 
 final class ContentReadCancellationTests: XCTestCase {

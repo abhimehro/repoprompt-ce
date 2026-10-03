@@ -1,5 +1,7 @@
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptFoundation
+import RepoPromptWorkspaceCore
 import XCTest
 
 final class WorkspaceRootBindingProjectionTests: XCTestCase {

@@ -1,6 +1,7 @@
 import Foundation
 @_spi(TestSupport) @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptSecureStorage
 import XCTest
 
 /// Exercises Stop through the run-service terminal barrier and Claude attempt-lease cleanup.

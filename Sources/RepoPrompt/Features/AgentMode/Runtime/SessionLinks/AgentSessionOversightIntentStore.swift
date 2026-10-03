@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 // Durable oversight intents: the user's directed overseer → overseen relationships and nothing else.
 //
@@ -237,6 +238,7 @@ actor AgentSessionOversightIntentStore {
     static let maxDecodedRowCount = 65536
     private static let maxQuarantineAttempts = 4
 
+    private let restorePerfRecorder: any WorkspaceRestorePerfRecording
     private let fileURL: URL
     private let backupsDirectoryURL: URL
     private let mode: AgentSessionOversightPersistenceMode
@@ -281,8 +283,10 @@ actor AgentSessionOversightIntentStore {
         makeUUID: @escaping @Sendable () -> UUID = UUID.init,
         storeProcessGeneration: UUID = UUID(),
         maxFileByteCount: Int = AgentSessionOversightIntentStore.maxFileByteCount,
-        maxDecodedRowCount: Int = AgentSessionOversightIntentStore.maxDecodedRowCount
+        maxDecodedRowCount: Int = AgentSessionOversightIntentStore.maxDecodedRowCount,
+        restorePerfRecorder: any WorkspaceRestorePerfRecording = NoopWorkspaceRestorePerfRecorder()
     ) {
+        self.restorePerfRecorder = restorePerfRecorder
         self.fileURL = fileURL
         self.backupsDirectoryURL = backupsDirectoryURL
         self.mode = mode
@@ -298,7 +302,8 @@ actor AgentSessionOversightIntentStore {
     /// Production location, beside `windowSessions.json`.
     static func production(
         mode: AgentSessionOversightPersistenceMode,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        restorePerfRecorder: any WorkspaceRestorePerfRecording = NoopWorkspaceRestorePerfRecorder()
     ) -> AgentSessionOversightIntentStore {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first!
@@ -307,7 +312,8 @@ actor AgentSessionOversightIntentStore {
             fileURL: base.appendingPathComponent(filename),
             backupsDirectoryURL: base.appendingPathComponent(backupsDirectoryName, isDirectory: true),
             mode: mode,
-            fileManager: fileManager
+            fileManager: fileManager,
+            restorePerfRecorder: restorePerfRecorder
         )
     }
 
@@ -641,7 +647,7 @@ actor AgentSessionOversightIntentStore {
         _ receipt: AgentSessionOversightIntentMutationReceipt
     ) -> AgentSessionOversightIntentMutationReceipt {
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "oversight.store.receipt",
                 fields: [
                     "op": operation,
@@ -665,14 +671,14 @@ actor AgentSessionOversightIntentStore {
             didLogLaunchClassification = true
             switch result {
             case .suppressed:
-                WorkspaceRestorePerfLog.event("oversight.store.load", fields: ["result": "suppressed"])
+                restorePerfRecorder.event("oversight.store.load", fields: ["result": "suppressed"])
             case let .blocked(reason):
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "oversight.store.load",
                     fields: ["result": "blocked", "reason": reason.diagnosticLabel]
                 )
             case let .ready(load):
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "oversight.store.load",
                     fields: ["result": load.source.rawValue, "pairs": String(load.tokenByPair.count)]
                 )

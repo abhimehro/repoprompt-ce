@@ -1,4 +1,5 @@
 @testable import RepoPromptApp
+import RepoPromptFoundation
 import RepoPromptTestSupport
 import XCTest
 

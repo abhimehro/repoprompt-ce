@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptSecureStorage
 @_spi(TestSupport) @testable import RepoPromptApp
 import RepoPromptDomainRuntime
 import XCTest
@@ -557,6 +558,7 @@ final class SteerProviderMessageLog: @unchecked Sendable {
 
 /// Minimal native runtime that records every user message it is handed and touches nothing else.
 private actor SteerRecordingNativeController: NativeAgentRuntimeControlling {
+    private var configuration = SessionLinkNativeConfigurationFixture()
     private let log: SteerProviderMessageLog
     private let stream: AsyncStream<NativeAgentRuntimeEvent>
 
@@ -586,14 +588,27 @@ private actor SteerRecordingNativeController: NativeAgentRuntimeControlling {
         effortLevel _: NativeAgentRuntimeEffortLevel?,
         systemPromptOverride _: String?
     ) async throws -> NativeAgentRuntimeSessionRef {
-        NativeAgentRuntimeSessionRef(sessionID: "managed-steer-stub")
+        configuration.replaceProcess()
+        return NativeAgentRuntimeSessionRef(sessionID: "managed-steer-stub")
     }
 
     func currentSessionRef() -> NativeAgentRuntimeSessionRef {
         NativeAgentRuntimeSessionRef(sessionID: "managed-steer-stub")
     }
 
-    func applyModelAndEffort(model _: String?, effortLevel _: NativeAgentRuntimeEffortLevel?) async throws {}
+    func applyModelAndEffort(model _: String?, effortLevel _: NativeAgentRuntimeEffortLevel?) async throws {
+        _ = configuration.apply()
+    }
+
+    func applyModelAndEffortWithProof(model _: String?, effortLevel _: NativeAgentRuntimeEffortLevel?) async throws -> NativeAgentRuntimeConfigurationApplication {
+        configuration.apply()
+    }
+
+    func sendUserMessage(_ message: String, configuration proof: NativeAgentRuntimeConfigurationProof) async throws -> UUID {
+        try configuration.validate(proof)
+        log.record(message)
+        return UUID()
+    }
 
     func sendUserMessage(_ message: String) async throws -> UUID {
         log.record(message)
@@ -604,6 +619,9 @@ private actor SteerRecordingNativeController: NativeAgentRuntimeControlling {
         .noTurnInFlight
     }
 
-    func shutdown() {}
+    func shutdown() {
+        configuration.replaceProcess()
+    }
+
     func respondToPermissionRequest(id _: String, decision _: AgentApprovalDecision) {}
 }

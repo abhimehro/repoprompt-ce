@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 /// Reasons the session-index state changed, used by the store to notify the
 /// delegate (the view model) so it can trigger sidebar UI sync.
@@ -55,6 +56,12 @@ protocol AgentWorkspaceSessionIndexStoreDelegate: AnyObject {
 /// the view model owns the REFRESH FLOW that populates the data.
 @MainActor
 final class AgentWorkspaceSessionIndexStore: ObservableObject {
+    private let perfRecorder: any AgentModePerfRecording
+
+    init(perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()) {
+        self.perfRecorder = perfRecorder
+    }
+
     /// Owner epoch tracking which workspace activation produced the current
     /// session index. Moved out of `AgentModeViewModel` to reduce
     /// workspace-specific state on the view model. The VM retains a typealias
@@ -326,7 +333,7 @@ final class AgentWorkspaceSessionIndexStore: ObservableObject {
 
     func rebuildSessionSortDatesFromIndex() {
         #if DEBUG
-            let rebuildStartMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+            let rebuildStartMS = perfRecorder.timestampMSIfEnabled()
             let debugSessionIndexCount = sessionIndex.count
         #endif
         var sortDates = AgentSessionRestoreSupport.sidebarSortDates(from: sessionIndex)
@@ -335,7 +342,7 @@ final class AgentWorkspaceSessionIndexStore: ObservableObject {
             sessionListSortDates = sortDates
         }
         #if DEBUG
-            AgentModePerfDiagnostics.durationEvent(
+            perfRecorder.durationEvent(
                 "cleanup.vm.rebuildSessionSortDates",
                 startMS: rebuildStartMS,
                 fields: [

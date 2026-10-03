@@ -1,4 +1,5 @@
 import AppKit
+import RepoPromptInstrumentation
 import SwiftUI
 
 extension EnvironmentValues {
@@ -14,6 +15,7 @@ extension EnvironmentValues {
 /// - Uses the shared message timestamp formatter so timestamp labels stay consistent.
 /// - Observes FontScaleManager so footer text follows Agent Mode text size.
 private struct MessageFooterStrip: View {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     let text: String
     let timestamp: Date
     let isTrailing: Bool
@@ -63,7 +65,7 @@ private struct MessageFooterStrip: View {
         if let runtimeFooter {
             if let completedDate = runtimeFooter.completedDate {
                 #if DEBUG
-                    let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.completed")
+                    let _ = perfRecorder.increment("timeline.messageFooter.completed")
                 #endif
                 let elapsed = AgentRuntimeDurationFormatter.string(from: runtimeFooter.anchorDate, to: completedDate)
                 Text("\(runtimeFooter.statusText) \(elapsed)")
@@ -73,18 +75,18 @@ private struct MessageFooterStrip: View {
             } else if agentWindowIsFocused {
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     #if DEBUG
-                        let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.tick")
+                        let _ = perfRecorder.increment("timeline.messageFooter.tick")
                     #endif
                     runtimeFooterText(runtimeFooter, now: timeline.date)
                 }
                 #if DEBUG
                 .onAppear {
-                        AgentModePerfDiagnostics.increment("timeline.messageFooter.liveMount")
+                        perfRecorder.increment("timeline.messageFooter.liveMount")
                     }
                 #endif
             } else {
                 #if DEBUG
-                    let _ = AgentModePerfDiagnostics.increment("timeline.messageFooter.unfocused")
+                    let _ = perfRecorder.increment("timeline.messageFooter.unfocused")
                 #endif
                 runtimeFooterText(runtimeFooter, now: Date())
             }

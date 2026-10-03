@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import RepoPromptFoundation
 
 struct WorkspaceDuplicateGroupSummary: Identifiable, Equatable {
     struct DuplicateWorkspaceRow: Identifiable, Equatable {
@@ -98,7 +99,7 @@ struct WorkspacePreset: Codable, Identifiable, Equatable {
     /// Partial decoding approach to skip errors for mismatch or missing fields.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? WorkspaceDecodeSynthesis.mark(UUID())
         name = (try? c.decode(String.self, forKey: .name)) ?? "Unnamed Preset"
         capturesFileSelection = (try? c.decode(Bool.self, forKey: .capturesFileSelection)) ?? true
         capturesFileTreeExpansion = (try? c.decode(Bool.self, forKey: .capturesFileTreeExpansion)) ?? true
@@ -106,7 +107,7 @@ struct WorkspacePreset: Codable, Identifiable, Equatable {
         selectedFilePaths = (try? c.decode([String].self, forKey: .selectedFilePaths)) ?? []
         expandedFolders = (try? c.decode([String].self, forKey: .expandedFolders)) ?? []
         selectedPromptIDs = (try? c.decode([UUID].self, forKey: .selectedPromptIDs)) ?? []
-        lastUpdated = (try? c.decode(Date.self, forKey: .lastUpdated)) ?? Date()
+        lastUpdated = (try? c.decode(Date.self, forKey: .lastUpdated)) ?? WorkspaceDecodeSynthesis.mark(Date())
     }
 
     enum CodingKeys: String, CodingKey {
@@ -122,53 +123,30 @@ struct WorkspacePreset: Codable, Identifiable, Equatable {
     }
 }
 
-struct StoredSelection: Codable, Equatable, Hashable {
-    let selectedPaths: [String]
-    let manualCodemapPaths: [String]
-    let slices: [String: [LineRange]]
-    let codemapAutoEnabled: Bool
-
-    init(
-        selectedPaths: [String] = [],
-        manualCodemapPaths: [String] = [],
-        slices: [String: [LineRange]] = [:],
-        codemapAutoEnabled: Bool = true
-    ) {
-        self.selectedPaths = selectedPaths
-        self.manualCodemapPaths = manualCodemapPaths
-        self.slices = slices
-        self.codemapAutoEnabled = codemapAutoEnabled
+/// Records when workspace decoding synthesized values that are not a pure
+/// function of the input bytes — `UUID()`/`Date()` fallbacks in the custom
+/// decoders, and `normalizeComposeTabInvariants` creating a tab. Results that
+/// synthesized values must not be memoized by the digest-keyed decode cache:
+/// two distinct documents with identical minimal bytes previously received
+/// independent identities, and must continue to.
+enum WorkspaceDecodeSynthesis {
+    /// Bound by `decodeWorkspace` for the duration of one decode; decodes
+    /// outside that scope (other JSONDecoder call sites) leave it nil and
+    /// `mark` is a no-op for them. Safe under `@unchecked Sendable` because
+    /// each decode binds a fresh recorder and uses it only within that one
+    /// synchronous call — adding detached/concurrent work inside the bound
+    /// scope would require revisiting this.
+    final class Recorder: @unchecked Sendable {
+        var occurred = false
     }
 
-    var isEmptyForSelectedFileTree: Bool {
-        selectedPaths.isEmpty && manualCodemapPaths.isEmpty && slices.isEmpty
-    }
+    @TaskLocal static var recorder: Recorder?
 
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        try self.init(
-            selectedPaths: container.decodeIfPresent([String].self, forKey: .selectedPaths) ?? [],
-            manualCodemapPaths: container.decodeIfPresent([String].self, forKey: .manualCodemapPaths) ?? [],
-            slices: container.decodeIfPresent([String: [LineRange]].self, forKey: .slices) ?? [:],
-            codemapAutoEnabled: container.decodeIfPresent(Bool.self, forKey: .codemapAutoEnabled) ?? true
-        )
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(selectedPaths, forKey: .selectedPaths)
-        try container.encode(manualCodemapPaths, forKey: .manualCodemapPaths)
-        try container.encode([String](), forKey: .autoCodemapPaths)
-        try container.encode(slices, forKey: .slices)
-        try container.encode(codemapAutoEnabled, forKey: .codemapAutoEnabled)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case selectedPaths
-        case manualCodemapPaths
-        case autoCodemapPaths
-        case slices
-        case codemapAutoEnabled
+    /// Marks the enclosing scoped decode as having synthesized a value, then
+    /// returns the value. Use at every `UUID()`/`Date()` decode fallback.
+    static func mark<T>(_ value: @autoclosure () -> T) -> T {
+        recorder?.occurred = true
+        return value()
     }
 }
 
@@ -276,9 +254,9 @@ struct ComposeTabState: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? WorkspaceDecodeSynthesis.mark(UUID())
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "T1"
-        lastModified = try c.decodeIfPresent(Date.self, forKey: .lastModified) ?? Date()
+        lastModified = try c.decodeIfPresent(Date.self, forKey: .lastModified) ?? WorkspaceDecodeSynthesis.mark(Date())
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         pinnedOrder = try? c.decode(Int.self, forKey: .pinnedOrder)
         activeChatSessionID = try c.decodeIfPresent(UUID.self, forKey: .activeChatSessionID)
@@ -451,10 +429,10 @@ struct WorkspaceModel: Codable, Identifiable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
 
-        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? WorkspaceDecodeSynthesis.mark(UUID())
         schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? 1
         let persistedDateModified = try? c.decode(Date.self, forKey: .dateModified)
-        dateModified = persistedDateModified ?? Date()
+        dateModified = persistedDateModified ?? WorkspaceDecodeSynthesis.mark(Date())
         customStoragePath = (try? c.decode(URL.self, forKey: .customStoragePath))
         isSystemWorkspace = (try? c.decode(Bool.self, forKey: .isSystemWorkspace)) ?? false
         isHiddenInMenus = (try? c.decode(Bool.self, forKey: .isHiddenInMenus)) ?? false
@@ -601,6 +579,8 @@ extension WorkspaceModel {
         #endif
 
         if composeTabs.isEmpty {
+            // The memberwise init defaults synthesize a fresh id and timestamp.
+            _ = WorkspaceDecodeSynthesis.mark(())
             let tab = ComposeTabState(
                 name: "T1",
                 promptText: currentPromptText ?? "",

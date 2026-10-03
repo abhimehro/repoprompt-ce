@@ -6,7 +6,7 @@ regex triage graph in modularization_metrics.py for analysis. That graph keeps f
 the build-free ratchets.
 
 Source of truth: the index store a debug `swift build` writes
-(`.build/<triple>/debug/index/store`). It is read through the toolchain's
+(`.build/out` for Swift Build or `.build/<triple>/debug/index/store`). It is read through the toolchain's
 `libIndexStore.dylib` with ctypes, so no package or pip dependency is needed.
 
 For each `RepoPromptApp` source file the tool takes the newest index unit, then reads that
@@ -23,8 +23,9 @@ Usage:
   modularization_index_graph.py edge      SOURCE TARGET [--graph FILE | --store DIR]
 
 Paths are relative to Sources/RepoPrompt (repository-relative paths are also accepted).
-Build first, for example `./conductor swift-build --product RepoPrompt`; the report's
-`freshness` block lists files whose source is newer than their index unit.
+Build through conductor, for example `./conductor swift-build --product RepoPrompt`.
+Conductor records source-content SHA-256 hashes for a successful stable build; without
+that build fingerprint, freshness is unknown rather than inferred from timestamps.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ import modularization_metrics as mm  # noqa: E402
 DEFAULT_ROOT = SCRIPT_DIR.parent
 DEFAULT_MODULE = "RepoPromptApp"
 GRAPH_VERSION = 1
+BUILD_FINGERPRINT = Path(".build/modularization/app-source-sha256.json")
 
 # indexstore_symbol_role_t
 ROLE_DECLARATION = 1 << 0
@@ -120,6 +122,9 @@ def default_library_path() -> Optional[Path]:
 
 
 def default_store_path(root: Path) -> Optional[Path]:
+    swiftbuild = root / ".build/out"
+    if (swiftbuild / "v5/units").is_dir():
+        return swiftbuild
     candidates = sorted(root.glob(".build/*/debug/index/store"))
     return candidates[0] if candidates else None
 
@@ -273,7 +278,26 @@ def base_name(name: str) -> str:
     return _ACCESSOR_PREFIX.sub("", name).split("(", 1)[0]
 
 
-def extract_graph(store, root: Path, module: str = DEFAULT_MODULE, source_dir: Path = mm.APP_SOURCE_DIR) -> Dict[str, object]:
+def source_hashes(root: Path, source_dir: Path = mm.APP_SOURCE_DIR) -> Dict[str, str]:
+    return {
+        path.relative_to(root / source_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in mm.swift_files(root / source_dir)
+    }
+
+
+def build_source_hashes(root: Path) -> Optional[Dict[str, str]]:
+    try:
+        document = json.loads((root / BUILD_FINGERPRINT).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    expected = document.get("source_sha256") if isinstance(document, dict) else None
+    if not isinstance(expected, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in expected.items()):
+        return None
+    return expected
+
+
+def extract_graph(store, root: Path, module: str = DEFAULT_MODULE, source_dir: Path = mm.APP_SOURCE_DIR,
+                  built_source_sha256: Optional[Mapping[str, str]] = None) -> Dict[str, object]:
     """Build the graph document from any object with `units()` and `occurrences(record)`."""
     source_base = Path(os.path.realpath(root / source_dir))
     chosen: Dict[str, Unit] = {}
@@ -330,7 +354,9 @@ def extract_graph(store, root: Path, module: str = DEFAULT_MODULE, source_dir: P
             del symbols[usr]
 
     sources = {path.relative_to(root / source_dir).as_posix(): path for path in mm.swift_files(root / source_dir)}
-    stale = sorted(rel for rel, unit in chosen.items() if rel in sources and sources[rel].stat().st_mtime > unit.mtime)
+    actual_hashes = source_hashes(root, source_dir)
+    expected_hashes = dict(built_source_sha256) if built_source_sha256 is not None else build_source_hashes(root)
+    stale = sorted(rel for rel, digest in actual_hashes.items() if rel in chosen and expected_hashes is not None and expected_hashes.get(rel) != digest)
     return {
         "version": GRAPH_VERSION,
         "module": module,
@@ -343,9 +369,10 @@ def extract_graph(store, root: Path, module: str = DEFAULT_MODULE, source_dir: P
             "unindexed_files": sorted(set(sources) - set(chosen)),
             "stale_files": stale,
             "index_units_for_deleted_files": len(missing_sources),
-            "source_sha256": {
-                rel: hashlib.sha256(path.read_bytes()).hexdigest() for rel, path in sorted(sources.items())
-            },
+            "source_sha256": expected_hashes,
+            "freshness_unknown": expected_hashes is None,
+            "current": expected_hashes is not None and not stale and set(sources) == set(chosen)
+                       and set(actual_hashes) == set(expected_hashes),
         },
     }
 
@@ -746,8 +773,7 @@ def refresh_cached_freshness(document: Dict[str, object], root: Path) -> None:
     }
     freshness["unindexed_files"] = sorted(set(actual) - set(document.get("files", {})))
     freshness["stale_files"] = sorted(
-        set(freshness.get("stale_files", [])) |
-        {rel for rel, digest in actual.items() if expected.get(rel) != digest}
+        rel for rel, digest in actual.items() if rel in document.get("files", {}) and expected.get(rel) != digest
     )
     freshness["current"] = not freshness["unindexed_files"] and not freshness["stale_files"] and not (set(expected) - set(actual))
 
@@ -765,13 +791,14 @@ def warn_if_stale(document: Mapping[str, object]) -> None:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("dump", "report", "readiness", "compare", "edge"))
+    parser.add_argument("command", choices=("dump", "report", "readiness", "compare", "edge", "check"))
     parser.add_argument("paths", nargs="*", help="edge: SOURCE TARGET")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    parser.add_argument("--store", help="index store directory (default .build/*/debug/index/store)")
+    parser.add_argument("--store", help="index store directory (default .build/out or .build/*/debug/index/store)")
     parser.add_argument("--library", help="libIndexStore.dylib (default: next to `xcrun --find swift`)")
     parser.add_argument("--graph", help="read a graph document written by `dump` instead of the store")
     parser.add_argument("--output", help="dump: file to write")
+    parser.add_argument("--baseline", type=Path, default=Path("docs/migrations/build-modularization/build-ratchets.json"))
     parser.add_argument("--files", nargs="+", default=[], help="readiness: candidate files or directories")
     parser.add_argument("--top", type=int, default=40)
     # Intermixed parsing lets `edge` paths follow options on Python 3.9 as well as newer versions.
@@ -787,6 +814,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     document = load_document(args, root)
     warn_if_stale(document)
+    if args.command == "check":
+        freshness = document.get("freshness", {})
+        if freshness.get("current") is not True:
+            print("index ratchet: freshness unproven; rebuild through conductor", file=sys.stderr)
+            return 1
+        limits = json.loads((root / args.baseline).read_text(encoding="utf-8"))["index"]
+        metrics = analyze(document)["metrics"]
+        checks = (
+            ("index_wrong_way_file_edges", "wrong_way_file_edges"),
+            ("index_largest_cycle_components", "largest_cycle_components"),
+        )
+        failures = [f"{metric} {metrics[metric]} > {limits[limit]}" for metric, limit in checks
+                    if metrics[metric] > limits[limit]]
+        for error in failures:
+            print(f"index ratchet: {error}", file=sys.stderr)
+        if failures:
+            return 1
+        print("index ratchet: " + "; ".join(f"{metric} {metrics[metric]}/{limits[limit]}"
+                                               for metric, limit in checks))
+        if args.output:
+            output = root / args.output
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps({"source_sha256": freshness["source_sha256"],
+                                          "metrics": {metric: metrics[metric] for metric, _ in checks}},
+                                         sort_keys=True) + "\n", encoding="utf-8")
+        return 0
+
     if args.command == "dump":
         Path(args.output).write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
         print(f"wrote {args.output} ({len(document['files'])} files, {len(document['symbols'])} symbols)")

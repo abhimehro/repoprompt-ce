@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 struct AgentSessionSidebarSnapshot: Equatable {
     var searchText: String
@@ -26,6 +27,7 @@ struct AgentSessionSidebarSnapshot: Equatable {
 
 @MainActor
 final class AgentSessionSidebarUIStore: ObservableObject {
+    var perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()
     @Published private(set) var snapshot = AgentSessionSidebarSnapshot(
         searchText: "",
         visibleSessionCount: AgentModeViewModel.sessionSidebarPageSize,
@@ -349,7 +351,7 @@ final class AgentSessionSidebarUIStore: ObservableObject {
         guard next != selectionState else { return }
         selectionState = next
         #if DEBUG
-            AgentModePerfDiagnostics.recordStoreUpdate(
+            perfRecorder.recordStoreUpdate(
                 eventName,
                 published: true,
                 details: [
@@ -397,7 +399,7 @@ final class AgentSessionSidebarUIStore: ObservableObject {
         var next = proposedSnapshot
         guard force || next != snapshot else {
             #if DEBUG
-                AgentModePerfDiagnostics.recordStoreUpdate("sessionSidebar", published: false)
+                perfRecorder.recordStoreUpdate("sessionSidebar", published: false)
             #endif
             return false
         }
@@ -405,7 +407,7 @@ final class AgentSessionSidebarUIStore: ObservableObject {
         if affectsRowContent { next.rowContentRevision &+= 1 }
         snapshot = next
         #if DEBUG
-            AgentModePerfDiagnostics.recordStoreUpdate(
+            perfRecorder.recordStoreUpdate(
                 eventName,
                 published: true,
                 details: [

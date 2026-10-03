@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptProcess
 
 struct CursorACPAgentProvider: ACPAgentProvider {
     private let config: CursorAgentConfig
@@ -144,7 +145,8 @@ struct CursorACPAgentProvider: ACPAgentProvider {
 
         return try ACPPromptContentBuilder.blocks(
             text: text,
-            attachments: request.attachments
+            attachments: request.attachments,
+            transientImages: message.transientImages
         )
     }
 

@@ -37,8 +37,15 @@ final class AgentACPModelRegistry {
         lock.unlock()
 
         guard didChange else { return false }
+        invalidateAdvertisedModels(for: providerID)
         ACPDynamicModelStore.save(normalizedSnapshot, for: providerID)
         return true
+    }
+
+    private func invalidateAdvertisedModels(for providerID: ACPProviderID) {
+        for agent in AgentProviderKind.allCases where agent.acpProviderID == providerID {
+            AgentAdvertisedModelCatalog.shared.invalidate(agent)
+        }
     }
 
     func currentSnapshot(for providerID: ACPProviderID) -> ACPDiscoveredSessionModels? {
@@ -51,7 +58,7 @@ final class AgentACPModelRegistry {
         snapshotFromMemory(for: providerID)
     }
 
-    func warmStandardStoreIfNeeded() async {
+    func warmStandardStoreIfNeeded(beforeCompleting: (@Sendable () async -> Void)? = nil) async {
         let plan: StandardStoreWarmPlan? = lock.withLock {
             guard !didWarmStandardStore else { return nil }
 
@@ -73,9 +80,14 @@ final class AgentACPModelRegistry {
 
         guard let plan else { return }
         let loadedSnapshots = await plan.task.value
+        // Per-call scheduling seam for the shared-task completion race regression.
+        if let beforeCompleting { await beforeCompleting() }
 
         lock.withLock {
-            guard plan.generation == standardStoreWarmGeneration else { return }
+            guard !didWarmStandardStore, plan.generation == standardStoreWarmGeneration else { return }
+            for providerID in loadedSnapshots.keys {
+                invalidateAdvertisedModels(for: providerID)
+            }
             persistedSnapshotsByProvider = loadedSnapshots
             didWarmStandardStore = true
             standardStoreWarmTask = nil
@@ -105,7 +117,9 @@ final class AgentACPModelRegistry {
 
     #if DEBUG
         @_spi(TestSupport)
-        public func test_reset(providerID: ACPProviderID) {
+        public func test_reset(providerID: ACPProviderID, beforeClearingMemory: (() -> Void)? = nil) {
+            invalidateAdvertisedModels(for: providerID)
+            beforeClearingMemory?()
             lock.lock()
             liveSnapshotsByProvider.removeValue(forKey: providerID)
             liveSignaturesByProvider.removeValue(forKey: providerID)
@@ -116,10 +130,14 @@ final class AgentACPModelRegistry {
             standardStoreWarmGeneration &+= 1
             lock.unlock()
             ACPDynamicModelStore.remove(providerID: providerID)
+            // Fence producers that read the old snapshot after the first invalidation.
+            invalidateAdvertisedModels(for: providerID)
         }
 
         @_spi(TestSupport)
-        public func test_clearMemoryPreservingStore(providerID: ACPProviderID) {
+        public func test_clearMemoryPreservingStore(providerID: ACPProviderID, beforeClearingMemory: (() -> Void)? = nil) {
+            invalidateAdvertisedModels(for: providerID)
+            beforeClearingMemory?()
             lock.lock()
             liveSnapshotsByProvider.removeValue(forKey: providerID)
             liveSignaturesByProvider.removeValue(forKey: providerID)
@@ -129,6 +147,8 @@ final class AgentACPModelRegistry {
             didWarmStandardStore = false
             standardStoreWarmGeneration &+= 1
             lock.unlock()
+            // Fence producers that read the old snapshot after the first invalidation.
+            invalidateAdvertisedModels(for: providerID)
         }
 
         @_spi(TestSupport)

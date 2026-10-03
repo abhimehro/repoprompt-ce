@@ -2,6 +2,8 @@
 
 import Foundation
 import MCP
+import RepoPromptFoundation
+import RepoPromptWorkspaceCore
 
 #if DEBUG
     extension ServerNetworkManager {

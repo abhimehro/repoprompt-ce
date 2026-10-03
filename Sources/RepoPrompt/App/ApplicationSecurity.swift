@@ -10,6 +10,7 @@ import Foundation
 import MachO
 import os.lock
 import RepoPromptC
+import RepoPromptProcess
 
 /// This class handles application security by monitoring the environment
 /// for potential tampering or unauthorized access.

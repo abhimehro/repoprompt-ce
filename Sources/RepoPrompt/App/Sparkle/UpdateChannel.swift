@@ -1,11 +1,12 @@
 import Foundation
+import RepoPromptSecureStorage
 import Sparkle
 
 enum UpdateChannel: String, CaseIterable, Identifiable {
     case stable
     case tip
 
-    static let userDefaultsKey = "RepoPromptUpdateChannel"
+    static let userDefaultsKey = IdentityTransitionDiagnostics.updateChannelUserDefaultsKey
 
     var id: String {
         rawValue

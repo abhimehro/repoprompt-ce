@@ -1,5 +1,6 @@
 import Foundation
 
+// swiftformat:disable:next redundantSendable
 package struct MCPDomainResponseDeliverySnapshot: Equatable, Sendable {
     package let pendingRequestCount: Int
     package let waiterCount: Int
@@ -20,7 +21,7 @@ package struct MCPDomainResponseDeliverySnapshot: Equatable, Sendable {
     }
 }
 
-/// Tracks one transport hop from accepted JSON-RPC requests through completed response writes.
+/// Tracks response obligations from accepted requests through complete writes or explicit cancellation.
 /// Framing and physical I/O remain transport-owned; this lock-based tracker is synchronous so
 /// ingress and post-write record points do not acquire an actor hop or change delivery ordering.
 package final class MCPDomainResponseDeliveryTracker: @unchecked Sendable {
@@ -28,24 +29,55 @@ package final class MCPDomainResponseDeliveryTracker: @unchecked Sendable {
     private var pendingRequestIDs: Set<String> = []
     private var waiters: [CheckedContinuation<Bool, Never>] = []
     private var isTerminal = false
+    private var generation: UInt64 = 0
 
     package init() {}
 
-    package func recordAcceptedClientFrame(_ frame: Data) {
-        let requestIDs = Self.messageObjects(in: frame).compactMap { message -> String? in
-            guard message["method"] is String,
-                  let id = Self.identifier(in: message),
-                  id != "null"
-            else { return nil }
-            return id
-        }
-        guard !requestIDs.isEmpty else { return }
+    package var currentGeneration: UInt64 {
+        lock.withLock { generation }
+    }
 
+    /// Explicit client cancellation abandons a response-delivery obligation; it
+    /// does not certify that the handler or its cleanup has physically settled.
+    package func recordAcceptedClientFrame(_ frame: Data, expectedGeneration: UInt64? = nil) {
+        enum Acceptance {
+            case request(String)
+            case cancellation(String)
+        }
+        let accepted = Self.messageObjects(in: frame).compactMap { message -> Acceptance? in
+            guard let method = message["method"] as? String else { return nil }
+            if let id = Self.identifier(in: message), id != "null" {
+                return .request(id)
+            }
+            guard message["id"] == nil,
+                  method == "notifications/cancelled",
+                  let params = message["params"] as? [String: Any],
+                  let id = Self.identifier(params["requestId"] ?? params["id"]), id != "null"
+            else { return nil }
+            return .cancellation(id)
+        }
+        guard !accepted.isEmpty else { return }
+
+        let continuations: [CheckedContinuation<Bool, Never>]
         lock.lock()
-        if !isTerminal {
-            pendingRequestIDs.formUnion(requestIDs)
+        guard !isTerminal, expectedGeneration == nil || expectedGeneration == generation else {
+            lock.unlock()
+            return
+        }
+        for message in accepted {
+            switch message {
+            case let .request(id): pendingRequestIDs.insert(id)
+            case let .cancellation(id): pendingRequestIDs.remove(id)
+            }
+        }
+        if pendingRequestIDs.isEmpty {
+            continuations = waiters
+            waiters.removeAll()
+        } else {
+            continuations = []
         }
         lock.unlock()
+        continuations.forEach { $0.resume(returning: true) }
     }
 
     package func recordDeliveredServerFrame(_ frame: Data) {
@@ -98,6 +130,7 @@ package final class MCPDomainResponseDeliveryTracker: @unchecked Sendable {
         continuations = waiters
         waiters.removeAll()
         pendingRequestIDs.removeAll()
+        generation &+= 1
         isTerminal = false
         lock.unlock()
         continuations.forEach { $0.resume(returning: false) }
@@ -136,7 +169,11 @@ package final class MCPDomainResponseDeliveryTracker: @unchecked Sendable {
     }
 
     private static func identifier(in message: [String: Any]) -> String? {
-        guard let id = message["id"] else { return nil }
+        identifier(message["id"])
+    }
+
+    private static func identifier(_ value: Any?) -> String? {
+        guard let id = value else { return nil }
         switch id {
         case is NSNull:
             return "null"

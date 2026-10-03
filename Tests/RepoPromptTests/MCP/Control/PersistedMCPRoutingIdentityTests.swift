@@ -7,6 +7,91 @@
 
     final class PersistedMCPRoutingIdentityTests: XCTestCase {
         @MainActor
+        func testExpectedPIDAloneDoesNotJoinEstablishedRunButTokenAndPendingPolicyDo() async {
+            let manager = ServerNetworkManager(domainHost: AppDomainRuntimeComposition.shared.runtime.domainHost)
+            let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
+            GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
+            let window = WindowState()
+            GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
+            WindowStatesManager.shared.registerWindowState(window)
+            let clientName = AgentProviderKind.openCodeMCPClientID
+            let runID = UUID()
+            let initialConnectionID = UUID()
+            let secondConnectionID = UUID()
+            let reconnectConnectionID = UUID()
+            let sessionKey = "expected-pid-affinity-\(runID)"
+            let restrictedTools: Set = ["apply_edits"]
+            addTeardownBlock { @MainActor in
+                await manager.clearExpectedAgentPID(getppid(), for: clientName, runID: runID)
+                await manager.clearClientConnectionPolicy(for: clientName, windowID: window.windowID, runID: runID)
+                for connectionID in [initialConnectionID, secondConnectionID, reconnectConnectionID] {
+                    await manager.removeConnection(connectionID)
+                }
+                await manager.cleanupRunRoutingState(for: runID, windowID: window.windowID)
+                WindowStatesManager.shared.unregisterWindowState(window)
+            }
+
+            // Use this process's real parent to exercise ancestry, without spawning a provider.
+            await manager.registerExpectedAgentPID(getppid(), for: clientName, runID: runID)
+            func installPolicy() async {
+                await manager.installClientConnectionPolicy(
+                    for: clientName, windowID: window.windowID,
+                    restrictedTools: restrictedTools, oneShot: true,
+                    reason: "Expected-PID run affinity regression", ttl: 60,
+                    runID: runID, purpose: .agentModeRun, requiresExpectedAgentPID: true
+                )
+            }
+            await installPolicy()
+            let initial = await manager.debugApplyPendingPolicy(
+                clientName: clientName, connectionID: initialConnectionID,
+                clientPid: Int(getpid()), sessionKey: sessionKey
+            )
+            XCTAssertEqual(initial.outcome, "applied")
+            XCTAssertEqual(window.mcpServer.connectionID(forRunID: runID), initialConnectionID)
+            let pending = await manager.debugPendingPolicySnapshot(for: clientName)
+            XCTAssertTrue(pending.isEmpty, "The initial one-shot policy must be consumed")
+
+            // A different token with identical ancestry is not authority to take over the run.
+            let second = await manager.debugApplyPendingPolicy(
+                clientName: clientName, connectionID: secondConnectionID,
+                clientPid: Int(getpid()), sessionKey: "second-\(sessionKey)"
+            )
+            XCTAssertEqual(second.outcome, "fallback")
+            let secondRunID = await manager.debugCachedRunID(for: secondConnectionID)
+            XCTAssertNil(secondRunID)
+            XCTAssertNil(second.windowID)
+            XCTAssertEqual(second.purpose, .unknown)
+            XCTAssertTrue(second.restrictedTools.isEmpty)
+            XCTAssertNil(window.mcpServer.connectionIDToRunID[secondConnectionID])
+            XCTAssertEqual(window.mcpServer.connectionID(forRunID: runID), initialConnectionID)
+
+            // The original capability token still authorizes a reconnect handover.
+            let reconnect = await manager.debugApplyPendingPolicy(
+                clientName: clientName, connectionID: reconnectConnectionID,
+                clientPid: Int(getpid()), sessionKey: sessionKey
+            )
+            let reconnectRunID = await manager.debugCachedRunID(for: reconnectConnectionID)
+            XCTAssertEqual(reconnectRunID, runID)
+            XCTAssertEqual(reconnect.windowID, window.windowID)
+            XCTAssertEqual(reconnect.purpose, .agentModeRun)
+            XCTAssertEqual(reconnect.restrictedTools, restrictedTools)
+            XCTAssertEqual(window.mcpServer.connectionID(forRunID: runID), reconnectConnectionID)
+
+            // An explicit new run-owned policy authorizes the second token too.
+            await installPolicy()
+            let explicit = await manager.debugApplyPendingPolicy(
+                clientName: clientName, connectionID: secondConnectionID,
+                clientPid: Int(getpid()), sessionKey: "second-\(sessionKey)"
+            )
+            XCTAssertEqual(explicit.outcome, "applied")
+            let explicitRunID = await manager.debugCachedRunID(for: secondConnectionID)
+            XCTAssertEqual(explicitRunID, runID)
+            XCTAssertEqual(explicit.purpose, .agentModeRun)
+            XCTAssertEqual(explicit.restrictedTools, restrictedTools)
+            XCTAssertEqual(window.mcpServer.connectionID(forRunID: runID), secondConnectionID)
+        }
+
+        @MainActor
         func testPreCallBindingRejectsUnrelatedWindowThenRestoresStableWorkspace() async throws {
             let clientName = "Issue862RoutingBoundaryTests"
             let sessionKey = "issue-862-boundary-\(UUID().uuidString)"
@@ -249,7 +334,9 @@
 
         private func toolText(_ result: (content: [MCP.Tool.Content], isError: Bool?)) -> String {
             result.content.compactMap { content -> String? in
-                if case let .text(text, _, _) = content { return text }
+                if case let .text(text, _, _) = content {
+                    return text
+                }
                 return nil
             }.joined(separator: "\n")
         }

@@ -1,4 +1,5 @@
 @testable import RepoPromptApp
+import RepoPromptSecureStorage
 import XCTest
 
 /// Regression coverage for the two Major defects in the Agent Models read-modify-write boundary.

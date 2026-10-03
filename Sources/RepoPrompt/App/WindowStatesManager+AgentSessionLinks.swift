@@ -375,6 +375,34 @@ extension WindowStatesManager: AgentSessionLinkEndpointHost {
 
     // MARK: - Management delegation
 
+    func agentSessionLinkModelAvailability(windowID: Int) -> AgentModelCatalog.AvailabilityContext {
+        guard let window = modelRoutingWindow(withID: windowID) else { return .none }
+        return window.apiSettingsViewModel.agentAvailability
+    }
+
+    func agentSessionLinkModelCandidate(
+        for endpoint: DomainAgentSessionLinkEndpointIdentity
+    ) -> AgentSessionLinkEndpointCandidate? {
+        guard let window = modelRoutingWindow(withID: endpoint.windowID) else { return nil }
+        return window.agentModeViewModel.agentSessionLinkModelCandidate(for: endpoint)
+    }
+
+    func agentSessionLinkPerformSetModel(
+        to candidate: AgentSessionLinkEndpointCandidate,
+        modelID: String,
+        liveness: @escaping AgentSessionLinkSendLivenessProbe,
+        reauthorize: @MainActor () async -> AgentSessionLinkSendCommitOutcome
+    ) async -> AgentSessionLinkModelOutcome {
+        guard !isTerminating else { return .blocked(.shuttingDown) }
+        guard let window = modelRoutingWindow(withID: candidate.windowID) else {
+            return .blocked(.endpointHost)
+        }
+        return await window.agentModeViewModel.agentSessionLinkPerformSetModel(
+            to: candidate, modelID: modelID, liveness: liveness,
+            availability: { window.apiSettingsViewModel.agentAvailability }, reauthorize: reauthorize
+        )
+    }
+
     /// Routes one managed steer to the exact owning window, refusing during teardown before any
     /// target state is touched. Nothing here focuses or activates the window.
     func agentSessionLinkPerformSteer(

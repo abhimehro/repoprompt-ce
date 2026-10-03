@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 enum GitDiffArtifactPathPolicy {
     static func isSafeRelativeArtifactPath(_ path: String) -> Bool {

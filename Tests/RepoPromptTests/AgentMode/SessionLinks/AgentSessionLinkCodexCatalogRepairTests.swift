@@ -618,7 +618,8 @@ final class AgentSessionLinkCodexCatalogRepairTests: XCTestCase {
             testWorkspacePath: FileManager.default.currentDirectoryPath,
             codexControllerFactory: { _, _, _, _, _, _ in controller },
             connectionPolicyInstaller: { _, _, _, _, _, _, _, _, _, _, _, _, _ in },
-            mcpServerEnabler: { true }
+            mcpServerEnabler: { true },
+            testCatalogDiagnosticsSink: AppAgentSessionLinkCatalogEventSink()
         )
         retained.append(viewModel)
         if runService {

@@ -1,12 +1,14 @@
 import Combine
 import Foundation
 import KeyboardShortcuts
+import RepoPromptInstrumentation
 import SwiftUI
 
 // MARK: - Context Pill
 
 /// Always-visible pill showing context usage wheel + file/token info.
 struct AgentContextPill: View {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     @ObservedObject var promptManager: PromptViewModel
     let openContextDrawerFiles: () -> Void
     let selectionCoordinator: WorkspaceSelectionCoordinator
@@ -97,7 +99,7 @@ struct AgentContextPill: View {
 
     var body: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.context")
+            let _ = perfRecorder.increment("ui.body.statusPills.context")
         #endif
         let cornerRadius = AgentPillMetrics.cornerRadius()
         let displayText = selectionDisplayText

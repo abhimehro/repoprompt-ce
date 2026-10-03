@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptFoundation
 
 protocol FileSystemItem: Identifiable, Equatable, Sendable {
     var id: UUID { get }

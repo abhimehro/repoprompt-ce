@@ -86,6 +86,9 @@ struct AgentSessionLinkMCPToolService {
             _ operation: @escaping HeartbeatOperation
         ) async throws -> Value
 
+    var captureWaitInput: () -> DomainAgentSessionLinkWaitInput? = { AgentSessionLinkWaitCallOrigin.current }
+    // Deliberately fail-closed by default: never fall back to the generic recovery resolver.
+    var resolveModelObserverEndpoint: (RequestMetadata) async -> DomainAgentSessionLinkEndpointIdentity? = { _ in nil }
     var bridge: AgentSessionLinkRuntimeBridge = .shared
 
     // MARK: - Entry point
@@ -137,6 +140,9 @@ struct AgentSessionLinkMCPToolService {
         case "steer":
             try validateAllowedKeys(args, op: op, allowed: Self.steerKeys)
             return try await executeSteer(args: args)
+        case "set_model":
+            try validateAllowedKeys(args, op: op, allowed: Self.setModelKeys)
+            return try await executeSetModel(args: args)
         case "create_lane":
             try validateAllowedKeys(args, op: op, allowed: Self.createLaneKeys)
             return try await executeCreateLane(args: args)
@@ -161,7 +167,59 @@ struct AgentSessionLinkMCPToolService {
     /// advertised `op` enum they are teaching.
     static let supportedOperationsSentence =
         "Use list, poll, wait, read, send, cancel_pending_send, compact, set_waiting_on, snooze_auto_wake, "
-            + "request_attention, respond, steer, stop, create_lane, or retire_lane."
+            + "request_attention, respond, steer, stop, set_model, create_lane, or retire_lane."
+
+    static func parseModelID(_ value: Value?) throws -> String {
+        guard case let .string(raw)? = value,
+              AgentSessionLinkRuntimeBridge.isValidModelID(raw)
+        else {
+            throw MCPError.invalidParams(AgentSessionLinkRuntimeBridge.invalidModelIDMessage)
+        }
+        return raw
+    }
+
+    private func executeSetModel(args: [String: Value]) async throws -> Value {
+        let sessionID = try Self.parseSingleSessionID(args["session_id"], op: "set_model")
+        let modelID = try Self.parseModelID(args["model_id"])
+        let metadata = await captureRequestMetadata()
+        guard let observer = await resolveModelObserverEndpoint(metadata) else {
+            throw MCPError.invalidParams(
+                "set_model requires an already-installed current Agent Mode run route. No state was repaired or changed. Retry once; if unavailable, ask the user to restart this Agent Mode run."
+            )
+        }
+        let target: AgentSessionLinkRuntimeBridge.AuthorizedTarget
+        switch try await authorizeManaged(
+            operation: .monitorSetModel, observerEndpoint: observer, targetSessionID: sessionID
+        ) {
+        case let .authorized(value): target = value
+        case .managementNotGranted:
+            return AgentSessionLinkResponseRenderer.managementNotGrantedValue(targetSessionID: sessionID)
+        }
+        switch await bridge.setModel(target: target, modelID: modelID) {
+        case let .accepted(receipt):
+            return .object([
+                "result": .string("accepted"), "session_id": .string(sessionID.uuidString),
+                "model_id": .string(receipt.modelID), "model": .string(receipt.modelRaw),
+                "reasoning_effort": AgentMCPToolHelpers.stringOrNull(receipt.reasoningEffortRaw),
+                "changed": .bool(receipt.changed), "applies_to": .string("next_turn"),
+                "persistence": .string("scheduled"),
+                "hint": .string("Configuration only; no turn started or provider contacted. Next ordinary turn applies it and may fail. Default/Auto follows provider policy, not a guaranteed reset; enabled automatic effort/routing remains enabled.")
+            ])
+        case let .invalid(message): throw MCPError.invalidParams(message)
+        case .blocked(.managementRevoked):
+            return AgentSessionLinkResponseRenderer.managementNotGrantedValue(targetSessionID: sessionID)
+        case .blocked(.shuttingDown): throw MCPError.internalError("RepoPrompt is shutting down.")
+        case let .blocked(failure):
+            guard [.targetNotIdle, .targetLoading].contains(failure) else {
+                throw Self.denialError(targetSessionID: sessionID)
+            }
+            return .object([
+                "result": .string(failure.rawValue), "session_id": .string(sessionID.uuidString),
+                "retryable": .bool(true),
+                "hint": .string("No model change. Use wait(until: \"sendable\"), then retry set_model.")
+            ])
+        }
+    }
 
     private func executeSetWaitingOn(args: [String: Value]) async throws -> Value {
         let endpoint = try await resolveCallerEndpointIdentity()
@@ -209,10 +267,11 @@ struct AgentSessionLinkMCPToolService {
             targetEndpoint: targetEndpoint,
             observerSessionID: observerSessionID
         ) {
-        case .accepted:
-            // Deliberately identical for a newly stored occurrence and a duplicate that is already
-            // pending. The target gets no reverse receipt or observer-activity side channel.
-            return .object(["result": .string("accepted")])
+        case let .accepted(hasWaitingOn):
+            // Queued is not delivered; this self-scoped hint reveals no observer wake state.
+            let hint = "Queued, not delivered. A dormant observer may take a minute to start."
+                + (hasWaitingOn ? "" : " Set waiting_on first to explain why.")
+            return .object(["result": .string("accepted"), "hint": .string(hint)])
         case .atCapacity:
             return .object([
                 "result": .string("attention_queue_full"),
@@ -527,6 +586,10 @@ struct AgentSessionLinkMCPToolService {
             return AgentSessionLaneMCPToolService.refusal(refusal.rawValue)
         }
         let key = try Self.parseIdempotencyKey(args["idempotency_key"], op: "create_lane")
+        guard args["role"] == nil || args["model_id"] == nil else {
+            throw MCPError.invalidParams("create_lane accepts either role or explicit model_id, not both. Omit role to pin a model; omit model_id to use role defaults.")
+        }
+        let modelID = try args["model_id"].map { try Self.parseModelID($0) }
         let role: String?
         if let value = args["role"] {
             guard case let .string(raw) = value else {
@@ -577,6 +640,7 @@ struct AgentSessionLinkMCPToolService {
             request: AgentSessionLaneCreateRequest(
                 idempotencyKey: key,
                 role: role,
+                modelID: modelID,
                 sessionName: sessionName,
                 workspaceSelector: workspaceSelector,
                 message: message,
@@ -765,12 +829,16 @@ struct AgentSessionLinkMCPToolService {
     // MARK: - wait
 
     private func executeWait(args: [String: Value]) async throws -> Value {
+        let timeoutSeconds = try AgentMCPToolHelpers.parseTimeoutSeconds(args["timeout_seconds"])
+            ?? Self.defaultWaitTimeoutSeconds
+        let capturedInput = captureWaitInput()
         let observerEndpoint = try await resolveCallerEndpointIdentity()
+        // Rehydration may resolve an endpoint unavailable at capture time. Preserve upstream wait
+        // admission, without borrowing another endpoint's local-input cancellation generation.
+        let observerInput = capturedInput.flatMap { $0.endpoint == observerEndpoint ? $0 : nil }
         let metadata = await captureRequestMetadata()
         let request = try Self.parseTargets(args)
         let predicate = try Self.parsePredicate(args["until"])
-        let timeoutSeconds = try AgentMCPToolHelpers.parseTimeoutSeconds(args["timeout_seconds"])
-            ?? Self.defaultWaitTimeoutSeconds
         let cursorsBySessionID = try Self.parseWaitCursors(args, request: request)
 
         let targets = try await authorizeAll(
@@ -799,8 +867,23 @@ struct AgentSessionLinkMCPToolService {
             let waitResult = await bridge.wait(
                 requests: waitRequests,
                 until: predicate,
-                timeoutSeconds: timeoutSeconds
+                timeoutSeconds: timeoutSeconds,
+                observerInput: observerInput
             )
+            if waitResult.interruptedByLocalInput {
+                let pendingSends = await bridge.pendingSendProjections(for: leases)
+                // Keep the survivor proof as the last suspension before rendering.
+                let survivors = await bridge.terminalWaitSurvivingStates(leases: leases)
+                let rendered = AgentSessionLinkResponseRenderer.waitValue(
+                    .init(outcome: .cancelled, targets: survivors, interruptedByLocalInput: true),
+                    pendingSends: pendingSends,
+                    isSingle: isSingle
+                )
+                let survivingIDs = Set(survivors.map(\.sessionID))
+                return AgentSessionLinkResponseRenderer.addUnavailableWaitTargets(
+                    leases.map(\.target.sessionID).filter { !survivingIDs.contains($0) }, to: rendered
+                )
+            }
             // A terminal outcome is the authority's answer to a lost lease or runtime. Do not
             // replace it with a generic prompt-inspection denial or disclose a prompt from the
             // invalidated batch. Refresh surviving siblings' cursors and pending-send metadata.
@@ -1600,8 +1683,9 @@ struct AgentSessionLinkMCPToolService {
     /// Deliberately no workflow, delivery mode, or queue flag: a steer is one instruction delivered
     /// now, into whatever the target is doing, under its own current settings.
     static let steerKeys: Set<String> = ["op", "session_id", "message", "idempotency_key"]
+    static let setModelKeys: Set<String> = ["op", "session_id", "model_id"]
     static let createLaneKeys: Set<String> = [
-        "op", "idempotency_key", "role", "session_name", "workspace", "message",
+        "op", "idempotency_key", "role", "model_id", "session_name", "workspace", "message",
         "workflow_id", "workflow_name"
     ]
     static let retireLaneKeys: Set<String> = ["op", "session_id"]
@@ -2274,6 +2358,9 @@ enum AgentSessionLinkResponseRenderer {
         ]
         if let detail = waitDetail(result.outcome) {
             payload["detail"] = .string(detail)
+        }
+        if result.interruptedByLocalInput {
+            payload["_meta"] = .object(["wake_reason": .string("local_user_input")])
         }
         if isSingle {
             if let state = result.targets.first {

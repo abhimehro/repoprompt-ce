@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptWorkspaceCore
 import XCTest
 
 #if DEBUG
@@ -1643,6 +1644,15 @@ import XCTest
             )
             XCTAssertEqual(initialSwitch, .switched)
             window.promptManager.promptText = "before"
+            // The race uses saveState: false switches, which restore the stored compose tab.
+            // Publish the fixture now instead of depending on debounced prompt observation.
+            let fixtureTabID = try XCTUnwrap(window.promptManager.activeComposeTabID)
+            XCTAssertEqual(window.workspaceManager.activeWorkspaceID, alternate.id)
+            window.workspaceManager.publishActiveComposeTabSnapshot(commitToMemory: true)
+            let fixtureTab = try XCTUnwrap(
+                window.workspaceManager.activeWorkspace?.composeTabs.first { $0.id == fixtureTabID }
+            )
+            XCTAssertEqual(fixtureTab.promptText, "before")
             window.setAutomaticCommandProcessingForTesting(false)
             window.stopDomainWorkspaceProjectionForTesting()
             let storedPromptTitle = "Final Admission Active Stored Prompt \(UUID().uuidString)"

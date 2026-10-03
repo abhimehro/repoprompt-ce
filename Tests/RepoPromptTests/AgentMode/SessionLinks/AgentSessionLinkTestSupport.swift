@@ -279,11 +279,17 @@ final class LifecycleRecorder: @unchecked Sendable {
 final class LifecycleNoopCodexController: CodexSessionControllerTurnDispatchTestDefaults {
     private let recorder: LifecycleRecorder
     private let resumeGate: TestReleaseFence?
+    private let snapshotLatestTurnStatus: CodexNativeSessionController.TurnStatus?
     private(set) var hasActiveThread = false
 
-    init(recorder: LifecycleRecorder, resumeGate: TestReleaseFence? = nil) {
+    init(
+        recorder: LifecycleRecorder,
+        resumeGate: TestReleaseFence? = nil,
+        snapshotLatestTurnStatus: CodexNativeSessionController.TurnStatus? = nil
+    ) {
         self.recorder = recorder
         self.resumeGate = resumeGate
+        self.snapshotLatestTurnStatus = snapshotLatestTurnStatus
     }
 
     var events: AsyncStream<CodexNativeSessionController.Event> {
@@ -349,7 +355,7 @@ final class LifecycleNoopCodexController: CodexSessionControllerTurnDispatchTest
             runtimeStatus: .idle,
             currentTurnID: nil,
             activeTurnIDs: [],
-            latestTurnStatus: nil
+            latestTurnStatus: snapshotLatestTurnStatus
         )
     }
 

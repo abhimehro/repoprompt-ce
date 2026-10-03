@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct WorkspaceSessionWorktreeOwnershipToken: Hashable {
     let ownerID: UUID

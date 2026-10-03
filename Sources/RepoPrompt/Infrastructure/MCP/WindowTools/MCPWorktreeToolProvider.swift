@@ -2,6 +2,7 @@ import Foundation
 import JSONSchema
 import MCP
 import RepoPromptDomainRuntime
+import RepoPromptWorkspaceCore
 
 @MainActor
 final class MCPWorktreeToolProvider: MCPAppToolProviding {
