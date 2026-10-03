@@ -58,3 +58,5 @@ Icon
 .vscode/
 .idea/
 .claude/settings.local.json
+# Causari local ledger — captured prompts, completions and reasoning.
+.causari/
