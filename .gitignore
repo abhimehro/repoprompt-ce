@@ -54,6 +54,7 @@ Icon
 .env
 .env.*
 !.env.example
+!.env.pr-recap.template
 .vscode/
 .idea/
 .claude/settings.local.json

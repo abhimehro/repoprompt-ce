@@ -1,0 +1,18 @@
+{
+  "teamId": "ABHI",
+  "stateMap": {
+    "inProgress": "031c40d8-acc9-4d31-b5f7-ca9efb7206a1",
+    "inReview": "7fe5ca3c-51b1-434b-870b-11e6bb92257b",
+    "done": "f7acb293-01d7-4339-953f-9a9ddbfb7de1",
+    "todo": "04deb3a6-65ae-41ba-b766-e7b9bf091c8b"
+  },
+  "commentAnchor": "<!-- pr-recap-agent-summary -->",
+  "secretReferences": {
+    "onepassword": "op://Personal/LINEAR_API_KEY/credential",
+    "protonpass": {
+      "vault": "Personal",
+      "item": "LINEAR_API_KEY",
+      "field": "Secret"
+    }
+  }
+}
