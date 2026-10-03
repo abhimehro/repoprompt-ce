@@ -174,6 +174,7 @@ final class AgentSessionLinkTranscriptSanitizerTests: XCTestCase {
             (#"{"gh_api_key_v2": "ghs_zzzzzzzzzzzzzzzzzzzz"}"#, ["ghs_zzzzzzzzzzzzzzzzzzzz"]),
             ("password: hunter2swordfish", ["hunter2swordfish"]),
             ("token ghp_abcdefghijklmnopqrstuvwxyz012345", ["ghp_abcdefghijklmnopqrstuvwxyz012345"]),
+            ("token github_pat_11AAAAAAA0123456789ABC_defghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", ["github_pat_11AAAAAAA0123456789ABC_defghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"]),
             ("key AKIAIOSFODNN7EXAMPLE here", ["AKIAIOSFODNN7EXAMPLE"])
         ]
         for (input, secrets) in cases {
