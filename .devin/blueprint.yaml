@@ -25,7 +25,10 @@ initialize: |
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "${tmpdir}"' EXIT
   archive="${tmpdir}/${asset}"
-  curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}" -o "$archive"
+  curl --proto '=https' --tlsv1.2 -fsSL \
+    --retry 8 --retry-delay 3 --retry-all-errors \
+    --connect-timeout 10 --max-time 60 \
+    "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}" -o "$archive"
   echo "${sha}  ${archive}" | shasum -a 256 -c -
   tar -xzf "$archive" -C "${tmpdir}" gitleaks
   bindir="$(brew --prefix 2>/dev/null || echo /usr/local)/bin"
@@ -39,14 +42,20 @@ initialize: |
   [ "${actual#v}" = "${version}" ] \
     || { echo "gitleaks reports '${actual}', expected ${version}" >&2; exit 1; }
   # preflight.sh resolves gitleaks via PATH. A *different* binary winning is
-  # fatal (it would shadow the verified install); nothing resolving on this
-  # shell's PATH only warns, since session PATHs include ${bindir}.
+  # fatal (it would shadow the verified install). When nothing resolves on
+  # this shell's PATH, prove the install is reachable once ${bindir} is added
+  # — unreachable is still fatal, reachable warns with the concrete remedy.
   resolved="$(command -v gitleaks || true)"
   if [ -n "${resolved}" ] && [ "${resolved}" != "${bindir}/gitleaks" ]; then
     echo "PATH resolves gitleaks to '${resolved}', which would shadow the verified ${bindir}/gitleaks" >&2
     exit 1
   elif [ -z "${resolved}" ]; then
-    echo "warning: gitleaks not on this shell's PATH; ensure ${bindir} is on PATH for sessions" >&2
+    if [ "$(PATH="${bindir}:${PATH}" command -v gitleaks || true)" = "${bindir}/gitleaks" ]; then
+      echo "warning: verified gitleaks at ${bindir}/gitleaks but ${bindir} is not on this shell's PATH; add 'export PATH=\"${bindir}:\$PATH\"' so sessions can resolve it" >&2
+    else
+      echo "installed gitleaks at ${bindir}/gitleaks is not resolvable even with ${bindir} on PATH" >&2
+      exit 1
+    fi
   fi
   echo "gitleaks ${actual} installed at ${bindir}/gitleaks"
 # Install project dependencies (runs during builds, surfaced to agent at session start).
