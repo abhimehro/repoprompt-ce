@@ -12,6 +12,7 @@ struct SettingsButton<Content: View>: View {
         contentBuilder = content
     }
 
+    /// Presents the supplied settings sheet from an icon button with a tooltip and accessible name.
     var body: some View {
         Button(action: {
             showPopover.toggle()
@@ -30,6 +31,8 @@ struct SettingsButton<Content: View>: View {
         .onHover { hovering in
             isHovered = hovering
         }
+        .hoverTooltip("Settings")
+        .accessibilityLabel("Settings")
         .sheet(isPresented: $showPopover) {
             contentBuilder()
                 .interactiveDismissDisabled(false)
