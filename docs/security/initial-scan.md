@@ -1,4 +1,4 @@
-<!-- markdownlint-disable MD013 -->
+<!-- markdownlint-disable MD013 MD043 -->
 # Initial security scan
 
 Issue: abhimehro/repoprompt-ce#286
