@@ -108,7 +108,7 @@ jobs:
 
       - name: Upload failed root test build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           overwrite: true
           name: root-build-tests-failure-${{ github.run_id }}
@@ -133,7 +133,7 @@ jobs:
 
       - name: Retain full module execution logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           overwrite: true
           name: module-execution-${{ github.run_id }}
@@ -145,7 +145,7 @@ jobs:
         run: python3 Scripts/modularization_ci_artifact.py pack --output root-build.tar.gz
 
       - name: Share expected coverage independently of the runnable products
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           overwrite: true
           name: expected-coverage-${{ github.run_id }}
@@ -156,7 +156,7 @@ jobs:
           retention-days: 7
 
       - name: Share the single build with test shards
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           overwrite: true
           name: root-build-${{ github.run_id }}
@@ -215,7 +215,7 @@ jobs:
 
       - name: Retain execution receipts and full shard logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           overwrite: true
           name: shard-execution-${{ matrix.shard }}-${{ github.run_id }}
