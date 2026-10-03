@@ -7,7 +7,10 @@ initialize: |
   set -euo pipefail
   # Version follows ci.yml's pinned gitleaks install; fall back if unparsed.
   version="$(sed -n 's/.*gitleaks_\([0-9.]*\)_linux_x64.*/\1/p' .github/workflows/ci.yml | head -n1)"
-  version="${version:-8.30.1}"
+  if [ -z "${version}" ]; then
+    echo "warning: could not parse gitleaks version from .github/workflows/ci.yml; using 8.30.1" >&2
+    version="8.30.1"
+  fi
   case "$(uname -m)" in
     arm64)  arch="arm64" ;;
     x86_64) arch="x64" ;;
