@@ -47,6 +47,7 @@ jobs:
             build-mode: none
     permissions:
       contents: read
+      # Needed to upload SARIF results to the code-scanning API.
       security-events: write
     steps:
       - name: Check out repository

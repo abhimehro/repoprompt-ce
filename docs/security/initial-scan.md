@@ -27,7 +27,7 @@ autobuild, which looks for a committed Xcode project/workspace. This repo
 generates its Xcode workspace (`.build/xcode`) and builds via SwiftPM, so the
 `0 results` for Swift should be read as *no findings reported*, not *complete
 coverage confirmed*. The new `security.yml` scans Swift on `macos-26` with a
-manual `swift build`, which compiles every SwiftPM target for extraction.
+manual `swift build`, which compiles the package's products (test targets are not built) for extraction.
 
 ## Open findings (5, all HIGH)
 
