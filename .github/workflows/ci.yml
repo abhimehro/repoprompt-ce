@@ -327,12 +327,12 @@ jobs:
           version="$(awk 'match($0, /gitleaks_[0-9.]+_linux_x64\.tar\.gz/) {
             print substr($0, RSTART + 9, RLENGTH - 26); exit }' .github/workflows/ci.yml)"
           [ -n "${version}" ] || { echo "could not parse gitleaks version from ci.yml" >&2; exit 1; }
-          # ~4 KB checksums file: --max-time bounds the whole invocation in
-          # modern curl, so 90s covers several attempts well inside the job's
-          # 5-minute timeout.
+          # ~4 KB checksums file: --max-time is per-attempt (30s each),
+          # --retry-max-time caps the retry window at 60s — worst case ≈2min,
+          # well inside the job's 5-minute timeout.
           sums="$(curl --proto '=https' --tlsv1.2 -fsSL \
-            --retry 5 --retry-delay 2 --retry-all-errors \
-            --connect-timeout 10 --max-time 90 \
+            --retry 3 --retry-delay 2 --retry-max-time 60 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 \
             "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
           # Drive the check from the arch/sha pairs actually declared in the
           # blueprint, so added or reformatted case arms are verified too. A
