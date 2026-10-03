@@ -226,7 +226,7 @@ jobs:
   style:
     # Protect main requires exactly Style: it must be the FINAL gate, not an early green row.
     name: Style
-    needs: [build-test-bundles, build-and-test, secret-scan]
+    needs: [build-test-bundles, build-and-test, secret-scan, blueprint-pin-check]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -240,7 +240,8 @@ jobs:
           BUILD_RESULT: ${{ needs.build-test-bundles.result }}
           SECRET_RESULT: ${{ needs.secret-scan.result }}
           SHARD_RESULT: ${{ needs.build-and-test.result }}
-        run: test "$BUILD_RESULT" = success && test "$SHARD_RESULT" = success && test "$SECRET_RESULT" = success
+          PIN_RESULT: ${{ needs.blueprint-pin-check.result }}
+        run: test "$BUILD_RESULT" = success && test "$SHARD_RESULT" = success && test "$SECRET_RESULT" = success && test "$PIN_RESULT" = success
 
       - name: Download expected coverage
         uses: actions/download-artifact@v4
@@ -300,7 +301,8 @@ jobs:
         run: gitleaks dir --redact .
 
   # Drift detection only — kept out of secret-scan so a transient fetch or a
-  # wrong pin can never suppress the security scans.
+  # wrong pin can never suppress the security scans. It still gates the merge:
+  # `style` (the required check) lists this job in `needs:`.
   blueprint-pin-check:
     name: Verify blueprint gitleaks pins
     runs-on: ubuntu-latest
@@ -325,16 +327,27 @@ jobs:
           version="$(awk 'match($0, /gitleaks_[0-9.]+_linux_x64\.tar\.gz/) {
             print substr($0, RSTART + 9, RLENGTH - 26); exit }' .github/workflows/ci.yml)"
           [ -n "${version}" ] || { echo "could not parse gitleaks version from ci.yml" >&2; exit 1; }
+          # ~4 KB checksums file: --max-time bounds the whole invocation in
+          # modern curl, so 90s covers several attempts well inside the job's
+          # 5-minute timeout.
           sums="$(curl --proto '=https' --tlsv1.2 -fsSL \
-            --retry 8 --retry-delay 3 --retry-all-errors \
-            --connect-timeout 10 --max-time 60 \
+            --retry 5 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 10 --max-time 90 \
             "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
           # Drive the check from the arch/sha pairs actually declared in the
-          # blueprint, so added or reformatted case arms are verified too.
-          pairs="$(sed -n 's/.*arch="\([a-z0-9_]*\)"; *sha="\([0-9a-f]\{64\}\)".*/\1 \2/p' .devin/blueprint.yaml)"
-          [ -n "${pairs}" ] \
-            || { echo "no arch/sha pin pairs found in .devin/blueprint.yaml" >&2; exit 1; }
+          # blueprint, so added or reformatted case arms are verified too. A
+          # pin that fails to parse (uppercase, wrong length, reformat) makes
+          # the count mismatch and fails loudly instead of dropping coverage.
+          pairs="$(sed -n 's/.*arch="\([a-z0-9_]*\)"; *sha *= *"\([^"]*\)".*/\1 \2/p' .devin/blueprint.yaml)"
+          declared="$(grep -cE 'arch="[a-z0-9_]+"' .devin/blueprint.yaml)"
+          found="$(printf '%s\n' "${pairs}" | grep -c .)"
+          unique="$(printf '%s\n' "${pairs}" | awk 'NF && !seen[$1]++ { n++ } END { print n+0 }')"
+          [ "${found}" -eq "${declared}" ] && [ "${unique}" -eq "${declared}" ] \
+            || { echo "expected one arch/sha pair per arch= declaration (${declared}); got ${found} pairs / ${unique} unique" >&2; exit 1; }
           while read -r arch pinned; do
+            printf '%s' "${pinned}" | grep -qiE '^[0-9a-f]{64}$' \
+              || { echo "invalid SHA-256 pin for darwin_${arch}: ${pinned}" >&2; exit 1; }
+            pinned="$(printf '%s' "${pinned}" | tr 'A-F' 'a-f')"
             asset="gitleaks_${version}_darwin_${arch}.tar.gz"
             expected="$(echo "${sums}" | awk -v a="${asset}" '$2 == a { print $1 }')"
             [ -n "${expected}" ] || { echo "no checksum published for ${asset}" >&2; exit 1; }

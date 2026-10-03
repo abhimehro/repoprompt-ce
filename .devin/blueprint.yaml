@@ -5,8 +5,9 @@ runs-on: macos
 # and the darwin SHA-256 digests are pinned in-repo below (same approach as
 # ci.yml:277's pinned linux digest) so the integrity anchor stays reviewable.
 # A version bump in ci.yml fails the digest check loudly until the pins here
-# are bumped to match; the ci.yml secret-scan job also verifies these darwin
-# pins against the release checksums on every run, so drift is caught on CI.
+# are bumped to match; the ci.yml blueprint-pin-check job re-verifies these
+# darwin pins against the release checksums on every run and gates the merge
+# via `style`, so drift cannot land on main.
 initialize: |
   set -euo pipefail
   # Version follows ci.yml's pinned gitleaks install; fail loudly if unparsed.
@@ -25,9 +26,11 @@ initialize: |
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "${tmpdir}"' EXIT
   archive="${tmpdir}/${asset}"
+  # ~10 MB tarball: --max-time bounds the whole invocation in modern curl, so
+  # 300s leaves real room for retries on a slow link without hanging forever.
   curl --proto '=https' --tlsv1.2 -fsSL \
-    --retry 8 --retry-delay 3 --retry-all-errors \
-    --connect-timeout 10 --max-time 60 \
+    --retry 5 --retry-delay 2 --retry-all-errors \
+    --connect-timeout 10 --max-time 300 \
     "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}" -o "$archive"
   echo "${sha}  ${archive}" | shasum -a 256 -c -
   tar -xzf "$archive" -C "${tmpdir}" gitleaks
