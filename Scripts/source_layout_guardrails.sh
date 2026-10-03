@@ -817,6 +817,7 @@ allowed_tracked_docs=(
   "docs/open-source-readiness.md"
   "docs/privacy/telemetry.md"
   "docs/releasing.md"
+  "docs/security/initial-scan.md"
   "docs/testing.md"
   "docs/spec/headless-mcp-domain-runtime-m0-contracts.md"
   "docs/spec/headless-mcp-domain-runtime-m0-editflowperf-baseline.json"

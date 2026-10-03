@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows/ (security.yml and the
+  # rest of CI) refreshed; the dependency-review gate vets the bumps it opens.
+  # Scope note: this refreshes action SHA pins ONLY — a `swift` ecosystem
+  # entry exists but is intentionally not enabled (Package.resolved bumps are
+  # a maintainer decision), npm globals installed without a lockfile (e.g.
+  # @openai/codex in ci.yml) are invisible to it, and runner labels such as
+  # macos-26 are maintained by hand. This file takes effect once merged to
+  # the default branch.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
