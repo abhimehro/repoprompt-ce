@@ -374,13 +374,13 @@ enum CommandPathResolver {
 
         var timedOut = false
         if terminationGroup.wait(timeout: .now() + shellLookupTimeout) == .timedOut {
-            timedOut = true
             if process.isRunning {
+                timedOut = true
                 process.terminate()
-            }
-            if terminationGroup.wait(timeout: .now() + shellLookupTerminationGraceInterval) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                terminationGroup.wait()
+                if terminationGroup.wait(timeout: .now() + shellLookupTerminationGraceInterval) == .timedOut {
+                    kill(process.processIdentifier, SIGKILL)
+                    terminationGroup.wait()
+                }
             }
         }
 
