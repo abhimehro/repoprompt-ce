@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import RepoPromptInstrumentation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -38,6 +39,7 @@ struct AgentComposerActions {
 }
 
 struct AgentInputBar: View {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     let agentModeVM: AgentModeViewModel
     @ObservedObject var composerUI: AgentComposerUIStore
     @ObservedObject var statusPillsUI: AgentStatusPillsUIStore
@@ -83,7 +85,7 @@ struct AgentInputBar: View {
 
     var body: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.inputBar")
+            let _ = perfRecorder.increment("ui.body.inputBar")
         #endif
         AgentComposerView(
             props: composerUI.props,
@@ -168,7 +170,7 @@ struct AgentInputBar: View {
     @ViewBuilder
     private var statusPills: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.inputBar.statusPills")
+            let _ = perfRecorder.increment("ui.body.inputBar.statusPills")
         #endif
         AgentStatusPillsRow(
             agentModeVM: agentModeVM,
@@ -246,6 +248,7 @@ enum AgentFileMentionText {
 }
 
 struct AgentComposerView: View, Equatable {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     let props: AgentComposerProps
     let placeholderText: String
     let actions: AgentComposerActions
@@ -453,7 +456,7 @@ struct AgentComposerView: View, Equatable {
 
     var body: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.composer")
+            let _ = perfRecorder.increment("ui.body.composer")
         #endif
         VStack(spacing: 0) {
             ComposerChrome(
@@ -920,6 +923,16 @@ struct AgentComposerView: View, Equatable {
             return [.action("Use \(agent.displayName)", isEnabled: true, imageSystemName: agent.iconName) {
                 actions.selectAgentModel(agent, "")
             }]
+        }
+        if agent == .devin {
+            return DevinModelCatalog.current.menuGroups(for: options).flatMap { group -> [StableMenuItem] in
+                guard group.rendersAsSubmenu else {
+                    return group.entries.map { inputBarModelMenuItem(agent: agent, model: $0.option) }
+                }
+                return [.submenu(group.displayName, items: group.entries.map {
+                    inputBarModelMenuItem(agent: agent, model: $0.option, title: $0.effortDisplayName)
+                })]
+            }
         }
         guard agent == .openCode else {
             return options.map { inputBarModelMenuItem(agent: agent, model: $0) }
@@ -1635,19 +1648,19 @@ struct AgentComposerView: View, Equatable {
 
     private func logViewSubmitRejection(reason: String, target: AgentComposerSubmitTarget?) {
         #if DEBUG
-            AgentModePerfDiagnostics.event(
+            perfRecorder.event(
                 "agent.composer.submit.rejected",
                 tabID: currentTabID,
                 fields: [
                     "reason": reason,
-                    "currentTabID": AgentModePerfDiagnostics.shortID(currentTabID),
-                    "propsTabID": AgentModePerfDiagnostics.shortID(props.currentTabID),
-                    "targetTabID": AgentModePerfDiagnostics.shortID(target?.tabID),
-                    "attemptID": AgentModePerfDiagnostics.shortID(submissionLatch.activeAttemptID(for: currentTabID)),
+                    "currentTabID": perfRecorder.shortID(currentTabID),
+                    "propsTabID": perfRecorder.shortID(props.currentTabID),
+                    "targetTabID": perfRecorder.shortID(target?.tabID),
+                    "attemptID": perfRecorder.shortID(submissionLatch.activeAttemptID(for: currentTabID)),
                     "inputRevision": String(submissionLatch.inputRevision),
-                    "expectedSubmissionToken": AgentModePerfDiagnostics.shortID(target?.expectedSubmissionToken),
-                    "expectedSourceAgentSessionID": AgentModePerfDiagnostics.shortID(target?.expectedSourceAgentSessionID),
-                    "expectedPersistentBindingGeneration": AgentModePerfDiagnostics.shortID(target?.expectedPersistentBindingIdentity?.generation),
+                    "expectedSubmissionToken": perfRecorder.shortID(target?.expectedSubmissionToken),
+                    "expectedSourceAgentSessionID": perfRecorder.shortID(target?.expectedSourceAgentSessionID),
+                    "expectedPersistentBindingGeneration": perfRecorder.shortID(target?.expectedPersistentBindingIdentity?.generation),
                     "expectedBindingTransitionGeneration": target.map { String($0.expectedBindingTransitionGeneration) } ?? "nil"
                 ]
             )

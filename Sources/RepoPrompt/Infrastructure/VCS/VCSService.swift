@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 // MARK: - VCS Resolved Repo
 
@@ -59,10 +60,25 @@ public actor VCSService {
     /// Whether jj is available on this system (cached after first check).
     private var _jjAvailable: Bool?
 
+    /// Configuration for the process-wide shared worktree listing used by periodic
+    /// Git context refreshes. See `VCSService+SharedWorktreeListing.swift`.
+    let sharedWorktreeListingConfiguration: SharedWorktreeListingConfiguration
+
+    /// Entries, in-flight enumerations, and invalidation generation for the shared listing.
+    var sharedWorktreeListing = SharedWorktreeListingState()
+
     // MARK: - Initialization
 
     public init(jjRunner: JJCommandRunner = JJCommandRunner()) {
+        self.init(jjRunner: jjRunner, sharedWorktreeListingConfiguration: SharedWorktreeListingConfiguration())
+    }
+
+    init(
+        jjRunner: JJCommandRunner,
+        sharedWorktreeListingConfiguration: SharedWorktreeListingConfiguration
+    ) {
         self.jjRunner = jjRunner
+        self.sharedWorktreeListingConfiguration = sharedWorktreeListingConfiguration
     }
 
     // MARK: - Backend Access
@@ -170,11 +186,26 @@ public actor VCSService {
         resolvedRepoCache.removeAll()
         backendKindCache.removeAll()
         gitLayoutCache.removeAll()
+        invalidateSharedWorktreeListings()
+    }
+
+    /// Drop the cached resolution of one repository root only (no shared-listing invalidation),
+    /// e.g. when its worktree listing shows the root now belongs to a different repository.
+    func dropCachedResolution(forRepoRoot url: URL) {
+        let path = url.standardizedFileURL.path
+        resolvedRepoCache.removeValue(forKey: path)
+        backendKindCache.removeValue(forKey: path)
+        gitLayoutCache.removeValue(forKey: path)
+        sharedWorktreeListing.keyByRootPath.removeValue(forKey: path)
     }
 
     /// Remove a specific path from the cache.
     /// Also invalidates the resolved root if different from the input path.
+    ///
+    /// Every RepoPrompt operation that changes worktree-list data (worktree create, branch
+    /// switch, worktree merge) calls this, so it also drops every shared worktree listing.
     public func invalidateCache(for url: URL) {
+        invalidateSharedWorktreeListings()
         let path = url.standardizedFileURL.path
 
         // Get the resolved root path before removing (if cached)
@@ -409,7 +440,14 @@ extension VCSService {
 
     func switchGitBranch(_ request: GitBranchSwitchRequest, at repoURL: URL) async throws -> GitBranchSwitchResult {
         let resolved = try await requireGitBranchSwitchRepo(repoURL, operation: "branch_switch")
-        let result = try await gitBackend().switchGitBranch(request, at: resolved.rootURL)
+        let result: GitBranchSwitchResult
+        do {
+            result = try await gitBackend().switchGitBranch(request, at: resolved.rootURL)
+        } catch {
+            // The checkout may have happened before a later read threw.
+            invalidateCache(for: resolved.rootURL)
+            throw error
+        }
         invalidateCache(for: resolved.rootURL)
         return result
     }
@@ -499,7 +537,7 @@ public extension VCSService {
     func gitWorktreeContext(for url: URL, resolved: VCSResolvedRepo) async -> GitWorktreeContextSummary? {
         guard resolved.backendKind == .git else { return nil }
         do {
-            let worktrees = try await listGitWorktrees(for: resolved)
+            let worktrees = try await sharedGitWorktreeListing(for: resolved)
             return await gitWorktreeContext(for: url, resolved: resolved, worktrees: worktrees)
         } catch {
             return await gitWorktreeContext(for: url, resolved: resolved, worktrees: nil)
@@ -610,11 +648,19 @@ public extension VCSService {
             throw VCSError.unsupportedOperation(operation: "create_worktree", backend: resolved.backendKind)
         }
 
-        let result = try await gitBackend().createWorktreeWithResult(
-            request: request,
-            at: resolved.rootURL,
-            initializationContext: initializationContext
-        )
+        let result: GitWorktreeCreateResult
+        do {
+            result = try await gitBackend().createWorktreeWithResult(
+                request: request,
+                at: resolved.rootURL,
+                initializationContext: initializationContext
+            )
+        } catch {
+            // `git worktree add` may have succeeded before a later step threw.
+            invalidateCache(for: resolved.rootURL)
+            invalidateCache(for: request.path)
+            throw error
+        }
         invalidateCache(for: resolved.rootURL)
         invalidateCache(for: request.path)
         return result

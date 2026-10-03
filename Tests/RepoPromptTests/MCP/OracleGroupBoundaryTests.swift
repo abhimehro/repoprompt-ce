@@ -1,3 +1,4 @@
+import Foundation
 import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
@@ -591,3 +592,277 @@ import XCTest
         }
     }
 #endif
+
+@MainActor
+final class OracleImageContractTests: XCTestCase {
+    func testParserAcceptsOnlyBoundedPathAndOptionalTitleObjects() throws {
+        XCTAssertEqual(try MCPOracleToolService.parseOracleImageRequests(nil), [])
+        XCTAssertEqual(try MCPOracleToolService.parseOracleImageRequests(.array([])), [])
+
+        let parsed = try MCPOracleToolService.parseOracleImageRequests(.array([
+            .object([
+                "path": .string("  /workspace/diagram.png  "),
+                "title": .string("  Architecture  ")
+            ]),
+            .object(["path": .string("/workspace/photo.jpg")])
+        ]))
+
+        XCTAssertEqual(parsed, [
+            .init(index: 0, path: "  /workspace/diagram.png  ", title: "Architecture"),
+            .init(index: 1, path: "/workspace/photo.jpg", title: nil)
+        ])
+    }
+
+    func testParserRejectsOversizedAndExpandedAttachmentShapes() {
+        XCTAssertThrowsError(try MCPOracleToolService.parseOracleImageRequests(.array([
+            .object(["path": .string("/workspace/image.png"), "_meta": .string("ignored")])
+        ])))
+        XCTAssertThrowsError(try MCPOracleToolService.parseOracleImageRequests(.array(
+            (0 ... 10).map { .object(["path": .string("/workspace/\($0).png")]) }
+        )))
+        XCTAssertThrowsError(try MCPOracleToolService.parseOracleImageRequests(.array([
+            .object([
+                "path": .string("/workspace/image.png"),
+                "url": .string("https://example.com/image.png")
+            ])
+        ])))
+        XCTAssertThrowsError(try MCPOracleToolService.parseOracleImageRequests(.array([
+            .object([
+                "path": .string("/workspace/image.png"),
+                "title": .string(String(repeating: "x", count: 201))
+            ])
+        ])))
+    }
+
+    func testAskOracleImageDocumentationIsProviderNeutralAndMatchesLimits() throws {
+        XCTAssertEqual(OracleImageAttachmentLimits.production.maxCount, 10)
+        XCTAssertEqual(OracleImageAttachmentLimits.production.maxBytesPerImage, 20 * 1024 * 1024)
+        XCTAssertEqual(OracleImageAttachmentLimits.production.maxTotalBytes, 50 * 1024 * 1024)
+        let canonical = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: "ask_oracle"))
+        let schema = try XCTUnwrap(canonical.inputSchema.objectValue)
+        let properties = try XCTUnwrap(schema["properties"]?.objectValue)
+        let canonicalArgument = try XCTUnwrap(properties["images"]?.objectValue?["description"]?.stringValue)
+        let headlessDisclaimer = " Requires the app backend; the direct headless backend rejects `images`."
+        XCTAssertEqual(canonicalArgument, MCPOracleToolProvider.askOracleImagesArgumentDescription + headlessDisclaimer)
+        XCTAssertTrue(canonical.description.contains(MCPOracleToolProvider.askOracleImageUsageDescription + headlessDisclaimer))
+
+        let documentation = [
+            MCPOracleToolProvider.askOracleImageUsageDescription,
+            MCPOracleToolProvider.askOracleImagesArgumentDescription
+        ].joined(separator: " ")
+
+        XCTAssertFalse(documentation.lowercased().contains("anthropic"))
+        XCTAssertTrue(documentation.contains("10 images"))
+        XCTAssertTrue(documentation.contains("20 MiB each"))
+        XCTAssertTrue(documentation.contains("50 MiB total"))
+        for description in [
+            MCPOracleToolProvider.askOracleImageUsageDescription,
+            MCPOracleToolProvider.askOracleImagesArgumentDescription
+        ] {
+            XCTAssertTrue(description.contains("raw attachment-file bytes before provider encoding"))
+            XCTAssertTrue(description.contains("provider or model may impose additional restrictions"))
+            XCTAssertTrue(description.contains("do not guarantee full-request or model-context fit"))
+        }
+        let usage = MCPOracleToolProvider.askOracleImageUsageDescription
+        XCTAssertTrue(usage.contains("additional to pre-send text estimates and Context Builder text-selection budgets"))
+        XCTAssertTrue(usage.contains("Originals, not transcript thumbnails, are sent to each Oracle lane"))
+        XCTAssertTrue(usage.contains("group fan-out multiplies image usage/cost, not any one request's attachment cap"))
+        XCTAssertTrue(usage.contains("Provider-reported input totals may already include image usage"))
+        XCTAssertTrue(usage.contains("this-turn-only"))
+        XCTAssertTrue(usage.contains("continuations do not automatically reattach prior images or send saved thumbnails"))
+        XCTAssertTrue(documentation.contains("PNG"))
+        XCTAssertTrue(documentation.lowercased().contains("rejected"))
+
+        // Images the user attached to the agent session are accepted at their exact path, so every
+        // surface (app tool, canonical/headless definition, path field) must say so.
+        for description in [
+            MCPOracleToolProvider.askOracleImageUsageDescription,
+            MCPOracleToolProvider.askOracleImagesArgumentDescription
+        ] {
+            XCTAssertTrue(description.contains("image the user attached to this agent session"))
+            XCTAssertTrue(description.contains("sibling attachments"))
+            XCTAssertTrue(description.contains("arbitrary"))
+        }
+        let items = try XCTUnwrap(properties["images"]?.objectValue?["items"]?.objectValue)
+        let pathDescription = try XCTUnwrap(
+            items["properties"]?.objectValue?["path"]?.objectValue?["description"]?.stringValue
+        )
+        XCTAssertTrue(pathDescription.contains("image attached to this agent session"))
+    }
+
+    func testRawImagesAtOracleDispatchAreAnInternalInvariantFailure() {
+        XCTAssertNoThrow(try OracleViewModel.validateRawImageDispatchInvariant([
+            "message": .string("inspect")
+        ]))
+        XCTAssertThrowsError(try OracleViewModel.validateRawImageDispatchInvariant([
+            "images": .array([.object(["path": .string("/workspace/image.png")])])
+        ])) { error in
+            guard let toolError = error as? ChatToolError else {
+                return XCTFail("Expected ChatToolError, got \(error)")
+            }
+            XCTAssertEqual(toolError.code, .internalError)
+            XCTAssertTrue(toolError.message.contains("must be consumed before Oracle dispatch"))
+        }
+    }
+
+    func testAskOracleToolArgumentsAreRedactedBeforePersistence() throws {
+        let raw = #"{"message":"inspect","images":[{"path":"/Users/secret.png","title":"Secret"}]}"#
+        let item = AgentChatItem.toolCall(
+            name: "mcp__RepoPromptCE__ask_oracle",
+            argsJSON: raw
+        )
+
+        let sanitized = try XCTUnwrap(item.toolArgsJSON)
+        XCTAssertTrue(sanitized.contains("inspect"))
+        XCTAssertFalse(sanitized.contains("images"))
+        XCTAssertFalse(sanitized.contains("/Users/secret.png"))
+        XCTAssertFalse(try String(decoding: JSONEncoder().encode(item), as: UTF8.self).contains("secret.png"))
+
+        let unrelated = AgentChatItem.toolCall(name: "read_file", argsJSON: raw)
+        XCTAssertEqual(unrelated.toolArgsJSON, raw)
+    }
+
+    func testMalformedOracleArgumentsFailClosed() {
+        // Every malformed or truncated ask_oracle payload fails closed — a partial prefix
+        // might yet grow an "images" key, and an impossible prefix may already carry one.
+        let malformed = [
+            #"{"message":"partial""#,
+            #"{"message":"say \"images\": hi""#,
+            #"{"message":"\ud83d"#,
+            #"{"message":"x","m"#,
+            #"{"message":"x",""#,
+            #"{"message":"x","ima"#,
+            #"{"images":[{"path":"/Users/secret.png""#,
+            #"{"\u0069mages":[{"path":"/Users/secret.png""#,
+            #"{"i\u006Dages":[{"path":"/Users/secret.png""#,
+            #"{"message":"x" "images":[{"path":"/Users/secret.png""#,
+            #"{"message":"x" "ima"#,
+            #"{"message":1 "images""#,
+            #"{"message":"x"}{"images":[]"#,
+            #"{"message":"x","other""#,
+            // Syntactically impossible nested content still carrying image material.
+            #"{"message":["x","images":[{"path":"/Users/secret.png","title":"Secret"#,
+            // Complete non-object values cannot carry a top-level images key, but fail
+            // closed anyway — tool arguments are always objects.
+            #"[{"images":[]}]"#,
+            #""images""#
+        ]
+
+        for raw in malformed {
+            XCTAssertNil(
+                AgentToolArgumentPersistencePolicy.sanitizedArgsJSON(
+                    toolName: "ask_oracle",
+                    argsJSON: raw
+                ),
+                raw
+            )
+            XCTAssertEqual(
+                AgentToolArgumentPersistencePolicy.sanitizedArgsJSON(
+                    toolName: "read_file",
+                    argsJSON: raw
+                ),
+                raw,
+                raw
+            )
+        }
+    }
+
+    func testNamespacedAndAliasedOracleToolNamesAreRedacted() throws {
+        let raw = #"{"message":"inspect","images":[{"path":"/Users/secret.png"}]}"#
+        let oracleNames = [
+            "ask_oracle",
+            "mcp__RepoPromptCE__ask_oracle",
+            "RepoPromptCE__ask_oracle",
+            "RepoPromptCE_ask_oracle",
+            "functions.ask_oracle",
+            "other_server:ask_oracle",
+            "mcp__other__ask_oracle"
+        ]
+        for name in oracleNames {
+            let sanitized = try XCTUnwrap(
+                AgentToolArgumentPersistencePolicy.sanitizedArgsJSON(toolName: name, argsJSON: raw),
+                name
+            )
+            XCTAssertFalse(sanitized.contains("secret.png"), name)
+            XCTAssertTrue(sanitized.contains("inspect"), name)
+        }
+
+        // Non-oracle tools keep their arguments untouched.
+        let unrelated = #"{"images":[{"path":"/tmp/not-an-oracle-image.png"}]}"#
+        for name in ["ask_oracle_extended", "oracle_send", "read_file"] {
+            XCTAssertEqual(
+                AgentToolArgumentPersistencePolicy.sanitizedArgsJSON(
+                    toolName: name,
+                    argsJSON: unrelated
+                ),
+                unrelated,
+                name
+            )
+        }
+    }
+
+    func testEscapedImagesKeysAndPersistedItemsAreSanitized() throws {
+        let raw = #"{"\u0069mages":[{"path":"/Users/secret.png"}],"message":"inspect"}"#
+        let sanitized = try XCTUnwrap(AgentToolArgumentPersistencePolicy.sanitizedArgsJSON(
+            toolName: "ask_oracle",
+            argsJSON: raw
+        ))
+        XCTAssertTrue(sanitized.contains("inspect"))
+        XCTAssertFalse(sanitized.contains("secret.png"))
+
+        let source = AgentChatItem.toolCall(name: "read_file", argsJSON: raw)
+        var persisted = AgentChatItemPersist(from: source, sanitizeToolResults: false)
+        persisted.toolName = "mcp__RepoPromptCE__ask_oracle"
+        let encoded = try JSONEncoder().encode(persisted)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("secret.png"))
+        let decoded = try JSONDecoder().decode(AgentChatItemPersist.self, from: encoded)
+        XCTAssertFalse(decoded.toolArgsJSON?.contains("secret.png") == true)
+    }
+
+    func testLegacyImageArgumentsAreSanitizedOnDecode() throws {
+        let raw = #"{"message":"inspect","images":[{"path":"/Users/legacy-secret.png"}]}"#
+        let source = AgentChatItem.toolCall(name: "read_file", argsJSON: raw)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(source)) as? [String: Any]
+        )
+        object["toolName"] = "ask_oracle"
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(AgentChatItem.self, from: legacyData)
+        XCTAssertFalse(decoded.toolArgsJSON?.contains("legacy-secret") == true)
+        XCTAssertFalse(try String(decoding: JSONEncoder().encode(decoded), as: UTF8.self).contains("legacy-secret"))
+    }
+
+    func testUnrelatedAndImageFreeArgumentsRoundTripUnchanged() throws {
+        let unrelatedRaw = #"{"images":[{"path":"/tmp/not-an-oracle-image.png"}]}"#
+        let unrelated = AgentChatItem.toolCall(name: "read_file", argsJSON: unrelatedRaw)
+        let unrelatedRoundTrip = try JSONDecoder().decode(
+            AgentChatItem.self,
+            from: JSONEncoder().encode(unrelated)
+        )
+        XCTAssertEqual(unrelatedRoundTrip.toolArgsJSON, unrelatedRaw)
+
+        let oracleRaw = #"{"message":"hi","mode":"plan"}"#
+        let oracle = AgentChatItem.toolCall(name: "ask_oracle", argsJSON: oracleRaw)
+        let oracleRoundTrip = try JSONDecoder().decode(
+            AgentChatItem.self,
+            from: JSONEncoder().encode(oracle)
+        )
+        XCTAssertEqual(oracleRoundTrip.toolArgsJSON, oracleRaw)
+    }
+
+    func testLateToolArgumentsRedactImagesAndFailClosed() throws {
+        let raw = #"{"message":"inspect","images":[{"path":"/Users/late-secret.png"}]}"#
+        var item = AgentChatItem.toolCall(name: "read_file", argsJSON: nil)
+        item.toolName = "ask_oracle"
+        item.toolArgsJSON = raw
+
+        let sanitized = try XCTUnwrap(item.toolArgsJSON)
+        XCTAssertFalse(sanitized.contains("images"))
+        XCTAssertFalse(sanitized.contains("late-secret"))
+
+        item.toolArgsJSON = #"{"message":"partial"#
+        XCTAssertNil(item.toolArgsJSON)
+        item.toolArgsJSON = #"{"images":[{"path":"/Users/partial-secret.png"#
+        XCTAssertNil(item.toolArgsJSON)
+    }
+}

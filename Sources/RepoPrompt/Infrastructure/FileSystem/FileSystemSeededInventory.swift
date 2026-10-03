@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct FileSystemSeededInventoryRecord: Equatable {
     let relativePath: String

@@ -178,7 +178,8 @@ final class CodemapAutomaticSelectionGraphNativeTests: XCTestCase {
             in: betaRoot
         )
 
-        let fixture = try CodemapStoreFixture(name: #function, forbidCodeMapGitProcesses: true)
+        let overlay = WorkspaceCodemapLiveOverlay()
+        let fixture = try CodemapStoreFixture(name: #function, overlay: overlay, forbidCodeMapGitProcesses: true)
         let store = fixture.makeProductionStore()
         let loadedAlpha = try await store.loadRoot(path: alphaRoot.path)
         let loadedBeta = try await store.loadRoot(path: betaRoot.path)
@@ -253,21 +254,17 @@ final class CodemapAutomaticSelectionGraphNativeTests: XCTestCase {
             "An edit in one root must not rebuild the sibling root's identically named source"
         )
 
-        let replacedAlpha = try await waitForReadySnapshot(
-            engine: engine,
-            rootEpoch: alphaAccounting.rootEpoch,
-            "edited sibling root maps its new symbol"
-        ) { snapshot in
-            Self.definitions(in: snapshot, fileID: alphaFile.id) == ["AlphaReplacedProps"]
-        }
+        let replacedAlpha = try await snapshotAfterOverlayPublication(
+            engine: engine, overlay: overlay, rootEpoch: alphaAccounting.rootEpoch
+        )
+        XCTAssertEqual(definitions(in: replacedAlpha, fileID: alphaFile.id), ["AlphaReplacedProps"])
         XCTAssertFalse(
             definitions(in: replacedAlpha, fileID: alphaFile.id).contains("AlphaOnlyProps")
         )
         XCTAssertNil(replacedAlpha.snapshot.nodesByFileID[betaFile.id])
 
-        let untouchedBeta = try await requireReadySnapshot(
-            engine: engine,
-            rootEpoch: betaAccounting.rootEpoch
+        let untouchedBeta = try await snapshotAfterOverlayPublication(
+            engine: engine, overlay: overlay, rootEpoch: betaAccounting.rootEpoch
         )
         XCTAssertEqual(definitions(in: untouchedBeta, fileID: betaFile.id), ["BetaOnlyProps"])
         XCTAssertTrue(untouchedBeta.snapshot.coverage.isComplete)
@@ -887,6 +884,41 @@ final class CodemapAutomaticSelectionGraphNativeTests: XCTestCase {
         })
         XCTAssertTrue(fixture.builtSourceTexts.values.contains { $0.contains("NestedWorktreeOnly") })
         XCTAssertFalse(fixture.builtSourceTexts.values.contains { $0.contains("OuterBlobOnly") })
+    }
+
+    /// Presentation readiness does not imply that the graph has committed its publication.
+    /// Wait for the captured overlay generation, not for particular symbols or full coverage:
+    /// a pending or incorrect slot at that generation must still fail the caller's assertions.
+    private func snapshotAfterOverlayPublication(
+        engine: WorkspaceCodemapBindingEngine,
+        overlay: WorkspaceCodemapLiveOverlay,
+        rootEpoch: WorkspaceCodemapRootEpoch
+    ) async throws -> WorkspaceCodemapGraphPinnedSnapshot {
+        let maybeGraph = await engine.selectionGraph(rootEpoch: rootEpoch)
+        let graph = try XCTUnwrap(maybeGraph)
+        // Subscribe before capturing the target so its commit cannot be missed.
+        let events = await graph.statusUpdates()
+        let maybeTarget = await overlay.graphContributionGeneration(rootEpoch: rootEpoch)
+        let target = try XCTUnwrap(maybeTarget)
+        let published = XCTestExpectation(description: "graph applies captured overlay generation")
+        let snapshots = CodemapLockedValues<WorkspaceCodemapGraphPinnedSnapshot>()
+        let observer = Task {
+            for await status in events {
+                if status.revocationReason != nil {
+                    published.fulfill()
+                    return
+                }
+                guard status.appliedGeneration >= target else { continue }
+                if case let .ready(snapshot) = await graph.latestSnapshot() {
+                    snapshots.append(snapshot)
+                }
+                published.fulfill()
+                return
+            }
+        }
+        defer { observer.cancel() }
+        await fulfillment(of: [published], timeout: 10)
+        return try XCTUnwrap(snapshots.values.last)
     }
 
     private func waitForGraphCompletion(

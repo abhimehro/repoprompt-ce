@@ -91,6 +91,7 @@ class RatchetCommandTests(unittest.TestCase):
         self.assertIn("tests_sleep_calls", mm.TRACKED_METRICS)
         self.assertEqual(len(mm._SLEEP.findall("func sleep(until deadline: Instant) {}")), 1)
         baseline = {name: 0 for name in mm.RATCHETED_METRICS}
+        baseline["app_target_swift_lines"] = 0
         current = {**baseline, "app_largest_cycle_components": 68, "tests_sleep_calls": 50}
         self.assertEqual(mm.regressions(current, baseline), [])
 
@@ -117,6 +118,29 @@ class RatchetCommandTests(unittest.TestCase):
             )
             self.assertEqual(self.run_main("check", "--root", tmp, "--baseline", str(baseline)), 0)
 
+    def test_update_refuses_app_lines_growth_within_headroom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_fixture(root)
+            baseline = root / "ratchets.json"
+            self.assertEqual(self.run_main("update", "--root", tmp, "--baseline", str(baseline)), 0)
+            before = json.loads(baseline.read_text())["metrics"]["app_target_swift_lines"]
+            write(root, "Sources/RepoPrompt/Features/Chat/Growth.swift", "let growth = 0\n" * 1500)
+            # Within headroom: `check` passes, but `update` must not raise the baseline.
+            self.assertEqual(self.run_main("check", "--root", tmp, "--baseline", str(baseline)), 0)
+            self.assertEqual(self.run_main("update", "--root", tmp, "--baseline", str(baseline)), 1)
+            self.assertEqual(json.loads(baseline.read_text())["metrics"]["app_target_swift_lines"], before)
+            self.assertEqual(
+                self.run_main("update", "--root", tmp, "--baseline", str(baseline), "--allow-regression"), 0
+            )
+            self.assertEqual(json.loads(baseline.read_text())["metrics"]["app_target_swift_lines"], before + 1500)
+
+    def test_baseline_raises_covers_tracked_metrics(self) -> None:
+        baseline = {name: 5 for name in mm.RATCHETED_METRICS + mm.TRACKED_METRICS}
+        current = dict(baseline, tests_sleep_calls=6)
+        self.assertEqual(mm.baseline_raises(current, baseline), ["tests_sleep_calls: 5 -> 6"])
+        self.assertEqual(mm.baseline_raises(dict(baseline, tests_sleep_calls=4), baseline), [])
+
     def test_check_fails_without_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             make_fixture(Path(tmp))
@@ -124,7 +148,7 @@ class RatchetCommandTests(unittest.TestCase):
 
     def test_regressions_reports_missing_metric(self) -> None:
         problems = mm.regressions({name: 0 for name in mm.RATCHETED_METRICS}, {})
-        self.assertEqual(len(problems), len(mm.RATCHETED_METRICS))
+        self.assertEqual(len(problems), len(mm.RATCHETED_METRICS) + 1)
 
 
 if __name__ == "__main__":

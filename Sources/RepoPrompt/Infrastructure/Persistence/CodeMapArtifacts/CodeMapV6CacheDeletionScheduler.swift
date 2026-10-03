@@ -6,7 +6,7 @@
     enum CodeMapV6CacheDeletionProductionTargetResolver {
         static func resolve() -> CodeMapV6CacheDeletionTarget {
             CodeMapV6CacheDeletionTarget(
-                applicationSupportRootURL: MCPFilesystemConstants.identity.applicationSupportRootURL()
+                applicationSupportRootURL: MCPFilesystemIdentity.repoPromptCE(.release).applicationSupportRootURL()
             )
         }
     }

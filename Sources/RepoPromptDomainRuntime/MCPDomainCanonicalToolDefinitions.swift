@@ -1117,7 +1117,9 @@ package enum MCPDomainCanonicalToolDefinitions {
         guard definitions.map(\.name) == MCPDomainToolCatalog.orderedToolNames else {
             preconditionFailure("Invalid canonical MCP domain tool definitions")
         }
-        return (canonicalize ? definitions.map(canonicalizeGlobalSemantics) : definitions).map(advertiseModelParameters)
+        return (canonicalize ? definitions.map(canonicalizeGlobalSemantics) : definitions)
+            .map(advertiseModelParameters)
+            .map(advertiseOracleImageAttachments)
     }
 
     private static let agentSelfDefinition = MCPDomainToolDefinition(
@@ -1178,6 +1180,57 @@ package enum MCPDomainCanonicalToolDefinitions {
             name: definition.name,
             description: definition.description
                 + "\n\n**Cursor parameters**: `\(operations)` accept `model_parameters` as exact `config_id` and `value` pairs for app-backed Cursor sessions. Discover choices in `agent_manage.list_agents`; catalog `current_value` is the catalog default, not a live session value. Selections are applied before prompting and returned in session snapshots. Standalone headless sessions reject parameter overrides.",
+            inputSchema: .object(schema),
+            annotations: definition.annotations,
+            isEnabledByDefault: definition.isEnabledByDefault
+        )
+    }
+
+    /// The vendored `ask_oracle` definition predates Oracle image attachments, so
+    /// canonicalization advertises the app-backend `images` contract here instead of
+    /// re-vendoring the blob. The direct headless backend cannot resolve workspace
+    /// images and rejects the argument at execution time rather than dropping it.
+    private static func advertiseOracleImageAttachments(
+        _ definition: MCPDomainToolDefinition
+    ) -> MCPDomainToolDefinition {
+        guard definition.name == MCPWindowToolName.askOracle,
+              case var .object(schema) = definition.inputSchema,
+              case var .object(properties)? = schema["properties"],
+              properties["images"] == nil
+        else { return definition }
+
+        let limits = OracleImageAttachmentLimits.production
+        properties["images"] = .object([
+            "type": .string("array"),
+            "description": .string("Optional workspace-local PNG/JPEG/GIF/WebP images for transports that support image input. Each item requires canonical absolute `path` inside a loaded workspace root (including screenshots saved under a workspace root) or the exact path of an image the user attached to this agent session, and may include transient `title`. Unsupported transports, remote URLs, sibling attachments, and arbitrary paths outside loaded roots are rejected. Max \(limits.maxCount) images, \(limits.maxBytesPerImage / 1_048_576) MiB each, \(limits.maxTotalBytes / 1_048_576) MiB total, measured as raw attachment-file bytes before provider encoding. The selected provider or model may impose additional restrictions; accepted attachments do not guarantee full-request or model-context fit. Requires the app backend; the direct headless backend rejects `images`."),
+            "items": .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("Canonical absolute path inside a currently loaded workspace root, or the exact path of an image attached to this agent session")
+                    ]),
+                    "title": .object([
+                        "type": .string("string"),
+                        "description": .string("Optional transient image title"),
+                        "maxLength": .int(200)
+                    ])
+                ]),
+                "required": .array([.string("path")])
+            ]),
+            "maxItems": .int(limits.maxCount)
+        ])
+        schema["properties"] = .object(properties)
+
+        var description = definition.description
+        let imageUsage = "Optional `images` attaches workspace-local PNG, JPEG, GIF, or WebP files to the Oracle request when the resolved model transport supports image input. Each item is `{path,title?}` with a canonical absolute path inside the current loaded roots — a screenshot saved under a workspace root is fine — or the exact path of an image the user attached to this agent session (pasted or dropped into the composer; its path is listed in the user's message). Remote URLs, relative paths, sibling attachments, and arbitrary files outside the loaded roots are rejected before a message is sent, and models on transports without image input reject `images` with an error. Image input is additional to pre-send text estimates and Context Builder text-selection budgets. Originals, not transcript thumbnails, are sent to each Oracle lane; group fan-out multiplies image usage/cost, not any one request's attachment cap. Provider-reported input totals may already include image usage. Session attachment files are normally deleted when the agent turn ends; forward them during that turn. Originals are this-turn-only: continuations do not automatically reattach prior images or send saved thumbnails. `oracle_send` does not accept images; continue image-bearing conversations with `ask_oracle` + `chat_id`. Limits: \(limits.maxCount) images, \(limits.maxBytesPerImage / 1_048_576) MiB each, \(limits.maxTotalBytes / 1_048_576) MiB total, measured as raw attachment-file bytes before provider encoding. The selected provider or model may impose additional restrictions; accepted attachments do not guarantee full-request or model-context fit. Requires the app backend; the direct headless backend rejects `images`."
+        if !description.contains(imageUsage) {
+            description += "\n\n\(imageUsage)"
+        }
+
+        return MCPDomainToolDefinition(
+            name: definition.name,
+            description: description,
             inputSchema: .object(schema),
             annotations: definition.annotations,
             isEnabledByDefault: definition.isEnabledByDefault
@@ -1853,7 +1906,7 @@ package enum MCPDomainCanonicalToolDefinitions {
             Pass `op` plus fields for that operation.
             list: cursor?, max_items?
             poll: exactly one of session_id/session_ids
-            wait: exactly one of session_id/session_ids; cursor? or cursors?; until?; timeout_seconds?
+            wait: exactly one of session_id/session_ids; cursor? or cursors?; until?; timeout_seconds? Local input cancels older waits.
             read: session_id, cursor?, from?, max_items?, max_output_bytes?
             send: session_id, message, idempotency_key; workflow_id|workflow_name?; delivery?; replace_pending?
             cancel_pending_send: session_id, idempotency_key
@@ -2029,6 +2082,55 @@ package enum MCPDomainCanonicalToolDefinitions {
                 inputSchema: inputSchema,
                 annotations: previous.annotations,
                 isEnabledByDefault: previous.isEnabledByDefault
+            )
+        }
+    }
+
+    /// Outer projection only; all prior exact migration stages remain frozen.
+    private enum AgentSessionLinkModelSelectionMigration {
+        static let description = AgentSessionLinkRefusalSubreasonMigration.description
+            .replacingOccurrences(of: " | stop", with: " | stop | set_model")
+            .replacingOccurrences(
+                of: "- `retire_lane`: [manage + created by you] unlink/stash idle lane, never delete; no idempotency key.",
+                with: "- `retire_lane`: [manage + created by you] unlink/stash idle lane, never delete; no idempotency key.\n- `set_model`: [manage] same agent, idle; next turn."
+            )
+
+        static let inputSchema: Value = {
+            guard case var .object(schema) = AgentSessionLinkLaneOperationsMigration.inputSchema,
+                  case var .object(properties)? = schema["properties"],
+                  case var .object(op)? = properties["op"],
+                  case var .array(operations)? = op["enum"],
+                  case var .object(sessionID)? = properties["session_id"],
+                  case let .string(sessionSummary)? = sessionID["description"],
+                  case var .object(name)? = properties["session_name"],
+                  case let .string(nameSummary)? = name["description"],
+                  case let .string(summary)? = schema["description"]
+            else { preconditionFailure("agent_session_link model selection requires lane schema") }
+            operations.append(.string("set_model"))
+            op["enum"] = .array(operations)
+            properties["op"] = .object(op)
+            properties["model_id"] = .object(["type": .string("string")])
+            sessionID["description"] = .string(sessionSummary.replacingOccurrences(of: "]", with: ", set_model]"))
+            properties["session_id"] = .object(sessionID)
+            name["description"] = .string(nameSummary.replacingOccurrences(of: "Name, max", with: "Max"))
+            properties["session_name"] = .object(name)
+            schema["properties"] = .object(properties)
+            schema["description"] = .string(
+                summary.replacingOccurrences(of: "role?,", with: "role|model_id?,")
+                    + "\nset_model: session_id, model_id"
+            )
+            return .object(schema)
+        }()
+
+        static func isCurrent(_ definition: MCPDomainToolDefinition) -> Bool {
+            definition.description == description && definition.inputSchema == inputSchema
+        }
+
+        static func applying(to definition: MCPDomainToolDefinition) -> MCPDomainToolDefinition {
+            precondition(definition.description == AgentSessionLinkRefusalSubreasonMigration.description && definition.inputSchema == AgentSessionLinkLaneOperationsMigration.inputSchema)
+            return MCPDomainToolDefinition(
+                name: definition.name, description: description, inputSchema: inputSchema,
+                annotations: definition.annotations, isEnabledByDefault: definition.isEnabledByDefault
             )
         }
     }
@@ -2240,8 +2342,26 @@ package enum MCPDomainCanonicalToolDefinitions {
     private static func canonicalizeAgentSessionLink(
         _ definition: MCPDomainToolDefinition
     ) -> MCPDomainToolDefinition {
+        if AgentSessionLinkModelSelectionMigration.isCurrent(definition) { return definition }
+        precondition(!agentSessionLinkModelSelectionIsPartial(definition), "Partial agent_session_link model selection contract")
+        return AgentSessionLinkModelSelectionMigration.applying(to: canonicalizeAgentSessionLinkBeforeModelSelection(definition))
+    }
+
+    private static func agentSessionLinkModelSelectionIsPartial(_ definition: MCPDomainToolDefinition) -> Bool {
+        !AgentSessionLinkModelSelectionMigration.isCurrent(definition)
+            && (
+                definition.description.contains("set_model")
+                    || stringOccurrenceCount(of: "set_model", in: definition.inputSchema) > 0
+                    || stringOccurrenceCount(of: "model_id", in: definition.inputSchema) > 0
+            )
+    }
+
+    private static func canonicalizeAgentSessionLinkBeforeModelSelection(
+        _ definition: MCPDomainToolDefinition
+    ) -> MCPDomainToolDefinition {
         if definition.description == AgentSessionLinkRefusalSubreasonMigration.description,
-           definition.inputSchema == AgentSessionLinkLaneOperationsMigration.inputSchema {
+           definition.inputSchema == AgentSessionLinkLaneOperationsMigration.inputSchema
+        {
             return definition
         }
         return AgentSessionLinkRefusalSubreasonMigration.apply(canonicalizeAgentSessionLinkBeforeRefusalSubreason(definition))
@@ -2623,6 +2743,14 @@ package enum MCPDomainCanonicalToolDefinitions {
         _ definition: MCPDomainToolDefinition
     ) -> MCPDomainToolDefinition {
         canonicalizeAgentSessionLink(definition)
+    }
+
+    package static func test_agentSessionLinkPreviousStopDefinition() -> MCPDomainToolDefinition {
+        canonicalizeAgentSessionLinkBeforeModelSelection(test_agentSessionLinkLegacyCurrentDefinition())
+    }
+
+    package static func test_agentSessionLinkModelSelectionIsPartial(_ definition: MCPDomainToolDefinition) -> Bool {
+        agentSessionLinkModelSelectionIsPartial(definition)
     }
 
     package static func test_agentSessionLinkPreviousCompactDefinition() -> MCPDomainToolDefinition {

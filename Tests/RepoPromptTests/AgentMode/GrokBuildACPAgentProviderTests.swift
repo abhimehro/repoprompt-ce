@@ -1,5 +1,6 @@
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptProcess
 import XCTest
 
 final class GrokBuildACPAgentProviderTests: XCTestCase {

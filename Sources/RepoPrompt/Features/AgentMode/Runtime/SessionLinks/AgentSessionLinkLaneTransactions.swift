@@ -5,6 +5,7 @@ import RepoPromptDomainRuntime
 struct AgentSessionLaneCreateRequest {
     let idempotencyKey: String
     let role: String?
+    var modelID: String?
     let sessionName: String?
     /// The caller's selector, not a window/workspace binding that can move after the request.
     var workspaceSelector: String?
@@ -13,7 +14,7 @@ struct AgentSessionLaneCreateRequest {
 
     var digest: String {
         let fields = [
-            role ?? "pair", sessionName ?? "", Self.canonicalSelector(workspaceSelector),
+            modelID.map { "model:\($0)" } ?? role ?? "pair", sessionName ?? "", Self.canonicalSelector(workspaceSelector),
             message ?? "", AgentWorkflowReference.canonicalSelector(for: workflowReference)
         ]
         let canonical = fields.map { "\($0.utf8.count):\($0)" }.joined()
@@ -46,6 +47,7 @@ struct AgentSessionLaneCreateReceipt: Equatable {
         case laneLimitReached = "lane_limit_reached"
         case admissionUnstable = "admission_unstable"
         case roleUnavailable = "role_unavailable"
+        case modelUnavailable = "model_unavailable"
         case idempotencyConflict = "idempotency_conflict"
         case ledgerFull = "ledger_full"
         case saveFailed = "save_failed"

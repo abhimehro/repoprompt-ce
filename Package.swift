@@ -45,6 +45,10 @@ var packageDependencies: [Package.Dependency] = [
 
 var repoPromptAppDependencies: [Target.Dependency] = [
     "RepoPromptDomainRuntime",
+    "RepoPromptFoundation",
+    "RepoPromptProcess",
+    "RepoPromptInstrumentation",
+    "RepoPromptSecureStorage",
     "RepoPromptCodeMapCore",
     "RepoPromptRegexCore",
     "RepoPromptWorkspaceCore",
@@ -72,11 +76,16 @@ var repoPromptAppSwiftSettings: [SwiftSetting] = [
 
 var repoPromptTestDependencies: [Target.Dependency] = [
     "RepoPromptApp",
+    "RepoPromptFoundation",
+    "RepoPromptProcess",
+    "RepoPromptInstrumentation",
+    "RepoPromptSecureStorage",
     "RepoPromptDomainRuntime",
     "RepoPromptCodeMapCore",
     "RepoPromptMCPCore",
     "RepoPromptShared",
     "RepoPromptTestSupport",
+    "RepoPromptWorkspaceCore",
     .product(name: "Markdown", package: "swift-markdown")
 ]
 
@@ -126,6 +135,40 @@ let package = Package(
             ],
             path: "Sources/RepoPromptDomainRuntime",
             swiftSettings: swift6LanguageMode + [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .target(
+            name: "RepoPromptFoundation",
+            dependencies: [
+                "RepoPromptWorkspaceCore",
+                "RepoPromptCodeMapCore"
+            ],
+            path: "Sources/RepoPromptFoundation",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .target(
+            name: "RepoPromptProcess",
+            dependencies: ["RepoPromptFoundation", "RepoPromptShared"],
+            path: "Sources/RepoPromptProcess",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .target(
+            name: "RepoPromptSecureStorage",
+            path: "Sources/RepoPromptSecureStorage",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .target(
+            name: "RepoPromptInstrumentation",
+            dependencies: ["RepoPromptFoundation", "RepoPromptShared"],
+            path: "Sources/RepoPromptInstrumentation",
+            swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))
             ]
         ),
@@ -218,6 +261,38 @@ let package = Package(
         .target(
             name: "RepoPromptTestSupport",
             path: "Tests/RepoPromptTestSupport"
+        ),
+        .testTarget(
+            name: "RepoPromptFoundationTests",
+            dependencies: ["RepoPromptFoundation"],
+            path: "Tests/RepoPromptFoundationTests",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .testTarget(
+            name: "RepoPromptProcessTests",
+            dependencies: ["RepoPromptProcess"],
+            path: "Tests/RepoPromptProcessTests",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .testTarget(
+            name: "RepoPromptSecureStorageTests",
+            dependencies: ["RepoPromptSecureStorage", "RepoPromptTestSupport"],
+            path: "Tests/RepoPromptSecureStorageTests",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
+        ),
+        .testTarget(
+            name: "RepoPromptInstrumentationTests",
+            dependencies: ["RepoPromptInstrumentation", "RepoPromptTestSupport"],
+            path: "Tests/RepoPromptInstrumentationTests",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
         ),
         .testTarget(
             name: "RepoPromptWorkspaceCoreTests",

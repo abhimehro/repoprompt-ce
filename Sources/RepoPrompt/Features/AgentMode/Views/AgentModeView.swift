@@ -1,4 +1,5 @@
 import Combine
+import RepoPromptInstrumentation
 import SwiftUI
 
 /// Agent Mode view - a chat-style interface for long-running agent interactions
@@ -5995,6 +5996,7 @@ struct AgentModeChatDetailView: View {
 }
 
 private struct AgentRunningElapsedText: View {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     let startedAt: Date
     let isLive: Bool
     @ObservedObject private var fontScale = FontScaleManager.shared
@@ -6006,7 +6008,7 @@ private struct AgentRunningElapsedText: View {
         if isLive {
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 #if DEBUG
-                    let _ = AgentModePerfDiagnostics.increment("timeline.runningIndicator.tick")
+                    let _ = perfRecorder.increment("timeline.runningIndicator.tick")
                 #endif
                 elapsedText(now: timeline.date)
             }

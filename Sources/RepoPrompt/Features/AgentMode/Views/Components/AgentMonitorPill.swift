@@ -1,5 +1,6 @@
 import AppKit
 import RepoPromptDomainRuntime
+import RepoPromptInstrumentation
 import SwiftUI
 
 /// Compact oversight pill, placed between Workflow and Interview.
@@ -8,6 +9,7 @@ import SwiftUI
 /// session-scoped and survives until explicit or lifecycle revocation, so the user needs a surface
 /// that lists both directions and offers Unlink at either end.
 struct AgentMonitorPill: View {
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     @ObservedObject var statusPillsUI: AgentStatusPillsUIStore
     @State private var showPopover = false
 
@@ -22,7 +24,7 @@ struct AgentMonitorPill: View {
 
     var body: some View {
         #if DEBUG
-            let _ = AgentModePerfDiagnostics.increment("ui.body.statusPills.monitor")
+            let _ = perfRecorder.increment("ui.body.statusPills.monitor")
         #endif
         let cornerRadius = AgentPillMetrics.cornerRadius()
         let height = AgentPillMetrics.height()

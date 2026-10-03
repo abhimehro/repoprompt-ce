@@ -9,6 +9,8 @@ import MCP
 import Ontology
 import OSLog
 import RepoPromptDomainRuntime
+import RepoPromptFoundation
+import RepoPromptInstrumentation
 import RepoPromptShared
 import SwiftUI
 
@@ -483,6 +485,28 @@ actor ServerNetworkManager {
     /// MCP listener from anywhere in the app.
     static let shared = ServerNetworkManager()
 
+    private var catalogDiagnosticsSink: any AgentSessionLinkCatalogEventSink
+    private var perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()
+
+    func installPerfRecorder(_ recorder: any AgentModePerfRecording) {
+        perfRecorder = recorder
+    }
+
+    private var executionDiagnosticsSink: any MCPToolExecutionEventSink
+    private var phaseRecorderFactory: any MCPToolExecutionHandlerPhaseRecorderFactory
+
+    func installCatalogDiagnosticsSink(_ sink: any AgentSessionLinkCatalogEventSink) {
+        catalogDiagnosticsSink = sink
+    }
+
+    func installExecutionDiagnosticsSink(_ sink: any MCPToolExecutionEventSink) {
+        executionDiagnosticsSink = sink
+    }
+
+    func installPhaseRecorderFactory(_ factory: any MCPToolExecutionHandlerPhaseRecorderFactory) {
+        phaseRecorderFactory = factory
+    }
+
     enum StartDegradedReason: String, Equatable {
         case readinessTimedOut
         case readinessWaitCancelled
@@ -741,11 +765,17 @@ actor ServerNetworkManager {
     init(
         bootstrapLifecycleTiming: MCPBootstrapLifecycleTiming = .production,
         bootstrapPeerPIDResolver: (@Sendable (Int32) -> Int?)? = nil,
-        domainHost: MCPDomainHost = AppDomainRuntimeComposition.shared.runtime.domainHost
+        domainHost: MCPDomainHost = AppDomainRuntimeComposition.shared.runtime.domainHost,
+        catalogDiagnosticsSink: any AgentSessionLinkCatalogEventSink = NoopAgentSessionLinkCatalogEventSink(),
+        executionDiagnosticsSink: any MCPToolExecutionEventSink = NoopMCPToolExecutionEventSink(),
+        phaseRecorderFactory: any MCPToolExecutionHandlerPhaseRecorderFactory = NoopMCPToolExecutionHandlerPhaseRecorderFactory()
     ) {
         self.bootstrapLifecycleTiming = bootstrapLifecycleTiming
         self.bootstrapPeerPIDResolver = bootstrapPeerPIDResolver
         defaultDomainHost = domainHost
+        self.catalogDiagnosticsSink = catalogDiagnosticsSink
+        self.executionDiagnosticsSink = executionDiagnosticsSink
+        self.phaseRecorderFactory = phaseRecorderFactory
     }
 
     // Bootstrap socket server. Startup candidates remain separate until bind/listen and
@@ -1777,6 +1807,7 @@ actor ServerNetworkManager {
         let windowStateIdentity: ObjectIdentifier
         let serverViewModelIdentity: ObjectIdentifier
         let catalogRegistrationHandle: MCPDomainToolRegistrationHandle
+        var modelRouteToken: AgentSessionLinkRunCatalogRouteToken?
     }
 
     struct ToolDispatchAuthorization: @unchecked Sendable {
@@ -2416,18 +2447,20 @@ actor ServerNetworkManager {
 
     private func captureWindowToolDispatchIdentity(
         windowID: Int,
-        catalogRegistrationHandle: MCPDomainToolRegistrationHandle
+        catalogRegistrationHandle: MCPDomainToolRegistrationHandle,
+        modelRouteToken: AgentSessionLinkRunCatalogRouteToken? = nil
     ) async -> WindowToolDispatchIdentity? {
         guard await AppDomainRuntimeComposition.shared.isActive(catalogRegistrationHandle) else { return nil }
         return await MainActor.run {
-            guard let window = WindowStatesManager.shared.window(withID: windowID),
-                  !window.isClosing
-            else { return nil }
+            let window = modelRouteToken != nil ? WindowStatesManager.shared.modelRoutingWindow(withID: windowID)
+                : WindowStatesManager.shared.window(withID: windowID)
+            guard let window, !window.isClosing else { return nil }
             return WindowToolDispatchIdentity(
                 windowID: windowID,
                 windowStateIdentity: ObjectIdentifier(window),
                 serverViewModelIdentity: ObjectIdentifier(window.mcpServer),
-                catalogRegistrationHandle: catalogRegistrationHandle
+                catalogRegistrationHandle: catalogRegistrationHandle,
+                modelRouteToken: modelRouteToken
             )
         }
     }
@@ -2437,9 +2470,13 @@ actor ServerNetworkManager {
         expectedServerViewModelIdentity: ObjectIdentifier? = nil
     ) async -> Bool {
         guard await AppDomainRuntimeComposition.shared.isActive(identity.catalogRegistrationHandle) else { return false }
+        if let token = identity.modelRouteToken,
+           await cachedModelCatalogRouteToken(connectionID: token.connectionID) != token { return false }
         return await MainActor.run {
+            let window = identity.modelRouteToken != nil ? WindowStatesManager.shared.modelRoutingWindow(withID: identity.windowID)
+                : WindowStatesManager.shared.window(withID: identity.windowID)
             guard identity.windowID > 0,
-                  let window = WindowStatesManager.shared.window(withID: identity.windowID),
+                  let window,
                   !window.isClosing,
                   ObjectIdentifier(window) == identity.windowStateIdentity,
                   ObjectIdentifier(window.mcpServer) == identity.serverViewModelIdentity
@@ -2715,15 +2752,15 @@ actor ServerNetworkManager {
         }
     }
 
-    private func liveSessionLinkGrantSnapshot(connectionID: UUID) async -> LiveSessionLinkGrantSnapshot? {
+    private func liveSessionLinkGrantSnapshot(connectionID: UUID, modelOnly: Bool = false) async -> LiveSessionLinkGrantSnapshot? {
         guard let runID = runIDByConnectionID[connectionID],
               let runState = runPolicyStateByRunID[runID],
               runState.purpose == .agentModeRun,
               let tabID = runState.tabID,
-              let routeToken = await authoritativeRunCatalogRouteToken(
-                  runID: runID,
-                  windowID: runState.windowID,
-                  tabID: tabID
+              let routeToken = await (
+                  modelOnly
+                      ? cachedModelCatalogRouteToken(connectionID: connectionID)
+                      : authoritativeRunCatalogRouteToken(runID: runID, windowID: runState.windowID, tabID: tabID)
               ),
               routeToken.connectionID == connectionID
         else {
@@ -2754,10 +2791,10 @@ actor ServerNetworkManager {
                 observerEndpoint: routeToken.observerEndpoint
             )
         #endif
-        guard let revalidatedRouteToken = await authoritativeRunCatalogRouteToken(
-            runID: routeToken.runID,
-            windowID: runState.windowID,
-            tabID: tabID
+        guard let revalidatedRouteToken = await (
+            modelOnly
+                ? cachedModelCatalogRouteToken(connectionID: connectionID)
+                : authoritativeRunCatalogRouteToken(runID: routeToken.runID, windowID: runState.windowID, tabID: tabID)
         ), revalidatedRouteToken == routeToken else {
             return nil
         }
@@ -2841,13 +2878,17 @@ actor ServerNetworkManager {
             projectionRevision: runCatalogProjectionRevision
         )
         runCatalogObservationByRunID[runID] = observation
-        AgentSessionLinkCatalogDiagnostics.catalogPublished(
+        catalogDiagnosticsSink.record(.catalogPublished(
             runID: runID,
-            routeToken: routeToken,
+            tabID: routeToken?.observerEndpoint.tabID,
+            connectionID: routeToken?.connectionID,
             revision: runCatalogProjectionRevision,
+            routingGeneration: routeToken?.routingAuthorityGeneration,
+            lifecycleGeneration: routeToken?.connectionLifecycleGeneration,
+            routePresent: routeToken != nil,
             catalog: hasAgentSessionLink,
             outbound: hasActiveOutboundLink
-        )
+        ))
         let projection = observation.projection
         #if DEBUG
             await debugSuspendRunCatalogPublicationBeforeMainActorIfRequested()
@@ -3179,7 +3220,7 @@ actor ServerNetworkManager {
         }
 
         private func debugPolicyDiagnostic(_ name: String, connectionID: UUID, policy: (restricted: Set<String>, additional: Set<String>, preassigned: Bool, purpose: MCPRunPurpose, taskLabelKind: AgentModelCatalog.TaskLabelKind?, allowsAgentExternalControlTools: Bool)? = nil, extra: [String: String] = [:]) {
-            AgentModePerfDiagnostics.event(
+            perfRecorder.event(
                 "mcp.policy.\(name)",
                 fields: debugPolicyDiagnosticFields(connectionID: connectionID, policy: policy, extra: extra)
             )
@@ -3554,7 +3595,8 @@ actor ServerNetworkManager {
     func isRunRouteAuthoritativelyCommitted(
         runID: UUID,
         windowID: Int,
-        tabID: UUID?
+        tabID: UUID?,
+        expectedAgentPID: pid_t? = nil
     ) async -> Bool {
         let connectionID = await MainActor.run { () -> UUID? in
             guard let window = WindowStatesManager.shared.window(withID: windowID),
@@ -3575,6 +3617,11 @@ actor ServerNetworkManager {
                   tabID: tabID
               )
         else { return false }
+        if let expectedAgentPID {
+            guard let observedPeerPID = actorSnapshot.observedPeerPID,
+                  isAncestor(expectedPIDs: [expectedAgentPID], ofPid: pid_t(observedPeerPID))
+            else { return false }
+        }
 
         let mappingIsStillCurrent = await MainActor.run {
             guard let window = WindowStatesManager.shared.window(withID: windowID) else {
@@ -3816,6 +3863,57 @@ actor ServerNetworkManager {
         return nil
     }
 
+    nonisolated static func isMemoryOnlyModelCall(toolName: String, arguments: [String: Value]) -> Bool {
+        toolName == MCPWindowToolName.agentSessionLink
+            && AgentMCPToolHelpers.normalizedString(arguments["op"])?.lowercased() == "set_model"
+    }
+
+    nonisolated static let modelRouteUnavailableMessage =
+        "set_model requires an already-installed current Agent Mode run route. No state was repaired or changed. Retry once; if unavailable, ask the user to restart this Agent Mode run."
+
+    struct CachedModelRunRoute: Equatable {
+        let runID: UUID
+        let windowID: Int
+        let workspaceID: UUID
+        let tabID: UUID
+        let routingAuthorityGeneration: UInt64
+        let connectionLifecycleGeneration: UInt64
+    }
+
+    /// A read-only admission snapshot, not a recovery request. Pending handovers, cold caches,
+    /// revoked generations and terminal connections refuse without binding or persisting anything.
+    func cachedModelRunRoute(connectionID: UUID) -> CachedModelRunRoute? {
+        guard let runID = runIDByConnectionID[connectionID],
+              runPurposeByConnection[connectionID] == .agentModeRun,
+              let policy = runPolicyStateByRunID[runID], policy.purpose == .agentModeRun,
+              let workspaceID = policy.workspaceID, let tabID = policy.tabID,
+              let snapshot = authoritativeRunRouteActorSnapshot(
+                  runID: runID, connectionID: connectionID, windowID: policy.windowID, tabID: tabID
+              ), let lifecycleGeneration = snapshot.connectionLifecycleGeneration,
+              let routingGeneration = runRoutingAuthorityGenerationByRunID[runID]
+        else { return nil }
+        return CachedModelRunRoute(
+            runID: runID, windowID: policy.windowID, workspaceID: workspaceID, tabID: tabID,
+            routingAuthorityGeneration: routingGeneration, connectionLifecycleGeneration: lifecycleGeneration
+        )
+    }
+
+    /// Exact read-only transport route: both owners must agree across the actor hop. No
+    /// context resolver, catalog discovery, persistent affinity or recovery helper is called.
+    private func cachedModelCatalogRouteToken(connectionID: UUID) async -> AgentSessionLinkRunCatalogRouteToken? {
+        guard let route = cachedModelRunRoute(connectionID: connectionID) else { return nil }
+        let endpoint = await MainActor.run {
+            WindowStatesManager.shared.modelRoutingWindow(withID: route.windowID)?.mcpServer
+                .cachedModelObserverEndpoint(connectionID: connectionID, route: route)
+        }
+        guard let endpoint, cachedModelRunRoute(connectionID: connectionID) == route else { return nil }
+        return AgentSessionLinkRunCatalogRouteToken(
+            runID: route.runID, observerEndpoint: endpoint, connectionID: connectionID,
+            routingAuthorityGeneration: route.routingAuthorityGeneration,
+            connectionLifecycleGeneration: route.connectionLifecycleGeneration
+        )
+    }
+
     private struct AuthoritativeRunRouteActorSnapshot: Equatable {
         let pendingRunApplicationID: UUID?
         let pendingConnectionApplicationID: UUID?
@@ -3827,6 +3925,7 @@ actor ServerNetworkManager {
         let isRunAdmitted: Bool
         let connectionLifecycleGeneration: UInt64?
         let connectionIdentity: ObjectIdentifier?
+        let observedPeerPID: Int?
         let connectionIsBeingRemoved: Bool
         let lifecycleIsCurrent: Bool
         let executionWatchdogIsTerminal: Bool
@@ -3852,6 +3951,7 @@ actor ServerNetworkManager {
             isRunAdmitted: admittedPolicyRunIDs.contains(runID),
             connectionLifecycleGeneration: connectionLifecycleGenerationByID[connectionID],
             connectionIdentity: connection.map { ObjectIdentifier($0 as AnyObject) },
+            observedPeerPID: bootstrapObservedPeerPIDByConnectionID[connectionID],
             connectionIsBeingRemoved: connectionsBeingRemoved.contains(connectionID),
             lifecycleIsCurrent: connectionLifecycleGenerationByID[connectionID].map(isCurrentLifecycle) ?? false,
             executionWatchdogIsTerminal: executionWatchdogTerminalConnections.contains(connectionID),
@@ -3881,11 +3981,15 @@ actor ServerNetworkManager {
 
     func toolTrackingRunIDForCompletion(
         callTimeRunID: UUID?,
+        modelOnly: Bool = false,
         connectionID: UUID,
         toolName: String,
         invocationID: UUID,
         context: String
     ) async -> UUID? {
+        // Completion must retain the original call attribution without invoking the generic
+        // cold-route recovery sweep after a disconnect or handover.
+        if modelOnly { return callTimeRunID }
         if let callTimeRunID {
             if MCPIntegrationHelper.isRepoPromptToolNameAfterNormalization(toolName),
                let completionTimeRunID = await runIDForConnection(connectionID),
@@ -10228,6 +10332,14 @@ actor ServerNetworkManager {
                 connectionStats.removeValue(forKey: connectionID)
             }
 
+            func debugSetObservedPeerPIDForTesting(_ peerPID: Int?, connectionID: UUID) {
+                if let peerPID {
+                    bootstrapObservedPeerPIDByConnectionID[connectionID] = peerPID
+                } else {
+                    bootstrapObservedPeerPIDByConnectionID.removeValue(forKey: connectionID)
+                }
+            }
+
             func debugDirectAdmissionStateForTesting(connectionID: UUID) -> DebugDirectAdmissionState {
                 DebugDirectAdmissionState(
                     pendingClientID: pendingConnections[connectionID],
@@ -11162,7 +11274,9 @@ actor ServerNetworkManager {
         }
 
         if let liveAffinity = preferredExpectedPIDRunAffinity(for: clientName, clientPid: clientPid) {
-            await applyLiveRunAffinity(liveAffinity, clientName: clientName, connectionID: connectionID, reason: "expected-pid")
+            connectionLog(
+                "Expected-PID fallback matched established run \(liveAffinity.runID); refusing implicit run mapping without a pending per-connection policy"
+            )
             return
         }
 
@@ -11764,7 +11878,7 @@ actor ServerNetworkManager {
                     ]
                 )
             }
-            AgentModePerfDiagnostics.event("mcp.policy.pendingPolicyApplied", fields: [
+            perfRecorder.event("mcp.policy.pendingPolicyApplied", fields: [
                 "connectionID": connectionID.uuidString,
                 "clientName": clientName,
                 "clientPid": clientPid.map(String.init) ?? "nil",
@@ -12291,11 +12405,11 @@ actor ServerNetworkManager {
             connectionLog("tools/call received original=\(originalName) canonical=\(toolName) connection=\(connectionID)")
             if toolName == MCPWindowToolName.agentSessionLink {
                 let context = await agentSessionLinkCatalogDiagnosticContext(for: connectionID)
-                AgentSessionLinkCatalogDiagnostics.toolCallReceived(
+                await catalogDiagnosticsSink.record(.toolCallReceived(
                     runID: context.runID,
                     tabID: context.tabID,
                     connectionID: connectionID
-                )
+                ))
             }
             #if DEBUG
                 await debugPolicyDiagnostic("toolsCallReceived", connectionID: connectionID, extra: [
@@ -12587,15 +12701,29 @@ actor ServerNetworkManager {
             // Do not repeat it on each tools/call; it can re-enter routing notifications
             // while the call is waiting for a response.
 
-            var dispatchTabContextHint: MCPServerViewModel.TabContextHint?
-            var preResolvedWindowID: Int?
+            let isMemoryOnlyModelCall = Self.isMemoryOnlyModelCall(toolName: toolName, arguments: cleanedArguments)
+            let modelRouteToken = isMemoryOnlyModelCall
+                ? await cachedModelCatalogRouteToken(connectionID: connectionID) : nil
+            if isMemoryOnlyModelCall {
+                guard let endpoint = modelRouteToken?.observerEndpoint,
+                      extractedWindowID.map({ $0 == endpoint.windowID }) ?? true,
+                      extractedContextID.map({ $0 == endpoint.tabID }) ?? true,
+                      extractedTabID.map({ $0 == endpoint.tabID }) ?? true
+                else {
+                    return Self.toolErrorResult(rawJSON: capturedRawJSON, message: Self.modelRouteUnavailableMessage)
+                }
+            }
+            var dispatchTabContextHint: MCPServerViewModel.TabContextHint? = modelRouteToken.map {
+                .init(tabID: $0.observerEndpoint.tabID, workspaceID: $0.observerEndpoint.workspaceID, windowID: $0.observerEndpoint.windowID)
+            }
+            var preResolvedWindowID: Int? = modelRouteToken?.observerEndpoint.windowID
             do {
                 let logicalContextState = EditFlowPerf.begin(
                     EditFlowPerf.Stage.MCPToolCall.logicalContextResolution,
                     EditFlowPerf.Dimensions(toolName: toolName)
                 )
                 defer { EditFlowPerf.end(EditFlowPerf.Stage.MCPToolCall.logicalContextResolution, logicalContextState) }
-                if !Self.shouldBypassLogicalContextPreResolution(for: toolName) {
+                if !isMemoryOnlyModelCall, !Self.shouldBypassLogicalContextPreResolution(for: toolName) {
                     do {
                         let logicalBinding: MCPLogicalContextBindingResolution? = if extractedContextID == nil,
                                                                                      extractedTabID == nil,
@@ -12664,7 +12792,7 @@ actor ServerNetworkManager {
                 // must never decide execution. Scoped to the only tool whose grant is live link
                 // state, so no other tool call pays for the lookup or its actor hop.
                 let liveSessionLinkGrant = toolName == MCPWindowToolName.agentSessionLink
-                    ? await liveSessionLinkGrantSnapshot(connectionID: connectionID)
+                    ? await liveSessionLinkGrantSnapshot(connectionID: connectionID, modelOnly: isMemoryOnlyModelCall)
                     : nil
                 let liveAdditional = effectivePolicy.additional.union(
                     liveSessionLinkGrant?.additionalGrants ?? []
@@ -12759,7 +12887,7 @@ actor ServerNetworkManager {
                 // gate are separated by routing work, so carrying the earlier answer would let a
                 // revocation stale-authorize this exception.
                 let liveSessionLinkGrant = toolName == MCPWindowToolName.agentSessionLink
-                    ? await liveSessionLinkGrantSnapshot(connectionID: connectionID)
+                    ? await liveSessionLinkGrantSnapshot(connectionID: connectionID, modelOnly: isMemoryOnlyModelCall)
                     : nil
                 let domainPolicy = Self.domainPolicySnapshot(
                     restricted: policy.restricted,
@@ -12838,7 +12966,7 @@ actor ServerNetworkManager {
             // Snapshot only routing state before entering the per-connection limiter.
             // Tool definitions and handlers are resolved exactly once from the domain registry
             // after window routing chooses the canonical application/window scope.
-            let bypassWindowRoutingForSnapshot = Self.shouldBypassWindowRouting(for: toolName)
+            let bypassWindowRoutingForSnapshot = isMemoryOnlyModelCall || Self.shouldBypassWindowRouting(for: toolName)
             connectionLog("tools/call \(toolName): reading MainActor routing state")
             if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
                 return await finishRequestProgress(admissionTimeout)
@@ -13076,9 +13204,15 @@ actor ServerNetworkManager {
                                     )
                                     defer { EditFlowPerf.end(EditFlowPerf.Stage.MCPToolCall.windowRunResolution, windowRunResolutionState) }
 
-                                    let bypassWindowRouting = Self.shouldBypassWindowRouting(for: toolName)
+                                    if isMemoryOnlyModelCall,
+                                       await self.cachedModelCatalogRouteToken(connectionID: connectionID) != modelRouteToken
+                                    {
+                                        return Self.toolErrorResult(rawJSON: capturedRawJSON, message: Self.modelRouteUnavailableMessage)
+                                    }
+                                    let bypassWindowRouting = isMemoryOnlyModelCall || Self.shouldBypassWindowRouting(for: toolName)
                                     let existingMapping = bypassWindowRouting ? nil : await self.presentationWindowByConnection[connectionID]
-                                    chosenID = bypassWindowRouting ? nil : capturedPreResolvedWindowID
+                                    chosenID = isMemoryOnlyModelCall ? modelRouteToken?.observerEndpoint.windowID
+                                        : (bypassWindowRouting ? nil : capturedPreResolvedWindowID)
                                     let preassigned = await self.preassignedConnections.contains(connectionID)
                                     var persistedRoutingAffinityBlocked = false
                                     if let cid = existingMapping {
@@ -13265,9 +13399,8 @@ actor ServerNetworkManager {
                                     // Notify enhanced tool event observers using the connection's resolved run mapping.
                                     // Coordination/app-wide routing tools run before a stable window/run context may
                                     // exist, so avoid re-entering MainActor run lookup on that hot path.
-                                    observerRunIDForCallbacksFinal = Self.shouldBypassWindowRouting(for: toolName)
-                                        ? nil
-                                        : await self.runIDForConnection(connectionID)
+                                    observerRunIDForCallbacksFinal = await isMemoryOnlyModelCall ? modelRouteToken?.runID
+                                        : (Self.shouldBypassWindowRouting(for: toolName) ? nil : self.runIDForConnection(connectionID))
                                 }
                                 if let admissionTimeout = promptExportAdmissionTimeoutResultIfExpired() {
                                     return admissionTimeout
@@ -13503,7 +13636,7 @@ actor ServerNetworkManager {
                                 // ────────────────────────────────────────────────────────
                                 // Run-scoped tab rebind fallback on reconnect handovers
                                 // ────────────────────────────────────────────────────────
-                                let shouldAttemptRunScopedTabRebindFallback = observerRunIDForCallbacksFinal != nil
+                                let shouldAttemptRunScopedTabRebindFallback = !isMemoryOnlyModelCall && observerRunIDForCallbacksFinal != nil
                                     && chosenID != nil
                                     && !Self.shouldSkipPerCallRunScopedTabRebindFallback(
                                         toolName: toolName,
@@ -13537,7 +13670,9 @@ actor ServerNetworkManager {
                                     arguments: capturedArguments
                                 )
                                 let executionTraceOrigin = executionWatchdogEnvironment.now()
-                                let handlerPhaseRecorder = MCPToolExecutionHandlerPhaseRecorder(
+                                let executionSink = await self.executionDiagnosticsSink
+                                let recorderFactory = await self.phaseRecorderFactory
+                                let handlerPhaseRecorder = recorderFactory.make(
                                     origin: executionTraceOrigin,
                                     now: { executionWatchdogEnvironment.now() }
                                 )
@@ -13553,17 +13688,18 @@ actor ServerNetworkManager {
                                         using: handlerPhaseRecorder
                                     )
                                     let now = executionWatchdogEnvironment.now()
-                                    MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
+                                    executionSink.record(MCPToolExecutionDiagnosticEvent(
                                         toolName: toolName,
-                                        operationIdentity: evidenceOperationIdentity,
+                                        canonicalTool: evidenceOperationIdentity.canonicalTool,
+                                        normalizedOperation: evidenceOperationIdentity.normalizedOperation,
                                         connectionID: connectionID,
                                         invocationID: invocationID,
                                         runID: observerRunIDForCallbacksFinal,
                                         requestIdentity: resolvedRequestIdentity,
-                                        contractKind: contract.kind,
+                                        contractKind: .init(contract.kind),
                                         executionDeadlineSeconds: contract.deadline?.mcpSeconds,
                                         cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
-                                        cleanupDisposition: contract.cleanupDisposition,
+                                        cleanupDisposition: contract.cleanupDisposition.map(MCPToolExecutionDiagnosticEvent.CleanupDisposition.init),
                                         phase: .handlerPhaseTransition,
                                         elapsedMilliseconds: max(
                                             0,
@@ -13656,36 +13792,37 @@ actor ServerNetworkManager {
                                     }
 
                                     @Sendable func emitExecutionTrace(
-                                        _ phase: MCPToolExecutionTraceEvent.Phase,
+                                        _ phase: MCPToolExecutionDiagnosticEvent.Phase,
                                         resolvedCleanupDisposition: MCPToolExecutionCleanupDisposition? = nil,
                                         cancellationRequested: Bool? = nil,
-                                        cancellationOutcome: String? = nil,
+                                        cancellationOutcome: MCPToolExecutionSettlement? = nil,
                                         cancellationOrigin: MCPToolExecutionCancellationOrigin? = nil,
-                                        settlement: String? = nil,
-                                        graceOutcome: String? = nil,
-                                        escalationReason: String? = nil
+                                        settlement: MCPToolExecutionDiagnosticEvent.Settlement? = nil,
+                                        graceOutcome: MCPToolExecutionDiagnosticEvent.GraceOutcome? = nil,
+                                        escalationReason: MCPToolExecutionDiagnosticEvent.EscalationReason? = nil
                                     ) async {
                                         let now = executionWatchdogEnvironment.now()
                                         let handlerPhase = handlerPhaseRecorder.snapshot()
                                         let handlerPhaseAgeMilliseconds = handlerPhase.map {
                                             max(0, now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds - $0.elapsedMilliseconds)
                                         }
-                                        MCPToolExecutionTracer.emit(MCPToolExecutionTraceEvent(
+                                        executionSink.record(MCPToolExecutionDiagnosticEvent(
                                             toolName: toolName,
-                                            operationIdentity: evidenceOperationIdentity,
+                                            canonicalTool: evidenceOperationIdentity.canonicalTool,
+                                            normalizedOperation: evidenceOperationIdentity.normalizedOperation,
                                             connectionID: connectionID,
                                             invocationID: invocationID,
                                             runID: observerRunIDForCallbacksFinal,
                                             requestIdentity: resolvedRequestIdentity,
-                                            contractKind: contract.kind,
+                                            contractKind: .init(contract.kind),
                                             executionDeadlineSeconds: contract.deadline?.mcpSeconds,
                                             cleanupGraceSeconds: contract.cancellationGrace?.mcpSeconds,
-                                            cleanupDisposition: resolvedCleanupDisposition ?? settlementAdmission.cleanupDisposition,
+                                            cleanupDisposition: (resolvedCleanupDisposition ?? settlementAdmission.cleanupDisposition).map(MCPToolExecutionDiagnosticEvent.CleanupDisposition.init),
                                             phase: phase,
                                             elapsedMilliseconds: max(0, now.mcpMilliseconds - executionTraceOrigin.mcpMilliseconds),
                                             cancellationRequested: cancellationRequested,
-                                            cancellationOutcome: cancellationOutcome,
-                                            cancellationOrigin: cancellationOrigin,
+                                            cancellationOutcome: cancellationOutcome.map(MCPToolExecutionDiagnosticEvent.Outcome.init),
+                                            cancellationOrigin: cancellationOrigin.map(MCPToolExecutionDiagnosticEvent.CancellationOrigin.init),
                                             settlement: settlement,
                                             graceOutcome: graceOutcome,
                                             escalationReason: escalationReason,
@@ -13772,7 +13909,7 @@ actor ServerNetworkManager {
                                             )
                                         }
                                         let outcome = providerSettlement.rawValue
-                                        await emitExecutionTrace(.handlerCompleted, cancellationOutcome: outcome)
+                                        await emitExecutionTrace(.handlerCompleted, cancellationOutcome: providerSettlement)
                                         EditFlowPerf.lifecycleEvent(
                                             EditFlowPerf.Lifecycle.MCPToolCall.resolvedProviderEnded,
                                             correlation: lifecycleCorrelation,
@@ -13811,10 +13948,10 @@ actor ServerNetworkManager {
                                         await emitExecutionTrace(
                                             .detachedSettled,
                                             cancellationRequested: true,
-                                            cancellationOutcome: providerSettlement.rawValue,
+                                            cancellationOutcome: providerSettlement,
                                             cancellationOrigin: .watchdogDeadline,
-                                            settlement: "detached",
-                                            graceOutcome: "expired"
+                                            settlement: .detached,
+                                            graceOutcome: .expired
                                         )
                                         EditFlowPerf.lifecycleEvent(
                                             EditFlowPerf.Lifecycle.MCPToolCall.resolvedProviderEnded,
@@ -13858,7 +13995,7 @@ actor ServerNetworkManager {
                                         await emitExecutionTrace(
                                             .handlerCompleted,
                                             cancellationRequested: true,
-                                            cancellationOutcome: providerSettlement.rawValue,
+                                            cancellationOutcome: providerSettlement,
                                             cancellationOrigin: .requestCancellation
                                         )
                                         EditFlowPerf.lifecycleEvent(
@@ -13999,9 +14136,9 @@ actor ServerNetworkManager {
                                                         await emitExecutionTrace(
                                                             .settledDuringGrace,
                                                             cancellationRequested: cancellationRequested,
-                                                            cancellationOutcome: settlement.rawValue,
+                                                            cancellationOutcome: settlement,
                                                             cancellationOrigin: cancellationRequested ? .watchdogDeadline : nil,
-                                                            graceOutcome: cancellationRequested ? "settled" : "late_completion"
+                                                            graceOutcome: cancellationRequested ? .settled : .lateCompletion
                                                         )
                                                     case .cleanupGraceCappedByOuterEnvelope:
                                                         MCPLifecycleDiagnostics.shared.record(.cleanupGraceExpired, connectionID: connectionID, invocationID: invocationID)
@@ -14010,8 +14147,8 @@ actor ServerNetworkManager {
                                                             resolvedCleanupDisposition: .forceDisconnect,
                                                             cancellationRequested: true,
                                                             cancellationOrigin: .watchdogDeadline,
-                                                            graceOutcome: "capped",
-                                                            escalationReason: "outer_envelope_cleanup_cap"
+                                                            graceOutcome: .capped,
+                                                            escalationReason: .outerEnvelopeCleanupCap
                                                         )
                                                     case let .cleanupGraceExpired(resolvedDisposition):
                                                         MCPLifecycleDiagnostics.shared.record(.cleanupGraceExpired, connectionID: connectionID, invocationID: invocationID)
@@ -14020,8 +14157,8 @@ actor ServerNetworkManager {
                                                             resolvedCleanupDisposition: resolvedDisposition,
                                                             cancellationRequested: true,
                                                             cancellationOrigin: .watchdogDeadline,
-                                                            graceOutcome: "expired",
-                                                            escalationReason: "handler_ignored_cancellation"
+                                                            graceOutcome: .expired,
+                                                            escalationReason: .handlerIgnoredCancellation
                                                         )
                                                     case .detachedForSettlement:
                                                         await emitExecutionTrace(
@@ -14029,9 +14166,9 @@ actor ServerNetworkManager {
                                                             resolvedCleanupDisposition: .detachAndSettle,
                                                             cancellationRequested: true,
                                                             cancellationOrigin: .watchdogDeadline,
-                                                            settlement: "detached",
-                                                            graceOutcome: "expired",
-                                                            escalationReason: "detach_disposition_handler_ignored_cancellation"
+                                                            settlement: .detached,
+                                                            graceOutcome: .expired,
+                                                            escalationReason: .detachDispositionHandlerIgnoredCancellation
                                                         )
                                                     }
                                                 },
@@ -14048,8 +14185,8 @@ actor ServerNetworkManager {
                                                 resolvedCleanupDisposition: .forceDisconnect,
                                                 cancellationRequested: true,
                                                 cancellationOrigin: .watchdogDeadline,
-                                                graceOutcome: "expired",
-                                                escalationReason: "handler_ignored_cancellation"
+                                                graceOutcome: .expired,
+                                                escalationReason: .handlerIgnoredCancellation
                                             )
                                             throw MCPToolExecutionWatchdogError.cleanupUnresponsive
                                         }
@@ -14335,7 +14472,7 @@ actor ServerNetworkManager {
                                     if !isAdmissionExpiry,
                                        await isPromptExportCompletionObserverAuthorityCurrent(),
                                        let runID = await self.toolTrackingRunIDForCompletion(
-                                           callTimeRunID: observerRunIDForCallbacksFinal,
+                                           callTimeRunID: observerRunIDForCallbacksFinal, modelOnly: isMemoryOnlyModelCall,
                                            connectionID: connectionID,
                                            toolName: toolName,
                                            invocationID: invocationID,
@@ -14450,11 +14587,19 @@ actor ServerNetworkManager {
                                     EditFlowPerf.end(EditFlowPerf.Stage.MCPToolCall.serviceToolLookup, serviceToolLookupState)
                                     endPermitPreDispatchEnvelopeIfNeeded()
 
-                                    let invocationSecurityContext = await self.domainInvocationSecurityContext(
-                                        connectionID: connectionID,
-                                        invocationID: invocationID,
-                                        toolName: toolName
-                                    )
+                                    let invocationSecurityContext: DomainToolInvocationSecurityContext
+                                    if isMemoryOnlyModelCall {
+                                        guard let context = try? await self.modelInvocationSecurityContext(
+                                            connectionID: connectionID, invocationID: invocationID, expectedRoute: modelRouteToken
+                                        ) else {
+                                            return Self.toolErrorResult(rawJSON: capturedRawJSON, message: Self.modelRouteUnavailableMessage)
+                                        }
+                                        invocationSecurityContext = context
+                                    } else {
+                                        invocationSecurityContext = await self.domainInvocationSecurityContext(
+                                            connectionID: connectionID, invocationID: invocationID, toolName: toolName
+                                        )
+                                    }
                                     let admittedDomainContext: MCPDomainAdmittedContext? = if let hint = capturedTabContextHint,
                                                                                               let workspaceID = hint.workspaceID,
                                                                                               let admittedWindowID = hint.windowID ?? chosenID
@@ -14502,7 +14647,8 @@ actor ServerNetworkManager {
                                         let ownershipWindowID = chosenID ?? registeredWindowID
                                         guard let windowDispatchIdentity = await self.captureWindowToolDispatchIdentity(
                                             windowID: ownershipWindowID,
-                                            catalogRegistrationHandle: resolvedTool.registrationHandle
+                                            catalogRegistrationHandle: resolvedTool.registrationHandle,
+                                            modelRouteToken: modelRouteToken
                                         ) else {
                                             return Self.executionContractToolErrorResult(
                                                 rawJSON: capturedRawJSON,
@@ -14582,7 +14728,7 @@ actor ServerNetworkManager {
                                                         EditFlowPerf.Stage.MCPToolCall.completionObservers,
                                                         EditFlowPerf.Dimensions(toolName: toolName)
                                                     ) {
-                                                        if let runID = await self.toolTrackingRunIDForCompletion(callTimeRunID: observerRunIDForCallbacksFinal, connectionID: connectionID, toolName: toolName, invocationID: invocationID, context: "window-scoped success") {
+                                                        if let runID = await self.toolTrackingRunIDForCompletion(callTimeRunID: observerRunIDForCallbacksFinal, modelOnly: isMemoryOnlyModelCall, connectionID: connectionID, toolName: toolName, invocationID: invocationID, context: "window-scoped success") {
                                                             let resultJSON = EditFlowPerf.measure(
                                                                 EditFlowPerf.Stage.MCPToolCall.completionObserverResultEncoding,
                                                                 EditFlowPerf.Dimensions(toolName: toolName)
@@ -14654,7 +14800,7 @@ actor ServerNetworkManager {
                                             ) {
                                                 if await isPromptExportCompletionObserverAuthorityCurrent(),
                                                    let runID = await self.toolTrackingRunIDForCompletion(
-                                                       callTimeRunID: observerRunIDForCallbacksFinal,
+                                                       callTimeRunID: observerRunIDForCallbacksFinal, modelOnly: isMemoryOnlyModelCall,
                                                        connectionID: connectionID,
                                                        toolName: toolName,
                                                        invocationID: invocationID,
@@ -14742,7 +14888,7 @@ actor ServerNetworkManager {
                                             ) {
                                                 if await isPromptExportPublicationAuthorityCurrent(),
                                                    let runID = await self.toolTrackingRunIDForCompletion(
-                                                       callTimeRunID: observerRunIDForCallbacksFinal,
+                                                       callTimeRunID: observerRunIDForCallbacksFinal, modelOnly: isMemoryOnlyModelCall,
                                                        connectionID: connectionID,
                                                        toolName: toolName,
                                                        invocationID: invocationID,
@@ -14800,7 +14946,7 @@ actor ServerNetworkManager {
                                             ) {
                                                 if await isPromptExportCompletionObserverAuthorityCurrent(),
                                                    let runID = await self.toolTrackingRunIDForCompletion(
-                                                       callTimeRunID: observerRunIDForCallbacksFinal,
+                                                       callTimeRunID: observerRunIDForCallbacksFinal, modelOnly: isMemoryOnlyModelCall,
                                                        connectionID: connectionID,
                                                        toolName: toolName,
                                                        invocationID: invocationID,
@@ -14864,7 +15010,7 @@ actor ServerNetworkManager {
                                     ) {
                                         ToolOutputFormatter.rawJSONString(.object(["error": .string("Tool not found: \(toolName)"), "tool": .string(toolName)]))
                                     }
-                                    if let runID = await self.toolTrackingRunIDForCompletion(callTimeRunID: observerRunIDForCallbacksFinal, connectionID: connectionID, toolName: toolName, invocationID: invocationID, context: "final tool-not-found fallthrough") {
+                                    if let runID = await self.toolTrackingRunIDForCompletion(callTimeRunID: observerRunIDForCallbacksFinal, modelOnly: isMemoryOnlyModelCall, connectionID: connectionID, toolName: toolName, invocationID: invocationID, context: "final tool-not-found fallthrough") {
                                         let eventObserverCount = await EditFlowPerf.measure(
                                             EditFlowPerf.Stage.MCPToolCall.completionObserverCallbacks,
                                             EditFlowPerf.Dimensions(toolName: toolName)
@@ -15070,6 +15216,37 @@ actor ServerNetworkManager {
         )
     }
 
+    /// set_model has no protected filesystem capability. Do not stat the executable or
+    /// canonicalize roots just to populate unused grants. This context deliberately carries
+    /// *less* authority: no verified-process claim, roots, or ephemeral mutation grants.
+    /// The normal host validates the existing connection generation; the model service still
+    /// requires the original exact Manage lease. Missing registration never gets repaired here.
+    private func modelInvocationSecurityContext(
+        connectionID: UUID,
+        invocationID: UUID,
+        expectedRoute: AgentSessionLinkRunCatalogRouteToken?
+    ) async throws -> DomainToolInvocationSecurityContext {
+        let runtime = AppDomainRuntimeComposition.shared.runtime
+        let registration = try await runtime.routingCoordinator.currentRegistration(connectionID: connectionID)
+        guard let expectedRoute,
+              await cachedModelCatalogRouteToken(connectionID: connectionID) == expectedRoute
+        else {
+            throw MCPError.invalidParams(Self.modelRouteUnavailableMessage)
+        }
+        let displayName = clientIdentifier(forConnection: connectionID) ?? "unknown"
+        return DomainToolInvocationSecurityContext(
+            principal: DomainClientPrincipal(
+                principalID: connectionID, stableKey: MCPClientIdentity.storageKey(displayName),
+                displayName: displayName, kind: .runScoped, assurance: .displayNameOnly,
+                processID: nil, runID: expectedRoute.runID, provider: nil
+            ),
+            connectionID: connectionID, connectionGeneration: registration.generation,
+            invocationID: invocationID, runtimeID: runtime.identity.runtimeID,
+            runtimeGeneration: runtime.identity.lifecycleGeneration,
+            hasAuthoritativeRoutingContext: false, ephemeralGrantedToolNames: []
+        )
+    }
+
     private func domainInvocationSecurityContext(
         connectionID: UUID,
         invocationID: UUID,
@@ -15080,27 +15257,36 @@ actor ServerNetworkManager {
         let displayName = clientIdentifier(forConnection: connectionID) ?? "unknown"
         let stableKey = MCPClientIdentity.storageKey(displayName)
 
-        let peerIdentity: (observedProcessID: Int?, claimedProcessID: Int?, fingerprint: String?)
+        let peerIdentity: (
+            observedProcessID: Int?,
+            claimedProcessID: Int?,
+            fingerprint: String?,
+            verificationFailure: DomainClientPrincipalVerificationFailure?
+        )
         #if DEBUG
             switch debugDomainPeerIdentityByConnectionID[connectionID] {
             case let .verified(processID, fingerprint):
-                peerIdentity = (processID, processID, fingerprint)
+                peerIdentity = (processID, processID, fingerprint, nil)
             case .unverified:
-                peerIdentity = (nil, bootstrapClaimedPIDByConnectionID[connectionID], nil)
+                peerIdentity = (nil, bootstrapClaimedPIDByConnectionID[connectionID], nil, nil)
             case nil:
                 let processID = bootstrapObservedPeerPIDByConnectionID[connectionID]
+                let verification = processID.map(Self.peerExecutableVerification)
                 peerIdentity = (
                     processID,
                     bootstrapClaimedPIDByConnectionID[connectionID],
-                    processID.flatMap(Self.verifiedExecutableFingerprint)
+                    verification?.fingerprint,
+                    verification?.failure
                 )
             }
         #else
             let processID = bootstrapObservedPeerPIDByConnectionID[connectionID]
+            let verification = processID.map(Self.peerExecutableVerification)
             peerIdentity = (
                 processID,
                 bootstrapClaimedPIDByConnectionID[connectionID],
-                processID.flatMap(Self.verifiedExecutableFingerprint)
+                verification?.fingerprint,
+                verification?.failure
             )
         #endif
         let kind: DomainClientPrincipalKind = policy.purpose == .unknown ? .appProxy : .runScoped
@@ -15175,7 +15361,8 @@ actor ServerNetworkManager {
             runID: runID,
             provider: stableKey,
             verifiedIdentityFingerprint: peerIdentity.fingerprint,
-            claimedProcessID: peerIdentity.claimedProcessID.map(Int32.init)
+            claimedProcessID: peerIdentity.claimedProcessID.map(Int32.init),
+            verificationFailure: peerIdentity.verificationFailure
         )
         return DomainToolInvocationSecurityContext(
             principal: principal,
@@ -15193,17 +15380,25 @@ actor ServerNetworkManager {
     }
 
     /// Binds a kernel-authenticated peer PID to the executable identity currently on disk.
-    /// Display names never participate. Replacing the executable changes the inode and fingerprint.
-    private nonisolated static func verifiedExecutableFingerprint(_ processID: Int) -> String? {
+    /// Display names never participate. Replacing the executable changes the inode and fingerprint;
+    /// deleting it, as an app update does to a running helper's old bundle, leaves the peer unverifiable.
+    private nonisolated static func peerExecutableVerification(
+        _ processID: Int
+    ) -> (fingerprint: String?, failure: DomainClientPrincipalVerificationFailure?) {
         var buffer = [CChar](repeating: 0, count: 4096)
-        guard proc_pidpath(pid_t(processID), &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        guard proc_pidpath(pid_t(processID), &buffer, UInt32(buffer.count)) > 0 else {
+            return (nil, errno == ENOENT ? .executableMissing : nil)
+        }
         let path = String(cString: buffer)
         var info = stat()
-        guard lstat(path, &info) == 0 else { return nil }
+        guard lstat(path, &info) == 0 else {
+            return (nil, errno == ENOENT ? .executableMissing : nil)
+        }
         let material = "\(URL(fileURLWithPath: path).standardizedFileURL.path)|\(info.st_dev)|\(info.st_ino)"
-        return SHA256.hash(data: Data(material.utf8))
+        let fingerprint = SHA256.hash(data: Data(material.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
+        return (fingerprint, nil)
     }
 
     /// Returns the verified peer PID for a bootstrap socket connection, if available.

@@ -382,7 +382,12 @@ struct MessageBubble: View {
                     }
                 } else {
                     // Normal view mode
-                    CollapsibleUserMessage(text: message.content)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        if !message.imageAttachments.isEmpty {
+                            ImageAttachmentStrip(attachments: message.imageAttachments)
+                        }
+                        CollapsibleUserMessage(text: message.content)
+                    }
                 }
             }
             .padding(12)
@@ -550,6 +555,34 @@ private struct ForkButtonOverlay: View {
             }
         }
         .hoverTooltip("Fork chat from this message")
+    }
+}
+
+/// Ordered, bounded previews of this user message's image attachments.
+private struct ImageAttachmentStrip: View {
+    let attachments: [AIChatImageAttachment]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(attachments) { attachment in
+                    Group {
+                        if let image = NSImage(data: attachment.thumbnailData) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } else {
+                            Image(systemName: "photo")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 48, height: 48)
+                    .clipped()
+                    .cornerRadius(8)
+                    .hoverTooltip("Attached image")
+                }
+            }
+        }
     }
 }
 

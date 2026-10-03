@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptCodeMapCore
+import RepoPromptFoundation
 
 enum CodeMapArtifactBuildPriority: Equatable {
     case demand
@@ -633,7 +634,7 @@ actor CodeMapArtifactBuildCoordinator {
         var locatorLookup: CodeMapArtifactCoordinatorLocatorLookup
         let missKind: WaiterMissKind
         #if DEBUG
-            let benchmarkMetricTag: WorktreeStartupInstrumentation.BenchmarkMetricTag?
+            let benchmarkMetricTag: WorkspaceContextStartupInstrumentation.BenchmarkMetricTag?
         #endif
         let continuation: CheckedContinuation<CodeMapArtifactBuildCoordinatorResult, Error>
     }
@@ -1061,7 +1062,7 @@ actor CodeMapArtifactBuildCoordinator {
                 proofInput: proofInput,
                 locatorLookup: effectiveLocatorLookup,
                 missKind: missKind,
-                benchmarkMetricTag: WorktreeStartupInstrumentation.currentBenchmarkMetricTag,
+                benchmarkMetricTag: WorkspaceContextStartupInstrumentation.currentBenchmarkMetricTag,
                 continuation: continuation
             )
         #else
@@ -1546,7 +1547,7 @@ actor CodeMapArtifactBuildCoordinator {
             let exact = tags.count == waiters.count && uniqueTags.count == 1
             var recordedBuild = false
             for tag in tags {
-                WorktreeStartupInstrumentation.recordBenchmarkCodemapWork(
+                WorkspaceContextStartupInstrumentation.recordBenchmarkCodemapWork(
                     tag: tag,
                     durations: exact && !recordedBuild ? flight.durations : nil,
                     buildPerformed: exact && !recordedBuild && flight.buildPerformed,

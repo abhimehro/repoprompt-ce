@@ -3,6 +3,8 @@ import Foundation
 import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptSecureStorage
+import RepoPromptWorkspaceCore
 import XCTest
 
 final class MCPReadMutationPathContractTests: XCTestCase {

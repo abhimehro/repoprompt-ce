@@ -3,6 +3,9 @@ import JSONSchema
 import MCP
 import Ontology
 import RepoPromptDomainRuntime
+import RepoPromptFoundation
+import RepoPromptInstrumentation
+import RepoPromptWorkspaceCore
 
 @MainActor
 private final class MCPGitRequestContext {

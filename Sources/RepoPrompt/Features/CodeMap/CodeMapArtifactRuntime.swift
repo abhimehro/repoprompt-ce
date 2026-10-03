@@ -136,7 +136,7 @@ final class CodeMapArtifactRuntime: @unchecked Sendable {
     }
 
     private static let processWideProvider: CodeMapArtifactRuntimeProvider = {
-        let identity = MCPFilesystemConstants.identity
+        let identity = WorkspaceContextFilesystemIdentity.identity
         #if DEBUG
             return makeProcessWideProvider(
                 identity: identity,

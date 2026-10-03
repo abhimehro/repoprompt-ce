@@ -1,6 +1,7 @@
 import Darwin
 import Darwin.POSIX.fcntl
 import Foundation
+import RepoPromptProcess
 
 enum CodexJSONValue: Equatable {
     case string(String)
@@ -345,6 +346,40 @@ actor CodexAppServerClient {
         let processFamilyCleanupWasCompleted: Bool
     }
 
+    /// Only the Codex rollout-path lookup diagnostic is eligible for a fresh fallback.
+    /// Generic missing-file errors can describe unrelated configuration or workspace files.
+    static func isMissingRolloutPathResolutionMessage(
+        _ message: String,
+        expectedRolloutPath: String? = nil
+    ) -> Bool {
+        guard let reportedPath = missingRolloutPathResolutionPath(message) else { return false }
+        guard let expectedRolloutPath else { return true }
+        return URL(fileURLWithPath: reportedPath).standardizedFileURL.path
+            == URL(fileURLWithPath: expectedRolloutPath).standardizedFileURL.path
+    }
+
+    private static func missingRolloutPathResolutionPath(_ message: String) -> String? {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        let prefix = "failed to resolve rollout path"
+        guard normalized.hasPrefix(prefix) else { return nil }
+        let detail = trimmed.dropFirst(prefix.count)
+        guard detail.first == " " || detail.first == ":" else { return nil }
+        let reason = "file does not exist"
+        let suffix = normalized.hasSuffix("\(reason).") ? "\(reason)." : reason
+        guard normalized.hasSuffix(suffix) else { return nil }
+        var reportedPath = String(detail.dropLast(suffix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard reportedPath.hasSuffix(":") else { return nil }
+        reportedPath.removeLast()
+        reportedPath = reportedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if reportedPath.hasPrefix(":") { reportedPath.removeFirst() }
+        reportedPath = reportedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        reportedPath = reportedPath.trimmingCharacters(in: CharacterSet(charactersIn: "'\"`"))
+        guard reportedPath.hasPrefix("/") else { return nil }
+        return reportedPath
+    }
+
     static func isTimeoutError(_ error: Error) -> Bool {
         if let clientError = error as? ClientError,
            case let .requestFailed(failure) = clientError
@@ -474,7 +509,7 @@ actor CodexAppServerClient {
         launchSnapshot: CodexRuntimeAuthority.LaunchSnapshot = CodexRuntimeAuthority.currentLaunchSnapshot(),
         provisionsRepoPromptMCPOnStart: Bool = true,
         processExitObserverFactory: @escaping @Sendable (pid_t) -> ChildProcessExitObserver = {
-            ChildProcessExitObserver(pid: $0)
+            ChildProcessExitObserver.observe(pid: $0)
         },
         expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar = .serverNetworkManager,
         faultInjection: FaultInjection = .init()
@@ -580,6 +615,15 @@ actor CodexAppServerClient {
     func clearExpectedAgentPIDRegistration() async {
         expectedAgentPIDRegistration = nil
         await clearRegisteredExpectedAgentPIDIfNeeded()
+    }
+
+    /// Returns only the PID currently registered for this run and live transport.
+    func activeExpectedAgentPID(for runID: UUID) -> pid_t? {
+        guard let registeredExpectedAgentPID,
+              registeredExpectedAgentPID.runID == runID,
+              activeTransport?.process.pid == registeredExpectedAgentPID.pid
+        else { return nil }
+        return registeredExpectedAgentPID.pid
     }
 
     private func registerExpectedAgentPIDIfNeeded(for pid: pid_t) async {

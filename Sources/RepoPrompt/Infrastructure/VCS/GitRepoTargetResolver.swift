@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct GitRepoTargetResolver {
     struct Dependencies {

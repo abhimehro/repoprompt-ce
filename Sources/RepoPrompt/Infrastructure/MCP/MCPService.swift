@@ -38,11 +38,39 @@ actor MCPService: Sendable {
         diagnostics: MCPDiagnostics()
     )
 
-    /// Async publisher for incremental updates
-    private let updates = AsyncStream.makeStream(of: Snapshot.self)
+    /// Subscribers for state updates (one stream per subscriber).
+    /// Each subscriber receives every snapshot; a single shared `AsyncStream`
+    /// would distribute each yield to exactly one iterator, so consumers
+    /// (including view models of already-closed windows) could steal updates
+    /// meant for live windows.
+    private var stateSubscribers: [UUID: AsyncStream<Snapshot>.Continuation] = [:]
 
-    nonisolated var stateStream: AsyncStream<Snapshot> {
-        updates.stream
+    /// Creates a new state stream for a subscriber. The current snapshot is
+    /// yielded immediately so a late subscriber does not miss state that
+    /// changed before it subscribed.
+    func subscribeToStateUpdates() -> (id: UUID, stream: AsyncStream<Snapshot>) {
+        let id = UUID()
+        var continuation: AsyncStream<Snapshot>.Continuation!
+        let stream = AsyncStream<Snapshot> { cont in
+            continuation = cont
+        }
+        stateSubscribers[id] = continuation
+        continuation.yield(state)
+        return (id, stream)
+    }
+
+    /// Unsubscribes from state updates and finishes that subscriber's stream.
+    func unsubscribeFromStateUpdates(id: UUID) {
+        if let cont = stateSubscribers.removeValue(forKey: id) {
+            cont.finish()
+        }
+    }
+
+    /// Broadcasts the current snapshot to every state subscriber.
+    private func yieldState() {
+        for (_, continuation) in stateSubscribers {
+            continuation.yield(state)
+        }
     }
 
     /// Subscribers for dashboard updates (multicast to all windows)
@@ -65,11 +93,6 @@ actor MCPService: Sendable {
         if let cont = dashboardSubscribers.removeValue(forKey: id) {
             cont.finish()
         }
-    }
-
-    /// Returns the latest server snapshot synchronously (callers must `await`).
-    func currentState() -> Snapshot {
-        state
     }
 
     // ──────────────────────────────────────────────
@@ -179,7 +202,7 @@ actor MCPService: Sendable {
             {
                 activeStartAttempt = nil
                 state.isRunning = false
-                updates.continuation.yield(state)
+                yieldState()
             }
             throw error
         }
@@ -194,7 +217,7 @@ actor MCPService: Sendable {
 
         activeStartAttempt = nil
         state.isRunning = true
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     private func performTeardown(
@@ -208,7 +231,7 @@ actor MCPService: Sendable {
         activeStartAttempt = nil
         supersededStartAttempt?.task.cancel()
         state.isRunning = false
-        updates.continuation.yield(state)
+        yieldState()
 
         let predecessor = activeTeardownAttempt?.task
         let task = Task {
@@ -228,23 +251,23 @@ actor MCPService: Sendable {
     func join(windowID: Int) async {
         joinedWindowIDs.insert(windowID)
         mcpServiceLog("Window \(windowID) attached to process-owned MCP presentation")
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     func leave(windowID: Int) async {
         joinedWindowIDs.remove(windowID)
         mcpServiceLog("Window \(windowID) detached from process-owned MCP presentation")
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     /// Force a state refresh (useful when UI needs immediate update)
     func refreshState() async {
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     func updateDiagnostics(_ diag: MCPDiagnostics) {
         state.diagnostics = diag
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     /// Called when a client successfully connects/approves.
@@ -255,7 +278,7 @@ actor MCPService: Sendable {
             MCPExternalEventsMonitor.shared.clearEventForClient(name)
         }
         // Trigger state update so the UI refreshes the dashboard
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     /// Expose enable/disable for Settings
@@ -277,6 +300,18 @@ actor MCPService: Sendable {
 
         func joinedWindowIDsForTesting() -> Set<Int> {
             joinedWindowIDs
+        }
+
+        func stateSubscriberCountForTesting() -> Int {
+            stateSubscribers.count
+        }
+
+        /// Sets the pending-approval client and broadcasts the snapshot without
+        /// going through the controller callback, so tests can exercise the
+        /// per-subscriber state fan-out directly.
+        func setPendingApprovalForTesting(_ clientID: String?) {
+            state.pendingClientID = clientID
+            yieldState()
         }
     #endif
 
@@ -313,14 +348,14 @@ actor MCPService: Sendable {
         )
         // Clear the pending client ID and notify observers.
         state.pendingClientID = nil
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     /// Controller → Service callback - called when a new client requests approval
     private func setPendingApproval(_ clientID: String?) {
         mcpServiceLog("Setting pending approval for client: \(clientID ?? "nil")")
         state.pendingClientID = clientID
-        updates.continuation.yield(state)
+        yieldState()
     }
 
     // ──────────────────────────────────────────────

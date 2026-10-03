@@ -621,10 +621,10 @@ extension AgentModeViewModel {
         guard let backendID = configuration.selectedBackendID,
               modelRouterRuntime?.isBackendReady(backendID) == true
         else { return false }
-        return (try? AgentTaskRoutingCandidateBuilder().build(
+        return AgentTaskRoutingCandidateBuilder().hasAvailableTarget(
             allowedProviders: providers(for: .primarySession, configuration: configuration),
             availability: modelRouterAvailabilityContext
-        )) != nil
+        )
     }
 
     private func executableTarget(for session: TabSession) -> AgentRoutingExecutableTarget {

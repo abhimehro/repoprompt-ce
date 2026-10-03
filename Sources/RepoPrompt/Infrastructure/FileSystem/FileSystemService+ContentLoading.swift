@@ -1,6 +1,7 @@
 import Cuchardet
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptWorkspaceCore
 import UniversalCharsetDetection
 
 private extension String.Encoding {

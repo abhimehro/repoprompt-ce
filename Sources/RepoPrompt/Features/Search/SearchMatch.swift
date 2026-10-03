@@ -1,6 +1,7 @@
 import Foundation
 import RepoPromptC
 import RepoPromptRegexCore
+import RepoPromptWorkspaceCore
 
 // Wildmatch flags for pattern matching
 private let WM_NOESCAPE: UInt32 = 0x01
@@ -422,6 +423,18 @@ private struct SearchScanPlan {
     let contentFreshnessPolicy: FileContentFreshnessPolicy
 }
 
+protocol WorkspaceSearchFileProjection: AnyObject {
+    var id: UUID { get }
+    var name: String { get }
+    var relativePath: String { get }
+    var standardizedRelativePath: String { get }
+    var fullPath: String { get }
+    var standardizedFullPath: String { get }
+    var standardizedRootFolderPath: String { get }
+    var fileExtension: String? { get }
+    func searchContentSnapshot(freshnessPolicy: FileContentFreshnessPolicy) async -> FileSearchContentSnapshot
+}
+
 private struct SearchFileDescriptor {
     let id: UUID
     let name: String
@@ -433,7 +446,7 @@ private struct SearchFileDescriptor {
     let fileExtension: String?
     let contentSnapshot: (FileContentFreshnessPolicy) async throws -> FileSearchContentSnapshot
 
-    init(file: FileViewModel) {
+    init(file: any WorkspaceSearchFileProjection) {
         id = file.id
         name = file.name
         relativePath = file.relativePath
@@ -985,7 +998,7 @@ actor FileSearchActor {
         isRegex: Bool = false,
         wasAutoCorrected: inout Bool?,
         options: SearchOptions = SearchOptions(),
-        in files: [FileViewModel]
+        in files: [any WorkspaceSearchFileProjection]
     ) async throws -> [SearchMatch] {
         var materializingOptions = options
         materializingOptions.countOnly = false
@@ -1164,7 +1177,7 @@ actor FileSearchActor {
         pattern: String,
         isRegex: Bool = false,
         options: SearchOptions = SearchOptions(),
-        in files: [FileViewModel]
+        in files: [any WorkspaceSearchFileProjection]
     ) async throws -> [SearchMatch] {
         var autoCorrected: Bool? = nil
         return try await search(
@@ -2244,7 +2257,7 @@ actor FileSearchActor {
     func searchPaths(
         pattern: String,
         limit: Int = 100,
-        in files: [FileViewModel],
+        in files: [any WorkspaceSearchFileProjection],
         caseInsensitive: Bool = true,
         isRegex: Bool = false, // ← NEW
         aliasByRootPath: [String: String]? = nil
@@ -2640,7 +2653,7 @@ actor FileSearchActor {
         isRegex: Bool = false,
         wasAutoCorrected: inout Bool?,
         options: SearchOptions = SearchOptions(),
-        in files: [FileViewModel],
+        in files: [any WorkspaceSearchFileProjection],
         aliasByRootPath: [String: String]? = nil
     ) async throws -> SearchResults {
         try await searchUnified(
@@ -2904,7 +2917,7 @@ actor FileSearchActor {
         pattern: String,
         isRegex: Bool = false,
         options: SearchOptions = SearchOptions(),
-        in files: [FileViewModel],
+        in files: [any WorkspaceSearchFileProjection],
         aliasByRootPath: [String: String]? = nil
     ) async throws -> SearchResults {
         // Entry point for MCP tool integration

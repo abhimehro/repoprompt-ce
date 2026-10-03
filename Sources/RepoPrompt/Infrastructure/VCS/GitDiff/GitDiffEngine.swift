@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RepoPromptFoundation
 
 actor GitDiffEngine {
     struct CacheLimits: Equatable {

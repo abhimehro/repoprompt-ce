@@ -351,17 +351,43 @@ enum AgentModelCatalog {
         )
     }
 
+    /// Producing canonical options also refreshes the memory-only admission index. Capture its
+    /// generation before reading provider snapshots so a concurrent invalidation defeats old work.
+    /// Window-local Codex overrides are picker projections, not the list_agents catalogue.
     static func options(
         for agentKind: AgentProviderKind,
         availability: AvailabilityContext = .current,
         codexDynamicModels: [CodexAppServerClient.RemoteModel]? = nil,
         includeClaudeEffortVariants: Bool = true
     ) -> [AgentModelOption] {
+        let generation = AgentAdvertisedModelCatalog.shared.productionGeneration(for: agentKind)
+        let result = uncachedOptions(
+            for: agentKind, availability: availability, codexDynamicModels: codexDynamicModels,
+            includeClaudeEffortVariants: includeClaudeEffortVariants
+        )
+        if includeClaudeEffortVariants,
+           agentKind != .codexExec || codexDynamicModels == nil,
+           isAgentAvailable(agentKind, availability: availability)
+        {
+            AgentAdvertisedModelCatalog.shared.record(result, for: agentKind, generation: generation)
+        }
+        return result
+    }
+
+    private static func uncachedOptions(
+        for agentKind: AgentProviderKind,
+        availability: AvailabilityContext,
+        codexDynamicModels: [CodexAppServerClient.RemoteModel]?,
+        includeClaudeEffortVariants: Bool
+    ) -> [AgentModelOption] {
         guard isAgentAvailable(agentKind, availability: availability) else { return [] }
         if agentKind == .cursor {
             return CursorAIModelCatalog.options
         }
-        if agentKind == .antigravity || agentKind == .devin {
+        if agentKind == .devin {
+            return DevinModelCatalog(snapshot: resolvedACPDiscoveredModels(for: .devin)).entries.map(\.option)
+        }
+        if agentKind == .antigravity {
             return resolvedACPDiscoveredModels(for: agentKind)?.options ?? []
         }
         if agentKind == .grokBuild {
@@ -421,7 +447,10 @@ enum AgentModelCatalog {
         {
             return true
         }
-        if agentKind == .antigravity || agentKind == .devin {
+        if agentKind == .devin {
+            return DevinModelCatalog(snapshot: resolvedACPDiscoveredModels(for: .devin)).entry(matching: normalized) != nil
+        }
+        if agentKind == .antigravity {
             return resolvedACPDiscoveredModels(for: agentKind)?.contains(rawModel: normalized) == true
         }
         if let discoveredModels = resolvedACPDiscoveredModels(for: agentKind) {
@@ -476,6 +505,13 @@ enum AgentModelCatalog {
                 return known.displayName
             }
             return raw
+        }
+
+        // The encoded effort is part of a Devin model's identity, so it is never dropped.
+        if agentKind == .devin,
+           let entry = DevinModelCatalog(snapshot: resolvedACPDiscoveredModels(for: .devin)).entry(matching: effectiveRaw)
+        {
+            return entry.option.displayName
         }
 
         if agentKind.usesClaudeTooling {

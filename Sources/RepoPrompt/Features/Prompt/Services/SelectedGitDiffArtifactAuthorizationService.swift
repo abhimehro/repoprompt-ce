@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct SelectedGitArtifactAuthorizationRequest {
     let physicalSelection: StoredSelection

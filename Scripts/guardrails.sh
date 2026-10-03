@@ -11,3 +11,4 @@ cd "$ROOT_DIR"
 ./Scripts/headless_runtime_guardrails.sh
 ./Scripts/xcframework_declared_paths_guardrails.sh
 python3 Scripts/modularization_metrics.py check
+python3 Scripts/modularization_modules.py

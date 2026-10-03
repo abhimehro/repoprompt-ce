@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptInstrumentation
 
 /// Window-local seam between the authoritative link inventory and the provider dispatch adapters.
 ///
@@ -312,15 +313,15 @@ extension AgentModeViewModel {
         _ projection: AgentSessionLinkRunCatalogProjection,
         to endpoint: DomainAgentSessionLinkEndpointIdentity
     ) {
-        func record(_ outcome: AgentSessionLinkCatalogDiagnostics.Outcome) {
-            AgentSessionLinkCatalogDiagnostics.projectionEvaluated(
+        func record(_ outcome: AgentSessionLinkCatalogOutcome) {
+            catalogDiagnosticsSink.record(.projectionEvaluated(
                 runID: projection.runID,
                 tabID: endpoint.tabID,
                 revision: projection.projectionRevision,
                 catalog: projection.hasAgentSessionLink,
                 outbound: projection.hasActiveOutboundLink,
                 outcome: outcome
-            )
+            ))
         }
 
         guard projection.routeToken?.observerEndpoint == endpoint else {
@@ -406,11 +407,11 @@ extension AgentModeViewModel {
             let hadCycle = session.codexSessionLinkCatalogRepairCycle != nil
             session.codexSessionLinkCatalogRepairCycle = nil
             if hadCycle {
-                AgentSessionLinkCatalogDiagnostics.repairTransition(
+                catalogDiagnosticsSink.record(.repairTransition(
                     runID: projection.runID,
                     tabID: session.tabID,
                     outcome: projection.hasAgentSessionLink == true ? .closedCatalogPresent : .closedLinksLost
-                )
+                ))
             }
             return
         }
@@ -427,11 +428,11 @@ extension AgentModeViewModel {
             session.codexSessionLinkCatalogRepairCycle = AgentSessionLinkCodexCatalogRepair.Cycle(
                 observedControllerGeneration: session.codexControllerGeneration
             )
-            AgentSessionLinkCatalogDiagnostics.repairTransition(
+            catalogDiagnosticsSink.record(.repairTransition(
                 runID: projection.runID,
                 tabID: session.tabID,
                 outcome: .opened
-            )
+            ))
         }
         codexCoordinator.codexRepairSessionLinkCatalogIfQuiescent(for: session)
     }

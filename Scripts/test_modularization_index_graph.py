@@ -141,7 +141,7 @@ class ExtractionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(os.path.realpath(self.tmp.name))
         write_sources(self.root)
-        self.document = ig.extract_graph(FakeStore(self.root, fixture_units(self.root)), self.root)
+        self.document = ig.extract_graph(FakeStore(self.root, fixture_units(self.root)), self.root, built_source_sha256=ig.source_hashes(self.root))
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -165,13 +165,25 @@ class ExtractionTests(unittest.TestCase):
 
     def test_freshness_reports_stale_and_unindexed_files(self) -> None:
         (self.root / APP / "App/New.swift").write_text("struct NewThing {}\n", encoding="utf-8")
-        os.utime(self.root / APP / SHELL, (3_000, 3_000))
-        document = ig.extract_graph(FakeStore(self.root, fixture_units(self.root)), self.root)
+        before = self.document["freshness"]["source_sha256"]
+        (self.root / APP / SHELL).write_text(SOURCES[SHELL] + "// modified\n", encoding="utf-8")
+        document = ig.extract_graph(FakeStore(self.root, fixture_units(self.root)), self.root, built_source_sha256=before)
         self.assertEqual(document["freshness"]["unindexed_files"], ["App/New.swift"])
         self.assertEqual(document["freshness"]["stale_files"], [SHELL])
         readiness = ig.readiness(document, ["App", "Infrastructure"])
         self.assertFalse(readiness["ready"])
         self.assertFalse(readiness["coverage_complete"])
+
+    def test_mtime_only_change_does_not_stale_content_hash(self) -> None:
+        os.utime(self.root / APP / UTIL, (9_999, 9_999))
+        ig.refresh_cached_freshness(self.document, self.root)
+        self.assertTrue(self.document["freshness"]["current"])
+
+    def test_missing_build_fingerprint_is_unknown(self) -> None:
+        document = ig.extract_graph(FakeStore(self.root, fixture_units(self.root)), self.root,
+                                    built_source_sha256=None)
+        self.assertFalse(document["freshness"]["current"])
+        self.assertTrue(document["freshness"]["freshness_unknown"])
 
     def test_saved_graph_revalidates_source_edit(self) -> None:
         self.assertTrue(ig.readiness(self.document, ["App", "Infrastructure"])["ready"])
@@ -193,7 +205,7 @@ class AnalysisTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.root = Path(os.path.realpath(cls.tmp.name))
         write_sources(cls.root)
-        cls.document = ig.extract_graph(FakeStore(cls.root, fixture_units(cls.root)), cls.root)
+        cls.document = ig.extract_graph(FakeStore(cls.root, fixture_units(cls.root)), cls.root, built_source_sha256=ig.source_hashes(cls.root))
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -301,7 +313,7 @@ class CommandLineTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(os.path.realpath(self.tmp.name))
         write_sources(self.root)
-        document = ig.extract_graph(FakeStore(self.root, fixture_units(self.root)), self.root)
+        document = ig.extract_graph(FakeStore(self.root, fixture_units(self.root)), self.root, built_source_sha256=ig.source_hashes(self.root))
         self.graph = self.root / "graph.json"
         self.graph.write_text(json.dumps(document), encoding="utf-8")
 
@@ -324,6 +336,19 @@ class CommandLineTests(unittest.TestCase):
         code, out, _ = self.run_main("edge", *common, UTIL, FONT)
         self.assertTrue(json.loads(out)["wrong_way"])
 
+    def test_swiftbuild_index_store_location_and_check_attestation(self) -> None:
+        units = self.root / '.build/out/v5/units'
+        units.mkdir(parents=True)
+        self.assertEqual(ig.default_store_path(self.root), self.root / '.build/out')
+        baseline = self.root / 'ratchets.json'
+        baseline.write_text(json.dumps({'index': {'wrong_way_file_edges': 100,
+                                                   'largest_cycle_components': 100}}))
+        attestation = self.root / '.build/modularization/index-check.json'
+        code, _, _ = self.run_main('check', '--root', str(self.root), '--graph', str(self.graph),
+                                   '--baseline', str(baseline), '--output', str(attestation))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(attestation.read_text())['source_sha256'], ig.source_hashes(self.root))
+
     def test_missing_store_and_bad_arguments_fail_clearly(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             self.run_main("report", "--root", str(self.root))
@@ -335,8 +360,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_stale_index_warns(self) -> None:
         document = json.loads(self.graph.read_text(encoding="utf-8"))
-        document["freshness"]["stale_files"] = [SHELL]
-        self.graph.write_text(json.dumps(document), encoding="utf-8")
+        (self.root / APP / SHELL).write_text(SOURCES[SHELL] + "// modified\n", encoding="utf-8")
         _, _, err = self.run_main("report", "--root", str(self.root), "--graph", str(self.graph))
         self.assertIn("1 stale", err)
 

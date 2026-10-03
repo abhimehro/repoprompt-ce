@@ -1,4 +1,6 @@
 import Foundation
+import RepoPromptFoundation
+import RepoPromptProcess
 
 struct HeadlessAgentContext {
     let runID: UUID

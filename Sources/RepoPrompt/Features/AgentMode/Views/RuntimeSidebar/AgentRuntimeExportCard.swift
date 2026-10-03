@@ -1,4 +1,5 @@
 import Combine
+import RepoPromptInstrumentation
 import SwiftUI
 
 private enum AgentSelectedFilesPopoverTab {
@@ -211,6 +212,7 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
     let summaryOverride: AgentContextSelectionSummary?
     @ViewBuilder let label: (AgentContextSelectionSummary) -> Label
 
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     @StateObject private var modelCoordinator = AgentSelectedFilesModelCoordinator()
     @State private var showSelectedFilesPopover = false
     @State private var activePopoverTab: AgentSelectedFilesPopoverTab = .files
@@ -269,7 +271,7 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
             refreshExportModel(preserveDisplayedModel: true)
         }
         .onChange(of: showSelectedFilesPopover) { _, isPresented in
-            AgentSelectedFilesDiagnostics.event(
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event(
                 "trigger.popover.visibilityChanged",
                 fields: ["isPresented": String(isPresented)],
                 includeStack: true
@@ -282,7 +284,7 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
             }
         }
         .onChange(of: currentTabID) { oldValue, newValue in
-            AgentSelectedFilesDiagnostics.event(
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event(
                 "trigger.currentTab.changed",
                 fields: [
                     "old": AgentSelectedFilesDiagnostics.shortID(oldValue),
@@ -293,7 +295,7 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
             resetOrRefreshExportModelForContextChange()
         }
         .onChange(of: activeAgentSessionID) { oldValue, newValue in
-            AgentSelectedFilesDiagnostics.event(
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event(
                 "trigger.activeSession.changed",
                 fields: [
                     "old": AgentSelectedFilesDiagnostics.shortID(oldValue),
@@ -334,7 +336,7 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
     }
 
     private func makeModelRequest(flushPendingUI: Bool = true) -> AgentSelectedFilesModelRequest {
-        let startMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let startMS = AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).timestampMSIfEnabled()
         let source = makeExportSource(flushPendingUI: flushPendingUI)
         let cfg = promptManager.resolvePromptContext(BuiltInCopyPresets.standard, custom: nil)
         let codeMapUsage = effectiveCodeMapUsage(for: activePopoverTab, configuredUsage: cfg.codeMapUsage)
@@ -344,8 +346,8 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
         fields["activeTab"] = String(describing: activePopoverTab)
         fields["configuredCodeMapUsage"] = String(describing: cfg.codeMapUsage)
         fields["codeMapUsage"] = String(describing: codeMapUsage)
-        fields.merge(AgentSelectedFilesDiagnostics.elapsedFields(since: startMS)) { _, new in new }
-        AgentSelectedFilesDiagnostics.event("view.makeModelRequest", fields: fields)
+        fields.merge(AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).elapsedFields(since: startMS)) { _, new in new }
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.makeModelRequest", fields: fields)
         return AgentSelectedFilesModelRequest(
             identity: AgentSelectedFilesModelIdentity(
                 exportContextIdentity: source.exportContextIdentity,
@@ -373,6 +375,7 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
     }
 
     private func refreshExportModel(force: Bool = false, preserveDisplayedModel: Bool = false) {
+        modelCoordinator.perfRecorder = perfRecorder
         let request = makeModelRequest(flushPendingUI: true)
         var fields = AgentSelectedFilesDiagnostics.requestFields(request)
         fields["component"] = "trigger"
@@ -384,11 +387,11 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
             preserveDisplayedModel: preserveDisplayedModel
         )
         fields["outcome"] = String(describing: outcome)
-        AgentSelectedFilesDiagnostics.event("view.refresh", fields: fields, includeStack: true)
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.refresh", fields: fields, includeStack: true)
     }
 
     private func resetOrRefreshExportModelForContextChange() {
-        AgentSelectedFilesDiagnostics.event(
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event(
             "trigger.resetForContextChange",
             fields: ["isPresented": String(showSelectedFilesPopover)],
             includeStack: true
@@ -408,10 +411,10 @@ struct AgentSelectedFilesPopoverTrigger<Label: View>: View {
         fields["isPresented"] = String(showSelectedFilesPopover)
         guard change.tabID == tabID else {
             fields["ignored"] = "tabMismatch"
-            AgentSelectedFilesDiagnostics.event("view.selectionChange", fields: fields)
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.selectionChange", fields: fields)
             return
         }
-        AgentSelectedFilesDiagnostics.event("view.selectionChange", fields: fields, includeStack: true)
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.selectionChange", fields: fields, includeStack: true)
         if showSelectedFilesPopover {
             refreshExportModel(preserveDisplayedModel: true)
         } else {
@@ -488,6 +491,7 @@ struct AgentSelectedFilesInlineManager: View {
     let worktreeBindingsProvider: (@MainActor (UUID, UUID?) -> [AgentSessionWorktreeBinding])?
     let summary: AgentContextSelectionSummary
 
+    @Environment(\.agentModePerfRecorder) private var perfRecorder
     @StateObject private var modelCoordinator = AgentSelectedFilesModelCoordinator()
     @State private var activePopoverTab: AgentSelectedFilesPopoverTab = .files
 
@@ -512,18 +516,19 @@ struct AgentSelectedFilesInlineManager: View {
             onClear: { model in clearSelection(for: model) }
         )
         .onAppear {
-            AgentSelectedFilesDiagnostics.event("inline.onAppear", includeStack: true)
+            modelCoordinator.perfRecorder = perfRecorder
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("inline.onAppear", includeStack: true)
             refreshExportModel()
         }
         .onChange(of: activePopoverTab) { _, _ in
             refreshExportModel(preserveDisplayedModel: true)
         }
         .onDisappear {
-            AgentSelectedFilesDiagnostics.event("inline.onDisappear", includeStack: true)
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("inline.onDisappear", includeStack: true)
             modelCoordinator.cancelLoading(keepLoadedModel: true)
         }
         .onChange(of: currentTabID) { oldValue, newValue in
-            AgentSelectedFilesDiagnostics.event(
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event(
                 "inline.currentTab.changed",
                 fields: [
                     "old": AgentSelectedFilesDiagnostics.shortID(oldValue),
@@ -534,7 +539,7 @@ struct AgentSelectedFilesInlineManager: View {
             resetAndRefreshExportModelForContextChange()
         }
         .onChange(of: activeAgentSessionID) { oldValue, newValue in
-            AgentSelectedFilesDiagnostics.event(
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event(
                 "inline.activeSession.changed",
                 fields: [
                     "old": AgentSelectedFilesDiagnostics.shortID(oldValue),
@@ -570,7 +575,7 @@ struct AgentSelectedFilesInlineManager: View {
     }
 
     private func makeModelRequest(flushPendingUI: Bool = true) -> AgentSelectedFilesModelRequest {
-        let startMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let startMS = AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).timestampMSIfEnabled()
         let source = makeExportSource(flushPendingUI: flushPendingUI)
         let cfg = promptManager.resolvePromptContext(BuiltInCopyPresets.standard, custom: nil)
         let codeMapUsage = effectiveCodeMapUsage(for: activePopoverTab, configuredUsage: cfg.codeMapUsage)
@@ -580,8 +585,8 @@ struct AgentSelectedFilesInlineManager: View {
         fields["activeTab"] = String(describing: activePopoverTab)
         fields["configuredCodeMapUsage"] = String(describing: cfg.codeMapUsage)
         fields["codeMapUsage"] = String(describing: codeMapUsage)
-        fields.merge(AgentSelectedFilesDiagnostics.elapsedFields(since: startMS)) { _, new in new }
-        AgentSelectedFilesDiagnostics.event("view.makeModelRequest", fields: fields)
+        fields.merge(AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).elapsedFields(since: startMS)) { _, new in new }
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.makeModelRequest", fields: fields)
         return AgentSelectedFilesModelRequest(
             identity: AgentSelectedFilesModelIdentity(
                 exportContextIdentity: source.exportContextIdentity,
@@ -609,6 +614,7 @@ struct AgentSelectedFilesInlineManager: View {
     }
 
     private func refreshExportModel(force: Bool = false, preserveDisplayedModel: Bool = false) {
+        modelCoordinator.perfRecorder = perfRecorder
         let request = makeModelRequest(flushPendingUI: true)
         var fields = AgentSelectedFilesDiagnostics.requestFields(request)
         fields["component"] = "inline"
@@ -620,11 +626,11 @@ struct AgentSelectedFilesInlineManager: View {
             preserveDisplayedModel: preserveDisplayedModel
         )
         fields["outcome"] = String(describing: outcome)
-        AgentSelectedFilesDiagnostics.event("view.refresh", fields: fields, includeStack: true)
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.refresh", fields: fields, includeStack: true)
     }
 
     private func resetAndRefreshExportModelForContextChange() {
-        AgentSelectedFilesDiagnostics.event("inline.resetForContextChange", includeStack: true)
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("inline.resetForContextChange", includeStack: true)
         modelCoordinator.invalidate()
         refreshExportModel()
     }
@@ -637,10 +643,10 @@ struct AgentSelectedFilesInlineManager: View {
         fields["targetTabID"] = AgentSelectedFilesDiagnostics.shortID(tabID)
         guard change.tabID == tabID else {
             fields["ignored"] = "tabMismatch"
-            AgentSelectedFilesDiagnostics.event("view.selectionChange", fields: fields)
+            AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.selectionChange", fields: fields)
             return
         }
-        AgentSelectedFilesDiagnostics.event("view.selectionChange", fields: fields, includeStack: true)
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).event("view.selectionChange", fields: fields, includeStack: true)
         refreshExportModel(preserveDisplayedModel: true)
     }
 

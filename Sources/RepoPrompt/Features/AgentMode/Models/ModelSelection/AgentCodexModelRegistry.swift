@@ -36,6 +36,7 @@ final class AgentCodexModelRegistry {
         lock.unlock()
 
         guard didChange else { return false }
+        AgentAdvertisedModelCatalog.shared.invalidate(.codexExec)
         CodexDynamicModelStore.save(normalized)
         return true
     }

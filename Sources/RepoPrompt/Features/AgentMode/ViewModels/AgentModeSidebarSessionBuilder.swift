@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 @MainActor
 struct AgentModeSidebarSessionBuilder {
@@ -14,6 +15,7 @@ struct AgentModeSidebarSessionBuilder {
     let sessionListCacheReady: Bool
     let sidebarRestoreFrozenOrderByTabID: [UUID: Int]
     let mcpControlledTabIDs: Set<UUID>
+    var perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()
 
     private struct BuildContext {
         let tabByID: [UUID: ComposeTabState]
@@ -28,7 +30,7 @@ struct AgentModeSidebarSessionBuilder {
 
     func build() -> [SidebarSession] {
         #if DEBUG
-            let startMS = AgentModePerfDiagnostics.timestampMSIfEnabled()
+            let startMS = perfRecorder.timestampMSIfEnabled()
         #endif
         let context = makeBuildContext()
         let rows = rowTabs.map { tab in
@@ -39,7 +41,7 @@ struct AgentModeSidebarSessionBuilder {
         #if DEBUG
             let hasParentMetadata = sessions.values.contains { $0.parentSessionID != nil }
                 || sessionIndex.values.contains { $0.parentSessionID != nil }
-            AgentModePerfDiagnostics.durationEvent(
+            perfRecorder.durationEvent(
                 "sidebar.builder.build",
                 startMS: startMS,
                 fields: [

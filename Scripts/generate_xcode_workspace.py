@@ -24,6 +24,8 @@ import tempfile
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 
+from modularization_modules import target_dependency_names
+
 
 SCHEMA_VERSION = 1
 GENERATOR_ID = "com.repoprompt.ce.xcode-workspace-generator"
@@ -90,6 +92,24 @@ def _by_name_dependencies(target: dict) -> list[str]:
     ]
 
 
+def validate_repo_prompt_test_dependencies(target: dict, repo_root: Path) -> None:
+    catalog_path = repo_root / "Scripts/modularization/modules.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        expected = set(catalog["modules"]["RepoPromptTests"]["allowed_dependencies"])
+    except (OSError, KeyError, ValueError, TypeError) as error:
+        raise GeneratorError(f"Cannot read RepoPromptTests dependency catalog: {error}") from error
+    dependency_errors: list[str] = []
+    actual = target_dependency_names(target, dependency_errors)
+    if dependency_errors:
+        raise GeneratorError(f"RepoPromptTests has malformed dependencies: {dependency_errors}")
+    if actual != expected:
+        raise GeneratorError(
+            "RepoPromptTests target dependencies differ from the modularization catalog: "
+            f"missing {sorted(expected - actual)}, unexpected {sorted(actual - expected)}"
+        )
+
+
 def validate_manifest(manifest: dict, repo_root: Path) -> None:
     if manifest.get("name") != "RepoPromptCE":
         raise GeneratorError("Package.swift must define package 'RepoPromptCE'")
@@ -146,20 +166,7 @@ def validate_manifest(manifest: dict, repo_root: Path) -> None:
             "Target 'RepoPromptApp' must retain the existing Sources/RepoPrompt implementation"
         )
 
-    expected_test_dependencies = {
-        "RepoPromptApp",
-        "RepoPromptCodeMapCore",
-        "RepoPromptDomainRuntime",
-        "RepoPromptMCPCore",
-        "RepoPromptShared",
-        "RepoPromptTestSupport",
-    }
-    repo_prompt_tests = targets["RepoPromptTests"]
-    if set(_by_name_dependencies(repo_prompt_tests)) != expected_test_dependencies:
-        raise GeneratorError(
-            "RepoPromptTests must depend on RepoPromptApp, RepoPromptCodeMapCore, "
-            "RepoPromptDomainRuntime, RepoPromptMCPCore, RepoPromptShared, and RepoPromptTestSupport"
-        )
+    validate_repo_prompt_test_dependencies(targets["RepoPromptTests"], repo_root)
 
     domain_runtime = targets["RepoPromptDomainRuntime"]
     if domain_runtime.get("type") != "regular":

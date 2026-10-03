@@ -18,6 +18,45 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
 
     // MARK: - Canonical catalog
 
+    func testModelSelectionMigrationFullEntryBudgetAndConvergence() throws {
+        let previous = MCPDomainCanonicalToolDefinitions.test_agentSessionLinkPreviousStopDefinition()
+        let current = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: toolName))
+        XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(previous), current)
+        XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(current), current)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        func size(_ definition: MCPDomainToolDefinition) throws -> Int {
+            try XCTUnwrap(String(data: encoder.encode(definition), encoding: .utf8)).unicodeScalars.count
+        }
+        // The independent wait note occurs in both definitions; exclude it only from the frozen anchor.
+        XCTAssertEqual(try size(previous) - " Local input cancels older waits.".unicodeScalars.count, 10304, "Frozen c43f1bf6 full-entry baseline")
+        XCTAssertLessThanOrEqual(try size(current) - size(previous), 160)
+        let properties = try XCTUnwrap(current.inputSchema.objectValue?["properties"]?.objectValue)
+        XCTAssertEqual(properties["model_id"], .object(["type": .string("string")]))
+        XCTAssertTrue(current.inputSchema.objectValue?["description"]?.stringValue?.contains("role|model_id?") == true)
+        XCTAssertTrue(current.description.contains("`set_model`: [manage] same agent, idle; next turn."))
+        for partial in [
+            MCPDomainToolDefinition(
+                name: current.name,
+                description: current.description,
+                inputSchema: previous.inputSchema,
+                annotations: current.annotations,
+                isEnabledByDefault: current.isEnabledByDefault
+            ),
+            MCPDomainToolDefinition(
+                name: current.name,
+                description: previous.description,
+                inputSchema: current.inputSchema,
+                annotations: current.annotations,
+                isEnabledByDefault: current.isEnabledByDefault
+            )
+        ] {
+            XCTAssertTrue(MCPDomainCanonicalToolDefinitions.test_agentSessionLinkModelSelectionIsPartial(partial))
+        }
+        XCTAssertFalse(MCPDomainCanonicalToolDefinitions.test_agentSessionLinkModelSelectionIsPartial(current))
+        XCTAssertFalse(MCPDomainCanonicalToolDefinitions.test_agentSessionLinkModelSelectionIsPartial(previous))
+    }
+
     func testCanonicalEntryDeclaresItsOwnCapabilityAndControlAdmission() throws {
         let entry = try XCTUnwrap(MCPDomainToolCatalog.entry(named: toolName))
         XCTAssertEqual(entry.scope, .window)
@@ -40,7 +79,7 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
             [
                 "list", "poll", "wait", "read", "send", "cancel_pending_send", "compact",
                 "set_waiting_on", "snooze_auto_wake", "request_attention",
-                "respond", "steer", "stop", "create_lane", "retire_lane"
+                "respond", "steer", "stop", "create_lane", "retire_lane", "set_model"
             ]
         )
         XCTAssertEqual(schema["required"]?.arrayValue?.compactMap(\.stringValue), ["op"])
@@ -118,7 +157,7 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
     }
 
     func testManagementOperationsAreAdmittedAndAdvertisedWithTheirManageGate() throws {
-        for operation in ["respond", "steer", "stop", "create_lane", "retire_lane"] {
+        for operation in ["respond", "steer", "stop", "create_lane", "retire_lane", "set_model"] {
             XCTAssertEqual(
                 MCPDomainToolCatalog.operationIdentity(for: toolName, input: .value(operation)),
                 MCPDomainToolOperationIdentity(canonicalTool: toolName, normalizedOperation: operation)

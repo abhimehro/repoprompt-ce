@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptSecureStorage
 @_spi(TestSupport) @testable import RepoPromptApp
 import RepoPromptDomainRuntime
 import XCTest
@@ -12,6 +13,252 @@ import XCTest
 /// reported success and pre-start failure identically.
 @MainActor
 final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
+    // MARK: - Configuration-only model transaction
+
+    private func advertiseModel(_ raw: String = "test-native:high", agent: AgentProviderKind = .claudeCode) -> String {
+        AgentAdvertisedModelCatalog.shared.record([
+            AgentModelOption(
+                rawValue: raw,
+                displayName: "Test model",
+                description: nil,
+                isPlaceholderDefault: false,
+                isProviderDefault: false
+            )
+        ], for: agent, generation: AgentAdvertisedModelCatalog.shared.productionGeneration(for: agent))
+        return AgentModelSelectionID(agentRaw: agent.rawValue, modelRaw: raw).rawValue
+    }
+
+    private func setModel(
+        _ fixture: Fixture, modelID: String,
+        liveness: @escaping AgentSessionLinkSendLivenessProbe = {
+            .init(observerEndpointIsLive: true, targetEndpointIsLive: true, targetWindowIsClosing: false)
+        },
+        fence: @MainActor () async -> AgentSessionLinkSendCommitOutcome = { .committed }
+    ) async -> AgentSessionLinkModelOutcome {
+        await fixture.viewModel.agentSessionLinkPerformSetModel(
+            to: fixture.candidate, modelID: modelID, liveness: liveness,
+            availability: { .init() }, reauthorize: fence
+        )
+    }
+
+    func testSetModelChangesOnlyNextTurnConfigurationAndPreservesStagedHandoff() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.session.saveDebounceTask?.cancel()
+            AgentAdvertisedModelCatalog.shared.invalidate(.claudeCode)
+        }
+        let modelID = advertiseModel()
+        fixture.session.pendingHandoff = AgentModeViewModel.PendingHandoffState(
+            payload: "staged handoff", createdAt: Date(timeIntervalSince1970: 10), sourceItemID: UUID(),
+            defersProviderLockUntilSend: true, isStagedForSend: true
+        )
+        fixture.session.acpModelParameterSelections = [.init(
+            providerID: .openCode, baseModelRaw: "vendor/old", kind: .thinking,
+            configID: "effort", valueRaw: "high"
+        )]
+        fixture.session.codexConversationID = "preserved-thread"
+        fixture.session.providerSessionID = "preserved-native"
+        fixture.session.draftText = "local draft"
+        let handoff = fixture.session.pendingHandoff
+        let pins = fixture.session.acpModelParameterSelections
+        let binding = fixture.session.persistentSessionBindingIdentity
+        let saveGeneration = fixture.session.saveRequestGeneration
+        let globals = UserDefaults.standard.dictionaryRepresentation() as NSDictionary
+        guard case let .accepted(receipt) = await setModel(fixture, modelID: modelID) else {
+            return XCTFail("Expected configuration acceptance")
+        }
+        XCTAssertTrue(receipt.changed)
+        XCTAssertEqual(receipt.modelID, modelID)
+        XCTAssertEqual(fixture.session.selectedModelRaw, "test-native:high")
+        XCTAssertEqual(fixture.session.selectedReasoningEffortRaw, "high")
+        XCTAssertEqual(fixture.viewModel.selectedModelRaw, fixture.session.selectedModelRaw)
+        XCTAssertEqual(fixture.viewModel.ui.composer.props.selectedModelRaw, fixture.session.selectedModelRaw)
+        XCTAssertEqual(fixture.viewModel.ui.composer.props.selectedReasoningEffortDisplayName, "High")
+        XCTAssertFalse(fixture.viewModel.isRestoringState)
+        XCTAssertEqual(fixture.session.pendingHandoff, handoff)
+        XCTAssertEqual(fixture.session.acpModelParameterSelections, pins)
+        XCTAssertEqual(fixture.session.persistentSessionBindingIdentity, binding)
+        XCTAssertEqual(fixture.session.codexConversationID, "preserved-thread")
+        XCTAssertEqual(fixture.session.providerSessionID, "preserved-native")
+        XCTAssertEqual(fixture.session.draftText, "local draft")
+        XCTAssertEqual(UserDefaults.standard.dictionaryRepresentation() as NSDictionary, globals)
+        XCTAssertTrue(fixture.session.items.isEmpty)
+        XCTAssertNil(fixture.session.runID)
+        XCTAssertNil(fixture.session.activeComposerSubmitAttempt)
+        XCTAssertEqual(fixture.session.saveRequestGeneration, saveGeneration + 1)
+        XCTAssertFalse(fixture.events.contains(.save), "Only schedule persistence; never flush inside set_model")
+        XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+        guard case let .accepted(noop) = await setModel(fixture, modelID: modelID) else { return XCTFail("Expected no-op") }
+        XCTAssertFalse(noop.changed)
+        XCTAssertEqual(fixture.session.saveRequestGeneration, saveGeneration + 1)
+    }
+
+    func testModelTabIndexTracksNestedEditsReplacementAmbiguityAndActiveWorkspace() throws {
+        let fixture = try makeFixture()
+        let manager = fixture.manager
+        let workspaceID = fixture.candidate.workspaceID
+        let tabID = fixture.candidate.tabID
+        let original = try XCTUnwrap(manager.activeWorkspace)
+        XCTAssertEqual(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID)?.activeAgentSessionID, fixture.candidate.sessionID)
+        manager.workspaces[0].composeTabs.insert(ComposeTabState(id: UUID(), name: "Before"), at: 0)
+        XCTAssertEqual(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID)?.activeAgentSessionID, fixture.candidate.sessionID)
+        manager.workspaces[0].composeTabs.removeLast()
+        XCTAssertNil(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID))
+        manager.workspaces = [original]
+        manager.workspaces[0].composeTabs.append(original.composeTabs[0])
+        XCTAssertNil(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID), "Duplicate tabs are not last-wins")
+        manager.workspaces = [original, original]
+        XCTAssertNil(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID), "Duplicate workspaces are not last-wins")
+        manager.workspaces = [original]
+        XCTAssertNotNil(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID))
+        manager.activeWorkspace = nil
+        XCTAssertNil(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID), "An indexed inactive workspace is not a live model endpoint")
+        manager.activeWorkspace = original
+        XCTAssertNotNil(manager.modelRoutingTab(workspaceID: workspaceID, tabID: tabID))
+    }
+
+    func testModelCandidatesUseConfigurationFreeProviderLabels() throws {
+        let fixture = try makeFixture()
+        for agent: AgentProviderKind in [.claudeCodeGLM, .kimiCode, .customClaudeCompatible] {
+            fixture.session.selectedAgent = agent
+            let candidate = try XCTUnwrap(fixture.viewModel.agentSessionLinkModelCandidate(for: fixture.candidate.domainEndpoint))
+            XCTAssertEqual(candidate.providerDisplayName, agent.rawValue, "Model admission must not load a compatible backend's configured display name")
+            XCTAssertNil(candidate.locationLabel)
+            XCTAssertEqual(candidate.domainEndpoint, fixture.candidate.domainEndpoint)
+        }
+    }
+
+    func testSetModelRejectsCrossAgentBeforeColdCatalogueAdmission() async throws {
+        let fixture = try makeFixture()
+        fixture.session.selectedAgent = .codexExec
+        AgentAdvertisedModelCatalog.shared.invalidate(.devin)
+        let originalModel = fixture.session.selectedModelRaw
+        let originalEffort = fixture.session.selectedReasoningEffortRaw
+        let saveGeneration = fixture.session.saveRequestGeneration
+        var fenceCount = 0
+        let result = await fixture.viewModel.agentSessionLinkPerformSetModel(
+            to: fixture.candidate, modelID: "devin:default",
+            liveness: { .init(observerEndpointIsLive: true, targetEndpointIsLive: true, targetWindowIsClosing: false) },
+            availability: { .init(devinAvailable: true) },
+            reauthorize: {
+                fenceCount += 1
+                return .committed
+            }
+        )
+        guard case let .invalid(message) = result else { return XCTFail("Expected same-agent refusal") }
+        XCTAssertEqual(message, "set_model cannot change agent kind (current: codexExec). Use agent_manage.list_agents for a same-agent model_id.")
+        XCTAssertEqual(fenceCount, 0)
+        XCTAssertEqual(fixture.session.selectedModelRaw, originalModel)
+        XCTAssertEqual(fixture.session.selectedReasoningEffortRaw, originalEffort)
+        XCTAssertEqual(fixture.session.saveRequestGeneration, saveGeneration)
+        XCTAssertFalse(fixture.events.contains(.save))
+        XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+    }
+
+    func testSetModelRejectsIndexedBindingReplacementDuringFinalFence() async throws {
+        let fixture = try makeFixture()
+        let original = fixture.session.selectedModelRaw
+        let modelID = advertiseModel()
+        defer { AgentAdvertisedModelCatalog.shared.invalidate(.claudeCode) }
+        let result = await setModel(fixture, modelID: modelID) {
+            fixture.manager.workspaces[0].composeTabs[0].activeAgentSessionID = UUID()
+            return .committed
+        }
+        guard case .blocked(.endpointInvalidated) = result else { return XCTFail("Replaced binding must lose final fence") }
+        XCTAssertEqual(fixture.session.selectedModelRaw, original)
+        XCTAssertFalse(fixture.events.contains(.save))
+        XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+    }
+
+    func testSetModelNoopStillRefusesBusyAndPostFenceReadinessLoss() async throws {
+        let blockers: [(String, (AgentModeViewModel.TabSession) -> Void)] = [
+            ("run", { $0.runState = .running }),
+            ("follow-up", { $0.mcpFollowUpRunPending = true }),
+            ("location", { $0.isChangingExecutionLocation = true })
+        ]
+        for (label, block) in blockers {
+            for duringFence in [false, true] {
+                let fixture = try makeFixture()
+                let modelID = advertiseModel()
+                fixture.session.selectedModelRaw = "test-native:high"
+                fixture.session.selectedReasoningEffortRaw = "high"
+                if !duringFence { block(fixture.session) }
+                var fences = 0
+                let result = await setModel(fixture, modelID: modelID) {
+                    fences += 1
+                    if duringFence { block(fixture.session) }
+                    return .committed
+                }
+                guard case .blocked(.targetNotIdle) = result else { return XCTFail("\(label): expected idle refusal") }
+                XCTAssertEqual(fences, duringFence ? 1 : 0, label)
+                XCTAssertEqual(fixture.session.selectedModelRaw, "test-native:high")
+                XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+                fixture.session.runState = .idle
+                fixture.session.mcpFollowUpRunPending = false
+                fixture.session.isChangingExecutionLocation = false
+            }
+        }
+        AgentAdvertisedModelCatalog.shared.invalidate(.claudeCode)
+    }
+
+    func testSetModelRechecksCatalogueAndExactLivenessAfterFinalFence() async throws {
+        for removeCatalogue in [false, true] {
+            let fixture = try makeFixture()
+            let before = fixture.session.selectedModelRaw
+            let modelID = advertiseModel()
+            var live = true
+            let result = await setModel(fixture, modelID: modelID, liveness: {
+                .init(observerEndpointIsLive: live, targetEndpointIsLive: true, targetWindowIsClosing: false)
+            }) {
+                if removeCatalogue { AgentAdvertisedModelCatalog.shared.invalidate(.claudeCode) }
+                else { live = false }
+                return .committed
+            }
+            if removeCatalogue {
+                guard case .invalid = result else { return XCTFail("Missing catalogue must fail closed") }
+            } else {
+                guard case .blocked(.endpointInvalidated) = result else { return XCTFail("Stale endpoint must fail closed") }
+            }
+            XCTAssertEqual(fixture.session.selectedModelRaw, before)
+            XCTAssertFalse(fixture.events.contains(.save))
+            XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+        }
+    }
+
+    func testSetModelBackgroundSelectionDoesNotFocusOrOverwriteActiveBindings() async throws {
+        let fixture = try makeFixture()
+        let modelID = advertiseModel()
+        defer { fixture.session.saveDebounceTask?.cancel()
+            AgentAdvertisedModelCatalog.shared.invalidate(.claudeCode)
+        }
+        let otherTab = UUID()
+        fixture.viewModel.test_setCurrentTabIDOverride(otherTab)
+        let oldModel = fixture.viewModel.selectedModelRaw
+        guard case .accepted = await setModel(fixture, modelID: modelID) else { return XCTFail("Expected acceptance") }
+        XCTAssertEqual(fixture.viewModel.currentTabID, otherTab)
+        XCTAssertEqual(fixture.viewModel.selectedModelRaw, oldModel)
+        XCTAssertEqual(fixture.session.selectedModelRaw, "test-native:high")
+    }
+
+    func testSetModelLosesToComposerClaimDuringFinalHop() async throws {
+        let fixture = try makeFixture()
+        let modelID = advertiseModel()
+        defer { AgentAdvertisedModelCatalog.shared.invalidate(.claudeCode) }
+        let before = fixture.session.selectedModelRaw
+        let target = try XCTUnwrap(fixture.viewModel.makeComposerSubmitTarget(tabID: fixture.tabID, session: fixture.session))
+        let attempt = AgentComposerSubmitAttempt(id: UUID(), target: target, inputRevision: 0, noticeRevision: 0, rawDraftSnapshot: "local")
+        let result = await setModel(fixture, modelID: modelID) {
+            guard case .claimed = fixture.viewModel.claimComposerSubmitAttempt(attempt, requireActiveTabOwnership: false) else {
+                XCTFail("Fixture must acquire real composer claim")
+                return .linkRevoked
+            }
+            return .committed
+        }
+        guard case .blocked(.targetNotIdle) = result else { return XCTFail("A concurrent ordinary send must win") }
+        XCTAssertEqual(fixture.session.selectedModelRaw, before)
+        XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
+        XCTAssertFalse(fixture.events.contains(.save))
+    }
+
     // MARK: - Fixture
 
     private struct Fixture {
@@ -869,6 +1116,7 @@ final class LiveSendEventLog: @unchecked Sendable {
 /// Minimal native runtime stub. The transaction only needs the Claude runner to reach its provider
 /// handoff; nothing here should touch a process, a socket, or the filesystem.
 private actor LiveSendStubNativeController: NativeAgentRuntimeControlling {
+    private var configuration = SessionLinkNativeConfigurationFixture()
     private let stream: AsyncStream<NativeAgentRuntimeEvent>
 
     init() {
@@ -896,14 +1144,26 @@ private actor LiveSendStubNativeController: NativeAgentRuntimeControlling {
         effortLevel _: NativeAgentRuntimeEffortLevel?,
         systemPromptOverride _: String?
     ) async throws -> NativeAgentRuntimeSessionRef {
-        NativeAgentRuntimeSessionRef(sessionID: "live-send-stub")
+        configuration.replaceProcess()
+        return NativeAgentRuntimeSessionRef(sessionID: "live-send-stub")
     }
 
     func currentSessionRef() -> NativeAgentRuntimeSessionRef {
         NativeAgentRuntimeSessionRef(sessionID: "live-send-stub")
     }
 
-    func applyModelAndEffort(model _: String?, effortLevel _: NativeAgentRuntimeEffortLevel?) async throws {}
+    func applyModelAndEffort(model _: String?, effortLevel _: NativeAgentRuntimeEffortLevel?) async throws {
+        _ = configuration.apply()
+    }
+
+    func applyModelAndEffortWithProof(model _: String?, effortLevel _: NativeAgentRuntimeEffortLevel?) async throws -> NativeAgentRuntimeConfigurationApplication {
+        configuration.apply()
+    }
+
+    func sendUserMessage(_: String, configuration proof: NativeAgentRuntimeConfigurationProof) async throws -> UUID {
+        try configuration.validate(proof)
+        return UUID()
+    }
 
     func sendUserMessage(_: String) async throws -> UUID {
         UUID()
@@ -913,6 +1173,9 @@ private actor LiveSendStubNativeController: NativeAgentRuntimeControlling {
         .noTurnInFlight
     }
 
-    func shutdown() {}
+    func shutdown() {
+        configuration.replaceProcess()
+    }
+
     func respondToPermissionRequest(id _: String, decision _: AgentApprovalDecision) {}
 }

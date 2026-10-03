@@ -4,6 +4,7 @@ import JSONSchema
 import MCP
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptInstrumentation
 import RepoPromptShared
 import XCTest
 
@@ -3724,6 +3725,8 @@ import XCTest
         ) async throws -> PersistentMCPTestFixture {
             _ = lease
             try await AppGlobalMCPServiceComposition.shared.ensureRegistered()
+            await ServerNetworkManager.shared.installExecutionDiagnosticsSink(AppMCPToolExecutionEventSink())
+            await ServerNetworkManager.shared.installPhaseRecorderFactory(AppMCPToolExecutionHandlerPhaseRecorderFactory())
 
             let rootURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("PersistentMCPDistinctConnectionConcurrencyTests", isDirectory: true)
