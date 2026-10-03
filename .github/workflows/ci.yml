@@ -342,8 +342,11 @@ jobs:
           #   can only over-count (e.g. a `#` comment mentioning the shape),
           #   which is fail-closed.
           # - `pairs` needs the strict `arch="..."; sha="..."` shape on
-          #   comment-stripped text (whitespace/line-start-anchored `#`, the
-          #   YAML comment rule; a literal `#` mid-token is kept).
+          #   comment-stripped text. The strip is a quote-unaware shell/YAML
+          #   approximation (whitespace/line-start-anchored `#`): a literal
+          #   `#` mid-token is kept, but `#` inside a quoted string on those
+          #   lines would still truncate — `declared` on the raw file is what
+          #   catches that as found < declared.
           # A reformat that breaks the strict shape (spacing around `=`,
           # non-lowercase arch, arch/sha split across lines, a sed-truncated
           # line) keeps `declared` high and fails loudly instead of dropping
