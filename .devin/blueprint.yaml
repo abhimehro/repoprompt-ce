@@ -1,0 +1,74 @@
+runs-on: macos
+# One-time setup (e.g., install system tools, global CLIs).
+# gitleaks matches the CI secret-scan job (.github/workflows/ci.yml "Install
+# pinned gitleaks"): the version is read from ci.yml so the two never diverge,
+# and the darwin SHA-256 digests are pinned in-repo below (same approach as
+# ci.yml:277's pinned linux digest) so the integrity anchor stays reviewable.
+# A version bump in ci.yml fails the digest check loudly until the pins here
+# are bumped to match; the ci.yml blueprint-pin-check job re-verifies these
+# darwin pins against the release checksums on every run and gates the merge
+# via `style`, so drift cannot land on main.
+initialize: |
+  set -euo pipefail
+  # Version follows ci.yml's pinned gitleaks install; fail loudly if unparsed.
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  ciyml="${repo_root}/.github/workflows/ci.yml"
+  version="$(awk 'match($0, /gitleaks_[0-9.]+_linux_x64\.tar\.gz/) {
+    print substr($0, RSTART + 9, RLENGTH - 26); exit }' "${ciyml}")"
+  [ -n "${version}" ] \
+    || { echo "could not parse gitleaks version from ${ciyml}" >&2; exit 1; }
+  case "$(uname -m)" in
+    arm64)  arch="arm64"; sha="b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5" ;;
+    x86_64) arch="x64";   sha="dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709" ;;
+    *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+  esac
+  asset="gitleaks_${version}_darwin_${arch}.tar.gz"
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "${tmpdir}"' EXIT
+  archive="${tmpdir}/${asset}"
+  # ~10 MB tarball: --max-time is per-attempt (90s each), --retry-max-time
+  # caps the retry window at 120s — worst case ≈3.5min total, not unbounded.
+  curl --proto '=https' --tlsv1.2 -fsSL \
+    --retry 3 --retry-delay 2 --retry-max-time 120 --retry-all-errors \
+    --connect-timeout 10 --max-time 90 \
+    "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}" -o "$archive"
+  echo "${sha}  ${archive}" | shasum -a 256 -c -
+  tar -xzf "$archive" -C "${tmpdir}" gitleaks
+  bindir="$(brew --prefix 2>/dev/null || echo /usr/local)/bin"
+  mkdir -p "${bindir}" 2>/dev/null || sudo -n mkdir -p "${bindir}"
+  install -m 0755 "${tmpdir}/gitleaks" "${bindir}/gitleaks" \
+    || sudo -n install -m 0755 "${tmpdir}/gitleaks" "${bindir}/gitleaks" \
+    || { echo "failed to install gitleaks into ${bindir} (needs a writable prefix or interactive sudo)" >&2; exit 1; }
+  # gitleaks prints the version with and without a leading 'v' across
+  # releases; compare exactly after stripping it and report both values.
+  actual="$("${bindir}/gitleaks" version)"
+  [ "${actual#v}" = "${version}" ] \
+    || { echo "gitleaks reports '${actual}', expected ${version}" >&2; exit 1; }
+  # preflight.sh resolves gitleaks via PATH. A *different* binary winning is
+  # fatal (it would shadow the verified install). When nothing resolves on
+  # this shell's PATH, prove the install is reachable once ${bindir} is added
+  # — unreachable is still fatal, reachable warns with the concrete remedy.
+  resolved="$(command -v gitleaks || true)"
+  if [ -n "${resolved}" ] && [ "${resolved}" != "${bindir}/gitleaks" ]; then
+    echo "PATH resolves gitleaks to '${resolved}', which would shadow the verified ${bindir}/gitleaks" >&2
+    exit 1
+  elif [ -z "${resolved}" ]; then
+    if [ "$(PATH="${bindir}:${PATH}" command -v gitleaks || true)" = "${bindir}/gitleaks" ]; then
+      echo "warning: verified gitleaks at ${bindir}/gitleaks but ${bindir} is not on this shell's PATH; add 'export PATH=\"${bindir}:\$PATH\"' so sessions can resolve it" >&2
+    else
+      echo "installed gitleaks at ${bindir}/gitleaks is not resolvable even with ${bindir} on PATH" >&2
+      exit 1
+    fi
+  fi
+  echo "gitleaks ${actual} installed at ${bindir}/gitleaks"
+# Install project dependencies (runs during builds, surfaced to agent at session start).
+maintenance: |
+  true
+knowledge:
+  - name: preflight
+    contents: |
+      .agents/skills/rpce-contribution-check/scripts/preflight.sh commit   # before committing
+      .agents/skills/rpce-contribution-check/scripts/preflight.sh push     # before pushing
+  - name: guardrails
+    contents: |
+      ./Scripts/guardrails.sh   # source-layout + modularization ratchet gates
