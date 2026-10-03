@@ -57,6 +57,12 @@ enum AgentSessionLaneMCPToolService {
 
     static func render(_ receipt: AgentSessionLaneCreateReceipt) -> Value {
         if receipt.result == .refused {
+            if receipt.reason == .modelUnavailable {
+                return .object([
+                    "result": .string("model_unavailable"),
+                    "hint": .string("Refresh agent_manage.list_agents in the destination window and retry with an exact available model_id, or omit model_id to use role defaults. No lane was allocated.")
+                ])
+            }
             if receipt.reason == .laneLimitReached {
                 return .object([
                     "result": .string(AgentSessionLaneCreateReceipt.Reason.laneLimitReached.rawValue),

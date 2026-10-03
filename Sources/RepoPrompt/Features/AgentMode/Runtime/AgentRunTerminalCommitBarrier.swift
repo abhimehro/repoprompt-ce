@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptInstrumentation
 
 extension AgentSessionRunState {
     var isTerminalForCommit: Bool {
@@ -129,7 +130,11 @@ final class AgentRunTerminalCommitBarrier {
     private var consumedProviderSuccessorOrder: [UUID] = []
     private let maxConsumedProviderSuccessorTombstones = 512
 
-    init() {}
+    private let perfRecorder: any AgentModePerfRecording
+
+    init(perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()) {
+        self.perfRecorder = perfRecorder
+    }
 
     @discardableResult
     func commit(_ request: Request) async -> AgentRunTerminalCommitRevision? {
@@ -362,8 +367,8 @@ final class AgentRunTerminalCommitBarrier {
         }
 
         #if DEBUG
-            AgentModePerfDiagnostics.increment("run.terminal.commit.accepted", tabID: binding.tabID)
-            AgentModePerfDiagnostics.increment(
+            perfRecorder.increment("run.terminal.commit.accepted", tabID: binding.tabID)
+            perfRecorder.increment(
                 "run.terminal.commit.accepted.\(request.terminalState.rawValue)",
                 tabID: binding.tabID
             )
@@ -476,11 +481,11 @@ final class AgentRunTerminalCommitBarrier {
         guard let teardown else { return nil }
         let task = Task { @MainActor [weak self] in
             #if DEBUG
-                AgentModePerfDiagnostics.increment("run.terminal.teardown.started", tabID: tabID)
+                perfRecorder.increment("run.terminal.teardown.started", tabID: tabID)
             #endif
             await teardown()
             #if DEBUG
-                AgentModePerfDiagnostics.increment("run.terminal.teardown.completed", tabID: tabID)
+                perfRecorder.increment("run.terminal.teardown.completed", tabID: tabID)
             #endif
             self?.terminalTeardownTasks[ownership] = nil
         }
@@ -497,8 +502,8 @@ final class AgentRunTerminalCommitBarrier {
 
     private func recordRejection(_ reason: String, request: Request) {
         #if DEBUG
-            AgentModePerfDiagnostics.increment("run.terminal.commit.rejected.\(reason)", tabID: request.binding.tabID)
-            AgentModePerfDiagnostics.event(
+            perfRecorder.increment("run.terminal.commit.rejected.\(reason)", tabID: request.binding.tabID)
+            perfRecorder.event(
                 "run.terminal.commitRejected",
                 tabID: request.binding.tabID,
                 fields: [

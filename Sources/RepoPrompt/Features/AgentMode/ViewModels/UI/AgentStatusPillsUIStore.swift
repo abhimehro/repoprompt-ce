@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import RepoPromptInstrumentation
 
 struct AgentExecutionLocationProps: Equatable {
     let tabID: UUID
@@ -76,6 +77,7 @@ struct AgentStatusPillsSnapshot: Equatable {
 
 @MainActor
 final class AgentStatusPillsUIStore: ObservableObject {
+    var perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()
     @Published private(set) var snapshot: AgentStatusPillsSnapshot
     @Published private(set) var revision: UInt64 = 0
 
@@ -86,20 +88,20 @@ final class AgentStatusPillsUIStore: ObservableObject {
     func update(_ nextSnapshot: AgentStatusPillsSnapshot) {
         guard snapshot != nextSnapshot else {
             #if DEBUG
-                AgentModePerfDiagnostics.recordStoreUpdate("statusPills", published: false)
+                perfRecorder.recordStoreUpdate("statusPills", published: false)
             #endif
             return
         }
         snapshot = nextSnapshot
         revision &+= 1
         #if DEBUG
-            AgentModePerfDiagnostics.recordStoreUpdate(
+            perfRecorder.recordStoreUpdate(
                 "statusPills",
                 published: true,
                 details: [
                     "revision": String(revision),
                     "runState": String(describing: snapshot.runState),
-                    "tabID": AgentModePerfDiagnostics.shortID(snapshot.currentTabID)
+                    "tabID": perfRecorder.shortID(snapshot.currentTabID)
                 ]
             )
         #endif

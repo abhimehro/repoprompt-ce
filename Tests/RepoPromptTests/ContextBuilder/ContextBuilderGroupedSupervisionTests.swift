@@ -290,6 +290,12 @@ import XCTest
                 XCTAssertTrue(scope.hasDrainedForTesting)
                 XCTAssertEqual(harness.registeredModels, [.gpt54])
                 XCTAssertEqual(harness.uiReply?.oracleGroup?.result.oracleResults.map(\.status), [.failed, .completed])
+                let results = try XCTUnwrap(harness.uiReply?.oracleGroup?.result.oracleResults)
+                let presented = try results.map { lane in
+                    let member = try XCTUnwrap(oracle.sessions.first { $0.shortID == lane.chatID })
+                    return oracle.oracleMemberPresentation(for: member).status
+                }
+                XCTAssertEqual(presented, [.failed, .completed], "Normal completion publishes both member outcomes")
                 let error = try XCTUnwrap(harness.uiReply?.oracleGroup?.result.oracleResults.first?.error)
                 XCTAssertTrue(error.message.contains("not available"))
                 // Opening the lane chat must not show the failed send's MCP mode/model/preset label.

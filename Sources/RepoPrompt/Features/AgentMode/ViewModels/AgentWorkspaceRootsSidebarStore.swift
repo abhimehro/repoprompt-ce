@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct AgentWorkspaceCodemapPresentation: Equatable {
     enum State: Equatable {

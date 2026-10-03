@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 enum AutomaticReviewGitDiffSource: Equatable {
     case discover(WorkspaceSelectedGitPathResolution)

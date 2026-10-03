@@ -1,7 +1,11 @@
 import Combine
+import CryptoKit
 import Foundation
 import os
 import RepoPromptDomainRuntime
+import RepoPromptFoundation
+import RepoPromptInstrumentation
+import RepoPromptWorkspaceCore
 import SwiftUI
 
 /// Free helper function not tied to any actor
@@ -105,6 +109,25 @@ final class WorkspaceFileDecodeCache: @unchecked Sendable {
     private var cachedWorkspacesByKey: [WorkspaceFileDecodeCacheKey: WorkspaceModel] = [:]
     private var scheduledNormalizationSaveKeys: Set<WorkspaceFileDecodeCacheKey> = []
 
+    /// Digest-keyed decode cache: `decodeWorkspace(documentBytes:)` is a pure
+    /// function of the input bytes, so identical document payloads (the same
+    /// workspace projected into N windows, or a file whose metadata changed but
+    /// whose contents did not) decode once process-wide instead of once per
+    /// consumer. Entries are LRU-evicted past the entry/byte bounds.
+    private struct DigestCachedDecode {
+        let workspace: WorkspaceModel
+        let normalizationRequiresSave: Bool
+        let inputByteCount: Int
+    }
+
+    private var cachedDecodesByDigest: [String: DigestCachedDecode] = [:]
+    private var decodeOrder: [String] = [] // oldest first (LRU)
+    private var cachedDecodeInputBytes = 0
+    private var decodeCacheEntryLimit = 128
+    private var decodeCacheByteLimit = 64 * 1024 * 1024
+    private var decodeCacheHits = 0
+    private var decodeCacheMisses = 0
+
     private init() {}
 
     fileprivate func loadWorkspace(at fileURL: URL) throws -> WorkspaceFileCachedLoadResult {
@@ -146,12 +169,87 @@ final class WorkspaceFileDecodeCache: @unchecked Sendable {
     fileprivate static func decodeWorkspace(
         documentBytes: Data
     ) throws -> (workspace: WorkspaceModel, normalizationRequiresSave: Bool) {
-        var workspace = try JSONDecoder().decode(WorkspaceModel.self, from: documentBytes)
-        let decodedRequiresSave = workspace.normalizationRequiresSave
-        let normalized = workspace.normalizeComposeTabInvariants()
-        let normalizationRequiresSave = decodedRequiresSave || normalized || workspace.normalizationRequiresSave
-        workspace.normalizationRequiresSave = normalizationRequiresSave
-        return (workspace, normalizationRequiresSave)
+        let digest = Data(SHA256.hash(data: documentBytes))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        if let cached = shared.cachedDecode(for: digest) {
+            return cached
+        }
+        // The decode is only memoizable when it is a pure function of the
+        // bytes: custom decoders and normalization synthesize UUID()/Date()
+        // fallbacks for missing fields, and those results must stay
+        // per-document (identical bytes at two files must keep independent
+        // synthesized identities).
+        let recorder = WorkspaceDecodeSynthesis.Recorder()
+        let decoded = try WorkspaceDecodeSynthesis.$recorder.withValue(recorder) {
+            var workspace = try JSONDecoder().decode(WorkspaceModel.self, from: documentBytes)
+            let decodedRequiresSave = workspace.normalizationRequiresSave
+            let normalized = workspace.normalizeComposeTabInvariants()
+            let normalizationRequiresSave = decodedRequiresSave
+                || normalized || workspace.normalizationRequiresSave
+            workspace.normalizationRequiresSave = normalizationRequiresSave
+            return (
+                workspace: workspace,
+                normalizationRequiresSave: normalizationRequiresSave
+            )
+        }
+        if !recorder.occurred {
+            shared.storeDecoded(
+                decoded.workspace,
+                normalizationRequiresSave: decoded.normalizationRequiresSave,
+                digest: digest,
+                inputByteCount: documentBytes.count
+            )
+        }
+        return (decoded.workspace, decoded.normalizationRequiresSave)
+    }
+
+    private func cachedDecode(
+        for digest: String
+    ) -> (workspace: WorkspaceModel, normalizationRequiresSave: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let hit = cachedDecodesByDigest[digest] else {
+            decodeCacheMisses += 1
+            return nil
+        }
+        decodeCacheHits += 1
+        decodeOrder.removeAll { $0 == digest }
+        decodeOrder.append(digest)
+        return (hit.workspace, hit.normalizationRequiresSave)
+    }
+
+    private func storeDecoded(
+        _ workspace: WorkspaceModel,
+        normalizationRequiresSave: Bool,
+        digest: String,
+        inputByteCount: Int
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        // A single document larger than the byte budget is never cached —
+        // eviction could not bound memory for it anyway.
+        guard inputByteCount <= decodeCacheByteLimit else { return }
+        if let existing = cachedDecodesByDigest[digest] {
+            cachedDecodeInputBytes -= existing.inputByteCount
+            decodeOrder.removeAll { $0 == digest }
+        }
+        cachedDecodesByDigest[digest] = DigestCachedDecode(
+            workspace: workspace,
+            normalizationRequiresSave: normalizationRequiresSave,
+            inputByteCount: inputByteCount
+        )
+        decodeOrder.append(digest)
+        cachedDecodeInputBytes += inputByteCount
+        while cachedDecodesByDigest.count > decodeCacheEntryLimit
+            || cachedDecodeInputBytes > decodeCacheByteLimit,
+            let oldest = decodeOrder.first
+        {
+            decodeOrder.removeFirst()
+            if let evicted = cachedDecodesByDigest.removeValue(forKey: oldest) {
+                cachedDecodeInputBytes -= evicted.inputByteCount
+            }
+        }
     }
 
     fileprivate func metadataKey(for fileURL: URL) throws -> WorkspaceFileDecodeCacheKey {
@@ -204,6 +302,55 @@ final class WorkspaceFileDecodeCache: @unchecked Sendable {
             defer { lock.unlock() }
             cachedWorkspacesByKey.removeAll()
             scheduledNormalizationSaveKeys.removeAll()
+            cachedDecodesByDigest.removeAll()
+            decodeOrder.removeAll()
+            cachedDecodeInputBytes = 0
+            decodeCacheHits = 0
+            decodeCacheMisses = 0
+        }
+
+        func digestDecodeStatsForTesting() -> (
+            entries: Int, orderCount: Int, inputBytes: Int, hits: Int, misses: Int
+        ) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (
+                cachedDecodesByDigest.count,
+                decodeOrder.count,
+                cachedDecodeInputBytes,
+                decodeCacheHits,
+                decodeCacheMisses
+            )
+        }
+
+        func setDecodeCacheLimitsForTesting(maxEntries: Int, maxInputBytes: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            decodeCacheEntryLimit = maxEntries
+            decodeCacheByteLimit = maxInputBytes
+        }
+
+        func decodeCacheLimitsForTesting() -> (maxEntries: Int, maxInputBytes: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (decodeCacheEntryLimit, decodeCacheByteLimit)
+        }
+
+        /// Exercises the existing-key replacement path in `storeDecoded`
+        /// deterministically — concurrent cold misses in production can store
+        /// the same digest twice, and the accounting must charge it once.
+        func storeDecodedForTesting(
+            workspace: WorkspaceModel,
+            normalizationRequiresSave: Bool,
+            digest: String,
+            inputByteCount: Int
+        ) {
+            storeDecoded(
+                workspace,
+                normalizationRequiresSave: normalizationRequiresSave,
+                digest: digest,
+                inputByteCount: inputByteCount
+            )
         }
     #endif
 }
@@ -270,18 +417,22 @@ enum PersistentFolderOpenResolution {
 }
 
 @MainActor
-private final class PendingPersistentWorkspaceCreation {
-    let workspaceID: UUID
+final class PendingPersistentWorkspaceCreation {
+    let workspace: WorkspaceModel
+    var workspaceID: UUID {
+        workspace.id
+    }
+
     let operationID: UUID
     private let creationTask: Task<DomainCommandOutcome, Error>
     private var joinWaiters: [UUID: CheckedContinuation<DomainCommandOutcome, Error>] = [:]
 
-    init(
-        workspaceID: UUID,
+    fileprivate init(
+        workspace: WorkspaceModel,
         operationID: UUID,
         creationTask: Task<DomainCommandOutcome, Error>
     ) {
-        self.workspaceID = workspaceID
+        self.workspace = workspace
         self.operationID = operationID
         self.creationTask = creationTask
     }
@@ -310,6 +461,21 @@ private final class PendingPersistentWorkspaceCreation {
                 self?.cancelJoin(waiterID)
             }
         }
+    }
+
+    /// The retained task, not a later catalog/local-model lookup, is the creation receipt.
+    func publishedWorkspace() async throws -> WorkspaceModel {
+        let outcome = try await join()
+        guard WorkspaceManagerViewModel.isSuccessfulDomainOutcome(outcome) else {
+            throw DomainWorkspaceAuthorityOperationError(outcome: outcome)
+        }
+        guard outcome.operationID == operationID,
+              outcome.workspace?.document.workspaceID == workspaceID
+        else {
+            throw PersistentWorkspaceCreationError.unexpectedOutcome(workspaceID, operationID)
+        }
+        try Task.checkCancellation()
+        return workspace
     }
 
     private func finishJoin(
@@ -356,6 +522,23 @@ final class PendingPersistentWorkspacePublication: Equatable {
 
     func join() async throws -> DomainCommandOutcome {
         try await creation.join()
+    }
+}
+
+private enum PersistentWorkspaceCreationError: LocalizedError {
+    case authorityUnavailable
+    case missingHandle(UUID)
+    case unexpectedOutcome(UUID, UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .authorityUnavailable:
+            "Persistent workspace creation authority is unavailable."
+        case let .missingHandle(workspaceID):
+            "Workspace \(workspaceID) has no expected authority creation handle."
+        case let .unexpectedOutcome(workspaceID, operationID):
+            "Workspace \(workspaceID) creation operation \(operationID) returned an unexpected authority identity."
+        }
     }
 }
 
@@ -810,6 +993,9 @@ private func workspaceSavePreparationDecision(
 /// in its own folder + workspace.json, and maintain an index file for all known workspaces.
 @MainActor
 class WorkspaceManagerViewModel: ObservableObject {
+    let restorePerfRecorder: any WorkspaceRestorePerfRecording
+    private let workspaceSaveTracer: WorkspaceSaveTracer
+
     private static let logger = Logger(subsystem: "com.repoprompt.workspace", category: "WorkspaceSwitch")
     private static let agentAdmissionLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "RepoPrompt",
@@ -825,8 +1011,34 @@ class WorkspaceManagerViewModel: ObservableObject {
                 workspaces.enumerated().map { ($1.id, $0) },
                 uniquingKeysWith: { _, last in last }
             )
+            // Derived only on mutation; exact model-routing reads never sweep or repair state.
+            // An ambiguous workspace or tab is deliberately unresolvable, not last-wins.
+            modelRoutingTabIndexes = Dictionary(
+                workspaces.map { workspace in
+                    (workspace.id, Dictionary(
+                        workspace.composeTabs.enumerated().map { ($1.id, $0) },
+                        uniquingKeysWith: { _, _ in -1 }
+                    ))
+                },
+                uniquingKeysWith: { _, _ in [:] }
+            )
             refreshSelectionMirrorContextRevision()
         }
+    }
+
+    private var modelRoutingTabIndexes: [UUID: [UUID: Int]] = [:]
+
+    /// Exact active-workspace binding. Missing, ambiguous, or stale indexes fail closed.
+    func modelRoutingTab(workspaceID: UUID, tabID: UUID) -> ComposeTabState? {
+        guard activeWorkspaceID == workspaceID,
+              let workspaceIndex = workspaceIndexMap[workspaceID],
+              workspaces.indices.contains(workspaceIndex),
+              workspaces[workspaceIndex].id == workspaceID,
+              let tabIndex = modelRoutingTabIndexes[workspaceID]?[tabID],
+              workspaces[workspaceIndex].composeTabs.indices.contains(tabIndex),
+              workspaces[workspaceIndex].composeTabs[tabIndex].id == tabID
+        else { return nil }
+        return workspaces[workspaceIndex].composeTabs[tabIndex]
     }
 
     @Published private(set) var domainWorkspaceAuthorityIssue: DomainWorkspaceAuthorityIssue?
@@ -986,6 +1198,9 @@ class WorkspaceManagerViewModel: ObservableObject {
         /// Observes explicit root assignment before persistence or lifecycle work can suspend.
         var rootEditDidApplyHandlerForTesting: (@MainActor (UUID, WorkspaceSaveSource) async -> Void)?
 
+        /// Per-instance creation fault/suspension seam; never replaces a successful authority outcome.
+        var persistentWorkspaceCreationWillExecuteHandlerForTesting:
+            (@MainActor (UUID, UUID) async throws -> Void)?
         private var workspaceSavePreparationDidFinishHandlerForTesting:
             (@Sendable (UUID, URL, Int) async -> Void)?
         private var workspaceSaveAfterAuthoritySnapshotHandlerForTesting:
@@ -1486,15 +1701,15 @@ class WorkspaceManagerViewModel: ObservableObject {
         revisedSelectionByWorkspaceTab[key] = newSelection
         #if DEBUG
             var fields: [String: String] = [
-                "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                "workspaceID": restorePerfRecorder.shortID(workspace.id),
                 "workspaceName": workspace.name,
-                "tabID": WorkspaceRestorePerfLog.shortID(tabID),
+                "tabID": restorePerfRecorder.shortID(tabID),
                 "revision": "\(revision)",
                 "reason": reason
             ]
             fields.merge(WorkspaceSaveSelectionSummary(tabID: tabID, selection: oldSelection).fields(prefix: "old")) { current, _ in current }
             fields.merge(WorkspaceSaveSelectionSummary(tabID: tabID, selection: newSelection).fields(prefix: "new")) { current, _ in current }
-            WorkspaceRestorePerfLog.event("workspaceSave.selectionRevision.recorded", fields: fields)
+            restorePerfRecorder.event("workspaceSave.selectionRevision.recorded", fields: fields)
         #endif
     }
 
@@ -2806,18 +3021,18 @@ class WorkspaceManagerViewModel: ObservableObject {
     private func notifyWorkspaceDidSwitch(_ workspace: WorkspaceModel?) {
         for (index, listenerRecord) in workspaceDidSwitchListeners.enumerated() {
             #if DEBUG
-                let listenerStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+                let listenerStartMS = restorePerfRecorder.timestampMSIfEnabled()
             #endif
             listenerRecord.listener(workspace)
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.listener",
                     fields: [
                         "index": "\(index)",
                         "label": listenerRecord.label,
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace?.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace?.id),
                         "hasWorkspace": "\(workspace != nil)",
-                        "duration": listenerStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured",
+                        "duration": listenerStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured",
                         "outcome": "completed"
                     ]
                 )
@@ -3140,18 +3355,18 @@ class WorkspaceManagerViewModel: ObservableObject {
                 "workspaceSwitchID": trace.id.uuidString,
                 "workspaceSwitchDirection": trace.direction,
                 "managerID": String(trace.managerID.uuidString.prefix(8)),
-                "targetWorkspaceID": WorkspaceRestorePerfLog.shortID(trace.targetWorkspaceID),
+                "targetWorkspaceID": restorePerfRecorder.shortID(trace.targetWorkspaceID),
                 "targetWorkspaceName": trace.targetWorkspaceName,
                 "expectedPrimaryRoots": "\(trace.expectedPrimaryRootCount)"
             ]
         }
 
         private func debugDurationSinceSwitchBegin(_ nowMS: Double, trace: WorkspaceOpenTrace) -> String {
-            WorkspaceRestorePerfLog.formatMS(nowMS - trace.switchStartMS)
+            restorePerfRecorder.formatMS(nowMS - trace.switchStartMS)
         }
 
         private func debugDurationSinceLoadWorkspaceFoldersBegin(_ nowMS: Double, trace: WorkspaceOpenTrace) -> String {
-            trace.loadWorkspaceFoldersStartMS.map { WorkspaceRestorePerfLog.formatMS(nowMS - $0) } ?? "notMeasured"
+            trace.loadWorkspaceFoldersStartMS.map { restorePerfRecorder.formatMS(nowMS - $0) } ?? "notMeasured"
         }
 
         private func debugWorkspaceSearchReadinessStateName() -> String {
@@ -3173,19 +3388,19 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         private func debugRecordWorkspaceSwitchOverlayShown(for workspace: WorkspaceModel) {
             guard var trace = currentWorkspaceOpenTrace else { return }
-            let nowMS = WorkspaceRestorePerfLog.timestampMS()
+            let nowMS = restorePerfRecorder.timestampMS()
             trace.overlayShownMS = nowMS
             currentWorkspaceOpenTrace = trace
             var fields = debugWorkspaceOpenTraceFields()
-            fields["workspaceID"] = WorkspaceRestorePerfLog.shortID(workspace.id)
+            fields["workspaceID"] = restorePerfRecorder.shortID(workspace.id)
             fields["workspaceName"] = workspace.name
             fields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
-            WorkspaceRestorePerfLog.event("workspaceSwitch.overlay.shown", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.overlay.shown", fields: fields)
         }
 
         private func debugRecordWorkspaceSwitchOverlayHidden(reason: String) {
             guard var trace = currentWorkspaceOpenTrace else { return }
-            let nowMS = WorkspaceRestorePerfLog.timestampMS()
+            let nowMS = restorePerfRecorder.timestampMS()
             trace.overlayHiddenMS = nowMS
             trace.hideReason = reason
             currentWorkspaceOpenTrace = trace
@@ -3193,25 +3408,25 @@ class WorkspaceManagerViewModel: ObservableObject {
             var fields = debugWorkspaceOpenTraceFields()
             fields["reason"] = reason
             fields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
-            fields["visibleDuration"] = trace.overlayShownMS.map { WorkspaceRestorePerfLog.formatMS(nowMS - $0) } ?? "notMeasured"
-            fields["durationAfterAllPrimaryRootsVisible"] = trace.allPrimaryRootsVisibleMS.map { WorkspaceRestorePerfLog.formatMS(nowMS - $0) } ?? "notAvailable"
+            fields["visibleDuration"] = trace.overlayShownMS.map { restorePerfRecorder.formatMS(nowMS - $0) } ?? "notMeasured"
+            fields["durationAfterAllPrimaryRootsVisible"] = trace.allPrimaryRootsVisibleMS.map { restorePerfRecorder.formatMS(nowMS - $0) } ?? "notAvailable"
             fields["allPrimaryRootsVisible"] = "\(trace.allPrimaryRootsVisibleMS != nil)"
             fields["attachedPrimaryRoots"] = "\(trace.attachedPrimaryRootCount)"
             fields["failureCount"] = "\(trace.failureCount)"
             fields["readinessState"] = debugWorkspaceSearchReadinessStateName()
-            WorkspaceRestorePerfLog.event("workspaceSwitch.overlay.hidden", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.overlay.hidden", fields: fields)
         }
 
         private func debugRecordLoadWorkspaceFoldersStart(for workspace: WorkspaceModel) {
             guard var trace = currentWorkspaceOpenTrace else { return }
-            let nowMS = WorkspaceRestorePerfLog.timestampMS()
+            let nowMS = restorePerfRecorder.timestampMS()
             trace.loadWorkspaceFoldersStartMS = nowMS
             currentWorkspaceOpenTrace = trace
             var fields = debugWorkspaceOpenTraceFields()
-            fields["workspaceID"] = WorkspaceRestorePerfLog.shortID(workspace.id)
+            fields["workspaceID"] = restorePerfRecorder.shortID(workspace.id)
             fields["workspaceName"] = workspace.name
             fields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
-            WorkspaceRestorePerfLog.event("workspaceSwitch.loadWorkspaceFolders.traceStart", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.loadWorkspaceFolders.traceStart", fields: fields)
         }
 
         private func debugRootLoadContext(
@@ -3237,16 +3452,16 @@ class WorkspaceManagerViewModel: ObservableObject {
             request: WorkspaceRootLoadRequest
         ) {
             guard let trace = currentWorkspaceOpenTrace else { return }
-            let nowMS = WorkspaceRestorePerfLog.timestampMS()
+            let nowMS = restorePerfRecorder.timestampMS()
             var fields = debugWorkspaceOpenTraceFields()
-            fields["workspaceID"] = WorkspaceRestorePerfLog.shortID(workspace.id)
+            fields["workspaceID"] = restorePerfRecorder.shortID(workspace.id)
             fields["workspaceName"] = workspace.name
             fields["generation"] = "\(hydrationGeneration)"
             fields["rootIndex"] = "\(request.rootIndex)"
             fields["rootName"] = request.rootName
             fields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
             fields["durationSinceLoadWorkspaceFoldersBegin"] = debugDurationSinceLoadWorkspaceFoldersBegin(nowMS, trace: trace)
-            WorkspaceRestorePerfLog.event("workspaceSwitch.loadWorkspaceFolders.userRootLoad.start", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.loadWorkspaceFolders.userRootLoad.start", fields: fields)
         }
 
         private func debugRecordRootShellPossible(
@@ -3256,7 +3471,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             rootRecord: WorkspaceRootRecord
         ) {
             guard var trace = currentWorkspaceOpenTrace else { return }
-            let nowMS = WorkspaceRestorePerfLog.timestampMS()
+            let nowMS = restorePerfRecorder.timestampMS()
             if trace.firstRootShellPossibleMS == nil {
                 trace.firstRootShellPossibleMS = nowMS
             }
@@ -3267,18 +3482,18 @@ class WorkspaceManagerViewModel: ObservableObject {
             currentWorkspaceOpenTrace = trace
 
             var fields = debugWorkspaceOpenTraceFields()
-            fields["workspaceID"] = WorkspaceRestorePerfLog.shortID(workspace.id)
+            fields["workspaceID"] = restorePerfRecorder.shortID(workspace.id)
             fields["workspaceName"] = workspace.name
             fields["generation"] = "\(hydrationGeneration)"
             fields["rootIndex"] = "\(request.rootIndex)"
             fields["rootName"] = request.rootName
-            fields["rootID"] = WorkspaceRestorePerfLog.shortID(rootRecord.id)
+            fields["rootID"] = restorePerfRecorder.shortID(rootRecord.id)
             fields["catalogCompleteAtPossible"] = "true"
             fields["possiblePrimaryRoots"] = "\(trace.rootShellPossibleByRootID.count)"
             fields["expectedPrimaryRoots"] = "\(trace.expectedPrimaryRootCount)"
             fields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
             fields["durationSinceLoadWorkspaceFoldersBegin"] = debugDurationSinceLoadWorkspaceFoldersBegin(nowMS, trace: trace)
-            WorkspaceRestorePerfLog.event("workspaceSwitch.loadWorkspaceFolders.rootShellPossible", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.loadWorkspaceFolders.rootShellPossible", fields: fields)
         }
 
         private func debugRecordRootShellAttach(
@@ -3292,32 +3507,32 @@ class WorkspaceManagerViewModel: ObservableObject {
             error: String? = nil
         ) {
             guard var trace = currentWorkspaceOpenTrace else { return }
-            let nowMS = WorkspaceRestorePerfLog.timestampMS()
+            let nowMS = restorePerfRecorder.timestampMS()
             trace.attachedPrimaryRootCount = attachedPrimaryRoots
             trace.failureCount = failureCount
             currentWorkspaceOpenTrace = trace
 
             var fields = debugWorkspaceOpenTraceFields()
-            fields["workspaceID"] = WorkspaceRestorePerfLog.shortID(workspace.id)
+            fields["workspaceID"] = restorePerfRecorder.shortID(workspace.id)
             fields["workspaceName"] = workspace.name
             fields["rootIndex"] = "\(request.rootIndex)"
             fields["rootName"] = request.rootName
-            fields["rootID"] = WorkspaceRestorePerfLog.shortID(rootRecord?.id)
+            fields["rootID"] = restorePerfRecorder.shortID(rootRecord?.id)
             fields["attachedPrimaryRoots"] = "\(attachedPrimaryRoots)"
             fields["visibleRootCount"] = "\(fileManager.visibleRootFolders.count)"
             fields["expectedRootCount"] = "\(trace.expectedPrimaryRootCount)"
             fields["failureCount"] = "\(failureCount)"
             fields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
             fields["durationSinceLoadWorkspaceFoldersBegin"] = debugDurationSinceLoadWorkspaceFoldersBegin(nowMS, trace: trace)
-            fields["attachDuration"] = attachDurationMS.map(WorkspaceRestorePerfLog.formatMS) ?? "notMeasured"
+            fields["attachDuration"] = attachDurationMS.map(restorePerfRecorder.formatMS) ?? "notMeasured"
             fields["attachMode"] = "barrier"
             fields["catalogCompleteAtAttach"] = "true"
-            fields["rootShellPossibleGap"] = rootRecord.flatMap { trace.rootShellPossibleByRootID[$0.id] }.map { WorkspaceRestorePerfLog.formatMS(nowMS - $0) } ?? "notMeasured"
+            fields["rootShellPossibleGap"] = rootRecord.flatMap { trace.rootShellPossibleByRootID[$0.id] }.map { restorePerfRecorder.formatMS(nowMS - $0) } ?? "notMeasured"
             fields["outcome"] = outcome
             if let error {
                 fields["error"] = error
             }
-            WorkspaceRestorePerfLog.event("workspaceSwitch.loadWorkspaceFolders.rootShellAttach", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.loadWorkspaceFolders.rootShellAttach", fields: fields)
 
             if outcome == "success", trace.firstPrimaryRootVisibleMS == nil {
                 trace.firstPrimaryRootVisibleMS = nowMS
@@ -3325,7 +3540,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 var firstFields = fields
                 firstFields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
                 firstFields["durationSinceLoadWorkspaceFoldersBegin"] = debugDurationSinceLoadWorkspaceFoldersBegin(nowMS, trace: trace)
-                WorkspaceRestorePerfLog.event("workspaceSwitch.loadWorkspaceFolders.firstPrimaryRootVisible", fields: firstFields)
+                restorePerfRecorder.event("workspaceSwitch.loadWorkspaceFolders.firstPrimaryRootVisible", fields: firstFields)
             }
         }
 
@@ -3339,13 +3554,13 @@ class WorkspaceManagerViewModel: ObservableObject {
             reorderChanged: Bool
         ) {
             guard var trace = currentWorkspaceOpenTrace else { return }
-            let nowMS = WorkspaceRestorePerfLog.timestampMS()
+            let nowMS = restorePerfRecorder.timestampMS()
             trace.attachedPrimaryRootCount = attachedPrimaryRoots
             trace.failureCount = failureCount
             trace.allPrimaryRootsVisibleMS = nowMS
             currentWorkspaceOpenTrace = trace
             var fields = debugWorkspaceOpenTraceFields()
-            fields["workspaceID"] = WorkspaceRestorePerfLog.shortID(workspace.id)
+            fields["workspaceID"] = restorePerfRecorder.shortID(workspace.id)
             fields["workspaceName"] = workspace.name
             fields["generation"] = "\(hydrationGeneration)"
             fields["attachedPrimaryRoots"] = "\(attachedPrimaryRoots)"
@@ -3353,27 +3568,27 @@ class WorkspaceManagerViewModel: ObservableObject {
             fields["failureCount"] = "\(failureCount)"
             fields["durationSinceSwitchBegin"] = debugDurationSinceSwitchBegin(nowMS, trace: trace)
             fields["durationSinceLoadWorkspaceFoldersBegin"] = debugDurationSinceLoadWorkspaceFoldersBegin(nowMS, trace: trace)
-            fields["rootAttachLoopDuration"] = rootAttachLoopDurationMS.map(WorkspaceRestorePerfLog.formatMS) ?? "notMeasured"
+            fields["rootAttachLoopDuration"] = rootAttachLoopDurationMS.map(restorePerfRecorder.formatMS) ?? "notMeasured"
             fields["reorderChanged"] = "\(reorderChanged)"
             fields["outcome"] = (attachedPrimaryRoots == expectedPrimaryRoots && failureCount == 0) ? "success" : "incomplete"
-            WorkspaceRestorePerfLog.event("workspaceSwitch.loadWorkspaceFolders.allPrimaryRootsVisible", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.loadWorkspaceFolders.allPrimaryRootsVisible", fields: fields)
 
             var summaryFields = fields
-            summaryFields["firstRootShellPossibleDuration"] = trace.firstRootShellPossibleMS.map { WorkspaceRestorePerfLog.formatMS($0 - trace.switchStartMS) } ?? "notMeasured"
-            summaryFields["allRootShellsPossibleDuration"] = trace.allRootShellsPossibleMS.map { WorkspaceRestorePerfLog.formatMS($0 - trace.switchStartMS) } ?? "notMeasured"
-            summaryFields["firstRootShellVisibleDuration"] = trace.firstPrimaryRootVisibleMS.map { WorkspaceRestorePerfLog.formatMS($0 - trace.switchStartMS) } ?? "notMeasured"
-            summaryFields["allRootShellsVisibleDuration"] = WorkspaceRestorePerfLog.formatMS(nowMS - trace.switchStartMS)
+            summaryFields["firstRootShellPossibleDuration"] = trace.firstRootShellPossibleMS.map { restorePerfRecorder.formatMS($0 - trace.switchStartMS) } ?? "notMeasured"
+            summaryFields["allRootShellsPossibleDuration"] = trace.allRootShellsPossibleMS.map { restorePerfRecorder.formatMS($0 - trace.switchStartMS) } ?? "notMeasured"
+            summaryFields["firstRootShellVisibleDuration"] = trace.firstPrimaryRootVisibleMS.map { restorePerfRecorder.formatMS($0 - trace.switchStartMS) } ?? "notMeasured"
+            summaryFields["allRootShellsVisibleDuration"] = restorePerfRecorder.formatMS(nowMS - trace.switchStartMS)
             let firstPossibleToVisibleGap: String = if let possible = trace.firstRootShellPossibleMS, let visible = trace.firstPrimaryRootVisibleMS {
-                WorkspaceRestorePerfLog.formatMS(visible - possible)
+                restorePerfRecorder.formatMS(visible - possible)
             } else {
                 "notMeasured"
             }
             summaryFields["firstRootShellPossibleToVisibleGap"] = firstPossibleToVisibleGap
-            summaryFields["allRootShellsPossibleToVisibleGap"] = trace.allRootShellsPossibleMS.map { WorkspaceRestorePerfLog.formatMS(nowMS - $0) } ?? "notMeasured"
+            summaryFields["allRootShellsPossibleToVisibleGap"] = trace.allRootShellsPossibleMS.map { restorePerfRecorder.formatMS(nowMS - $0) } ?? "notMeasured"
             summaryFields["catalogCompleteAtAllVisible"] = "true"
             summaryFields["attachMode"] = "barrier"
             summaryFields["rootCatalogFailedAfterVisible"] = "false"
-            WorkspaceRestorePerfLog.event("workspaceSwitch.loadWorkspaceFolders.rootVisibilitySummary", fields: summaryFields)
+            restorePerfRecorder.event("workspaceSwitch.loadWorkspaceFolders.rootVisibilitySummary", fields: summaryFields)
         }
 
         private func debugRebuildSearchIndex(
@@ -3381,18 +3596,18 @@ class WorkspaceManagerViewModel: ObservableObject {
             workspace: WorkspaceModel,
             hydrationGeneration: UInt64
         ) async -> (generation: UInt64, durationMS: Double?) {
-            let startMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let startMS = restorePerfRecorder.timestampMSIfEnabled()
             let indexedGeneration = await workspaceSearchService.rebuildIndex(from: snapshot)
-            let durationMS = startMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) }
-            WorkspaceRestorePerfLog.event(
+            let durationMS = startMS.map { restorePerfRecorder.elapsedMS(since: $0) }
+            restorePerfRecorder.event(
                 "workspaceSwitch.searchIndexRebuild.end",
                 fields: debugWorkspaceOpenTraceFields().merging([
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                    "workspaceID": restorePerfRecorder.shortID(workspace.id),
                     "generation": "\(hydrationGeneration)",
                     "catalogGeneration": "\(snapshot.generation)",
                     "indexedGeneration": "\(indexedGeneration)",
                     "indexedPathCount": "\(snapshot.entries.count)",
-                    "duration": durationMS.map(WorkspaceRestorePerfLog.formatMS) ?? "notMeasured"
+                    "duration": durationMS.map(restorePerfRecorder.formatMS) ?? "notMeasured"
                 ], uniquingKeysWith: { _, new in new })
             )
             return (indexedGeneration, durationMS)
@@ -3403,17 +3618,17 @@ class WorkspaceManagerViewModel: ObservableObject {
             hydrationGeneration: UInt64,
             catalogGeneration: UInt64
         ) async -> (generation: UInt64, durationMS: Double?) {
-            let startMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let startMS = restorePerfRecorder.timestampMSIfEnabled()
             let warmedGeneration = await fileManager.workspaceFileContextStore.warmPathLookupIndexes(rootScope: .visibleWorkspace)
-            let durationMS = startMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) }
-            WorkspaceRestorePerfLog.event(
+            let durationMS = startMS.map { restorePerfRecorder.elapsedMS(since: $0) }
+            restorePerfRecorder.event(
                 "workspaceSwitch.pathLookupWarm.end",
                 fields: debugWorkspaceOpenTraceFields().merging([
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                    "workspaceID": restorePerfRecorder.shortID(workspace.id),
                     "generation": "\(hydrationGeneration)",
                     "catalogGeneration": "\(catalogGeneration)",
                     "warmedGeneration": "\(warmedGeneration)",
-                    "duration": durationMS.map(WorkspaceRestorePerfLog.formatMS) ?? "notMeasured"
+                    "duration": durationMS.map(restorePerfRecorder.formatMS) ?? "notMeasured"
                 ], uniquingKeysWith: { _, new in new })
             )
             return (warmedGeneration, durationMS)
@@ -3426,16 +3641,16 @@ class WorkspaceManagerViewModel: ObservableObject {
 
             func payload(_ trace: WorkspaceOpenTrace?) -> Any {
                 guard let trace else { return NSNull() }
-                let nowMS = WorkspaceRestorePerfLog.timestampMS()
+                let nowMS = restorePerfRecorder.timestampMS()
                 let overlayVisibleMS: Any = if let hidden = trace.overlayHiddenMS, let shown = trace.overlayShownMS {
-                    WorkspaceRestorePerfLog.formatMS(hidden - shown)
+                    restorePerfRecorder.formatMS(hidden - shown)
                 } else if let shown = trace.overlayShownMS {
-                    WorkspaceRestorePerfLog.formatMS(nowMS - shown)
+                    restorePerfRecorder.formatMS(nowMS - shown)
                 } else {
                     NSNull()
                 }
                 let overlayClearAfterAllRootsMS: Any = if let hidden = trace.overlayHiddenMS, let allRoots = trace.allPrimaryRootsVisibleMS {
-                    WorkspaceRestorePerfLog.formatMS(hidden - allRoots)
+                    restorePerfRecorder.formatMS(hidden - allRoots)
                 } else {
                     NSNull()
                 }
@@ -3452,8 +3667,8 @@ class WorkspaceManagerViewModel: ObservableObject {
                     "attached_primary_roots": trace.attachedPrimaryRootCount,
                     "failure_count": trace.failureCount,
                     "overlay_visible_ms": overlayVisibleMS,
-                    "first_primary_root_visible_ms": optionalValue(trace.firstPrimaryRootVisibleMS.map { WorkspaceRestorePerfLog.formatMS($0 - trace.switchStartMS) }),
-                    "all_primary_roots_visible_ms": optionalValue(trace.allPrimaryRootsVisibleMS.map { WorkspaceRestorePerfLog.formatMS($0 - trace.switchStartMS) }),
+                    "first_primary_root_visible_ms": optionalValue(trace.firstPrimaryRootVisibleMS.map { restorePerfRecorder.formatMS($0 - trace.switchStartMS) }),
+                    "all_primary_roots_visible_ms": optionalValue(trace.allPrimaryRootsVisibleMS.map { restorePerfRecorder.formatMS($0 - trace.switchStartMS) }),
                     "overlay_clear_after_all_roots_ms": overlayClearAfterAllRootsMS,
                     "hide_reason": optionalValue(trace.hideReason)
                 ]
@@ -3539,10 +3754,14 @@ class WorkspaceManagerViewModel: ObservableObject {
         workspaceActivityCoordinator: WorkspaceActivityCoordinator? = nil,
         workspaceAgentAdmissionCoordinator: WorkspaceAgentAdmissionCoordinator = .shared,
         switchTimingPolicy: WorkspaceSwitchTimingPolicy = .production,
-        performInitialWorkspaceActivation: Bool = true
+        performInitialWorkspaceActivation: Bool = true,
+        restorePerfRecorder: any WorkspaceRestorePerfRecording = NoopWorkspaceRestorePerfRecorder()
     ) {
+        self.restorePerfRecorder = restorePerfRecorder
+        workspaceSaveTracer = WorkspaceSaveTracer(restorePerfRecorder: restorePerfRecorder)
+        WorkspaceDiskWriter.shared.installRestorePerfRecorder(restorePerfRecorder)
         #if DEBUG
-            let initStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let initStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         self.fileManager = fileManager
         self.promptViewModel = promptViewModel
@@ -3619,12 +3838,12 @@ class WorkspaceManagerViewModel: ObservableObject {
             .store(in: &cancellables)
 
         #if DEBUG
-            let indexLoadStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let indexLoadStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         let indexEntries = loadWorkspaceIndex()
         #if DEBUG
-            let indexLoadDurationMS = indexLoadStartMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) }
-            let decodeStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let indexLoadDurationMS = indexLoadStartMS.map { restorePerfRecorder.elapsedMS(since: $0) }
+            let decodeStartMS = restorePerfRecorder.timestampMSIfEnabled()
             var decodedWorkspaceCount = 0
             var workspaceDecodeCacheHitCount = 0
             var missingWorkspaceFileCount = 0
@@ -3675,10 +3894,10 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         #if DEBUG
             if let initStartMS {
-                let indexDuration = indexLoadDurationMS.map(WorkspaceRestorePerfLog.formatMS) ?? "notMeasured"
-                let decodeDuration = decodeStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
-                WorkspaceRestorePerfLog.log(
-                    "workspaceManager.init managerID=\(instanceID.uuidString.prefix(8)) indexEntries=\(indexEntries.count) decoded=\(decodedWorkspaceCount) decodeCacheHits=\(workspaceDecodeCacheHitCount) missingFiles=\(missingWorkspaceFileCount) decodeFailures=\(failedWorkspaceDecodeCount) composeTabNormalizations=\(composeTabNormalizationCount) normalizationSaveBacks=\(normalizationSaveBackCount) indexLoad=\(indexDuration) decodeAndMigration=\(decodeDuration) totalBeforeDefaultSwitch=\(WorkspaceRestorePerfLog.formatElapsedMS(since: initStartMS))"
+                let indexDuration = indexLoadDurationMS.map(restorePerfRecorder.formatMS) ?? "notMeasured"
+                let decodeDuration = decodeStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
+                restorePerfRecorder.log(
+                    "workspaceManager.init managerID=\(instanceID.uuidString.prefix(8)) indexEntries=\(indexEntries.count) decoded=\(decodedWorkspaceCount) decodeCacheHits=\(workspaceDecodeCacheHitCount) missingFiles=\(missingWorkspaceFileCount) decodeFailures=\(failedWorkspaceDecodeCount) composeTabNormalizations=\(composeTabNormalizationCount) normalizationSaveBacks=\(normalizationSaveBackCount) indexLoad=\(indexDuration) decodeAndMigration=\(decodeDuration) totalBeforeDefaultSwitch=\(restorePerfRecorder.formatElapsedMS(since: initStartMS))"
                 )
             }
         #endif
@@ -4430,14 +4649,14 @@ class WorkspaceManagerViewModel: ObservableObject {
         for workspace: WorkspaceModel,
         operationID: UUID,
         creationTask: Task<DomainCommandOutcome, Error>
-    ) {
+    ) -> PendingPersistentWorkspaceCreation? {
         if let existing = pendingPersistentWorkspaceCreationsByWorkspaceID[workspace.id] {
             // A live creation retains ownership of the workspace identity until it completes.
-            guard existing.operationID == operationID else { return }
-            return
+            guard existing.operationID == operationID else { return nil }
+            return existing
         }
         let creation = PendingPersistentWorkspaceCreation(
-            workspaceID: workspace.id,
+            workspace: workspace,
             operationID: operationID,
             creationTask: creationTask
         )
@@ -4462,6 +4681,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 creation: creation
             )
         }
+        return creation
     }
 
     private func removePendingPersistentWorkspacePublications(operationID: UUID) {
@@ -4476,7 +4696,25 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     @discardableResult
     func createWorkspace(name: String, repoPaths: [String], ephemeral: Bool = false, savedInLibrary: Bool = true) -> WorkspaceModel {
+        beginWorkspaceCreation(name: name, repoPaths: repoPaths, ephemeral: ephemeral, savedInLibrary: savedInLibrary).workspace
+    }
+
+    /// Capture the exact creation in the same actor turn, before notifications or any await.
+    /// Legacy/UI callers keep their synchronous model API; authority callers cannot use it as a receipt.
+    func createPersistentWorkspace(name: String, repoPaths: [String], savedInLibrary: Bool = true) throws -> PendingPersistentWorkspaceCreation {
+        guard domainWorkspaceAuthorityClient != nil else {
+            throw PersistentWorkspaceCreationError.authorityUnavailable
+        }
+        let started = beginWorkspaceCreation(name: name, repoPaths: repoPaths, ephemeral: false, savedInLibrary: savedInLibrary)
+        guard let creation = started.creation else {
+            throw PersistentWorkspaceCreationError.missingHandle(started.workspace.id)
+        }
+        return creation
+    }
+
+    private func beginWorkspaceCreation(name: String, repoPaths: [String], ephemeral: Bool, savedInLibrary: Bool) -> (workspace: WorkspaceModel, creation: PendingPersistentWorkspaceCreation?) {
         var newWorkspace = WorkspaceModel(name: name, repoPaths: repoPaths, isSavedWorkspace: savedInLibrary)
+        var retainedCreation: PendingPersistentWorkspaceCreation?
 
         // Mark as ephemeral if needed
         newWorkspace.isEphemeral = ephemeral
@@ -4487,6 +4725,9 @@ class WorkspaceManagerViewModel: ObservableObject {
             let creationTask = Task<DomainCommandOutcome, Error> { @MainActor [self] in
                 defer { removePendingPersistentWorkspacePublications(operationID: operationID) }
                 do {
+                    #if DEBUG
+                        try await persistentWorkspaceCreationWillExecuteHandlerForTesting?(newWorkspace.id, operationID)
+                    #endif
                     _ = try ensureWorkspaceDirectoryExists(for: newWorkspace)
                     let result = try await persistWorkspaceThroughDomainAuthority(
                         newWorkspace,
@@ -4516,7 +4757,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                     throw error
                 }
             }
-            registerPendingPersistentWorkspacePublications(
+            retainedCreation = registerPendingPersistentWorkspacePublications(
                 for: newWorkspace,
                 operationID: operationID,
                 creationTask: creationTask
@@ -4572,10 +4813,10 @@ class WorkspaceManagerViewModel: ObservableObject {
             )
         }
 
-        return newWorkspace
+        return (newWorkspace, retainedCreation)
     }
 
-    /// Wait for the target's own creation before taking the window's switch lease.
+    /// Drain creation for teardown only. This nonthrowing API does not authorize activation.
     func finishWorkspaceCreation(workspaceIDs: Set<UUID>) async {
         for workspaceID in workspaceIDs {
             if let creation = pendingPersistentWorkspaceCreationsByWorkspaceID[workspaceID] {
@@ -4583,6 +4824,22 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
             await workspaceCreationTasksByID[workspaceID]?.value
         }
+    }
+
+    private func workspaceCreationBarrierResult(workspaceID: UUID) async -> WorkspaceSwitchResult? {
+        if let creation = pendingPersistentWorkspaceCreationsByWorkspaceID[workspaceID] {
+            do {
+                _ = try await creation.publishedWorkspace()
+            } catch {
+                let message = "Workspace \(creation.workspaceID) creation operation \(creation.operationID) did not complete successfully: \(error.localizedDescription)"
+                return error is CancellationError ? .cancelled(message) : .blocked(message)
+            }
+        }
+        await workspaceCreationTasksByID[workspaceID]?.value
+        guard !Task.isCancelled else {
+            return .cancelled("Workspace switch to \(workspaceID) was cancelled before activation.")
+        }
+        return nil
     }
 
     // MARK: - Switch
@@ -4994,7 +5251,9 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     @MainActor
     func requestWorkspaceSwitch(to newWorkspace: WorkspaceModel, saveState: Bool = true, reason: String = "userOrInternal") async -> WorkspaceSwitchResult {
-        await finishWorkspaceCreation(workspaceIDs: [newWorkspace.id])
+        if let creationResult = await workspaceCreationBarrierResult(workspaceID: newWorkspace.id) {
+            return userVisibleWorkspaceSwitchResult(creationResult)
+        }
         let currentBeforeAdmission = workspace(withID: newWorkspace.id)
         if newWorkspace.consolidatedIntoWorkspaceID != nil
             || currentBeforeAdmission?.consolidatedIntoWorkspaceID != nil
@@ -5591,7 +5850,9 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard deletionToken?.isActive ?? true else {
             return .cancelled("Workspace switch to \"\(newWorkspace.name)\" was cancelled because deletion teardown timed out.")
         }
-        await finishWorkspaceCreation(workspaceIDs: [newWorkspace.id])
+        if let creationResult = await workspaceCreationBarrierResult(workspaceID: newWorkspace.id) {
+            return creationResult
+        }
         guard deletionToken?.isActive ?? true else {
             return .cancelled("Workspace switch to \"\(newWorkspace.name)\" was cancelled because deletion teardown timed out.")
         }
@@ -5670,7 +5931,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             previousWorkspace: previousActiveWorkspace
         )
         #if DEBUG
-            let restorePerfStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let restorePerfStartMS = restorePerfRecorder.timestampMSIfEnabled()
             let previousWorkspaceID = activeWorkspaceID
             let previousWorkspaceName = previousActiveWorkspace?.name ?? "nil"
             if let restorePerfStartMS {
@@ -5684,7 +5945,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         #endif
         logWorkspaceSwitch("BEGIN switch to \"\(newWorkspace.name)\" saveState=\(saveState) effectiveSaveState=\(effectiveSaveState)")
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.begin",
                 fields: debugWorkspaceOpenTraceFields().merging([
                     "reason": reason,
@@ -5692,7 +5953,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                     "saveState": "\(saveState)",
                     "effectiveSaveState": "\(effectiveSaveState)",
                     "targetName": newWorkspace.name,
-                    "previousWorkspaceID": WorkspaceRestorePerfLog.shortID(previousWorkspaceID),
+                    "previousWorkspaceID": restorePerfRecorder.shortID(previousWorkspaceID),
                     "previousName": previousWorkspaceName,
                     "targetRoots": "\(Self.loadableRepoPaths(for: newWorkspace).count)",
                     "loadedRoots": "\(fileManager.rootFolders.count)"
@@ -5721,19 +5982,19 @@ class WorkspaceManagerViewModel: ObservableObject {
                 #if DEBUG
                     if let restorePerfStartMS {
                         let counts = fileManager.restorePerfLoadedTreeCounts()
-                        WorkspaceRestorePerfLog.event(
+                        restorePerfRecorder.event(
                             "workspaceSwitch.end",
                             fields: debugWorkspaceOpenTraceFields().merging([
                                 "reason": reason,
                                 "restored": "\(reason == "restore")",
                                 "saveState": "\(saveState)",
                                 "effectiveSaveState": "\(effectiveSaveState)",
-                                "activeWorkspaceID": WorkspaceRestorePerfLog.shortID(activeWorkspaceID),
+                                "activeWorkspaceID": restorePerfRecorder.shortID(activeWorkspaceID),
                                 "loadedRoots": "\(counts.rootCount)",
                                 "loadedFolders": "\(counts.folderCount)",
                                 "loadedFiles": "\(counts.fileCount)",
                                 "shouldReturnToSystem": "\(shouldReturnToSystem)",
-                                "total": WorkspaceRestorePerfLog.formatElapsedMS(since: restorePerfStartMS)
+                                "total": restorePerfRecorder.formatElapsedMS(since: restorePerfStartMS)
                             ], uniquingKeysWith: { current, _ in current })
                         )
                     }
@@ -5789,7 +6050,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             }
             advanceWorkspaceSwitchOperation(operationID, to: .unloadingRoots)
             #if DEBUG
-                let preloadUnloadStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+                let preloadUnloadStartMS = restorePerfRecorder.timestampMSIfEnabled()
             #endif
             await fileManager.unloadAllRootFolders()
             rootsUnloadedBeforeFolderLoad = true
@@ -5802,13 +6063,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                 return cancellation
             }
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.preloadUnloadRootFolders",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(oldActive.id),
+                        "workspaceID": restorePerfRecorder.shortID(oldActive.id),
                         "workspaceName": oldActive.name,
                         "outcome": "completed",
-                        "duration": preloadUnloadStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "duration": preloadUnloadStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -5932,8 +6193,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         logWorkspaceSwitch("workspace disk load END target=\"\(newWorkspace.name)\" duration=\(String(format: "%.3f", diskLoadDuration))s")
         #if DEBUG
             debugSelectionOwnerTraceEvent("switch.diskLoad.after", workspace: activeWorkspace)
-            WorkspaceRestorePerfLog.log(
-                "workspaceSwitch.diskLoad managerID=\(instanceID.uuidString.prefix(8)) reason=\(reason) restored=\(reason == "restore") workspaceID=\(WorkspaceRestorePerfLog.shortID(newWorkspace.id)) duration=\(WorkspaceRestorePerfLog.formatMS(diskLoadDuration * 1000))"
+            restorePerfRecorder.log(
+                "workspaceSwitch.diskLoad managerID=\(instanceID.uuidString.prefix(8)) reason=\(reason) restored=\(reason == "restore") workspaceID=\(restorePerfRecorder.shortID(newWorkspace.id)) duration=\(restorePerfRecorder.formatMS(diskLoadDuration * 1000))"
             )
         #endif
 
@@ -6032,8 +6293,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         let restoreDuration = Date().timeIntervalSince(restoreStart)
         logWorkspaceSwitch("restore state END workspace=\"\(activeWS.name)\" duration=\(String(format: "%.3f", restoreDuration))s")
         #if DEBUG
-            WorkspaceRestorePerfLog.log(
-                "workspaceSwitch.restoreState managerID=\(instanceID.uuidString.prefix(8)) reason=\(reason) restored=\(reason == "restore") workspaceID=\(WorkspaceRestorePerfLog.shortID(activeWS.id)) duration=\(WorkspaceRestorePerfLog.formatMS(restoreDuration * 1000))"
+            restorePerfRecorder.log(
+                "workspaceSwitch.restoreState managerID=\(instanceID.uuidString.prefix(8)) reason=\(reason) restored=\(reason == "restore") workspaceID=\(restorePerfRecorder.shortID(activeWS.id)) duration=\(restorePerfRecorder.formatMS(restoreDuration * 1000))"
             )
         #endif
         if let cancellation = cancellationResult(
@@ -6047,16 +6308,16 @@ class WorkspaceManagerViewModel: ObservableObject {
             return .cancelled("Workspace switch to \"\(newWorkspace.name)\" was superseded during state restoration.")
         }
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.activationReady",
                 fields: [
                     "managerID": String(instanceID.uuidString.prefix(8)),
                     "reason": reason,
                     "restored": "\(reason == "restore")",
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(activeWS.id),
+                    "workspaceID": restorePerfRecorder.shortID(activeWS.id),
                     "generation": "\(hydrationGeneration)",
-                    "durationSinceSwitchBegin": restorePerfStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured",
-                    "restoreStateDuration": WorkspaceRestorePerfLog.formatMS(restoreDuration * 1000),
+                    "durationSinceSwitchBegin": restorePerfStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured",
+                    "restoreStateDuration": restorePerfRecorder.formatMS(restoreDuration * 1000),
                     "uiRootShells": "\(fileManager.rootFolders.count)",
                     "uiVisibleRootShells": "\(fileManager.visibleRootFolders.count)"
                 ]
@@ -6079,8 +6340,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         logWorkspaceSwitch("catalog hydration END workspace=\"\(activeWS.name)\" duration=\(String(format: "%.3f", folderLoadDuration))s")
         #if DEBUG
             let folderCounts = fileManager.restorePerfLoadedTreeCounts()
-            WorkspaceRestorePerfLog.log(
-                "workspaceSwitch.folderLoad managerID=\(instanceID.uuidString.prefix(8)) reason=\(reason) restored=\(reason == "restore") workspaceID=\(WorkspaceRestorePerfLog.shortID(activeWS.id)) rootCount=\(activeWS.repoPaths.count) loadedRoots=\(folderCounts.rootCount) loadedFolders=\(folderCounts.folderCount) loadedFiles=\(folderCounts.fileCount) duration=\(WorkspaceRestorePerfLog.formatMS(folderLoadDuration * 1000))"
+            restorePerfRecorder.log(
+                "workspaceSwitch.folderLoad managerID=\(instanceID.uuidString.prefix(8)) reason=\(reason) restored=\(reason == "restore") workspaceID=\(restorePerfRecorder.shortID(activeWS.id)) rootCount=\(activeWS.repoPaths.count) loadedRoots=\(folderCounts.rootCount) loadedFolders=\(folderCounts.folderCount) loadedFiles=\(folderCounts.fileCount) duration=\(restorePerfRecorder.formatMS(folderLoadDuration * 1000))"
             )
         #endif
         if let cancellation = cancellationResult(
@@ -6107,18 +6368,18 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         #if DEBUG
-            let postHydrationRefreshStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let postHydrationRefreshStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         fileManager.refreshRootFolderState()
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.postHydration.refreshRootFolderState",
                 fields: debugWorkspaceOpenTraceFields().merging([
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(activeWS.id),
+                    "workspaceID": restorePerfRecorder.shortID(activeWS.id),
                     "generation": "\(hydrationGeneration)",
                     "rootCount": "\(fileManager.rootFolders.count)",
                     "selectedFiles": "\(fileManager.selectedFiles.count)",
-                    "duration": postHydrationRefreshStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": postHydrationRefreshStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ], uniquingKeysWith: { _, new in new })
             )
         #endif
@@ -6141,19 +6402,19 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         // Notify listeners that workspace switched.
         #if DEBUG
-            let listenerStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let listenerStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         notifyWorkspaceDidSwitch(activeWorkspace)
         #if DEBUG
             if let listenerStartMS {
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.listeners",
                     fields: debugWorkspaceOpenTraceFields().merging([
                         "reason": reason,
                         "restored": "\(reason == "restore")",
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(activeWS.id),
+                        "workspaceID": restorePerfRecorder.shortID(activeWS.id),
                         "listenerCount": "\(workspaceDidSwitchListeners.count)",
-                        "duration": WorkspaceRestorePerfLog.formatElapsedMS(since: listenerStartMS)
+                        "duration": restorePerfRecorder.formatElapsedMS(since: listenerStartMS)
                     ], uniquingKeysWith: { _, new in new })
                 )
             }
@@ -6327,15 +6588,15 @@ class WorkspaceManagerViewModel: ObservableObject {
     private func ensureGitDataRootLoadedForActiveWorkspace(reason: String, expectedWorkspaceID: UUID?) async {
         let start = Date()
         #if DEBUG
-            let startMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
-            let expectedIDString = expectedWorkspaceID.map { WorkspaceRestorePerfLog.shortID($0) } ?? "nil"
+            let startMS = restorePerfRecorder.timestampMSIfEnabled()
+            let expectedIDString = expectedWorkspaceID.map { restorePerfRecorder.shortID($0) } ?? "nil"
             let initialWorkspace = activeWorkspace
-            var activeWorkspaceIDString = initialWorkspace.map { WorkspaceRestorePerfLog.shortID($0.id) } ?? "nil"
+            var activeWorkspaceIDString = initialWorkspace.map { restorePerfRecorder.shortID($0.id) } ?? "nil"
             var activeWorkspaceName = initialWorkspace?.name ?? "nil"
         #endif
         var outcome = "success"
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.gitDataLoad.postSwitch.begin",
                 fields: [
                     "workspaceID": activeWorkspaceIDString,
@@ -6348,7 +6609,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         defer {
             let duration = Date().timeIntervalSince(start)
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.gitDataLoad.postSwitch.end",
                     fields: [
                         "workspaceID": activeWorkspaceIDString,
@@ -6356,7 +6617,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                         "expectedWorkspaceID": expectedIDString,
                         "reason": reason,
                         "outcome": outcome,
-                        "duration": startMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? WorkspaceRestorePerfLog.formatMS(duration * 1000)
+                        "duration": startMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? restorePerfRecorder.formatMS(duration * 1000)
                     ]
                 )
             #endif
@@ -6371,7 +6632,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             return
         }
         #if DEBUG
-            activeWorkspaceIDString = WorkspaceRestorePerfLog.shortID(workspace.id)
+            activeWorkspaceIDString = restorePerfRecorder.shortID(workspace.id)
             activeWorkspaceName = workspace.name
         #endif
         guard workspace.isSystemWorkspace == false else {
@@ -6475,7 +6736,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     #if DEBUG
         @MainActor
         private func debugSelectionOwnerTraceEvent(_ phase: String, workspace explicitWorkspace: WorkspaceModel? = nil) {
-            guard WorkspaceRestorePerfLog.isEnabled else { return }
+            guard restorePerfRecorder.isEnabled else { return }
             let workspace = explicitWorkspace ?? activeWorkspace
             let workspaceTabID = workspace?.activeComposeTabID ?? workspace?.composeTabs.first?.id
             let workspaceTab = workspaceTabID.flatMap { id in
@@ -6486,12 +6747,12 @@ class WorkspaceManagerViewModel: ObservableObject {
 
             var fields: [String: String] = [
                 "phase": phase,
-                "workspaceID": WorkspaceRestorePerfLog.shortID(workspace?.id),
+                "workspaceID": restorePerfRecorder.shortID(workspace?.id),
                 "workspaceName": workspace?.name ?? "nil",
-                "workspaceTabID": WorkspaceRestorePerfLog.shortID(workspaceTabID),
-                "promptTabID": WorkspaceRestorePerfLog.shortID(promptViewModel.activeComposeTabID),
-                "coordinatorTabID": WorkspaceRestorePerfLog.shortID(coordinatorSnapshot?.tabID),
-                "fileManagerTabID": WorkspaceRestorePerfLog.shortID(fileManager.currentTabIDForDebugOwnerTrace)
+                "workspaceTabID": restorePerfRecorder.shortID(workspaceTabID),
+                "promptTabID": restorePerfRecorder.shortID(promptViewModel.activeComposeTabID),
+                "coordinatorTabID": restorePerfRecorder.shortID(coordinatorSnapshot?.tabID),
+                "fileManagerTabID": restorePerfRecorder.shortID(fileManager.currentTabIDForDebugOwnerTrace)
             ]
             if let workspaceSelection = workspaceTab?.selection {
                 fields.merge(WorkspaceSelectionDebugSignature.fields(for: workspaceSelection, prefix: "workspace")) { current, _ in current }
@@ -6500,7 +6761,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 fields.merge(WorkspaceSelectionDebugSignature.fields(for: coordinatorSelection, prefix: "coordinator")) { current, _ in current }
             }
             fields.merge(WorkspaceSelectionDebugSignature.fields(for: uiSnapshot, prefix: "ui")) { current, _ in current }
-            WorkspaceRestorePerfLog.event("workspaceSelection.ownerTrace", fields: fields)
+            restorePerfRecorder.event("workspaceSelection.ownerTrace", fields: fields)
         }
     #endif
 
@@ -6747,7 +7008,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         if let workspaceID,
            let workspace = workspace(withID: workspaceID)
         {
-            WorkspaceSaveTracer.event(
+            workspaceSaveTracer.event(
                 "workspaceSave.domain.rejected",
                 metadata: workspaceSaveMetadata(for: workspace, source: .directUnknown),
                 url: workspaceFileURL(for: workspace),
@@ -6866,7 +7127,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
     }
 
-    private static func isSuccessfulDomainOutcome(_ outcome: DomainCommandOutcome) -> Bool {
+    fileprivate static func isSuccessfulDomainOutcome(_ outcome: DomainCommandOutcome) -> Bool {
         outcome.disposition == .applied
             || outcome.disposition == .unchanged
             || outcome.disposition == .deduplicated
@@ -8590,7 +8851,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 workspaceSaveCapturePublicationCountByWorkspaceIDForTesting[workspace.id, default: 0] += 1
             #endif
             let metadata = workspaceSaveMetadata(for: workspace, source: source)
-            WorkspaceSaveTracer.capture(
+            workspaceSaveTracer.capture(
                 metadata: metadata,
                 url: workspaceFileURL(for: workspace),
                 liveUI: liveUISelection,
@@ -10517,17 +10778,17 @@ class WorkspaceManagerViewModel: ObservableObject {
     ) async {
         let wsID = workspace.id
         #if DEBUG
-            let restoreStateStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let restoreStateStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         // If another workspace is active, don't apply UI state for this one.
         if let active = activeWorkspaceID, active != wsID {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "inactiveWorkspace",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10535,12 +10796,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         guard let index = workspaceIndex(for: wsID) else {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "missingWorkspaceIndex",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10550,38 +10811,38 @@ class WorkspaceManagerViewModel: ObservableObject {
         // Work off a local copy so we don't rely on `index` after awaits.
         var upgraded = workspaces[index]
         #if DEBUG
-            let normalizationStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let normalizationStartMS = restorePerfRecorder.timestampMSIfEnabled()
             let composeTabsBeforeNormalization = upgraded.composeTabs.count
         #endif
         upgraded.normalizeComposeTabInvariants()
         workspaces[index] = upgraded
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.normalization",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
                     "composeTabsBefore": "\(composeTabsBeforeNormalization)",
                     "composeTabsAfter": "\(upgraded.composeTabs.count)",
                     "composeTabsNormalized": "\(upgraded.normalizationRequiresSave)",
-                    "activeComposeTabID": WorkspaceRestorePerfLog.shortID(upgraded.activeComposeTabID),
-                    "duration": normalizationStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "activeComposeTabID": restorePerfRecorder.shortID(upgraded.activeComposeTabID),
+                    "duration": normalizationStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
 
         #if DEBUG
-            let loadComposeTabsStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let loadComposeTabsStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         promptViewModel.loadComposeTabsFromWorkspace(upgraded)
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.loadComposeTabs",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
                     "composeTabs": "\(upgraded.composeTabs.count)",
                     "stashedTabs": "\(upgraded.stashedTabs.count)",
-                    "activeComposeTabID": WorkspaceRestorePerfLog.shortID(upgraded.activeComposeTabID),
-                    "duration": loadComposeTabsStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "activeComposeTabID": restorePerfRecorder.shortID(upgraded.activeComposeTabID),
+                    "duration": loadComposeTabsStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
@@ -10590,12 +10851,12 @@ class WorkspaceManagerViewModel: ObservableObject {
               let activeTab = upgraded.composeTabs.first(where: { $0.id == activeID }) ?? upgraded.composeTabs.first
         else {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "missingActiveTab",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10608,7 +10869,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         #if DEBUG
-            let applyComposeTabStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let applyComposeTabStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         #if DEBUG
             debugSelectionOwnerTraceEvent("restore.applyComposeTab.before", workspace: upgraded)
@@ -10621,16 +10882,16 @@ class WorkspaceManagerViewModel: ObservableObject {
             )
         }
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.applyComposeTab",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
-                    "tabID": WorkspaceRestorePerfLog.shortID(activeTab.id),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
+                    "tabID": restorePerfRecorder.shortID(activeTab.id),
                     "selectedPaths": "\(activeTab.selection.selectedPaths.count)",
                     "sliceFiles": "\(activeTab.selection.slices.count)",
                     "expandedFolders": "\(activeTab.expandedFolders.count)",
                     "selectedPromptIDs": "\(activeTab.selectedMetaPromptIDs.count)",
-                    "duration": applyComposeTabStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": applyComposeTabStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
@@ -10642,12 +10903,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         // Workspace may have been deleted/reordered while we were awaiting.
         if let active = activeWorkspaceID, active != wsID {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "switchedDuringApply",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10655,12 +10916,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         guard let idx2 = workspaceIndex(for: wsID) else {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "deletedDuringApply",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10668,19 +10929,19 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         #if DEBUG
-            let legacyMirrorStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let legacyMirrorStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         workspaces[idx2].currentPromptText = latestAppliedTab.promptText
         workspaces[idx2].selectedMetaPromptIDs = latestAppliedTab.selectedMetaPromptIDs
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.legacyWorkspaceMirror",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
-                    "tabID": WorkspaceRestorePerfLog.shortID(latestAppliedTab.id),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
+                    "tabID": restorePerfRecorder.shortID(latestAppliedTab.id),
                     "selectedPaths": "\(latestAppliedTab.selection.selectedPaths.count)",
                     "expandedFolders": "\(latestAppliedTab.expandedFolders.count)",
-                    "duration": legacyMirrorStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": legacyMirrorStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
@@ -10691,12 +10952,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         // Workspace might have been deleted/switched during yield.
         if let active = activeWorkspaceID, active != wsID {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "switchedDuringYield",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10704,12 +10965,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         guard let idx2 = workspaceIndex(for: wsID) else {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "deletedDuringYield",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10719,7 +10980,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         // 3️⃣.5 Restore preset selections and customizations (with safe fallbacks for migration)
         // IMPORTANT: Set workspace ID on fileManager BEFORE selectCopyPreset so GlobalSettings uses correct workspace
         #if DEBUG
-            let copyPresetStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let copyPresetStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         fileManager.setCurrentWorkspaceID(wsID)
 
@@ -10746,30 +11007,30 @@ class WorkspaceManagerViewModel: ObservableObject {
             promptViewModel.workingCopyCustomizations = storedWorkspaceCustomizations ?? .init()
         }
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.copyPreset",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
                     "savedCopyPreset": workspace.copyPresetId?.uuidString ?? "nil",
                     "activeCopyPreset": activeCopyPreset.id.uuidString,
                     "manualPreset": "\(activeCopyPreset.builtInKind == .manual)",
                     "customizationsDirty": "\(workspaces[idx2].copyCustomizations != storedWorkspaceCustomizations)",
-                    "duration": copyPresetStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": copyPresetStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
         let restoredChatPresetID = workspace.chatPresetId ?? ChatPreset.BuiltIn.chat.id
         #if DEBUG
-            let chatPresetStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let chatPresetStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         promptViewModel.selectChatPreset(restoredChatPresetID)
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.chatPreset",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
                     "chatPresetID": restoredChatPresetID.uuidString,
-                    "duration": chatPresetStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": chatPresetStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
@@ -10779,12 +11040,12 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         if let active = activeWorkspaceID, active != wsID {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "switchedDuringPresetYield",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10792,12 +11053,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         guard workspaceIndex(for: wsID) != nil else {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "deletedDuringPresetYield",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10808,61 +11069,61 @@ class WorkspaceManagerViewModel: ObservableObject {
         // Workspace switches that are about to unload the outgoing roots defer this
         // reconciliation until the target workspace has hydrated.
         #if DEBUG
-            let refreshRootFolderStateStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let refreshRootFolderStateStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         if refreshExistingRootFolderState {
             fileManager.refreshRootFolderState()
         }
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.refreshRootFolderState",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
                     "rootCount": "\(fileManager.rootFolders.count)",
                     "skipped": "\(!refreshExistingRootFolderState)",
-                    "duration": refreshRootFolderStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": refreshRootFolderStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
 
         // 5️⃣ Update dirty-preset indicator
         #if DEBUG
-            let activePresetDirtyCheckStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let activePresetDirtyCheckStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         checkIfActivePresetIsDirty(with: fileManager.selectedFiles)
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.activePresetDirtyCheck",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
                     "selectedFiles": "\(fileManager.selectedFiles.count)",
-                    "duration": activePresetDirtyCheckStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": activePresetDirtyCheckStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
 
         #if DEBUG
-            let settingsSyncStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let settingsSyncStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         promptViewModel.syncSettingsFromSettingsManager()
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.settingsSync",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
-                    "duration": settingsSyncStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "workspaceID": restorePerfRecorder.shortID(wsID),
+                    "duration": settingsSyncStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
 
         if let active = activeWorkspaceID, active != wsID {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "switchedBeforeTokenRecount",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10870,12 +11131,12 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         guard workspaceIndex(for: wsID) != nil else {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.restoreState.abort",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
+                        "workspaceID": restorePerfRecorder.shortID(wsID),
                         "reason": "deletedBeforeTokenRecount",
-                        "durationSinceRestoreStart": restoreStateStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "durationSinceRestoreStart": restoreStateStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -10883,7 +11144,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         #if DEBUG
-            let tokenRecountStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let tokenRecountStartMS = restorePerfRecorder.timestampMSIfEnabled()
             let tokenRecountWatchdogID = UUID()
             let tokenRecountTabID = latestAppliedTab.id
             let tokenRecountSelection = latestAppliedTab.selection
@@ -10893,11 +11154,11 @@ class WorkspaceManagerViewModel: ObservableObject {
             debugSelectionOwnerTraceEvent("restore.tokenRecount.begin", workspace: activeWorkspace)
             restoreTokenRecountWatchdogIDs.insert(tokenRecountWatchdogID)
             var tokenRecountBeginFields = tokenRecountSelectionFields
-            tokenRecountBeginFields["workspaceID"] = WorkspaceRestorePerfLog.shortID(wsID)
-            tokenRecountBeginFields["tabID"] = WorkspaceRestorePerfLog.shortID(tokenRecountTabID)
+            tokenRecountBeginFields["workspaceID"] = restorePerfRecorder.shortID(wsID)
+            tokenRecountBeginFields["tabID"] = restorePerfRecorder.shortID(tokenRecountTabID)
             tokenRecountBeginFields["rootCount"] = "\(fileManager.rootFolders.count)"
             tokenRecountBeginFields["selectedFiles"] = "\(fileManager.selectedFiles.count)"
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.tokenRecount.begin",
                 fields: tokenRecountBeginFields
             )
@@ -10907,9 +11168,9 @@ class WorkspaceManagerViewModel: ObservableObject {
                       restoreTokenRecountWatchdogIDs.contains(tokenRecountWatchdogID)
                 else { return }
                 var fields = promptViewModel.tokenCountingViewModel.debugTokenRecountStateFields()
-                fields["workspaceID"] = WorkspaceRestorePerfLog.shortID(wsID)
-                fields["tabID"] = WorkspaceRestorePerfLog.shortID(tokenRecountTabID)
-                fields["duration"] = tokenRecountStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                fields["workspaceID"] = restorePerfRecorder.shortID(wsID)
+                fields["tabID"] = restorePerfRecorder.shortID(tokenRecountTabID)
+                fields["duration"] = tokenRecountStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 fields["rootCount"] = "\(fileManager.rootFolders.count)"
                 fields["selectedFiles"] = "\(fileManager.selectedFiles.count)"
                 fields["tabSelectedPaths"] = "\(tokenRecountSelectedPaths)"
@@ -10917,16 +11178,16 @@ class WorkspaceManagerViewModel: ObservableObject {
                 for (key, value) in tokenRecountSelectionFields {
                     fields[key] = value
                 }
-                WorkspaceRestorePerfLog.event("workspaceSwitch.restoreState.tokenRecount.watchdog", fields: fields)
+                restorePerfRecorder.event("workspaceSwitch.restoreState.tokenRecount.watchdog", fields: fields)
             }
         #endif
         await promptViewModel.tokenCountingViewModel.forceImmediateRecount()
         #if DEBUG
             restoreTokenRecountWatchdogIDs.remove(tokenRecountWatchdogID)
             var tokenRecountEndFields = tokenRecountSelectionFields
-            tokenRecountEndFields["workspaceID"] = WorkspaceRestorePerfLog.shortID(wsID)
-            tokenRecountEndFields["duration"] = tokenRecountStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
-            WorkspaceRestorePerfLog.event(
+            tokenRecountEndFields["workspaceID"] = restorePerfRecorder.shortID(wsID)
+            tokenRecountEndFields["duration"] = tokenRecountStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
+            restorePerfRecorder.event(
                 "workspaceSwitch.restoreState.tokenRecount",
                 fields: tokenRecountEndFields
             )
@@ -12644,12 +12905,12 @@ class WorkspaceManagerViewModel: ObservableObject {
     ) async {
         logWorkspaceSwitch("loadWorkspaceFolders BEGIN workspace=\"\(workspace.name)\" skipSecurityScope=\(skipSecurityScope) gitDataRootLoadMode=\(gitDataRootLoadMode)")
         #if DEBUG
-            let loadWorkspaceFoldersStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let loadWorkspaceFoldersStartMS = restorePerfRecorder.timestampMSIfEnabled()
             debugRecordLoadWorkspaceFoldersStart(for: workspace)
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.loadWorkspaceFolders.begin",
                 fields: debugWorkspaceOpenTraceFields().merging([
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                    "workspaceID": restorePerfRecorder.shortID(workspace.id),
                     "workspaceName": workspace.name,
                     "userRoots": "\(Self.loadableRepoPaths(for: workspace).count)",
                     "skipSecurityScope": "\(skipSecurityScope)",
@@ -12663,27 +12924,27 @@ class WorkspaceManagerViewModel: ObservableObject {
         switch initialUnloadMode {
         case .perform:
             #if DEBUG
-                let initialUnloadStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+                let initialUnloadStartMS = restorePerfRecorder.timestampMSIfEnabled()
             #endif
             await fileManager.unloadAllRootFolders()
             onInitialRootUnloadCompleted?()
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.loadWorkspaceFolders.initialUnload",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "mode": "performed",
                         "outcome": "completed",
-                        "duration": initialUnloadStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "duration": initialUnloadStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
         case .skipPreviouslyCompleted:
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.loadWorkspaceFolders.initialUnload",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "mode": "skippedPreviouslyCompleted",
                         "outcome": "skipped",
                         "duration": "0.0ms"
@@ -12707,17 +12968,17 @@ class WorkspaceManagerViewModel: ObservableObject {
         )
         logWorkspaceSwitch("loadWorkspaceFolders user roots BEGIN workspace=\"\(workspace.name)\" roots=\(rootLoadRequests.count) concurrency=\(maxConcurrentLoads)")
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.loadWorkspaceFolders.userRoots.begin",
                 fields: debugWorkspaceOpenTraceFields().merging([
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                    "workspaceID": restorePerfRecorder.shortID(workspace.id),
                     "rootCount": "\(rootLoadRequests.count)",
                     "concurrency": "\(maxConcurrentLoads)"
                 ], uniquingKeysWith: { _, new in new })
             )
         #endif
         #if DEBUG
-            let hydrationBatchStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let hydrationBatchStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         let hydrationResults = await hydrateWorkspaceUserRootsBounded(
             rootLoadRequests,
@@ -12728,10 +12989,10 @@ class WorkspaceManagerViewModel: ObservableObject {
         #if DEBUG
             if let hydrationBatchStartMS {
                 let hydrationCatalogDiagnostics = await fileManager.workspaceFileContextStore.catalogDiagnostics(rootScope: .visibleWorkspace)
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.loadWorkspaceFolders.userRoots.catalogHydration.end",
                     fields: debugWorkspaceOpenTraceFields().merging([
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "workspaceName": workspace.name,
                         "rootCount": "\(rootLoadRequests.count)",
                         "concurrency": "\(maxConcurrentLoads)",
@@ -12739,7 +13000,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                         "catalogRoots": "\(hydrationCatalogDiagnostics.rootCount)",
                         "catalogFolders": "\(hydrationCatalogDiagnostics.folderCount)",
                         "catalogFiles": "\(hydrationCatalogDiagnostics.fileCount)",
-                        "duration": WorkspaceRestorePerfLog.formatElapsedMS(since: hydrationBatchStartMS)
+                        "duration": restorePerfRecorder.formatElapsedMS(since: hydrationBatchStartMS)
                     ], uniquingKeysWith: { _, new in new })
                 )
             }
@@ -12753,7 +13014,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             return
         }
         #if DEBUG
-            let rootAttachLoopStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let rootAttachLoopStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         let reorderChanged: Bool
         do {
@@ -12784,7 +13045,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 }
                 do {
                     #if DEBUG
-                        let rootAttachStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+                        let rootAttachStartMS = restorePerfRecorder.timestampMSIfEnabled()
                     #endif
                     try fileManager.attachRootShell(for: rootRecord, workspaceID: workspace.id)
                     loadedRootCount += 1
@@ -12795,7 +13056,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                             request: result.request,
                             attachedPrimaryRoots: loadedRootCount,
                             failureCount: failures.count,
-                            attachDurationMS: rootAttachStartMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) },
+                            attachDurationMS: rootAttachStartMS.map { restorePerfRecorder.elapsedMS(since: $0) },
                             outcome: "success"
                         )
                     #endif
@@ -12839,7 +13100,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 attachedPrimaryRoots: loadedRootCount,
                 expectedPrimaryRoots: rootLoadRequests.count,
                 failureCount: failures.count,
-                rootAttachLoopDurationMS: rootAttachLoopStartMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) },
+                rootAttachLoopDurationMS: rootAttachLoopStartMS.map { restorePerfRecorder.elapsedMS(since: $0) },
                 reorderChanged: reorderChanged
             )
         #endif
@@ -12850,19 +13111,19 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         #if DEBUG
             let postCatalogRootWorkTaskCount = postCatalogRootWorkTasks[hydrationGeneration]?.count ?? 0
-            let postCatalogRootWorkStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let postCatalogRootWorkStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         let postCatalogRootWorkFailures = await awaitPostCatalogRootWorkFailures(generation: hydrationGeneration)
         failures.append(contentsOf: postCatalogRootWorkFailures)
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.loadWorkspaceFolders.postCatalogRootWorkAwait.end",
                 fields: debugWorkspaceOpenTraceFields().merging([
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                    "workspaceID": restorePerfRecorder.shortID(workspace.id),
                     "generation": "\(hydrationGeneration)",
                     "taskCount": "\(postCatalogRootWorkTaskCount)",
                     "failureCount": "\(postCatalogRootWorkFailures.count)",
-                    "duration": postCatalogRootWorkStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": postCatalogRootWorkStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ], uniquingKeysWith: { _, new in new })
             )
         #endif
@@ -12873,7 +13134,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         #if DEBUG
             let searchIndexBuildStoreWorkBefore = await fileManager.workspaceFileContextStore.storeWorkDiagnosticsSnapshot()
             let searchIndexBuildSearchWorkBefore = await workspaceSearchService.workDiagnosticsSnapshot()
-            let searchCatalogSnapshotStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let searchCatalogSnapshotStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         var snapshot = await fileManager.workspaceFileContextStore.searchCatalogSnapshot(
             rootScope: .visibleWorkspace,
@@ -12881,18 +13142,18 @@ class WorkspaceManagerViewModel: ObservableObject {
         )
         guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
         #if DEBUG
-            let initialSearchCatalogSnapshotDurationMS = searchCatalogSnapshotStartMS.map { WorkspaceRestorePerfLog.elapsedMS(since: $0) }
+            let initialSearchCatalogSnapshotDurationMS = searchCatalogSnapshotStartMS.map { restorePerfRecorder.elapsedMS(since: $0) }
             if let initialSearchCatalogSnapshotDurationMS {
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.searchCatalogSnapshot.end",
                     fields: debugWorkspaceOpenTraceFields().merging([
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "generation": "\(hydrationGeneration)",
                         "catalogGeneration": "\(snapshot.generation)",
                         "catalogRoots": "\(snapshot.diagnostics.rootCount)",
                         "catalogFolders": "\(snapshot.diagnostics.folderCount)",
                         "catalogFiles": "\(snapshot.diagnostics.fileCount)",
-                        "duration": WorkspaceRestorePerfLog.formatMS(initialSearchCatalogSnapshotDurationMS)
+                        "duration": restorePerfRecorder.formatMS(initialSearchCatalogSnapshotDurationMS)
                     ], uniquingKeysWith: { _, new in new })
                 )
             }
@@ -12905,7 +13166,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         )
         let initialSearchSnapshot = snapshot
         #if DEBUG
-            let searchIndexBuildStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let searchIndexBuildStartMS = restorePerfRecorder.timestampMSIfEnabled()
             var searchIndexRebuildCount = 1
             var totalSearchCatalogSnapshotDurationMS = initialSearchCatalogSnapshotDurationMS ?? 0
             var totalSearchIndexRebuildDurationMS: Double = 0
@@ -12939,7 +13200,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
             guard currentCatalogGeneration != indexGeneration else { break }
             #if DEBUG
-                let loopSearchCatalogSnapshotStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+                let loopSearchCatalogSnapshotStartMS = restorePerfRecorder.timestampMSIfEnabled()
             #endif
             snapshot = await fileManager.workspaceFileContextStore.searchCatalogSnapshot(
                 rootScope: .visibleWorkspace,
@@ -12948,18 +13209,18 @@ class WorkspaceManagerViewModel: ObservableObject {
             guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
             #if DEBUG
                 if let loopSearchCatalogSnapshotStartMS {
-                    let duration = WorkspaceRestorePerfLog.elapsedMS(since: loopSearchCatalogSnapshotStartMS)
+                    let duration = restorePerfRecorder.elapsedMS(since: loopSearchCatalogSnapshotStartMS)
                     totalSearchCatalogSnapshotDurationMS += duration
-                    WorkspaceRestorePerfLog.event(
+                    restorePerfRecorder.event(
                         "workspaceSwitch.searchCatalogSnapshot.end",
                         fields: debugWorkspaceOpenTraceFields().merging([
-                            "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                            "workspaceID": restorePerfRecorder.shortID(workspace.id),
                             "generation": "\(hydrationGeneration)",
                             "catalogGeneration": "\(snapshot.generation)",
                             "catalogRoots": "\(snapshot.diagnostics.rootCount)",
                             "catalogFolders": "\(snapshot.diagnostics.folderCount)",
                             "catalogFiles": "\(snapshot.diagnostics.fileCount)",
-                            "duration": WorkspaceRestorePerfLog.formatMS(duration)
+                            "duration": restorePerfRecorder.formatMS(duration)
                         ], uniquingKeysWith: { _, new in new })
                     )
                 }
@@ -12990,7 +13251,7 @@ class WorkspaceManagerViewModel: ObservableObject {
             let searchIndexBuildStoreWorkAfter = await fileManager.workspaceFileContextStore.storeWorkDiagnosticsSnapshot()
             let searchIndexBuildSearchWorkAfter = await workspaceSearchService.workDiagnosticsSnapshot()
             var fields = [
-                "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                "workspaceID": restorePerfRecorder.shortID(workspace.id),
                 "generation": "\(hydrationGeneration)",
                 "catalogGeneration": "\(snapshot.generation)",
                 "indexedGeneration": "\(indexGeneration)",
@@ -12999,11 +13260,11 @@ class WorkspaceManagerViewModel: ObservableObject {
                 "catalogFiles": "\(snapshot.diagnostics.fileCount)",
                 "rebuildCount": "\(searchIndexRebuildCount)",
                 "failureCount": "\(failures.count)",
-                "catalogSnapshotDuration": WorkspaceRestorePerfLog.formatMS(totalSearchCatalogSnapshotDurationMS),
-                "searchRebuildDuration": WorkspaceRestorePerfLog.formatMS(totalSearchIndexRebuildDurationMS),
-                "pathLookupWarmDuration": WorkspaceRestorePerfLog.formatMS(totalPathLookupWarmDurationMS),
-                "barrierDuration": searchIndexBuildStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured",
-                "duration": searchIndexBuildStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                "catalogSnapshotDuration": restorePerfRecorder.formatMS(totalSearchCatalogSnapshotDurationMS),
+                "searchRebuildDuration": restorePerfRecorder.formatMS(totalSearchIndexRebuildDurationMS),
+                "pathLookupWarmDuration": restorePerfRecorder.formatMS(totalPathLookupWarmDurationMS),
+                "barrierDuration": searchIndexBuildStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured",
+                "duration": searchIndexBuildStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
             ].merging(debugWorkspaceOpenTraceFields(), uniquingKeysWith: { current, _ in current })
             fields.merge(WorkspaceSwitchSearchIndexDiagnostics.fields(
                 storeBefore: searchIndexBuildStoreWorkBefore,
@@ -13013,7 +13274,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 snapshot: snapshot,
                 requestedCapability: searchCatalogRequirement
             ), uniquingKeysWith: { current, _ in current })
-            WorkspaceRestorePerfLog.event("workspaceSwitch.searchIndexBuild.end", fields: fields)
+            restorePerfRecorder.event("workspaceSwitch.searchIndexBuild.end", fields: fields)
         #endif
         guard isHydrationGenerationCurrent(hydrationGeneration, workspaceID: workspace.id) else { return }
         if failures.isEmpty {
@@ -13039,7 +13300,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         case .inline:
             let gitDataStart = Date()
             #if DEBUG
-                let gitDataStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+                let gitDataStartMS = restorePerfRecorder.timestampMSIfEnabled()
             #endif
             logWorkspaceSwitch("ensureGitDataRootLoaded BEGIN workspace=\"\(workspace.name)\" mode=inline")
             var gitDataOutcome = "success"
@@ -13059,24 +13320,24 @@ class WorkspaceManagerViewModel: ObservableObject {
             let gitDataDuration = Date().timeIntervalSince(gitDataStart)
             logWorkspaceSwitch("ensureGitDataRootLoaded END workspace=\"\(workspace.name)\" mode=inline duration=\(String(format: "%.3f", gitDataDuration))s outcome=\(gitDataOutcome)")
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.gitDataLoad",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "isSystemWorkspace": "\(workspace.isSystemWorkspace)",
                         "mode": "inline",
                         "outcome": gitDataOutcome,
-                        "duration": gitDataStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "duration": gitDataStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
         case .deferredAfterSwitch:
             logWorkspaceSwitch("ensureGitDataRootLoaded SKIP workspace=\"\(workspace.name)\" mode=deferredAfterSwitch")
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.gitDataLoad",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "isSystemWorkspace": "\(workspace.isSystemWorkspace)",
                         "mode": "deferredAfterSwitch",
                         "outcome": "skippedInline",
@@ -13088,12 +13349,12 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         logWorkspaceSwitch("loadWorkspaceFolders END workspace=\"\(workspace.name)\"")
         #if DEBUG
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "workspaceSwitch.loadWorkspaceFolders.end",
                 fields: [
-                    "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                    "workspaceID": restorePerfRecorder.shortID(workspace.id),
                     "userRoots": "\(pathsToLoad.count)",
-                    "duration": loadWorkspaceFoldersStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                    "duration": loadWorkspaceFoldersStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                 ]
             )
         #endif
@@ -13166,7 +13427,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     ) async -> WorkspaceRootHydrationResult {
         let perRootStart = Date()
         #if DEBUG
-            let perRootStartMS = WorkspaceRestorePerfLog.timestampMSIfEnabled()
+            let perRootStartMS = restorePerfRecorder.timestampMSIfEnabled()
         #endif
         logWorkspaceSwitch("hydrateRoot BEGIN root=\"\(request.canonicalPath)\"")
 
@@ -13221,15 +13482,15 @@ class WorkspaceManagerViewModel: ObservableObject {
             let perRootDuration = Date().timeIntervalSince(perRootStart)
             logWorkspaceSwitch("hydrateRoot END root=\"\(request.canonicalPath)\" duration=\(String(format: "%.3f", perRootDuration))s")
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.loadWorkspaceFolders.userRootCatalogHydration",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "rootIndex": "\(request.rootIndex)",
                         "rootName": request.rootName,
-                        "rootID": WorkspaceRestorePerfLog.shortID(rootRecord.id),
+                        "rootID": restorePerfRecorder.shortID(rootRecord.id),
                         "outcome": "success",
-                        "duration": perRootStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "duration": perRootStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -13243,14 +13504,14 @@ class WorkspaceManagerViewModel: ObservableObject {
             let perRootDuration = Date().timeIntervalSince(perRootStart)
             logWorkspaceSwitch("hydrateRoot CANCELLED root=\"\(request.canonicalPath)\" duration=\(String(format: "%.3f", perRootDuration))s")
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.loadWorkspaceFolders.userRootCatalogHydration",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "rootIndex": "\(request.rootIndex)",
                         "rootName": request.rootName,
                         "outcome": "cancelled",
-                        "duration": perRootStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "duration": perRootStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -13264,14 +13525,14 @@ class WorkspaceManagerViewModel: ObservableObject {
             let perRootDuration = Date().timeIntervalSince(perRootStart)
             Self.logger.error("hydrateRoot ERROR root=\"\(request.canonicalPath)\" duration=\(String(format: "%.3f", perRootDuration))s error=\(error)")
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSwitch.loadWorkspaceFolders.userRootCatalogHydration",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "rootIndex": "\(request.rootIndex)",
                         "rootName": request.rootName,
                         "outcome": "error",
-                        "duration": perRootStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
+                        "duration": perRootStartMS.map { restorePerfRecorder.formatElapsedMS(since: $0) } ?? "notMeasured"
                     ]
                 )
             #endif
@@ -13361,6 +13622,15 @@ class WorkspaceManagerViewModel: ObservableObject {
         // MARK: public API
 
         static let shared = WorkspaceDiskWriter()
+        private nonisolated let restorePerfRecorderSlot = WorkspaceRestorePerfRecorderBox()
+
+        private var workspaceSaveTracer: WorkspaceSaveTracer {
+            WorkspaceSaveTracer(restorePerfRecorder: restorePerfRecorderSlot.snapshot())
+        }
+
+        nonisolated func installRestorePerfRecorder(_ recorder: any WorkspaceRestorePerfRecording) {
+            restorePerfRecorderSlot.install(recorder)
+        }
 
         func enqueue(data: Data, url: URL) {
             enqueue(data: data, url: url, metadata: nil)
@@ -13372,7 +13642,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         private func enqueue(data: Data, url: URL, metadata: WorkspaceSavePayloadMetadata?) {
             let lifecycleCorrelation = EditFlowPerf.currentLifecycleCorrelation
-            WorkspaceSaveTracer.event("workspaceSave.enqueue", metadata: metadata, url: url)
+            workspaceSaveTracer.event("workspaceSave.enqueue", metadata: metadata, url: url)
             recordLatestSelectionIfNeeded(metadata)
             let identity = Self.payloadIdentity(metadata: metadata, data: data)
             #if DEBUG
@@ -13396,10 +13666,11 @@ class WorkspaceManagerViewModel: ObservableObject {
                     existing: pending.newestIdentity,
                     incoming: identity,
                     incomingMetadata: metadata,
-                    url: url
+                    url: url,
+                    restorePerfRecorder: restorePerfRecorderSlot.snapshot()
                 ) {
                     decision = "keptExistingNewerDate"
-                    WorkspaceSaveTracer.event("workspaceSave.coalesce", metadata: metadata, url: url, extra: ["decision": decision])
+                    workspaceSaveTracer.event("workspaceSave.coalesce", metadata: metadata, url: url, extra: ["decision": decision])
                     return
                 } else {
                     pending.newestData = data
@@ -13409,7 +13680,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                     decision = "storedAsNewest"
                 }
                 pendingByURL[url] = pending
-                WorkspaceSaveTracer.event("workspaceSave.coalesce", metadata: metadata, url: url, extra: ["decision": decision])
+                workspaceSaveTracer.event("workspaceSave.coalesce", metadata: metadata, url: url, extra: ["decision": decision])
                 return
             }
 
@@ -13443,7 +13714,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 else {
                     return false
                 }
-                WorkspaceSaveTracer.event("workspaceSave.syncWrite.begin", metadata: metadata, url: url, extra: ["path": "normalization"])
+                workspaceSaveTracer.event("workspaceSave.syncWrite.begin", metadata: metadata, url: url, extra: ["path": "normalization"])
                 let writeState = EditFlowPerf.begin(EditFlowPerf.Stage.WorkspaceDurability.atomicWrite)
                 EditFlowPerf.lifecycleEvent(EditFlowPerf.Lifecycle.WorkspaceDurability.writeBegan)
                 defer {
@@ -13452,10 +13723,10 @@ class WorkspaceManagerViewModel: ObservableObject {
                 }
                 try data.write(to: url, options: .atomic)
                 recordLatestSelectionIfNeeded(metadata)
-                WorkspaceSaveTracer.event("workspaceSave.syncWrite.success", metadata: metadata, url: url, extra: ["path": "normalization"])
+                workspaceSaveTracer.event("workspaceSave.syncWrite.success", metadata: metadata, url: url, extra: ["path": "normalization"])
                 return true
             } catch {
-                WorkspaceSaveTracer.event("workspaceSave.syncWrite.failure", metadata: metadata, url: url, extra: ["error": error.localizedDescription, "path": "normalization"])
+                workspaceSaveTracer.event("workspaceSave.syncWrite.failure", metadata: metadata, url: url, extra: ["error": error.localizedDescription, "path": "normalization"])
                 print("💾 Normalization write skipped \(url.lastPathComponent): \(error)")
                 return false
             }
@@ -13565,7 +13836,8 @@ class WorkspaceManagerViewModel: ObservableObject {
             existing: WorkspacePayloadIdentity?,
             incoming: WorkspacePayloadIdentity?,
             incomingMetadata: WorkspaceSavePayloadMetadata?,
-            url: URL
+            url: URL,
+            restorePerfRecorder: any WorkspaceRestorePerfRecording
         ) -> Bool {
             guard let existing,
                   let incoming,
@@ -13575,10 +13847,10 @@ class WorkspaceManagerViewModel: ObservableObject {
                 return false
             }
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceDiskWriter.skipStaleCoalescedPayload",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(incoming.workspaceID),
+                        "workspaceID": restorePerfRecorder.shortID(incoming.workspaceID),
                         "workspaceName": incomingMetadata?.workspaceName ?? "unknown",
                         "url": url.lastPathComponent
                     ]
@@ -13593,7 +13865,8 @@ class WorkspaceManagerViewModel: ObservableObject {
             url: URL,
             metadata: WorkspaceSavePayloadMetadata?,
             latestRecord: LatestSelectionRecord?,
-            lastWrittenRevision: UInt64
+            lastWrittenRevision: UInt64,
+            workspaceSaveTracer: WorkspaceSaveTracer
         ) -> EffectiveWritePayload {
             var decodeWork = DecodeWork()
             func result(
@@ -13656,7 +13929,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                         var merged = applied.workspace
                         merged.dateModified = Date()
                         if let encoded = try? JSONEncoder().encode(merged) {
-                            WorkspaceSaveTracer.event(
+                            workspaceSaveTracer.event(
                                 "workspaceSave.write.newerSelectionMergedIntoNewerDisk",
                                 metadata: metadata,
                                 url: url,
@@ -13676,7 +13949,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                         }
                     }
                 }
-                WorkspaceSaveTracer.event("workspaceSave.write.skipStaleDiskPayload", metadata: metadata, url: url)
+                workspaceSaveTracer.event("workspaceSave.write.skipStaleDiskPayload", metadata: metadata, url: url)
                 return result(
                     data: payload,
                     metadata: metadata,
@@ -13701,7 +13974,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 if applied.applied,
                    let encoded = try? JSONEncoder().encode(applied.workspace)
                 {
-                    WorkspaceSaveTracer.event(
+                    workspaceSaveTracer.event(
                         "workspaceSave.write.selectionPreservedFromLatest",
                         metadata: metadata,
                         url: url,
@@ -13747,6 +14020,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 let atomicWriteGateForTesting = atomicWriteGateForTesting
             #endif
 
+            let workspaceSaveTracer = workspaceSaveTracer
             let task = Task.detached(priority: .utility) { [weak self] in
                 let effective = Self.effectivePayloadForWrite(
                     payload: payload,
@@ -13754,9 +14028,10 @@ class WorkspaceManagerViewModel: ObservableObject {
                     url: url,
                     metadata: metadata,
                     latestRecord: latestRecord,
-                    lastWrittenRevision: lastWrittenRevision
+                    lastWrittenRevision: lastWrittenRevision,
+                    workspaceSaveTracer: workspaceSaveTracer
                 )
-                WorkspaceSaveTracer.event("workspaceSave.write.begin", metadata: effective.metadata, url: url, extra: ["shouldWrite": "\(effective.shouldWrite)"])
+                workspaceSaveTracer.event("workspaceSave.write.begin", metadata: effective.metadata, url: url, extra: ["shouldWrite": "\(effective.shouldWrite)"])
                 var writeSucceeded = false
                 do {
                     if effective.shouldWrite {
@@ -13782,13 +14057,13 @@ class WorkspaceManagerViewModel: ObservableObject {
                         }
                         try effective.data.write(to: url, options: .atomic)
                         writeSucceeded = true
-                        WorkspaceSaveTracer.event("workspaceSave.write.success", metadata: effective.metadata, url: url)
+                        workspaceSaveTracer.event("workspaceSave.write.success", metadata: effective.metadata, url: url)
                     }
                 } catch {
-                    WorkspaceSaveTracer.event("workspaceSave.write.failure", metadata: effective.metadata, url: url, extra: ["error": error.localizedDescription])
+                    workspaceSaveTracer.event("workspaceSave.write.failure", metadata: effective.metadata, url: url, extra: ["error": error.localizedDescription])
                     print("💾 Write failed \(url.lastPathComponent): \(error)")
                 }
-                WorkspaceSaveTracer.event("workspaceSave.write.finish", metadata: effective.metadata, url: url, extra: ["writeSucceeded": "\(writeSucceeded)"])
+                workspaceSaveTracer.event("workspaceSave.write.finish", metadata: effective.metadata, url: url, extra: ["writeSucceeded": "\(writeSucceeded)"])
                 await self?.writerFinished(for: url, effective: effective, writeSucceeded: writeSucceeded)
             }
             if var current = pendingByURL[url] {
@@ -13983,10 +14258,10 @@ class WorkspaceManagerViewModel: ObservableObject {
                     source: source
                 )
                 #if DEBUG
-                    WorkspaceRestorePerfLog.event(
+                    restorePerfRecorder.event(
                         "workspaceSave.stalePayload.retry",
                         fields: [
-                            "workspaceID": WorkspaceRestorePerfLog.shortID(workspaceID),
+                            "workspaceID": restorePerfRecorder.shortID(workspaceID),
                             "capturedVersion": "\(capturedStateVersion)",
                             "latestVersion": "\(latestStateVersion)"
                         ]
@@ -14217,10 +14492,10 @@ class WorkspaceManagerViewModel: ObservableObject {
                     source: source
                 )
                 #if DEBUG
-                    WorkspaceRestorePerfLog.event(
+                    restorePerfRecorder.event(
                         "workspaceSave.domain.stalePayload.retry",
                         fields: [
-                            "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                            "workspaceID": restorePerfRecorder.shortID(workspace.id),
                             "capturedVersion": "\(capturedStateVersion)",
                             "latestVersion": "\(latestStateVersion)"
                         ]
@@ -14367,7 +14642,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
         WorkspaceFileDecodeCache.shared.invalidate(url: targetURL)
         await refreshCanonicalRootState(workspaceID: workspaceToSave.id)
-        WorkspaceSaveTracer.event(
+        workspaceSaveTracer.event(
             "workspaceSave.domain.committed",
             metadata: workspaceSaveMetadata(for: workspaceToSave, source: source),
             url: targetURL
@@ -14451,7 +14726,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         // The caller resolves canonical roots even on cancellation/failure. Never publish the
         // captured proposal or its baseline here after an inter-actor command suspension.
         WorkspaceFileDecodeCache.shared.invalidate(url: targetURL)
-        WorkspaceSaveTracer.event("workspaceSave.domain.committed", metadata: workspaceSaveMetadata(for: prepared, source: source), url: targetURL)
+        workspaceSaveTracer.event("workspaceSave.domain.committed", metadata: workspaceSaveMetadata(for: prepared, source: source), url: targetURL)
         // Only a fully represented local model can acknowledge its whole-state version.
         return (savedStateVersion: prepared == current ? version : nil, fileURL: targetURL)
     }
@@ -14524,10 +14799,10 @@ class WorkspaceManagerViewModel: ObservableObject {
            let index = workspaceIndex(for: workspace.id)
         {
             #if DEBUG
-                WorkspaceRestorePerfLog.event(
+                restorePerfRecorder.event(
                     "workspaceSave.direct.stalePayload.retry",
                     fields: [
-                        "workspaceID": WorkspaceRestorePerfLog.shortID(workspace.id),
+                        "workspaceID": restorePerfRecorder.shortID(workspace.id),
                         "capturedVersion": "\(capturedStateVersion)",
                         "latestVersion": "\(latestStateVersion)"
                     ]
@@ -14544,7 +14819,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
 
         let metadata = workspaceSaveMetadata(for: workspaceToSave, source: source)
-        WorkspaceSaveTracer.event("workspaceSave.direct.enqueue", metadata: metadata, url: targetURL)
+        workspaceSaveTracer.event("workspaceSave.direct.enqueue", metadata: metadata, url: targetURL)
         let finalURL = try await saveWorkspaceToFileAsync(workspaceToSave, baseRoot: currentBaseRoot, metadata: metadata)
         if let rootEditContext, !rootEditIsCurrent(rootEditContext) { throw rootFailure(.staleInvocation) }
         recordRepoPathBaseline(for: workspaceToSave)
@@ -14559,7 +14834,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         let finalURL = workspaceFileURL(for: workspace, baseRoot: baseRoot)
         guard !workspace.isEphemeral else { throw WorkspaceDirectWriteError.ephemeralWorkspace }
         guard domainWorkspaceAuthorityClient == nil else {
-            WorkspaceSaveTracer.event(
+            workspaceSaveTracer.event(
                 "workspaceSave.direct.denied",
                 metadata: metadata ?? workspaceSaveMetadata(for: workspace, source: .directUnknown),
                 url: finalURL,
@@ -14601,12 +14876,12 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         // Write synchronously for direct save paths.
         WorkspaceFileDecodeCache.shared.invalidate(url: finalURL)
-        WorkspaceSaveTracer.event("workspaceSave.syncWrite.begin", metadata: metadata, url: finalURL)
+        workspaceSaveTracer.event("workspaceSave.syncWrite.begin", metadata: metadata, url: finalURL)
         do {
             try encoded.write(to: finalURL, options: .atomic)
-            WorkspaceSaveTracer.event("workspaceSave.syncWrite.success", metadata: metadata, url: finalURL)
+            workspaceSaveTracer.event("workspaceSave.syncWrite.success", metadata: metadata, url: finalURL)
         } catch {
-            WorkspaceSaveTracer.event("workspaceSave.syncWrite.failure", metadata: metadata, url: finalURL, extra: ["error": error.localizedDescription])
+            workspaceSaveTracer.event("workspaceSave.syncWrite.failure", metadata: metadata, url: finalURL, extra: ["error": error.localizedDescription])
             throw error
         }
 
@@ -16374,5 +16649,48 @@ class WorkspaceManagerViewModel: ObservableObject {
         } catch {
             print("Warning: Could not remove RepoPrompt-Backup folder: \(error)")
         }
+    }
+}
+
+@MainActor
+extension WorkspaceManagerViewModel: WorkspaceSelectionHost {
+    var activeSelectionWorkspace: WorkspaceSelectionWorkspace? {
+        activeWorkspace.map { workspace in
+            WorkspaceSelectionWorkspace(
+                id: workspace.id,
+                activeComposeTabID: workspace.activeComposeTabID,
+                firstComposeTabID: workspace.composeTabs.first?.id
+            )
+        }
+    }
+
+    func selectionTab(for identity: WorkspaceSelectionIdentity) -> WorkspaceSelectionTab? {
+        composeTab(for: identity).map { WorkspaceSelectionTab(id: $0.id, selection: $0.selection) }
+    }
+
+    func storeSelection(
+        _ selection: StoredSelection,
+        modifiedAt: Date,
+        for identity: WorkspaceSelectionIdentity
+    ) -> Bool {
+        guard var tab = composeTab(for: identity) else { return false }
+        tab.selection = selection
+        tab.lastModified = modifiedAt
+        return updateComposeTabStoredOnly(tab, inWorkspaceID: identity.workspaceID)
+    }
+
+    func committedSelectionRevision(for identity: WorkspaceSelectionIdentity) -> UInt64 {
+        selectionRevisionForMCP(workspaceID: identity.workspaceID, tabID: identity.tabID)
+    }
+}
+
+@MainActor
+extension WorkspaceManagerViewModel: WorkspaceSearchReadinessProviding {
+    func waitForSearchReadiness(timeout: Duration) async throws -> WorkspaceSearchReadinessTicket {
+        try await awaitWorkspaceSearchReadiness(timeout: timeout)
+    }
+
+    nonisolated func validateSearchReadiness(_ ticket: WorkspaceSearchReadinessTicket) throws {
+        try validateWorkspaceSearchReadinessSnapshot(ticket)
     }
 }

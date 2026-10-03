@@ -1,5 +1,8 @@
 import CryptoKit
 import Foundation
+import RepoPromptFoundation
+import RepoPromptInstrumentation
+import RepoPromptWorkspaceCore
 
 struct AgentContextExportSource: Equatable {
     let tabID: UUID?
@@ -435,8 +438,8 @@ enum AgentContextExportResolver {
         source: AgentContextExportSource,
         store: WorkspaceFileContextStore
     ) async -> WorkspaceLookupContext {
-        let startMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
-        AgentSelectedFilesDiagnostics.event("resolver.lookupContext.start", fields: AgentSelectedFilesDiagnostics.sourceFields(source))
+        let startMS = AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).timestampMSIfEnabled()
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).event("resolver.lookupContext.start", fields: AgentSelectedFilesDiagnostics.sourceFields(source))
         let context = await AgentWorkspaceLookupContextResolver.lookupContext(
             source: AgentWorkspaceLookupContextSource(
                 activeAgentSessionID: source.activeAgentSessionID,
@@ -447,7 +450,7 @@ enum AgentContextExportResolver {
         var fields = AgentSelectedFilesDiagnostics.sourceFields(source)
         fields["rootScope"] = String(describing: context.rootScope)
         fields["hasProjection"] = String(context.bindingProjection != nil)
-        AgentSelectedFilesDiagnostics.durationEvent("resolver.lookupContext", startMS: startMS, fields: fields)
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).durationEvent("resolver.lookupContext", startMS: startMS, fields: fields)
         return context
     }
 
@@ -464,13 +467,13 @@ enum AgentContextExportResolver {
         phaseDidBeginForTesting: ResolutionPhaseDidBegin? = nil
     ) async throws -> AgentContextExportModel {
         try checkCancellation()
-        let totalStartMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let totalStartMS = AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).timestampMSIfEnabled()
         var startFields = AgentSelectedFilesDiagnostics.sourceFields(source)
         startFields["filePathDisplay"] = String(describing: filePathDisplay)
         startFields["codeMapUsage"] = String(describing: codeMapUsage)
-        AgentSelectedFilesDiagnostics.event("resolver.resolveModel.start", fields: startFields)
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).event("resolver.resolveModel.start", fields: startFields)
         guard selectionNeedsResolution(source.selection, codeMapUsage: codeMapUsage) else {
-            AgentSelectedFilesDiagnostics.durationEvent(
+            AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).durationEvent(
                 "resolver.resolveModel.fastEmpty",
                 startMS: totalStartMS,
                 fields: startFields
@@ -490,6 +493,7 @@ enum AgentContextExportResolver {
             source: source,
             filePathDisplay: filePathDisplay,
             codeMapUsage: codeMapUsage,
+            perfRecorder: store.perfRecorder,
             entryMetricsSnapshot: entryMetricsSnapshot,
             accountingService: accountingService,
             phaseDidBeginForTesting: phaseDidBeginForTesting,
@@ -504,20 +508,20 @@ enum AgentContextExportResolver {
             store: store,
             fallback: .visibleWorkspace
         )
-        let physicalizeStartMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let physicalizeStartMS = AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).timestampMSIfEnabled()
         let physicalSelection = lookupContext.physicalizeSelection(source.selection)
         var physicalizeFields = AgentSelectedFilesDiagnostics.selectionFields(physicalSelection)
         physicalizeFields["hasProjection"] = String(lookupContext.bindingProjection != nil)
-        AgentSelectedFilesDiagnostics.durationEvent("resolver.physicalizeSelection", startMS: physicalizeStartMS, fields: physicalizeFields)
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).durationEvent("resolver.physicalizeSelection", startMS: physicalizeStartMS, fields: physicalizeFields)
 
-        let resolveRowsStartMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let resolveRowsStartMS = AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).timestampMSIfEnabled()
         let resolution = await resolveRows(
             selection: physicalSelection,
             store: store,
             rootScope: lookupContext.rootScope,
             profile: .uiAssisted
         )
-        AgentSelectedFilesDiagnostics.durationEvent(
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).durationEvent(
             "resolver.resolveRows",
             startMS: resolveRowsStartMS,
             fields: [
@@ -1043,13 +1047,14 @@ enum AgentContextExportResolver {
         source: AgentContextExportSource,
         filePathDisplay: FilePathDisplay,
         codeMapUsage: CodeMapUsage,
+        perfRecorder: any AgentModePerfRecording,
         entryMetricsSnapshot: PromptContextEntryMetricsSnapshot?,
         accountingService: PromptContextAccountingService,
         phaseDidBeginForTesting: ResolutionPhaseDidBegin?,
         totalStartMS: Double?,
         fields startFields: [String: String]
     ) async throws -> AgentContextExportModel? {
-        let startMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let startMS = AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).timestampMSIfEnabled()
         guard source.hasWorktreeBindings,
               source.worktreeBindings.count >= 1,
               metadataOnlyBindingsAreSafe(source.worktreeBindings),
@@ -1156,7 +1161,7 @@ enum AgentContextExportResolver {
         }
         rows.sort(by: rowSort)
         try checkCancellation()
-        AgentSelectedFilesDiagnostics.durationEvent(
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).durationEvent(
             "resolver.metadataOnlyWorktreeModel",
             startMS: startMS,
             fields: [
@@ -1172,7 +1177,7 @@ enum AgentContextExportResolver {
         completeFields["invalidPaths"] = String(invalidPaths.count)
         completeFields["hasProjection"] = "true"
         completeFields["metadataOnly"] = "true"
-        AgentSelectedFilesDiagnostics.durationEvent(
+        AgentSelectedFilesDiagnostics(perfRecorder: perfRecorder).durationEvent(
             "resolver.resolveModel.complete",
             startMS: totalStartMS,
             fields: completeFields
@@ -1369,7 +1374,7 @@ enum AgentContextExportResolver {
                 filesByID[fileID] = file
             }
         }
-        AgentSelectedFilesDiagnostics.event(
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).event(
             "resolver.codemapFileRecords",
             fields: [
                 "wantedFiles": String(wantedFileCount),
@@ -1698,8 +1703,8 @@ enum AgentContextExportResolver {
         rootScope: WorkspaceLookupRootScope,
         profile: PathLocateProfile
     ) async -> RowResolution {
-        let totalStartMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
-        AgentSelectedFilesDiagnostics.event(
+        let totalStartMS = AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).timestampMSIfEnabled()
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).event(
             "resolver.resolveRows.start",
             fields: [
                 "selectedPaths": String(selection.selectedPaths.count),
@@ -1717,9 +1722,9 @@ enum AgentContextExportResolver {
         let selectedRequests = selection.selectedPaths.map {
             WorkspacePathLookupRequest(userPath: $0, profile: profile, rootScope: rootScope)
         }
-        let selectedLookupStartMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let selectedLookupStartMS = AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).timestampMSIfEnabled()
         let selectedLookupResults = await store.lookupSelectionPaths(selectedRequests)
-        AgentSelectedFilesDiagnostics.durationEvent(
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).durationEvent(
             "resolver.lookupSelectedPaths",
             startMS: selectedLookupStartMS,
             fields: [
@@ -1743,13 +1748,13 @@ enum AgentContextExportResolver {
         let sliceLookupRequests = slicePaths.map {
             WorkspacePathLookupRequest(userPath: $0, profile: profile, rootScope: rootScope)
         }
-        let sliceLookupStartMS = AgentSelectedFilesDiagnostics.timestampMSIfEnabled()
+        let sliceLookupStartMS = AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).timestampMSIfEnabled()
         let sliceLookupResults: [String: WorkspacePathLookupResult] = if sliceLookupRequests.isEmpty {
             [:]
         } else {
             await store.lookupSelectionPaths(sliceLookupRequests)
         }
-        AgentSelectedFilesDiagnostics.durationEvent(
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).durationEvent(
             "resolver.lookupSlicePaths",
             startMS: sliceLookupStartMS,
             fields: [
@@ -1859,7 +1864,7 @@ enum AgentContextExportResolver {
             append(entry, canRemove: true, to: &rows, seenAccountingIdentities: &seenAccountingIdentities)
         }
 
-        AgentSelectedFilesDiagnostics.durationEvent(
+        AgentSelectedFilesDiagnostics(perfRecorder: store.perfRecorder).durationEvent(
             "resolver.resolveRows.complete",
             startMS: totalStartMS,
             fields: [

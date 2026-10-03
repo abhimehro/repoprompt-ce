@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct ContextBuilderWorkspaceContext {
     let parentAgentSessionID: UUID

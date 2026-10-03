@@ -18,6 +18,11 @@ actor GitBackend: VCSBackend {
         self.gitService = gitService
     }
 
+    /// The environment this backend's Git subprocesses inherit.
+    func gitProcessEnvironment() async -> [String: String] {
+        await gitService.preparedProcessEnvironment()
+    }
+
     // MARK: - Repository Discovery
 
     func findRepoRoot(from url: URL) async throws -> URL? {

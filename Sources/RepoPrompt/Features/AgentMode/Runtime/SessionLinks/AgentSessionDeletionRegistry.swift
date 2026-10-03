@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 /// Process-owned record of which agent sessions are being, or have been, durably deleted.
 ///
@@ -14,6 +15,12 @@ import Foundation
 @MainActor
 final class AgentSessionDeletionRegistry {
     static let shared = AgentSessionDeletionRegistry()
+
+    private var restorePerfRecorder: any WorkspaceRestorePerfRecording = NoopWorkspaceRestorePerfRecorder()
+
+    func installRestorePerfRecorder(_ recorder: any WorkspaceRestorePerfRecording) {
+        restorePerfRecorder = recorder
+    }
 
     enum State: Equatable {
         /// A durable deletion is running. New oversight is transiently blocked, but existing intent
@@ -127,11 +134,11 @@ final class AgentSessionDeletionRegistry {
         /// only: a tombstone is a fact about a lifecycle, and the full UUID would make this log an
         /// index of the user's deleted transcripts.
         private func logTransition(_ transition: String, sessionID: UUID) {
-            WorkspaceRestorePerfLog.event(
+            restorePerfRecorder.event(
                 "oversight.deletion",
                 fields: [
                     "transition": transition,
-                    "session": WorkspaceRestorePerfLog.shortID(sessionID),
+                    "session": restorePerfRecorder.shortID(sessionID),
                     "tracked": String(statesBySession.count)
                 ]
             )

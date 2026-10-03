@@ -20,11 +20,26 @@ Self-tests: `make conductor-selftest` (includes `test_modularization_metrics.py`
 
 Added a fail-closed Git move audit (manifest, normalized SHA-256, similarity, import/access-only and discovery checks), dry-run diagnostics-driven `package` access lift, dry-run test-import retarget helper, and `make new-module` checklist. The helpers make no Swift changes in this slice. T0's Python regressions use temporary Git repositories and run in `make conductor-selftest`. The audit's first-party import allowlist is derived from first-party source/test targets and `Package.swift` at the compared revisions; unchanged external imports remain valid.
 
+## T1–T5 — PR 2 tooling half (2026-09-30)
+
+Checkpoint `f80ae16a` adds the append-friendly first-party target catalog (`Scripts/modularization/modules.json`) and allowed-edge/import/placement guardrails. The T1 gates are `tests_testable_import_app_files` and `app_files_over_2000_lines` (non-increasing), plus `app_target_swift_lines` with fixed 2,000-line headroom. CI's root test build uses SwiftPM's `--explicit-target-dependency-import-check error`.
+
+T2 routes `make dev-test MODULE=<TestTarget>` through conductor's app-free module executor. Exact, unambiguous `FILTER=<Suite>` values resolve to an owning app-free target; ambiguous/regex filters retain the aggregate path or require an explicit module. `modularization_metrics.py edit-locality` measures trailing 60-day Swift touches on `origin/main` by current module ownership. T3 compares source SHA-256 values against the conductor build attestation; missing or changed fingerprints fail the index gate instead of trusting mtimes.
+
+T4 changes machine-wide heavy admission to FIFO weighted reservations. Per-class observed `peakRss` samples set a nearest-rank p90 reservation with headroom; unknown app/aggregate work reserves conservatively, and legacy queue records are exclusive. T5 has one CI root test-bundle build and artifact handoff to four no-build shards, affected app-free module-test jobs, main-only Sentry validation, and build-produced index/type-check ratchets. The CI artifact carries source/test hash attestations and refuses missing or changed inputs. Hosted CI and runtime speedups are **not established** by local source inspection or selftests; record those separately when a PR run exists.
+
+Local tooling-half validation on 2026-09-30: `make conductor-selftest` passed; `make guardrails` passed after rerunning outside the restricted SwiftPM sandbox; `make xcode-validate` passed after the same sandbox accommodation. `make dev-test MODULE=RepoPromptRegexCoreTests` completed with 7 tests and 0 failures (conductor ticket `84bbe116-8b0c-4da9-b389-70de298a2de8`, exit 0; 3m 59s global-heavy wait, 2m 10s execution). The initial sandbox-denied guardrails and Xcode attempts were not source failures.
+
 ## Ratchet policy
 
-- **Gated** (CI fails on any increase): `app_files_over_5000_lines`, `app_static_shared_declarations`.
-- **Tracked** (reported, not gated): `app_target_swift_lines`, `app_files_over_2000_lines`, `app_shared_accessor_uses`, `app_userdefaults_standard_uses`, `app_wrong_way_file_edges`, `app_largest_cycle_components`, `tests_sleep_calls`, `tests_testable_import_app_files`. The lexical graph can add false edges from identifier collisions; the sleep regex also counts fake-clock declarations. Do not gate these counts until their semantics are corrected.
+- **Gated by build-free guardrails:** `app_files_over_5000_lines`, `app_files_over_2000_lines`, `app_static_shared_declarations`, and `tests_testable_import_app_files` are non-increasing; `app_target_swift_lines` has a fixed 2,000-line allowance over its recorded baseline.
+- **Gated by the build-producing CI job:** index wrong-way edges and largest cycle; type-check body and expression budgets. Index freshness must be proven by source hashes before comparing counts.
+- **Tracked, not gated:** `app_shared_accessor_uses`, `app_userdefaults_standard_uses`, lexical `app_wrong_way_file_edges`, lexical `app_largest_cycle_components`, and `tests_sleep_calls`. The lexical graph can add false edges from identifier collisions; the sleep regex also counts fake-clock declarations.
 - Lower a baseline with `update` in the slice that improves it. Raising one requires `update --allow-regression` plus a justification entry here.
+
+**2026-10-01 PR 2/main reconciliation.** Merging current `origin/main` (#1134–#1136) into PR 2 put the app target at 649,172 Swift lines, 242 above the earlier 648,930 ceiling. Regenerated `ratchets.json` with `update --allow-regression` against the merged tree: the recorded app-line baseline is now 649,172 with the same fixed 2,000-line headroom. The non-increasing gate counts remain unchanged; tracked-only counts reflect the merged source. This is a baseline reconciliation for existing feature work and PR 2, not a change to the guardrail policy.
+
+**2026-10-01 PR 2/#1137 reconciliation.** Merging `origin/main` at `773a0f2e` added three tests with an exact `@testable import RepoPromptApp` line. The new Devin catalog, Context Builder prompt, and MCP policy tests exercise app-owned types; the fourth new Devin test uses an SPI-prefixed import and is not counted by this lexical metric. Regenerated `ratchets.json` with `update --allow-regression` against the merged tree: the test-import baseline is 332 rather than 329. The app-line baseline and tracked metrics were also refreshed for the new Devin catalog. This reconciles upstream app-level test coverage without weakening the non-increasing rule for later changes.
 
 ## Baseline — 2026-09-28 (`589cecc5`)
 
@@ -50,6 +65,33 @@ Conductor timings (last 3,000 jobs, net of queue):
 - **Gated:** `tests_sleep_calls` 47 → 49. Both come from main: #1067 added a fake clock whose `func sleep(_:)` declaration the regex counts (`ContextBuilderGroupedSupervisionTests`), and #1092 added a 2 ms `Task.sleep` poll (`AgentAdmissionRecoveryTests`).
 - **Tracked (refreshed, not gated):** app files 1,160 → 1,161, app lines 648,091 → 651,485, files over 2,000 lines 50 → 51, `.shared` uses 1,220 → 1,222, wrong-way edges 1,102 → 1,104, `@testable import RepoPromptApp` test files 319 → 324. Of these, this branch adds 2 app lines (the P0.6 access change) and 1 `@testable` file (the P0.6 goldens); the rest is main (`origin/main` alone measures 651,483 lines and 323 files).
 
+## Ratchet exception — advertised model admission (2026-09-30)
+
+`app_static_shared_declarations`: **102 → 103**, solely for
+`AgentAdvertisedModelCatalog.shared`. Generated with
+`python3 Scripts/modularization_metrics.py update --allow-regression --baseline /tmp/overseer-model-selection-ratchets.generated.json`;
+only this justified metric is adopted in `ratchets.json`. Other baselines stay unchanged;
+`app_files_over_5000_lines` remains 17. This is an explicit one-owner exception, not a
+relaxation of the gate or a rename to evade its `shared` count.
+
+The new owner is the process-memory index of exact advertised compound model IDs and their
+precomputed effort decomposition, shared by `set_model` and explicit `create_lane(model_id:)`.
+Ordinary catalogue producers populate it; ACP/Codex/backend configuration changes invalidate it.
+Admission only performs bounded memory lookups and refuses a cold index actionably. It never
+warms persistence, scans the full catalogue, discovers models, or calls a provider. Keeping this
+projection separate prevents the legacy discovery/resolution paths (including Codex effort parsing
+that can consult persistence) from leaking into the configuration-only transaction.
+
+Alternatives inspected: `AgentACPModelRegistry` owns ACP provider snapshots and store warming;
+`AgentCodexModelRegistry` owns Codex snapshots. Neither is a coherent owner for Claude, ACP,
+Codex, and other advertised targets together. `AgentModelCatalog` is a stateless catalogue facade;
+adding a differently named static cache there would preserve the new global lifetime while merely
+hiding it from the ratchet. Reworking all catalogue lifetimes/injection is outside this bounded
+feature and would add risk without strengthening its no-I/O contract. The index has no authority,
+provider lifecycle, or persistence ownership; independently constructed instances support admission
+tests. Future catalogue-service extraction should absorb this projection and remove this singleton,
+not duplicate it in individual registries. No other new global owner is authorized by this exception.
+
 ## Decisions
 
 | ID | Decision | Status |
@@ -61,7 +103,7 @@ Conductor timings (last 3,000 jobs, net of queue):
 | ADR-05 | Logic/UI split (plan §3.1 principle 6) | Accepted (2026-09-29) as written. Evidence: P0.5 type-check data (SwiftUI is 58 of 104 function bodies ≥ 200 ms and 74% of their time) |
 | ADR-06 | Test ownership and hermeticity (plan §3.6) | Accepted (2026-09-29) as written. Evidence: P0.3 bake-off (module-owned test targets cut median edit→test by 77% and 95%; an app interface change recompiles 360 app test files) |
 | ADR-07 | Focused-test executor | Accepted (2026-09-28): Swift Build per-target bundles (`conductor test --module`) for test targets whose closure excludes `RepoPromptApp`, including Swift Testing; native aggregate stays the default `FILTER` path, the path for app-dependent targets, and the CI path. Passed the gate on both P0.3 slices (77% and 95% lower median edit→test, no discovery loss) |
-| ADR-08 | Admission and caching (plan §5.4–5.5) | Proposed. Deferred to P1.3 (admission v2 from measured per-job peak RSS, P0.5) and §5.5 (cross-worktree caching needs clean-vs-cached correctness evidence) |
+| ADR-08 | Admission and caching (plan §5.4–5.5) | Admission v2 accepted in T4: FIFO weighted reservations use measured per-class peak RSS with conservative app/aggregate fallback and legacy exclusivity. Cross-worktree caching remains conditional T6 and requires clean-vs-cached correctness evidence |
 | ADR-09 | Per-module concurrency (plan §3.7) | Accepted (2026-09-29) as written. Evidence: the existing [Swift 6.2 concurrency migration ledger](../swift-6-2-concurrency/migration-ledger.md), which each extraction extends |
 
 ## Phase 0 progress
@@ -726,7 +768,7 @@ These agree with P0.3's sampler: 3,856 MiB for an aggregate interface edit. For 
    - The first two were identical in both runs and are gate-ready. The ≥ 500 ms / ≥ 200 ms pair moved by up to 3 and stays tracked.
    - The ≥ 200 ms function count (92–104) is a report-only indicator.
    - Like the index metrics, these need a compile, so they cannot run in `make guardrails`. Gate them when a build-producing CI job exists (P1.4). Until then, record them per slice with `conductor swift-build --product RepoPrompt --scratch <label> --swiftc-flag=-Xfrontend --swiftc-flag=-warn-long-function-bodies=500 --swiftc-flag=-Xfrontend --swiftc-flag=-warn-long-expression-type-checking=200`.
-   - They are not added to `ratchets.json`, for the same `update` reason as the index baseline.
+   - The build-produced limits now live in [`build-ratchets.json`](build-ratchets.json), not `ratchets.json` (which holds source metrics). The CI warning classifier deduplicates by normalized app source path, line, column, and warning kind, retaining the maximum observed duration; repeated compiler emissions with different timings must not consume multiple slots. Timing is report-only on pull requests and enforced on pushes to `main`; compilation, import checking, Swift Testing guard, and test artifacts remain blocking.
 2. **Cheapest type-check wins.** Split the four bodies over 4 s: `AgentContextDrawerFilesTab.body`, `SettingsNotificationHandler.body(content:)`, `AgentSessionRow.body`, and `AgentModeSessionsListView.body`. Together they cost 27.5 s of type checking per full compile and sit in batch jobs on the app's critical path. Pure view refactors: behavior-preserving, out of scope here.
 3. **Do not adopt `-no_deduplicate`** for debug test bundles.
 4. **Evaluate skipping dSYM generation for local debug links** (follow-up; not adopted).
@@ -835,3 +877,162 @@ For every slice that moves code, before the move PR merges:
 - Tracked metrics grew (not gated): `app_target_swift_lines` 648,098 → 648,100 (the constant's doc comment) and `tests_testable_import_app_files` 319 → 320 (the new golden suite, which tests app-owned types). Baselines unchanged.
 - `make conductor-selftest`: every suite passes except `test_local_production_installer.py`, which hit the known load-sensitive flake (6 of 18 errors, each a 15 s installer subprocess timeout; this change does not touch the installer). `test_security_inventory.py`, the suite after it, passes standalone.
 - SwiftFormat `--lint` and SwiftLint `--strict` are clean on the two changed Swift files.
+
+## PR 2 foundations A1–A5 (2026-09-30)
+
+### Ownership and move evidence
+
+| Slice | Former app family | New production owner | Owning tests |
+| --- | --- | --- | --- |
+| A1 | `Infrastructure/Concurrency`, `Infrastructure/Utilities`, `Infrastructure/Networking`, `Infrastructure/SyntaxParsing`, selected notification names | `RepoPromptFoundation` | `RepoPromptFoundationTests` |
+| A2 | diagnostic event and sink contracts; concrete recorders remain in `RepoPromptApp` | `RepoPromptInstrumentation` | `RepoPromptInstrumentationTests` |
+| A3 | `Infrastructure/Regex` adapters | `RepoPromptRegexCore` | `RepoPromptRegexCoreTests` |
+| A4 | `Infrastructure/Process` including `CLI/` | `RepoPromptProcess` | `RepoPromptProcessTests` |
+| A5 | `Infrastructure/Security` | `RepoPromptSecureStorage` (app-only) | `RepoPromptSecureStorageTests` |
+
+The mechanical move commit `d681cbbd` is reproducibly audited with
+`python3 Scripts/modularization_move_audit.py --base 3aed2da3 --head d681cbbd`:
+**PASS, 76 moves, 0 violations**. The complete old-to-new path manifest is
+below. All 76 pairs are R100; the audit command verifies their normalized
+SHA-256 equality. The separate
+`8ca85819` checkpoint contains the necessary target access and import changes,
+including test retargets, rather than hiding them in the byte-identical move.
+The subsequent A2 instrumentation checkpoints are `c93500a3`, `3775cd3e`,
+`864e23b4`, `abe9bad3`, and `40205042`.
+
+### Byte-identical move manifest
+
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLI/CLIPathInstaller.swift` → `Sources/RepoPrompt/App/CLI/CLIPathInstaller.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLI/CLISymlinkManager.swift` → `Sources/RepoPrompt/App/CLI/CLISymlinkManager.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/Shortcuts.swift` → `Sources/RepoPrompt/App/Shortcuts.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/ErrorExtensions.swift` → `Sources/RepoPrompt/Infrastructure/AI/ErrorExtensions.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Concurrency/AsyncMutex.swift` → `Sources/RepoPromptFoundation/Concurrency/AsyncMutex.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Concurrency/AsyncScope.swift` → `Sources/RepoPromptFoundation/Concurrency/AsyncScope.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Concurrency/BoundedOrderedConcurrentMap.swift` → `Sources/RepoPromptFoundation/Concurrency/BoundedOrderedConcurrentMap.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Concurrency/CancellableProbe.swift` → `Sources/RepoPromptFoundation/Concurrency/CancellableProbe.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Concurrency/SameThreadReentryCheckedLock.swift` → `Sources/RepoPromptFoundation/Concurrency/SameThreadReentryCheckedLock.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Concurrency/TaskSemaphore.swift` → `Sources/RepoPromptFoundation/Concurrency/TaskSemaphore.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Networking/HTTPClient.swift` → `Sources/RepoPromptFoundation/Networking/HTTPClient.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Networking/HTTPDecoding.swift` → `Sources/RepoPromptFoundation/Networking/HTTPDecoding.swift`
+R100 `Sources/RepoPrompt/Infrastructure/WorkspaceContext/Slices/LineRange.swift` → `Sources/RepoPromptFoundation/Slices/LineRange.swift`
+R100 `Sources/RepoPrompt/Infrastructure/WorkspaceContext/Slices/SliceRangeMath.swift` → `Sources/RepoPromptFoundation/Slices/SliceRangeMath.swift`
+R100 `Sources/RepoPrompt/Infrastructure/SyntaxParsing/SyntaxManager.swift` → `Sources/RepoPromptFoundation/SyntaxParsing/SyntaxManager.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/CheckoutPathIdentity.swift` → `Sources/RepoPromptFoundation/Utilities/CheckoutPathIdentity.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/Collections/BoundedArray.swift` → `Sources/RepoPromptFoundation/Utilities/Collections/BoundedArray.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/Collections/PersistentHashMap.swift` → `Sources/RepoPromptFoundation/Utilities/Collections/PersistentHashMap.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/FriendlyErrorRepresentable.swift` → `Sources/RepoPromptFoundation/Utilities/FriendlyErrorRepresentable.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/JSONDictionaryHelpers.swift` → `Sources/RepoPromptFoundation/Utilities/JSONDictionaryHelpers.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/RelativePath.swift` → `Sources/RepoPromptFoundation/Utilities/RelativePath.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/SequenceExtension.swift` → `Sources/RepoPromptFoundation/Utilities/SequenceExtension.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/String+Sanitize.swift` → `Sources/RepoPromptFoundation/Utilities/String+Sanitize.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/String+Slug.swift` → `Sources/RepoPromptFoundation/Utilities/String+Slug.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Utilities/WorkspacePathNormalizations.swift` → `Sources/RepoPromptFoundation/Utilities/WorkspacePathNormalizations.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Telemetry/SentryTelemetryModel.swift` → `Sources/RepoPromptInstrumentation/SentryTelemetryModel.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLI/ManagedCLIPathPolicy.swift` → `Sources/RepoPromptProcess/CLI/ManagedCLIPathPolicy.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLIEnvironmentCache.swift` → `Sources/RepoPromptProcess/CLIEnvironmentCache.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLILaunchProfile.swift` → `Sources/RepoPromptProcess/CLILaunchProfile.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLINativePathDefaults.swift` → `Sources/RepoPromptProcess/CLINativePathDefaults.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLIOutputFormat.swift` → `Sources/RepoPromptProcess/CLIOutputFormat.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLIProcessConfiguration+AdditionalPaths.swift` → `Sources/RepoPromptProcess/CLIProcessConfiguration+AdditionalPaths.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLIProcessConfiguration.swift` → `Sources/RepoPromptProcess/CLIProcessConfiguration.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLIProcessLogCollector.swift` → `Sources/RepoPromptProcess/CLIProcessLogCollector.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CLIProcessRunner.swift` → `Sources/RepoPromptProcess/CLIProcessRunner.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ChildProcessExitObserver.swift` → `Sources/RepoPromptProcess/ChildProcessExitObserver.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/CommandPathResolver.swift` → `Sources/RepoPromptProcess/CommandPathResolver.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ExecutableFileIdentity.swift` → `Sources/RepoPromptProcess/ExecutableFileIdentity.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/FDWriteSupport.swift` → `Sources/RepoPromptProcess/FDWriteSupport.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/FileHandleChunkChannel.swift` → `Sources/RepoPromptProcess/FileHandleChunkChannel.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessDebugLogging.swift` → `Sources/RepoPromptProcess/ProcessDebugLogging.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessEnvironmentBuilder.swift` → `Sources/RepoPromptProcess/ProcessEnvironmentBuilder.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessEnvironmentSanitizer.swift` → `Sources/RepoPromptProcess/ProcessEnvironmentSanitizer.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessLaunchContext.swift` → `Sources/RepoPromptProcess/ProcessLaunchContext.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessLauncher.swift` → `Sources/RepoPromptProcess/ProcessLauncher.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessRegistry.swift` → `Sources/RepoPromptProcess/ProcessRegistry.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessStreamFraming.swift` → `Sources/RepoPromptProcess/ProcessStreamFraming.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Process/ProcessTermination.swift` → `Sources/RepoPromptProcess/ProcessTermination.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Regex/PCRE2RegexAdapter.swift` → `Sources/RepoPromptRegexCore/PCRE2RegexAdapter.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Regex/PCRE2SearchFastPlans.swift` → `Sources/RepoPromptRegexCore/PCRE2SearchFastPlans.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Regex/RegexToolkit.swift` → `Sources/RepoPromptRegexCore/RegexToolkit.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/BundleIdentityDefaultsMigration.swift` → `Sources/RepoPromptSecureStorage/BundleIdentityDefaultsMigration.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/EphemeralSecureKeyValueStore.swift` → `Sources/RepoPromptSecureStorage/EphemeralSecureKeyValueStore.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/IdentityTransitionDiagnostics.swift` → `Sources/RepoPromptSecureStorage/IdentityTransitionDiagnostics.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/KeyManager.swift` → `Sources/RepoPromptSecureStorage/KeyManager.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/KeychainService.swift` → `Sources/RepoPromptSecureStorage/KeychainService.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/LocalSigningIdentityRegistry.swift` → `Sources/RepoPromptSecureStorage/LocalSigningIdentityRegistry.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/RuntimeCodeSigningDetector.swift` → `Sources/RepoPromptSecureStorage/RuntimeCodeSigningDetector.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/RuntimeCodeSigningPolicy.swift` → `Sources/RepoPromptSecureStorage/RuntimeCodeSigningPolicy.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/SecureKeyService.swift` → `Sources/RepoPromptSecureStorage/SecureKeyService.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/SecureKeyValueStorageBackend.swift` → `Sources/RepoPromptSecureStorage/SecureKeyValueStorageBackend.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/SecureStorageAccountCatalog.swift` → `Sources/RepoPromptSecureStorage/SecureStorageAccountCatalog.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/SecureStorageIdentityMigration.swift` → `Sources/RepoPromptSecureStorage/SecureStorageIdentityMigration.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/SecureStorageRepairService.swift` → `Sources/RepoPromptSecureStorage/SecureStorageRepairService.swift`
+R100 `Sources/RepoPrompt/Infrastructure/Security/SecurityObfuscation.swift` → `Sources/RepoPromptSecureStorage/SecurityObfuscation.swift`
+R100 `Tests/RepoPromptTests/Infrastructure/Concurrency/AsyncMutexCancellationHandoffTests.swift` → `Tests/RepoPromptFoundationTests/AsyncMutexCancellationHandoffTests.swift`
+R100 `Tests/RepoPromptTests/AgentMode/SessionLinks/AgentSessionLinkDiagnosticsRedactionGuardTests.swift` → `Tests/RepoPromptInstrumentationTests/AgentSessionLinkDiagnosticsRedactionGuardTests.swift`
+R100 `Tests/RepoPromptTests/AI/CLIProcessRunnerCancellationTests.swift` → `Tests/RepoPromptProcessTests/CLIProcessRunnerCancellationTests.swift`
+R100 `Tests/RepoPromptTests/Infrastructure/Process/ExecutableFileIdentityTests.swift` → `Tests/RepoPromptProcessTests/ExecutableFileIdentityTests.swift`
+R100 `Tests/RepoPromptTests/Services/ProcessLauncherSignalDispositionTests.swift` → `Tests/RepoPromptProcessTests/ProcessLauncherSignalDispositionTests.swift`
+R100 `Tests/RepoPromptTests/Security/DebugSecureStorageRuntimePolicyTests.swift` → `Tests/RepoPromptSecureStorageTests/DebugSecureStorageRuntimePolicyTests.swift`
+R100 `Tests/RepoPromptTests/Security/KeychainServiceTests.swift` → `Tests/RepoPromptSecureStorageTests/KeychainServiceTests.swift`
+R100 `Tests/RepoPromptTests/Security/LocalSigningIdentityRegistryTests.swift` → `Tests/RepoPromptSecureStorageTests/LocalSigningIdentityRegistryTests.swift`
+R100 `Tests/RepoPromptTests/Security/SecureStorageAccountCatalogTests.swift` → `Tests/RepoPromptSecureStorageTests/SecureStorageAccountCatalogTests.swift`
+R100 `Tests/RepoPromptTests/Security/SecureStorageIdentityMigrationTests.swift` → `Tests/RepoPromptSecureStorageTests/SecureStorageIdentityMigrationTests.swift`
+R100 `Tests/RepoPromptTests/Security/SecureStorageRepairServiceTests.swift` → `Tests/RepoPromptSecureStorageTests/SecureStorageRepairServiceTests.swift`
+
+### P0.6 compatibility inventory for moved sites
+
+1. `RepoPromptSecureStorage` is explicitly app-only and is in
+   `bundle_main_allowed_roots`; no CLI-linked target is allowlisted.
+2. The moved-file identity scans find one `String(reflecting:)` in
+   `RepoPromptRegexCore/SwiftPCRE2/PCRE2Error.swift`, applied to a **String pattern**
+   for diagnostic quoting, not to a type or a persisted/sorted key. They find no
+   `#fileID`, metatype description, keyed-archive, runtime class-name, or Objective-C
+   selector site in the five target trees and their owning test trees.
+3. Three `Bundle.main` reads remain in `RepoPromptSecureStorage`:
+   `BundleIdentityDefaultsMigration` and `RuntimeCodeSigningPolicy` (two reads).
+   `RepoPromptProcess` contains neither `Bundle.main` nor
+   `UserDefaults.standard`; no CLI-linked process-identity semantics changed.
+4. The moved Swift error types have no `NSError` domain/code comparison or
+   persistence site in the new target trees or their owning tests. Secure-storage
+   `decision.domain` is its own typed enum, not an `NSError` domain. No new
+   `CustomNSError.errorDomain` is needed by this move.
+5. `SecureStorageAccountCatalogTests` continues to pin persisted Keychain
+   account names. The existing `ModularizationCompatibilityGoldenTests` pins
+   the identity-sensitive values catalogued above; neither the moved literal
+   values nor those goldens were edited by the pure move.
+
+The startup phase-event seam carries only closed enums, identifiers, and flags;
+its app adapter delegates to the pre-existing recorder. The module supplies a
+no-op sink so an uncomposed consumer cannot start logging or change policy.
+
+### Local validation evidence
+
+| Check | Conductor ticket | Result |
+| --- | --- | --- |
+| `make dev-swift-build PRODUCT=all` | `e0145fa8` | Completed successfully; app and MCP products, 4m 9s execution |
+| `./conductor test --module RepoPromptFoundationTests` | `8ae537a3` | Completed successfully; 5 tests, 0 failures |
+| `./conductor test --module RepoPromptInstrumentationTests` | `eb7376c3` | Completed successfully; 4 tests, 0 failures |
+| `./conductor test --module RepoPromptRegexCoreTests` | `78f23d39` | Completed successfully; 7 tests, 0 failures |
+| `./conductor test --module RepoPromptProcessTests` | `fcd86898` | Completed successfully; 13 tests, 0 failures |
+| `./conductor test --module RepoPromptSecureStorageTests` | `c925fd8e` | Completed successfully; 73 tests, 0 failures |
+| `./conductor test --filter ModularizationCompatibilityGoldenTests` | `c066843c` | Completed successfully; 3 tests, 0 failures |
+| `make dev-lint` after the app-test import repair | `4e227173` | Completed successfully; 0 files require formatting; SwiftLint strict passed |
+| `make guardrails` | — | Exit 0, source layout and modularization ratchets passed (the initial sandboxed attempt failed in SwiftPM manifest sandboxing; rerun with process access passed) |
+
+The first full-suite ticket `41e27478` failed at compilation because one app
+regression test lacked `import RepoPromptInstrumentation`; commit `4662c7f1`
+adds that direct import. The second full-suite ticket `eae6a0de` compiled and
+ran 3,224 app tests, but one timing-sensitive `ContentReadCancellationTests`
+case timed out waiting for overwrite reconciliation. Its owner source and test
+body have no behavioral diff in this slice; focused class ticket `5cdd9078`
+then passed all 36 cases, including the timed-out case. The final full
+`make dev-test` ticket `b35e427e` **completed successfully**: 3,224 app tests,
+2 skipped, 0 failures, plus the other test products; 11m 6s execution.
+These timings are post-move observations only, not a before/after performance
+claim.
+
+## PR 3 WorkspaceContext prep (2026-10-01)
+
+This in-place C1/C2 slice removes WorkspaceContext, Search, and CodeMap's outbound references to Features, view models, and MCP implementation files. S8 now uses file search projections and feature-side path adapters; S9 stores selection values in WorkspaceContext and receives neutral workspace/tab values from the workspace manager; S17 uses neutral prompt/workspace values and a search-readiness contract. Startup and debug diagnostics use injected recorders from `WindowStateComposition`, following the PR 2 instrumentation contract pattern. The read-only, root-scoped `WorkspaceContextRootSnapshot` retains catalog and lifetime leases and has a Sendable/currentness contract test. No files or package targets move in this PR.
+
+Compiler-index readiness baseline on 101 files: 55 outbound target files, 168 outbound file edges, 1,040 symbols. The final index and validation tickets are recorded in `/tmp/rpce-pr-reviews/pr3-impl.md` for this worktree. FileSystem/VCS and other Infrastructure remain for subsequent milestones.

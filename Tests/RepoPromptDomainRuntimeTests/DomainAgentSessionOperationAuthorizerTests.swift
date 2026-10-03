@@ -154,6 +154,7 @@ final class DomainAgentSessionOperationAuthorizerTests: XCTestCase {
             .monitorRespond: .manage,
             .monitorSteer: .manage,
             .monitorStop: .manage,
+            .monitorSetModel: .manage,
             .monitorRetireLane: .manage
         ]
         for operation in targetBearingMonitorOperations {
@@ -339,7 +340,7 @@ final class DomainAgentSessionOperationAuthorizerTests: XCTestCase {
                 "agent_session_link.create_lane", "agent_session_link.retire_lane",
                 "agent_session_link.snooze_auto_wake", "agent_session_link.compact",
                 "agent_session_link.respond",
-"agent_session_link.steer", "agent_session_link.stop"
+"agent_session_link.steer", "agent_session_link.stop", "agent_session_link.set_model"
             ]
         )
         for operation in sessionControlOperations where operation.requiredMonitorCapability != nil {

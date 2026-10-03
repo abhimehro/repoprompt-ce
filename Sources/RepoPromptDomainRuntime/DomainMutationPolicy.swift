@@ -90,9 +90,10 @@ package struct DomainMutationAuthorizationSnapshot: Hashable, Sendable {
     package let canonicalRoots: Set<String>
 }
 
-package enum DomainMutationPolicyError: Error, Equatable, LocalizedError, Sendable {
+package enum DomainMutationPolicyError: Error, Equatable, LocalizedError, CustomStringConvertible, Sendable {
     case principalMissing
     case principalUnverified
+    case peerExecutableMissing(processID: Int32)
     case runtimeIdentityMismatch
     case routingContextUnavailable
     case grantMissing
@@ -103,12 +104,15 @@ package enum DomainMutationPolicyError: Error, Equatable, LocalizedError, Sendab
     case invalidGrant(String)
     case administratorTTYRequired
 
-    package var errorDescription: String? {
+    /// MCP tool failures interpolate the thrown error, so `description` is the caller-visible text.
+    package var description: String {
         switch self {
         case .principalMissing:
             "Protected mutation denied because no client principal was installed."
         case .principalUnverified:
             "Protected mutation denied because the client principal is not verified."
+        case let .peerExecutableMissing(processID):
+            "Protected mutation denied because the RepoPrompt MCP helper (pid \(processID)) is running an executable that no longer exists on disk, usually because RepoPrompt CE was updated after the helper started. Reconnect the MCP server to start a current helper."
         case .runtimeIdentityMismatch:
             "Protected mutation denied because the runtime generation changed."
         case .routingContextUnavailable:
@@ -128,6 +132,10 @@ package enum DomainMutationPolicyError: Error, Equatable, LocalizedError, Sendab
         case .administratorTTYRequired:
             "Protected mutation grants may only be changed by a verified local TTY administrator."
         }
+    }
+
+    package var errorDescription: String? {
+        description
     }
 }
 
@@ -189,6 +197,11 @@ package actor DomainMutationPolicyStore {
             throw DomainMutationPolicyError.runtimeIdentityMismatch
         }
         guard context.principal.assurance != .displayNameOnly else {
+            if context.principal.verificationFailure == .executableMissing,
+               let processID = context.principal.processID
+            {
+                throw DomainMutationPolicyError.peerExecutableMissing(processID: processID)
+            }
             throw DomainMutationPolicyError.principalUnverified
         }
 

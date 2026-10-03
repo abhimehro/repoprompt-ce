@@ -1,6 +1,7 @@
 import Foundation
 @_spi(TestSupport) @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptSecureStorage
 import XCTest
 
 @MainActor

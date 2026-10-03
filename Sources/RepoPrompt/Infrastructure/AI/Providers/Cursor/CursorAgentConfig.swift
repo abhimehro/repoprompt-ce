@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptProcess
 
 enum CursorAgentCommandSelection: Equatable {
     case automatic

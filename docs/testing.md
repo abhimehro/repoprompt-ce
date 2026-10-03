@@ -53,6 +53,40 @@ make dev-provider-test
 
 A focused green run is evidence for the named contract, not a substitute for full-suite or CI coverage when the changed boundary is broad. The hosted root-test workflow discovers one current root XCTest population through `swift test list`, counts methods per suite, assigns every discovered suite to one of four deterministic method-count-weighted LPT shards, and executes each suite in its own XCTest process. Root CI has no contract/integration tier split or contributor-maintained registry; provider-package tests remain a separate lane.
 
+## Oracle image delivery
+
+Feature map (app-backed only):
+
+| Reach / drive | Observable proof | Prerequisites / traps |
+| --- | --- | --- |
+| Agent Mode-bound CE MCP `ask_oracle` with `images:[{path,title?}]` | Correct description of a pattern absent from filename/title/question; thumbnail visible, saved and restored without original bytes/path; persisted `ask_oracle.images` redacted; outside-root path rejected with indexed error and no new turn | Already-running matching debug artifact/CLI with verified repository/worktree, commit and dirty-patch provenance (CLI version alone is insufficient), exclusive coordination for the singleton app, loaded authorized fixture root, supported credentials and inspected **entire** Oracle roster. Coordinator approval immediately before uploads/paid prompts; lifecycle approval separately. |
+| Paste/drop an image into an Agent Mode composer (Devin, Codex and Grok receive its path as a text note; `@path` agents already see it), then ask the agent to consult the Oracle | Agent passes the listed attachment path in `ask_oracle.images`; every lane describes the pasted pattern; transcripts keep thumbnails only | Only the owning agent session's own files in the managed `agent_attachments` store are authorized, at their exact path; sibling attachments and other outside-root paths stay rejected. Consumed attachment files are deleted when the turn ends, so only in-flight turn images are reliably available. Same app/approval prerequisites as above. |
+
+Tool discovery and CLI help (`rpce-cli-debug -l` / `-e 'describe ask_oracle'`, when exposed by the owning Agent Mode connection) consume the app's tool schema; direct-headless discovery uses the canonical schema and explicitly rejects images. The generated reference is `docs/spec/mcp-domain-canonical-tool-definitions.generated.json`. Neither CLI adds automatic attachment forwarding: the agent must supply `images:[{path,title?}]`.
+
+Ordinary smoke and packaged initialize/tools-list are **not image-delivery proof**.
+Ordinary CLI connections do not expose `ask_oracle`; drive it through an owning Agent Mode session. Supply a fresh `mode:"chat"`,
+`new_chat:true`, `message`, and nonempty `images` JSON request. Do not include keys,
+raw image bytes or base64. Inspect roster/settings before approval: `model` changes
+only the primary lane; additional Oracle lanes can multiply uploads and cost.
+Use a small generated PNG in a disposable loaded root (neutral filename/title),
+with a simple colored shape/count pattern and a separately recorded expected answer.
+Run this once per approved route; capture command and returned answer/error as
+evidence. A successful RPC alone remains **INCONCLUSIVE**.
+
+Then inspect the resulting preview and saved/restored history through the real app
+(Cua Driver background delivery only). Inspect the disposable session's JSON for
+thumbnail-only storage and redacted tool arguments; retain only sanitized evidence,
+never full prompt/base64 payloads. Submit a second request pointing outside the loaded
+root only with approval; expect indexed loader rejection and no added Oracle turn.
+Unit regressions prove pre-read/pre-dispatch ordering; screenshots cannot prove it.
+Clean up only the created fixtures/session/workspace after evidence capture (use
+`trash` for files); do not stop a visible app. No production profile or keys should be
+copied into fixtures. Direct-headless Oracle rejects images. Originals are this-turn-only;
+continuations do not automatically resend them or use saved thumbnails. Missing
+credentials, unsupported negotiated capabilities or unapproved uploads mean **not run**,
+not PASS.
+
 ## Workspace projection decode diagnostics
 
 This is a bounded, opt-in diagnostic, not a cache or a CI timing gate. It calls

@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 // The wake coordinator: temporary admission policy for one observer's automatic lane-update turns.
 //
@@ -2283,7 +2284,7 @@ extension AgentModeViewModel {
         #if DEBUG
             // Identity, structural shape, and decision only. Never a name, a preview, or any other
             // target-derived content.
-            AgentModePerfDiagnostics.event(
+            perfRecorder.event(
                 "sessionLink.autoWake",
                 tabID: endpoint.tabID,
                 fields: [

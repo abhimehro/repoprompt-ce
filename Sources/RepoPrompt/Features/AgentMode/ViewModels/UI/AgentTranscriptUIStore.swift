@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptInstrumentation
 
 struct AgentTranscriptUISnapshot: Equatable {
     var currentTabID: UUID?
@@ -49,21 +50,22 @@ struct AgentTranscriptUISnapshot: Equatable {
 
 @MainActor
 final class AgentTranscriptUIStore: ObservableObject {
+    var perfRecorder: any AgentModePerfRecording = NoopAgentModePerfRecorder()
     @Published private(set) var snapshot: AgentTranscriptUISnapshot = .empty
 
     func update(_ snapshot: AgentTranscriptUISnapshot) {
         guard self.snapshot != snapshot else {
             #if DEBUG
-                AgentModePerfDiagnostics.recordStoreUpdate("transcript", published: false)
+                perfRecorder.recordStoreUpdate("transcript", published: false)
             #endif
             return
         }
         #if DEBUG
-            AgentModePerfDiagnostics.recordStoreUpdate(
+            perfRecorder.recordStoreUpdate(
                 "transcript",
                 published: true,
                 details: [
-                    "tabID": AgentModePerfDiagnostics.shortID(snapshot.currentTabID),
+                    "tabID": perfRecorder.shortID(snapshot.currentTabID),
                     "presentationRevision": String(snapshot.presentationRevision),
                     "visibleRows": String(snapshot.presentation.visibleRows.count),
                     "workingRows": String(snapshot.presentation.workingRows.count),

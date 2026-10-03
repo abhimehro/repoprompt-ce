@@ -14,6 +14,13 @@ package enum DomainClientPrincipalAssurance: String, Codable, CaseIterable, Send
     case localTTY = "local_tty"
 }
 
+/// Why a kernel-observed peer failed verification. Explains a denial; never grants authority.
+package enum DomainClientPrincipalVerificationFailure: String, Codable, Sendable {
+    /// The peer is running an executable that no longer exists on disk, as when an app update
+    /// deletes the old bundle of a helper that is still running.
+    case executableMissing = "executable_missing"
+}
+
 package struct DomainClientPrincipal: Codable, Hashable, Sendable {
     package let principalID: UUID
     package let stableKey: String?
@@ -28,6 +35,8 @@ package struct DomainClientPrincipal: Codable, Hashable, Sendable {
     package let provider: String?
     /// Kernel-derived executable identity. Display names and provider labels are never grant authority.
     package let verifiedIdentityFingerprint: String?
+    /// Why `processID` failed verification, when known. Explains denials; never grants authority.
+    package let verificationFailure: DomainClientPrincipalVerificationFailure?
 
     package init(
         principalID: UUID,
@@ -39,7 +48,8 @@ package struct DomainClientPrincipal: Codable, Hashable, Sendable {
         runID: UUID?,
         provider: String?,
         verifiedIdentityFingerprint: String? = nil,
-        claimedProcessID: Int32? = nil
+        claimedProcessID: Int32? = nil,
+        verificationFailure: DomainClientPrincipalVerificationFailure? = nil
     ) {
         self.principalID = principalID
         self.stableKey = stableKey
@@ -51,6 +61,7 @@ package struct DomainClientPrincipal: Codable, Hashable, Sendable {
         self.runID = runID
         self.provider = provider
         self.verifiedIdentityFingerprint = verifiedIdentityFingerprint
+        self.verificationFailure = verificationFailure
     }
 }
 

@@ -1,6 +1,7 @@
 import Foundation
 import MCP
 import RepoPromptDomainRuntime
+import RepoPromptWorkspaceCore
 
 struct GeneratedOracleExportFileWriter {
     let store: WorkspaceFileContextStore

@@ -1,5 +1,6 @@
 import Foundation
 @testable import RepoPromptMCPCore
+import RepoPromptShared
 import XCTest
 
 final class PersistentMCPResponseDeliveryTests: XCTestCase {
@@ -35,6 +36,28 @@ final class PersistentMCPResponseDeliveryTests: XCTestCase {
         await replayState.recordDeliveredServerFrame(line(#"{"jsonrpc":"2.0","id":6,"result":{"prompt_tokens":0}}"#))
         frames = await replayState.replayFrames()
         XCTAssertEqual(frames, [])
+    }
+
+    func testPreparedCancellationDoesNotRetireReplayUntilForwarded() async throws {
+        let replayState = MCPOutstandingRequestReplayState()
+        let ledger = JSONRPCBridgeLedger()
+        _ = try await ledger.beginConnection()
+        let request = line(#"{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}"#)
+        let cancellation = line(#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#)
+        let preparedRequest = try await ledger.prepare(frame: request, direction: .clientToServer)
+        let recordedRequest = await replayState.recordPreparedClientRequestFrame(request, prepared: preparedRequest)
+        XCTAssertTrue(recordedRequest)
+        try await ledger.commit(preparedRequest)
+        let preparedCancellation = try await ledger.prepare(frame: cancellation, direction: .clientToServer)
+        let recordedCancellation = await replayState.recordPreparedClientRequestFrame(cancellation, prepared: preparedCancellation)
+        XCTAssertFalse(recordedCancellation)
+        let beforeForward = await replayState.replayFrames()
+        XCTAssertEqual(beforeForward.count, 1)
+        assertJSONLineEqual(beforeForward[0], request)
+        try await ledger.commit(preparedCancellation)
+        await replayState.recordForwardedClientFrame(cancellation)
+        let afterForward = await replayState.replayFrames()
+        XCTAssertEqual(afterForward, [])
     }
 
     func testOutstandingReplayStateIgnoresClientResponseForAppOriginatedIDCollision() async {

@@ -19,16 +19,91 @@ import SystemPackage
     import Glibc
 #endif
 
+/// A bounded receive queue cannot recover after losing a protocol frame. Seal
+/// ingress synchronously on the reader queue, before actor teardown is scheduled.
+struct BootstrapSocketReceiveBufferOverflowError: Error, Equatable, LocalizedError {
+    let capacity: Int
+
+    var errorDescription: String? {
+        "Bootstrap socket receive buffer overflow (capacity \(capacity) frames); connection closed"
+    }
+}
+
+final class BootstrapSocketMCPIngressGate: @unchecked Sendable {
+    enum OfferResult {
+        case accepted
+        case overflow(BootstrapSocketReceiveBufferOverflowError)
+        case terminal
+    }
+
+    private let lock = NSLock()
+    fileprivate let capacity: Int
+    private var isTerminal = false
+    private var overflowError: BootstrapSocketReceiveBufferOverflowError?
+
+    init(capacity: Int) {
+        self.capacity = capacity
+    }
+
+    func offer(
+        _ frame: Data,
+        to continuation: AsyncThrowingStream<Data, Error>.Continuation
+    ) -> OfferResult {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isTerminal else { return .terminal }
+        switch continuation.yield(frame) {
+        case .enqueued:
+            return .accepted
+        case .dropped:
+            let error = BootstrapSocketReceiveBufferOverflowError(capacity: capacity)
+            overflowError = error
+            isTerminal = true
+            return .overflow(error)
+        case .terminated:
+            isTerminal = true
+            return .terminal
+        @unknown default:
+            isTerminal = true
+            return .terminal
+        }
+    }
+
+    /// Closing and offering share a lock. EOF/disconnect cannot erase a loss
+    /// already observed by the reader, even when its actor callback arrives late.
+    func close() -> BootstrapSocketReceiveBufferOverflowError? {
+        lock.lock()
+        defer { lock.unlock() }
+        isTerminal = true
+        return overflowError
+    }
+}
+
 #if DEBUG
     private final class BootstrapSocketMCPTransportCallbackGate: @unchecked Sendable {
         enum Kind: Hashable {
             case terminal
             case cancellation
+            case overflow
         }
 
         private let lock = NSLock()
         private var heldKinds: Set<Kind> = []
         private var pendingCallbacks: [Kind: [@Sendable () -> Void]] = [:]
+        private var pendingWaiters: [Kind: [CheckedContinuation<Void, Never>]] = [:]
+
+        func waitUntilPending(_ kind: Kind) async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if pendingCallbacks[kind]?.isEmpty == false {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    pendingWaiters[kind, default: []].append(continuation)
+                    lock.unlock()
+                }
+            }
+        }
 
         func hold(_ kind: Kind) {
             lock.lock()
@@ -44,7 +119,9 @@ import SystemPackage
                 return
             }
             pendingCallbacks[kind, default: []].append(callback)
+            let waiters = pendingWaiters.removeValue(forKey: kind) ?? []
             lock.unlock()
+            waiters.forEach { $0.resume() }
         }
 
         func release(_ kind: Kind) {
@@ -70,6 +147,7 @@ public actor BootstrapSocketMCPTransport: Transport {
 
     private nonisolated let messageStream: AsyncThrowingStream<Data, Swift.Error>
     private var messageContinuation: AsyncThrowingStream<Data, Swift.Error>.Continuation
+    private nonisolated let ingressGate: BootstrapSocketMCPIngressGate
 
     private let readQueue = DispatchQueue(label: "com.repoprompt.ce.mcp.cli.socket.read", qos: .userInitiated)
     private var nextReadSourceToken: UInt64 = 0
@@ -122,7 +200,8 @@ public actor BootstrapSocketMCPTransport: Transport {
         connectedFD: Int32,
         logger: Logger? = nil,
         writeStallTimeout: TimeInterval = MCPTimeoutPolicy.transportWriteStallTimeoutSeconds,
-        writePollIntervalMilliseconds: Int32 = 250
+        writePollIntervalMilliseconds: Int32 = 250,
+        receiveBufferCapacity: Int = 1024
     ) throws {
         do {
             try POSIXDescriptorSupport.setCloseOnExec(connectedFD)
@@ -139,11 +218,14 @@ public actor BootstrapSocketMCPTransport: Transport {
         self.writeStallTimeout = writeStallTimeout
         self.writePollIntervalMilliseconds = Self.sanitizedWritePollIntervalMilliseconds(writePollIntervalMilliseconds)
 
+        let capacity = max(1, receiveBufferCapacity)
+        ingressGate = BootstrapSocketMCPIngressGate(capacity: capacity)
+
         // Create message stream (buffered to avoid unbounded growth if consumer is slow)
         var continuation: AsyncThrowingStream<Data, Swift.Error>.Continuation!
         messageStream = AsyncThrowingStream(
             Data.self,
-            bufferingPolicy: .bufferingOldest(1024)
+            bufferingPolicy: .bufferingOldest(capacity)
         ) { continuation = $0 }
         messageContinuation = continuation
     }
@@ -265,7 +347,9 @@ public actor BootstrapSocketMCPTransport: Transport {
 
             if written < 0 {
                 let err = errno
-                if err == EINTR { continue }
+                if err == EINTR {
+                    continue
+                }
                 if err == EAGAIN || err == EWOULDBLOCK {
                     try waitForSocketWritable(
                         lastProgressAt: lastProgressAt,
@@ -320,13 +404,17 @@ public actor BootstrapSocketMCPTransport: Transport {
             let result = poll(&pfd, 1, pollTimeout)
 
             if result < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR {
+                    continue
+                }
                 let error = MCPError.transportError(Errno(rawValue: errno))
                 closeAfterSendFailure(error)
                 throw error
             }
 
-            if result == 0 { continue }
+            if result == 0 {
+                continue
+            }
 
             if pfd.revents & Int16(POLLHUP | POLLERR | POLLNVAL) != 0 {
                 closeAfterSendFailure(MCPError.connectionClosed)
@@ -355,6 +443,37 @@ public actor BootstrapSocketMCPTransport: Transport {
     }
 
     #if DEBUG
+        func debugHoldReceiveOverflowCallback() {
+            callbackGate.hold(.overflow)
+        }
+
+        func debugReleaseReceiveOverflowCallbacks() {
+            callbackGate.release(.overflow)
+        }
+
+        func debugWaitForHeldReaderTerminalCallback() async {
+            await callbackGate.waitUntilPending(.terminal)
+        }
+
+        func debugDeliverReaderEOF(token: UInt64) {
+            handleReaderTerminal(.eof(hasResidualData: false), from: ReaderIdentity(fd: socketFD, token: token))
+        }
+
+        func debugDeliverReaderCancellation(token: UInt64) {
+            readSourceDidCancel(ReaderIdentity(fd: socketFD, token: token))
+        }
+
+        func debugDeliverReceiveOverflow(token: UInt64) {
+            handleReceiveBufferOverflow(
+                BootstrapSocketReceiveBufferOverflowError(capacity: ingressGate.capacity),
+                from: ReaderIdentity(fd: socketFD, token: token)
+            )
+        }
+
+        func debugIngressTeardownCounts() -> (finalized: Int, closed: Int, staleTerminal: Int, staleCancellation: Int) {
+            (debugReaderFinalizationCount, debugDescriptorCloseCount, debugStaleTerminalCount, debugStaleCancellationCount)
+        }
+
         func debugHoldReaderTerminalCallback() {
             callbackGate.hold(.terminal)
         }
@@ -371,6 +490,14 @@ public actor BootstrapSocketMCPTransport: Transport {
             callbackGate.release(.cancellation)
         }
     #endif
+
+    private nonisolated func scheduleReceiveOverflowCallback(_ callback: @escaping @Sendable () -> Void) {
+        #if DEBUG
+            callbackGate.submit(.overflow, callback: callback)
+        #else
+            callback()
+        #endif
+    }
 
     private nonisolated func scheduleReaderTerminalCallback(_ callback: @escaping @Sendable () -> Void) {
         #if DEBUG
@@ -399,14 +526,19 @@ public actor BootstrapSocketMCPTransport: Transport {
         let identity = ReaderIdentity(fd: fd, token: nextReadSourceToken)
 
         let cont = messageContinuation
+        let gate = ingressGate
         let log = logger
 
         let newReader = NewlineDelimitedSocketReader(
             fd: fd,
             queue: readQueue,
             logger: log,
-            onFrame: { frame in
-                cont.yield(frame)
+            onFrame: { [weak self] frame in
+                guard case let .overflow(error) = gate.offer(frame, to: cont) else { return }
+                guard let transport = self else { return }
+                transport.scheduleReceiveOverflowCallback {
+                    Task { await transport.handleReceiveBufferOverflow(error, from: identity) }
+                }
             },
             onTerminal: { [weak self] terminal in
                 guard let transport = self else { return }
@@ -521,14 +653,24 @@ public actor BootstrapSocketMCPTransport: Transport {
         }
     }
 
+    private func handleReceiveBufferOverflow(
+        _ error: BootstrapSocketReceiveBufferOverflowError,
+        from identity: ReaderIdentity
+    ) {
+        guard activeReaderOwnership?.identity == identity else { return }
+        logger.error("Bootstrap socket ingress terminated: \(error.localizedDescription)")
+        tearDownSocket(error: error)
+    }
+
     private func tearDownSocket(error: Swift.Error? = nil) {
+        let resolvedError: Swift.Error? = ingressGate.close() ?? error
         isConnected = false
         if !socketClosed {
             POSIXDescriptorSupport.shutdownSocketReadWrite(socketFD)
         }
 
         stopReadSource()
-        finishStreamIfNeeded(throwing: error)
+        finishStreamIfNeeded(throwing: resolvedError)
         if !pendingReaderCancellationOwnsCurrentSocket() {
             closeSocketIfNeeded()
         }

@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptFoundation
 
 enum WorkspaceCodemapPresentationIntentResolver {
     static func plan(

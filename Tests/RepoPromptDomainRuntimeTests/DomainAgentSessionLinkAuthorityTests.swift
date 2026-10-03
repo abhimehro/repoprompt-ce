@@ -107,6 +107,39 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
         XCTFail("Waiter never parked", file: file, line: line)
     }
 
+    func testExactMembershipTracksPartialRevocationReplacementAndShutdown() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let first = makeEndpoint()
+        let second = makeEndpoint()
+        let firstGrant = try await activateLink(authority, observer: observer, target: first)
+        _ = try await activateLink(authority, observer: observer, target: second)
+        let outbound = await authority.hasActiveOutboundLink(observerEndpoint: observer)
+        let inboundOnly = await authority.hasActiveLink(endpoint: first)
+        let notOutbound = await authority.hasActiveOutboundLink(observerEndpoint: first)
+        XCTAssertTrue(outbound)
+        XCTAssertTrue(inboundOnly)
+        XCTAssertFalse(notOutbound)
+        _ = await authority.revoke(linkID: firstGrant.id, generation: firstGrant.generation, reason: .userRequested)
+        let stillOutbound = await authority.hasActiveOutboundLink(observerEndpoint: observer)
+        let removed = await authority.hasActiveLink(endpoint: first)
+        XCTAssertTrue(stillOutbound, "Removing one of multiple links must retain the remaining membership")
+        XCTAssertFalse(removed)
+        let replacement = makeEndpoint(sessionID: second.sessionID)
+        _ = try await activateLink(authority, observer: first, target: replacement)
+        let oldTarget = await authority.hasActiveLink(endpoint: second)
+        let oldObserver = await authority.hasActiveOutboundLink(observerEndpoint: observer)
+        let newTarget = await authority.hasActiveLink(endpoint: replacement)
+        XCTAssertFalse(oldTarget)
+        XCTAssertFalse(oldObserver, "Replacing the target incarnation revokes its previous observer membership")
+        XCTAssertTrue(newTarget)
+        await authority.finishShutdown()
+        let shutDownObserver = await authority.hasActiveOutboundLink(observerEndpoint: first)
+        let shutDownTarget = await authority.hasActiveLink(endpoint: replacement)
+        XCTAssertFalse(shutDownObserver)
+        XCTAssertFalse(shutDownTarget)
+    }
+
     // MARK: - Reservation, activation, invariants
 
     func testActivationSeedsInitialSnapshotSoFirstPollIsNeverEmpty() async throws {
@@ -1046,6 +1079,10 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
         XCTAssertEqual(repeated, .notFound, "revocation is idempotent and never resurrects")
         let revokedLeaseError = await authority.validate(lease: lease)
         XCTAssertEqual(revokedLeaseError, .linkRevoked)
+        let removedModelAuthorization = await authority.authorize(
+            operation: .monitorSetModel, observerEndpoint: observer, targetSessionID: target.sessionID
+        )
+        XCTAssertEqual(removedModelAuthorization, .failure(.noActiveLink), "Derived pair index must remove a revoked grant")
 
         let second = try await activateLink(authority, observer: observer, target: target)
         XCTAssertNotEqual(second.id, first.id)
@@ -1836,6 +1873,119 @@ final class DomainAgentSessionLinkAuthorityTests: XCTestCase {
             timeoutSeconds: 0
         )
         XCTAssertEqual(reuse.outcome, .timedOut)
+    }
+
+    func testLocalInputBeforeWaitRefusesOldGenerationButAllowsSameRunNewWait() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let target = makeEndpoint(windowID: 2)
+        try await activateLink(authority, observer: observer, target: target, status: .running)
+        let lease = try await authority.authorize(
+            operation: .monitorWait, observerEndpoint: observer, targetSessionID: target.sessionID
+        ).get()
+        let requests = [DomainAgentSessionLinkWaitRequest(lease: lease, cursor: nil)]
+        await authority.acceptLocalInput(.init(endpoint: observer, generation: 1))
+        let old = await authority.wait(requests: requests, timeoutSeconds: 0,
+                                       observerInput: .init(endpoint: observer, generation: 0))
+        XCTAssertEqual(old.outcome, .cancelled)
+        XCTAssertTrue(old.interruptedByLocalInput)
+        let current = await authority.wait(requests: requests, timeoutSeconds: 0,
+                                           observerInput: .init(endpoint: observer, generation: 1))
+        XCTAssertEqual(current.outcome, .timedOut)
+        XCTAssertFalse(current.interruptedByLocalInput)
+    }
+
+    func testLocalInputDuringAggregateWaitReleasesSiblingsAndNewGenerationCanPark() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let targets = [makeEndpoint(windowID: 2), makeEndpoint(windowID: 3)]
+        var requests: [DomainAgentSessionLinkWaitRequest] = []
+        for target in targets {
+            try await activateLink(authority, observer: observer, target: target, status: .running)
+            let lease = try await authority.authorize(
+                operation: .monitorWait, observerEndpoint: observer, targetSessionID: target.sessionID
+            ).get()
+            requests.append(.init(lease: lease, cursor: nil))
+        }
+        let frozenRequests = requests
+        let old = Task { await authority.wait(requests: frozenRequests, timeoutSeconds: 30,
+                                             observerInput: .init(endpoint: observer, generation: 0)) }
+        try await waitUntilParked(authority, count: 1)
+        await authority.acceptLocalInput(.init(endpoint: observer, generation: 1))
+        let result = await old.value
+        XCTAssertEqual(result.outcome, .cancelled)
+        XCTAssertTrue(result.interruptedByLocalInput)
+        let next = Task { await authority.wait(requests: frozenRequests, timeoutSeconds: 30,
+                                              observerInput: .init(endpoint: observer, generation: 1)) }
+        try await waitUntilParked(authority, count: 1)
+        await authority.acceptLocalInput(.init(endpoint: observer, generation: 2))
+        let nextResult = await next.value
+        XCTAssertEqual(nextResult.outcome, .cancelled)
+    }
+
+    func testRevocationWinsBeforeLocalInputAndDoesNotChangeOtherEndpoint() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let other = makeEndpoint(sessionID: observer.sessionID)
+        let target = makeEndpoint(windowID: 2)
+        let grant = try await activateLink(authority, observer: observer, target: target, status: .running)
+        let lease = try await authority.authorize(
+            operation: .monitorWait, observerEndpoint: observer, targetSessionID: target.sessionID
+        ).get()
+        let task = Task { await authority.wait(requests: [.init(lease: lease, cursor: nil)], timeoutSeconds: 30,
+                                              observerInput: .init(endpoint: observer, generation: 0)) }
+        try await waitUntilParked(authority, count: 1)
+        _ = await authority.revoke(linkID: grant.id, generation: grant.generation, reason: .userRequested)
+        await authority.acceptLocalInput(.init(endpoint: other, generation: 1))
+        await authority.acceptLocalInput(.init(endpoint: observer, generation: 1))
+        let result = await task.value
+        guard case .revoked = result.outcome else { return XCTFail("Revocation already resolved the waiter") }
+        XCTAssertFalse(result.interruptedByLocalInput)
+    }
+
+    func testInputForReboundEndpointDoesNotReleaseOriginalWait() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let replacement = makeEndpoint(sessionID: observer.sessionID)
+        let target = makeEndpoint(windowID: 2)
+        try await activateLink(authority, observer: observer, target: target, status: .running)
+        let lease = try await authority.authorize(operation: .monitorWait, observerEndpoint: observer,
+                                                 targetSessionID: target.sessionID).get()
+        let waiter = Task { await authority.wait(requests: [.init(lease: lease, cursor: nil)], timeoutSeconds: 30,
+                                                observerInput: .init(endpoint: observer, generation: 0)) }
+        try await waitUntilParked(authority, count: 1)
+        await authority.acceptLocalInput(.init(endpoint: replacement, generation: 1))
+        let count = await authority.snapshot().parkedWaiterCount
+        XCTAssertEqual(count, 1)
+        await authority.acceptLocalInput(.init(endpoint: observer, generation: 1))
+        let result = await waiter.value
+        XCTAssertTrue(result.interruptedByLocalInput)
+    }
+
+    func testInputAfterCompletedWaitDoesNotChangeResultOrInterruptAnotherEndpoint() async throws {
+        let authority = makeAuthority()
+        let observer = makeEndpoint()
+        let other = makeEndpoint()
+        let target = makeEndpoint(windowID: 2)
+        try await activateLink(authority, observer: observer, target: target, status: .running)
+        try await activateLink(authority, observer: other, target: target, status: .running)
+        let lease = try await authority.authorize(operation: .monitorWait, observerEndpoint: observer,
+                                                 targetSessionID: target.sessionID).get()
+        let otherLease = try await authority.authorize(operation: .monitorWait, observerEndpoint: other,
+                                                      targetSessionID: target.sessionID).get()
+        let completed = await authority.wait(requests: [.init(lease: lease, cursor: nil)], timeoutSeconds: 0,
+                                             observerInput: .init(endpoint: observer, generation: 0))
+        let unrelated = Task { await authority.wait(requests: [.init(lease: otherLease, cursor: nil)], timeoutSeconds: 30,
+                                                   observerInput: .init(endpoint: other, generation: 0)) }
+        try await waitUntilParked(authority, count: 1)
+        await authority.acceptLocalInput(.init(endpoint: observer, generation: 1))
+        XCTAssertEqual(completed.outcome, .timedOut)
+        let parked = await authority.snapshot().parkedWaiterCount
+        XCTAssertEqual(parked, 1)
+        unrelated.cancel()
+        let result = await unrelated.value
+        XCTAssertEqual(result.outcome, .cancelled)
+        XCTAssertFalse(result.interruptedByLocalInput)
     }
 
     func testForgedOrStaleWaitCursorIsRejected() async throws {

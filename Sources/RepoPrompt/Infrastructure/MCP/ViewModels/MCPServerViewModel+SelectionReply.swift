@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptFoundation
 
 extension MCPServerViewModel {
     enum SelectionReplyIngressPolicy: Equatable {

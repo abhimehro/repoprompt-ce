@@ -1,4 +1,5 @@
 import Foundation
+import RepoPromptProcess
 
 enum ACPProviderID: String, Codable, Hashable {
     case openCode

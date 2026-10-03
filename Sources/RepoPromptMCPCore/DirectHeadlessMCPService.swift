@@ -292,7 +292,7 @@ package actor DirectHeadlessMCPService {
         }
     }
 
-    private func installHandlers(
+    func installHandlers(
         server: Server,
         prepared: PreparedRuntime,
         connection: ConnectionContext
@@ -322,10 +322,11 @@ package actor DirectHeadlessMCPService {
                 let projected = definition.annotations.projected(
                     for: classification.annotationProfile
                 )
+                let advertisement = DirectHeadlessToolAdvertisement.project(definition)
                 return MCP.Tool(
                     name: definition.name,
-                    description: definition.description,
-                    inputSchema: definition.inputSchema,
+                    description: advertisement.description,
+                    inputSchema: advertisement.inputSchema,
                     annotations: .init(
                         title: projected.title,
                         readOnlyHint: projected.readOnlyHint,
@@ -369,7 +370,7 @@ package actor DirectHeadlessMCPService {
                 ))
                 return Self.successResult(result)
             } catch {
-                return Self.errorResult(String(describing: error))
+                return Self.errorResult(Self.wireMessage(for: error))
             }
         }
     }
@@ -611,12 +612,22 @@ package actor DirectHeadlessMCPService {
         )
     }
 
+    nonisolated static func wireMessage(for error: Error) -> String {
+        if let claimError = error as? OracleGroupClaimError, claimError == .conflict {
+            return "oracle_claim_conflict: this durable Oracle conversation is already owned by another invocation; observe that invocation instead of resubmitting paid work."
+        }
+        return (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
+
     nonisolated static func validatedCallArguments(
         toolName: String,
         arguments: [String: Value]
     ) throws -> [String: Value] {
         let supportedOperations: Set<String>
         switch toolName {
+        case "context_builder":
+            try DirectHeadlessOracleAdapter.validateContextBuilderArguments(arguments)
+            return arguments
         case "agent_run":
             supportedOperations = ["start", "poll", "wait", "cancel"]
         case "agent_explore":

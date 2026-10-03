@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional, Sequence, TextIO
 
+from modularization_ci_artifact import validate as validate_ci_artifact
+from swift_imports import sources_import_module
+from ci_test_coverage import listed_tests, listing_digest, verify_execution
+
 XCTEST_BUNDLE_GLOB = "*.xctest"
 SANDBOX_MARKER_NAME = ".issue944-test-sandbox"
 CommandExecutor = Callable[[Sequence[str], Optional[Path], Mapping[str, str]], int]
@@ -52,9 +56,11 @@ def parse_suite_methods(list_output: str) -> dict[str, tuple[str, ...]]:
 def list_suite_methods(
     swift_binary: str,
     cwd: Path | None,
+    *,
+    skip_build: bool = False,
 ) -> dict[str, tuple[str, ...]]:
     result = subprocess.run(
-        [swift_binary, "test", "list"],
+        [swift_binary, "test", "list", *(["--skip-build"] if skip_build else [])],
         check=True,
         capture_output=True,
         cwd=cwd,
@@ -119,19 +125,22 @@ def discover_test_bundles(
     swift_binary: str,
     cwd: Path | None,
     scratch_path: Path | None = None,
+    prebuilt_bin_path: Path | None = None,
 ) -> dict[str, Path]:
-    try:
-        result = subprocess.run(
-            [swift_binary, "build", *scratch_path_args(scratch_path), "--show-bin-path"],
-            check=True,
-            capture_output=True,
-            cwd=cwd,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return {}
-
-    bin_path = Path(result.stdout.strip())
+    if prebuilt_bin_path is not None:
+        bin_path = prebuilt_bin_path
+    else:
+        try:
+            result = subprocess.run(
+                [swift_binary, "build", *scratch_path_args(scratch_path), "--show-bin-path"],
+                check=True,
+                capture_output=True,
+                cwd=cwd,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return {}
+        bin_path = Path(result.stdout.strip())
     if not bin_path.is_dir():
         return {}
     return {
@@ -182,8 +191,9 @@ def resolve_bundle_selection(
     swift_binary: str,
     cwd: Path | None,
     suites: Sequence[str],
+    prebuilt_bin_path: Path | None = None,
 ) -> BundleSelection:
-    discovered = discover_test_bundles(swift_binary, cwd)
+    discovered = discover_test_bundles(swift_binary, cwd, prebuilt_bin_path=prebuilt_bin_path)
     if not discovered:
         return BundleSelection(None, {}, None)
     if len(discovered) == 1:
@@ -282,10 +292,6 @@ def execute_command(
         return 127
 
 
-SWIFT_TESTING_IMPORT = re.compile(
-    r"^\s*(?:(?:@\w+|public|internal|package|private|fileprivate)\s+)*"
-    r"import\s+(?:\w+\s+)?Testing\b", re.MULTILINE,
-)
 XCTEST_HELPER_RELATIVE_PATH = Path("libexec/swift/pm/swiftpm-xctest-helper")
 SWIFT_TESTING_HELPER_RELATIVE_PATH = Path("libexec/swift/pm/swiftpm-testing-helper")
 # Swift Testing's EXIT_NO_TESTS_FOUND (EX_UNAVAILABLE); `swift test` treats it as success.
@@ -297,13 +303,7 @@ def sources_import_swift_testing(directory: Path) -> bool:
     """Whether any Swift file under `directory` imports Testing; unreadable files count as yes."""
     if not directory.is_dir():
         return False
-    for path in directory.rglob("*.swift"):
-        try:
-            if SWIFT_TESTING_IMPORT.search(path.read_text(encoding="utf-8", errors="ignore")):
-                return True
-        except OSError:
-            return True
-    return False
+    return sources_import_module(directory, "Testing")
 
 
 def package_uses_swift_testing(root: Path) -> bool:
@@ -566,13 +566,36 @@ def run_local_tests(
             )
         if command == ():
             print("No matching test cases were run")
-            return 0
+            return 1 if os.environ.get('CI') == 'true' and executor is execute_command else 0
         if command is None:
             command = (swift_binary, "test", "--skip-build", *swiftpm_args)
             if test_product:
                 command += ("--test-product", test_product)
             if test_filter:
                 command += ("--filter", test_filter)
+        if os.environ.get('CI') == 'true' and executor is execute_command:
+            if test_filter and not is_portable_filter(test_filter):
+                print('::error::CI cannot prove this test filter matches SwiftPM semantics')
+                return 2
+            try:
+                methods = list_suite_methods(swift_binary, cwd, skip_build=True)
+                expected = listed_tests('\n'.join(method for tests in methods.values() for method in tests))
+                if test_product:
+                    # CI must not infer product membership from an aggregate listing.
+                    print('::error::CI test-product execution requires its own authoritative listing')
+                    return 2
+                if test_filter:
+                    expected = [method for method in expected if re.search(test_filter, method)]
+                if not expected:
+                    raise ValueError('CI filter selected zero tests')
+                status, transcript = execute_logged(command, cwd, environment,
+                                                    (cwd or Path.cwd()) / '.build/ci-test-results/local.log')
+                verify_execution(expected, transcript, status)
+                print(f'Filtered coverage: assigned={len(expected)}, executed={len(expected)}', flush=True)
+                return 0
+            except (ValueError, subprocess.CalledProcessError) as error:
+                print(f'::error::CI local test execution: {error}')
+                return 1
         return executor(command, cwd, environment)
 
 
@@ -671,12 +694,22 @@ def run_module_tests(
             binary = (xctest_binary or xctest_binary_path)()
             # As `swift test` does: otherwise xctest also hosts the Swift Testing tests, running them twice.
             xctest_environment = {**environment, "SWIFT_TESTING_ENABLED": "0"}
-            xctest_status = executor(
-                (*binary, "-XCTest", ",".join(selectors), str(bundle)), cwd, xctest_environment,
-            )
+            command = (*binary, "-XCTest", ",".join(selectors), str(bundle))
+            if os.environ.get('CI') == 'true' and executor is execute_command:
+                expected = [s for s in specifiers if not test_filter or re.search(test_filter, s)]
+                log_path = (cwd or Path.cwd()) / f'.build/ci-test-results/module-{module}.log'
+                xctest_status, transcript = execute_logged(command, cwd, xctest_environment, log_path)
+                try:
+                    verify_execution(expected, transcript, xctest_status)
+                except ValueError as error:
+                    print(f'::error::{module}: {error}')
+                    return xctest_status or 1
+                print(f'Module coverage: {module} assigned={len(expected)}, executed={len(expected)}', flush=True)
+            else:
+                xctest_status = executor(command, cwd, xctest_environment)
         elif testing_helper_binary is None:
             print("No matching test cases were run")
-            return 0
+            return 1 if os.environ.get('CI') == 'true' else 0
         if testing_helper_binary is None:
             return xctest_status
         testing_env = (testing_environment or developer_library_environment)(environment)
@@ -689,6 +722,27 @@ def run_module_tests(
         return xctest_status or testing_status
 
 
+def execute_logged(command, cwd, environment, log_path: Path) -> tuple[int, str]:
+    """Keep full output even on success; never infer execution from a conductor highlight."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    with log_path.open('a', encoding='utf-8') as log:
+        log.write('$ ' + ' '.join(command) + '\n')
+        try:
+            process = subprocess.Popen(list(command), cwd=cwd, env=dict(environment),
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except OSError as error:
+            log.write(str(error) + '\n')
+            return 127, str(error)
+        assert process.stdout is not None
+        for line in process.stdout:
+            lines.append(line)
+            log.write(line)
+            log.flush()
+            print(line, end='', flush=True)
+        return process.wait(), ''.join(lines)
+
+
 def run_selected_suites(
     suites: Sequence[str],
     *,
@@ -698,7 +752,18 @@ def run_selected_suites(
     sandbox_root: Path,
     executor: CommandExecutor = execute_command,
     output: TextIO = sys.stdout,
+    suite_methods: Mapping[str, Sequence[str]] | None = None,
+    receipt_path: Path | None = None,
+    shard_count: int = 1,
+    shard_index: int = 1,
 ) -> int:
+    executed = []
+    skipped = []
+    if suite_methods is not None and (not suites or receipt_path is None):
+        print('::error::empty shard or missing receipt destination', file=output)
+        return 2
+    if receipt_path is not None:
+        receipt_path.unlink(missing_ok=True)  # Never reuse a receipt from an interrupted attempt.
     for suite in suites:
         command = command_for_suite(
             suite,
@@ -708,7 +773,18 @@ def run_selected_suites(
         environment = isolated_suite_environment(sandbox_root, suite)
         print(f"::group::{suite}", file=output, flush=True)
         print(f"sandbox={environment['REPOPROMPT_TEST_SANDBOX_ROOT']}", file=output)
-        return_code = executor(command, cwd, environment)
+        if suite_methods is None:
+            return_code = executor(command, cwd, environment)
+        else:
+            environment['SWIFT_TESTING_ENABLED'] = '0'
+            return_code, transcript = execute_logged(command, cwd, environment, receipt_path.with_suffix('.log'))
+            try:
+                result = verify_execution(list(suite_methods[suite]), transcript, return_code)
+            except ValueError as error:
+                print(f'::error::{suite}: {error}', file=output, flush=True)
+                return return_code or 1
+            executed.extend(result['executed'])
+            skipped.extend(result['skipped'])
         print("::endgroup::", file=output, flush=True)
 
         if return_code == 0:
@@ -719,6 +795,15 @@ def run_selected_suites(
             flush=True,
         )
         return return_code or 1
+    if suite_methods is not None:
+        full_listing = listed_tests('\n'.join(method for methods in suite_methods.values() for method in methods))
+        assigned = sorted(method for suite in suites for method in suite_methods[suite])
+        receipt = {'schema': 1, 'shard_index': shard_index, 'shard_count': shard_count,
+                   'listing_sha256': listing_digest(full_listing), 'assigned': assigned,
+                   'executed': sorted(executed), 'skipped': sorted(skipped)}
+        receipt_path.write_text(json.dumps(receipt, sort_keys=True) + '\n')
+        print(f'Coverage: assigned={len(assigned)}, executed={len(executed)}, skipped={len(skipped)}',
+              file=output, flush=True)
     return 0
 
 
@@ -739,11 +824,21 @@ def print_selection_summary(
     )
 
 
+def verify_transferred_build(root: Path) -> str | None:
+    """Fail closed before shard discovery when test products or gate attestations are missing."""
+    try:
+        validate_ci_artifact(root)
+    except ValueError as error:
+        return str(error)
+    return None
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run deterministic RepoPrompt CE XCTest suites."
     )
     parser.add_argument("--local", action="store_true", help="Build, then run sandboxed local tests with SwiftPM selection")
+    parser.add_argument("--skip-build", action="store_true", help="CI shard: discover and run transferred test bundles without compiling")
     parser.add_argument("--filter", dest="test_filter")
     parser.add_argument("--test-product")
     parser.add_argument("--module", help="Build and run only this test target (Swift Build engine)")
@@ -757,6 +852,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Measurement builds: extra SwiftPM build argument (use --build-arg=VALUE); requires --scratch-path",
     )
     args = parser.parse_args(argv)
+    if args.local and args.skip_build:
+        parser.error("--local cannot be combined with --skip-build")
     if args.local and (args.shard_count != 1 or args.shard_index != 1):
         parser.error("--local cannot be combined with sharding")
     if not args.local and (args.test_filter or args.test_product or args.module):
@@ -783,9 +880,21 @@ def main(argv: Sequence[str]) -> int:
             test_filter=args.test_filter, test_product=args.test_product,
             scratch_path=args.scratch_path, build_args=tuple(args.build_args),
         )
+    prebuilt_bin_path = None
+    if args.skip_build:
+        root = args.cwd or Path.cwd()
+        try:
+            prebuilt_bin_path = validate_ci_artifact(root)
+        except ValueError as error:
+            print(f"::error::{error}", file=sys.stderr)
+            return 2
     try:
         validate_shard_args(args.shard_count, args.shard_index)
-        suite_methods = list_suite_methods(args.swift_binary, args.cwd)
+        if args.skip_build:
+            listing = ((args.cwd or Path.cwd()) / '.build/modularization/ci-test-list.txt').read_text(encoding='utf-8')
+            suite_methods = parse_suite_methods("\n".join(listed_tests(listing)))
+        else:
+            suite_methods = list_suite_methods(args.swift_binary, args.cwd)
     except ValueError as error:
         print(f"::error::{error}")
         return 2
@@ -820,13 +929,15 @@ def main(argv: Sequence[str]) -> int:
         output=sys.stdout,
     )
     if not selection.suites:
-        return 0
+        print("::error::empty shard; refusing silent success")
+        return 2
 
     try:
         bundle_selection = resolve_bundle_selection(
             swift_binary=args.swift_binary,
             cwd=args.cwd,
             suites=selection.suites,
+            prebuilt_bin_path=prebuilt_bin_path,
         )
     except ValueError as error:
         print(f"::error::{error}")
@@ -839,6 +950,9 @@ def main(argv: Sequence[str]) -> int:
             cwd=args.cwd,
             bundle_selection=bundle_selection,
             sandbox_root=Path(directory),
+            suite_methods=suite_methods,
+            receipt_path=(args.cwd or Path.cwd()) / f'.build/ci-test-results/shard-{args.shard_index}.json',
+            shard_count=args.shard_count, shard_index=args.shard_index,
         )
 
 

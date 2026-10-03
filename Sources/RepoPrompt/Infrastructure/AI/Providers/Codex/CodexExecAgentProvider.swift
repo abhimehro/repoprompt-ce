@@ -1,4 +1,6 @@
 import Foundation
+import RepoPromptFoundation
+import RepoPromptProcess
 
 final class CodexExecAgentProvider: HeadlessAgentProvider {
     private enum StreamRetryAction {

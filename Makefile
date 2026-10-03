@@ -21,7 +21,7 @@ help:
 	@printf '  %-30s %s\n' 'dev-run' 'Coordinated debug app build and launch'
 	@printf '  %-30s %s\n' 'dev-launch-existing' 'Launch existing coordinated debug app without building'
 	@printf '  %-30s %s\n' 'dev-codex-schema-check' 'Coordinated Codex app-server schema validation'
-	@printf '  %-30s %s\n' 'dev-test' 'Coordinated test run; override with FILTER=name'
+	@printf '  %-30s %s\n' 'dev-test' 'Coordinated test run; set MODULE=Tests target or FILTER=suite'
 	@printf '  %-30s %s\n' 'dev-provider-test' 'Run provider package tests; override with FILTER=name'
 	@printf '  %-30s %s\n' 'dev-smoke' 'Run non-disruptive live debug app smoke checks'
 	@printf '  %-30s %s\n' 'dev-smoke-launch' 'Launch debug app, then run smoke checks'
@@ -138,22 +138,28 @@ new-module:
 	python3 Scripts/modularization_new_module.py --name "$(NAME)" --family "$(FAMILY)"
 
 conductor-selftest:
+	python3 Scripts/test_ci_test_coverage.py
+	python3 Scripts/test_ci_resolve_packages.py
 	python3 Scripts/test_codex_app_server_schema.py
 	python3 Scripts/test_debug_app_process.py
 	python3 Scripts/test_ci_app_test_runner.py
 	python3 Scripts/test_conductor_diagnostics.py
 	python3 Scripts/test_contribution_preflight.py
 	python3 Scripts/test_modularization_metrics.py
+	python3 Scripts/test_modularization_tooling.py
 	python3 Scripts/test_modularization_t0.py
 	python3 Scripts/test_source_layout_resource_guard.py
 	python3 Scripts/test_modularization_index_graph.py
 	python3 Scripts/test_conductor_job_timings.py
 	python3 Scripts/test_conductor_job_phases.py
+	python3 Scripts/test_conductor_heavy_admission.py
 	python3 Scripts/test_local_production_installer.py
 	python3 Scripts/test_security_inventory.py
 
 ci-app-test-runner-selftest:
 	python3 Scripts/test_ci_app_test_runner.py
+	python3 Scripts/test_ci_test_coverage.py
+	python3 Scripts/test_ci_resolve_packages.py
 
 release-selftest:
 	python3 Scripts/test_release_tooling.py
@@ -211,7 +217,7 @@ dev-codex-schema-check:
 	./conductor codex-schema-check
 
 dev-test:
-	./conductor test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))
+	python3 Scripts/modularization_dev_test.py$(if $(MODULE), --module '$(MODULE)')$(if $(FILTER), --filter '$(FILTER)')$(if $(TEST_PRODUCT), --test-product '$(TEST_PRODUCT)')
 
 dev-provider-test:
 	./conductor provider-test$(if $(TEST_PRODUCT), --test-product $(TEST_PRODUCT))$(if $(FILTER), --filter $(FILTER))

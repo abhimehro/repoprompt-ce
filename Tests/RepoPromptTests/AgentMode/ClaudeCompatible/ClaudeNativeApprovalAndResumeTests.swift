@@ -100,6 +100,678 @@ final class ClaudeNativeApprovalAndResumeTests: XCTestCase {
         XCTAssertFalse(sameEnvironmentRequiresRestart)
     }
 
+    private actor ApplicationGate {
+        private let fence = TestReleaseFence(name: "native configuration application")
+        private var hold = true
+
+        func waitUntilEntered() async throws {
+            guard await fence.waitUntilEntered(timeout: 3) else {
+                fence.release()
+                throw CancellationError()
+            }
+        }
+
+        func respond() async -> [String: Any] {
+            if hold {
+                hold = false
+                await fence.enterAndWait()
+            }
+            return [:]
+        }
+
+        nonisolated func resume() {
+            fence.release()
+        }
+    }
+
+    private final class WrittenLines: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lines: [Data] = []
+        func append(_ line: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            lines.append(line)
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return lines.count
+        }
+
+        func line(at index: Int) -> Data? {
+            lock.lock()
+            defer { lock.unlock() }
+            return lines.indices.contains(index) ? lines[index] : nil
+        }
+    }
+
+    private actor PassthroughResolver: ClaudeCodeLaunchEnvironmentResolving {
+        func resolve(variant _: ClaudeCodeRuntimeVariant, requestedModel: String?) async throws -> ClaudeCodeLaunchEnvironment {
+            ClaudeCodeLaunchEnvironment(effectiveModel: requestedModel, environmentOverrides: [:], backend: .defaultClaude)
+        }
+    }
+
+    private func applicationController() -> ClaudeNativeProcessSessionController {
+        ClaudeNativeProcessSessionController(
+            runID: UUID(), tabID: UUID(), windowID: 1, workspacePath: nil,
+            config: .discovery(commandName: "/usr/bin/false", runtimeVariant: .standard),
+            environmentResolver: PassthroughResolver()
+        )
+    }
+
+    func testApplicationProofRequiresReadyTransportIncludingNilSettings() async throws {
+        let controller = applicationController()
+        let absent = try await controller.applyModelAndEffortWithProof(model: nil, effortLevel: nil)
+        XCTAssertEqual(absent, .notReady)
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: true, write: { writes.append($0) })
+        let ready = try await controller.applyModelAndEffortWithProof(model: nil, effortLevel: nil)
+        guard case let .applied(proof) = ready else { return XCTFail("Ready no-override policy must be proven") }
+        _ = try await controller.sendUserMessage("ordinary", configuration: proof)
+        XCTAssertEqual(writes.count, 1)
+    }
+
+    func testUnchangedConfigurationReusesProofWithoutProviderIO() async throws {
+        let controller = applicationController()
+        let controls = WrittenLines()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: true, controlRequest: { _ in
+            controls.append(Data())
+            return [:]
+        }, write: { writes.append($0) })
+        let first = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+        let repeated = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+        XCTAssertEqual(repeated, first, "Unchanged desired configuration must reuse its current proof")
+        XCTAssertEqual(controls.count, 1, "No provider round trip for an unchanged ordinary turn")
+        _ = try await controller.applyModelAndEffortWithProof(model: "B", effortLevel: .high)
+        _ = try await controller.applyModelAndEffortWithProof(model: "B", effortLevel: .low)
+        XCTAssertEqual(controls.count, 3, "Changed model and Auto effort each require application")
+        XCTAssertEqual(writes.count, 0)
+    }
+
+    @MainActor
+    func testFirstOrdinarySendWaitsForColdInitializationAndReusesLaunchProof() async throws {
+        let controller = applicationController()
+        let gate = ApplicationGate()
+        let controls = WrittenLines()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: false, controlRequest: { request in
+            if request["subtype"] as? String == "initialize" { return await gate.respond() }
+            if request["subtype"] as? String == "apply_flag_settings" { controls.append(Data()) }
+            return [:]
+        }, write: { writes.append($0) })
+        let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller)
+        let send = Task {
+            await coordinator.sendClaudeNativeMessage(
+                session: session, text: "first ordinary turn", attachments: [], intent: intent,
+                allowsCatalogRouteControllerRecovery: false
+            )
+        }
+        defer { send.cancel()
+            gate.resume()
+        }
+        // The ordinary send has entered production startOrResume, but initialize is still pending.
+        try await gate.waitUntilEntered()
+        XCTAssertEqual(writes.count, 0)
+        XCTAssertEqual(controls.count, 0)
+        gate.resume()
+        let outcome = await send.value
+        XCTAssertEqual(outcome, .sent, "The first turn must deliver without retry after initialization")
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(controls.count, 1, "Reuse launch-time application; do not add a live-update round trip")
+    }
+
+    func testApplicationACKSupersessionCannotReleasePromptEvenForSameValueOrABA() async throws {
+        for interveningModels in [["A"], ["B", "A"]] {
+            let controller = applicationController()
+            let gate = ApplicationGate()
+            let writes = WrittenLines()
+            await controller.test_installConfigurationTransport(
+                initialized: true, controlRequest: { _ in await gate.respond() }, write: { writes.append($0) }
+            )
+            let first = Task { try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high) }
+            defer { first.cancel()
+                gate.resume()
+            }
+            try await gate.waitUntilEntered()
+            var latest: NativeAgentRuntimeConfigurationApplication = .notReady
+            for model in interveningModels {
+                latest = try await controller.applyModelAndEffortWithProof(model: model, effortLevel: .high)
+            }
+            gate.resume()
+            let superseded = try await first.value
+            XCTAssertEqual(superseded, .appliedButSuperseded)
+            XCTAssertEqual(writes.count, 0)
+            guard case let .applied(proof) = latest else { return XCTFail("Latest application must be current") }
+            do {
+                _ = try await controller.sendUserMessage("tainted", configuration: proof)
+                XCTFail("A landed stale write must invalidate even the newer proof")
+            } catch NativeAgentRuntimeControllerError.configurationNotCurrent {}
+            XCTAssertEqual(writes.count, 0)
+            guard case let .applied(restored) = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+            else { return XCTFail("The next turn must re-establish its configuration") }
+            _ = try await controller.sendUserMessage("current", configuration: restored)
+            XCTAssertEqual(writes.count, 1)
+        }
+    }
+
+    func testPhysicalWriteRejectsProofAfterChangedIntentAndProcessReplacement() async throws {
+        let controller = applicationController()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: true, write: { writes.append($0) })
+        guard case let .applied(first) = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+        else { return XCTFail("Missing initial proof") }
+        guard case let .applied(second) = try await controller.applyModelAndEffortWithProof(model: "B", effortLevel: .high)
+        else { return XCTFail("Missing replacement proof") }
+        do {
+            _ = try await controller.sendUserMessage("stale", configuration: first)
+            XCTFail("Changed configuration must invalidate an older proof")
+        } catch NativeAgentRuntimeControllerError.configurationNotCurrent {}
+        await controller.test_installConfigurationTransport(initialized: true, write: { writes.append($0) })
+        _ = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+        _ = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+        do {
+            _ = try await controller.sendUserMessage("old process", configuration: second)
+            XCTFail("A prior transport proof must not survive generation reset")
+        } catch NativeAgentRuntimeControllerError.configurationNotCurrent {}
+        XCTAssertEqual(writes.count, 0)
+    }
+
+    private actor GatedResolver: ClaudeCodeLaunchEnvironmentResolving {
+        let gate: ApplicationGate
+        let rejectFirst: Bool
+        private var calls = 0
+        init(gate: ApplicationGate, rejectFirst: Bool = false) {
+            self.gate = gate
+            self.rejectFirst = rejectFirst
+        }
+
+        func resolve(variant _: ClaudeCodeRuntimeVariant, requestedModel: String?) async throws -> ClaudeCodeLaunchEnvironment {
+            calls += 1
+            let reject = rejectFirst && calls == 1
+            _ = await gate.respond()
+            if reject { throw ResolverError.unsupportedModel }
+            return ClaudeCodeLaunchEnvironment(effectiveModel: requestedModel, environmentOverrides: [:], backend: .defaultClaude)
+        }
+    }
+
+    func testSupersessionDuringResolutionNeverWritesStaleSettings() async throws {
+        let gate = ApplicationGate()
+        let controller = ClaudeNativeProcessSessionController(
+            runID: UUID(), tabID: UUID(), windowID: 1, workspacePath: nil,
+            config: .discovery(commandName: "/usr/bin/false", runtimeVariant: .standard),
+            environmentResolver: GatedResolver(gate: gate)
+        )
+        let writes = WrittenLines()
+        let controls = WrittenLines()
+        await controller.test_installConfigurationTransport(
+            initialized: true,
+            controlRequest: { _ in controls.append(Data())
+                return [:]
+            },
+            write: { writes.append($0) }
+        )
+        let first = Task { try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high) }
+        defer { first.cancel()
+            gate.resume()
+        }
+        try await gate.waitUntilEntered()
+        _ = try await controller.applyModelAndEffortWithProof(model: "B", effortLevel: .high)
+        let latest = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+        gate.resume()
+        let stale = try await first.value
+        XCTAssertEqual(stale, .superseded)
+        XCTAssertEqual(controls.count, 2, "The delayed A intent must not write settings after B→A")
+        XCTAssertEqual(writes.count, 0)
+        guard case let .applied(proof) = latest else { return XCTFail("Missing latest proof") }
+        _ = try await controller.sendUserMessage("current", configuration: proof)
+        XCTAssertEqual(writes.count, 1)
+    }
+
+    func testSupersededResolutionErrorReturnsSuperseded() async throws {
+        let gate = ApplicationGate()
+        let controller = ClaudeNativeProcessSessionController(
+            runID: UUID(), tabID: UUID(), windowID: 1, workspacePath: nil,
+            config: .discovery(commandName: "/usr/bin/false", runtimeVariant: .standard),
+            environmentResolver: GatedResolver(gate: gate, rejectFirst: true)
+        )
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: true, write: { writes.append($0) })
+        let first = Task { try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .low) }
+        defer { first.cancel()
+            gate.resume()
+        }
+        try await gate.waitUntilEntered()
+        _ = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .low)
+        gate.resume()
+        let result = try await first.value
+        XCTAssertEqual(result, .superseded, "Resolution failures must be generation-fenced too")
+        XCTAssertEqual(writes.count, 0)
+    }
+
+    func testRejectedApplicationInvalidatesEarlierProofWithoutChangingSessionIdentity() async throws {
+        let controller = applicationController()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: true, write: { writes.append($0) })
+        guard case let .applied(proof) = try await controller.applyModelAndEffortWithProof(model: "A", effortLevel: .high)
+        else { return XCTFail("Missing proof") }
+        await controller.test_setConfigurationControlRequest { _ in throw ResolverError.unsupportedModel }
+        do {
+            _ = try await controller.applyModelAndEffortWithProof(model: "B", effortLevel: .high)
+            XCTFail("Expected rejection")
+        } catch let failure as NativeAgentRuntimeConfigurationFailure {
+            guard case ResolverError.unsupportedModel = failure.underlyingError else {
+                return XCTFail("Unexpected underlying application error: \(failure.underlyingError)")
+            }
+        }
+        do {
+            try await controller.applyModelAndEffort(model: "B", effortLevel: .high)
+            XCTFail("Legacy updates must still expose their original error")
+        } catch ResolverError.unsupportedModel {}
+        do {
+            _ = try await controller.sendUserMessage("stale after rejection", configuration: proof)
+            XCTFail("Rejected intent still invalidates prior application")
+        } catch NativeAgentRuntimeControllerError.configurationNotCurrent {}
+        let identity = await controller.currentSessionRef()
+        XCTAssertEqual(identity.sessionID, "application-proof-session")
+        XCTAssertEqual(writes.count, 0)
+    }
+
+    @MainActor
+    private func ordinaryTurnFixture(
+        controller: ClaudeNativeProcessSessionController,
+        replacement: ClaudeNativeProcessSessionController? = nil
+    ) -> (ClaudeAgentModeCoordinator, AgentTabSession, ClaudeAgentModeCoordinator.NativeSessionIntent) {
+        var creations = 0
+        let coordinator = ClaudeAgentModeCoordinator(
+            windowID: 1,
+            workspacePathProvider: { _ in nil },
+            claudeControllerFactory: { _, _, _, _ in
+                creations += 1
+                return creations == 1 ? controller : (replacement ?? controller)
+            },
+            autoEffortEnabledProvider: { true }
+        )
+        let session = AgentTabSession(tabID: UUID())
+        session.selectedAgent = .claudeCode
+        session.selectedModelRaw = "claude-opus-5-5:high"
+        session.hasLoadedPersistedState = true
+        session.testInstallPersistentSessionBinding(sessionID: UUID())
+        let runID = UUID()
+        session.installRunID(runID)
+        session.runState = .running
+        let ownership = session.beginRunAttempt(source: "test.native-application-proof")
+        return (coordinator, session, .runAttempt(ownership: ownership, runID: runID))
+    }
+
+    @MainActor
+    func testOrdinarySendWaitsForModelAndEffortACKAndRejectsChangedModelWithSameEffort() async throws {
+        for changeModel in [false, true] {
+            let controller = applicationController()
+            let gate = ApplicationGate()
+            let writes = WrittenLines()
+            await controller.test_installConfigurationTransport(
+                initialized: true, controlRequest: { _ in await gate.respond() }, write: { writes.append($0) }
+            )
+            let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller)
+            let send = Task {
+                await coordinator.sendClaudeNativeMessage(
+                    session: session, text: "ordinary", attachments: [], intent: intent,
+                    allowsCatalogRouteControllerRecovery: false
+                )
+            }
+            defer { send.cancel()
+                gate.resume()
+            }
+            try await gate.waitUntilEntered()
+            XCTAssertEqual(writes.count, 0, "An ordinary turn must await application even without Auto")
+            if changeModel { session.selectedModelRaw = "claude-sonnet-4-6:high" }
+            gate.resume()
+            let outcome = await send.value
+            XCTAssertEqual(outcome, changeModel ? .superseded : .sent)
+            XCTAssertEqual(writes.count, changeModel ? 0 : 1)
+            XCTAssertEqual(session.providerSessionID, "application-proof-session")
+            XCTAssertTrue(session.claudeController === controller)
+        }
+    }
+
+    @MainActor
+    func testOrdinarySendRejectsSameValueSupersessionDuringACK() async throws {
+        let controller = applicationController()
+        let gate = ApplicationGate()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(
+            initialized: true, controlRequest: { _ in await gate.respond() }, write: { writes.append($0) }
+        )
+        let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller)
+        let send = Task {
+            await coordinator.sendClaudeNativeMessage(
+                session: session, text: "ordinary", attachments: [], intent: intent,
+                allowsCatalogRouteControllerRecovery: false
+            )
+        }
+        defer { send.cancel()
+            gate.resume()
+        }
+        try await gate.waitUntilEntered()
+        _ = try await controller.applyModelAndEffortWithProof(model: session.selectedModelRaw, effortLevel: .high)
+        gate.resume()
+        let outcome = await send.value
+        guard case .failed = outcome else { return XCTFail("Superseded application cannot release the prompt") }
+        XCTAssertEqual(writes.count, 0)
+        XCTAssertEqual(session.providerSessionID, "application-proof-session")
+    }
+
+    @MainActor
+    func testOrdinaryApplicationFailurePreservesIdentityAndDoesNotPrompt() async {
+        for failure in [NativeAgentRuntimeControllerError.invalidControlResponse("rejected")] {
+            let controller = applicationController()
+            let writes = WrittenLines()
+            await controller.test_installConfigurationTransport(
+                initialized: true, controlRequest: { _ in throw failure }, write: { writes.append($0) }
+            )
+            let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller)
+            let outcome = await coordinator.sendClaudeNativeMessage(
+                session: session, text: "ordinary", attachments: [], intent: intent,
+                allowsCatalogRouteControllerRecovery: false
+            )
+            guard case .failed = outcome else { return XCTFail("Expected pre-prompt failure, got \(outcome)") }
+            XCTAssertEqual(writes.count, 0)
+            XCTAssertEqual(session.providerSessionID, "application-proof-session")
+            XCTAssertTrue(session.claudeController === controller)
+        }
+    }
+
+    @MainActor
+    func testComposerModelSwitchRequiringRestartDeliversWithoutRetry() async {
+        let controller = applicationController()
+        let replacement = applicationController()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: true, controlRequest: { _ in
+            throw NativeAgentRuntimeControllerError.liveModelSwitchRequiresRestart
+        }, write: { writes.append($0) })
+        await replacement.test_installConfigurationTransport(initialized: true, write: { writes.append($0) })
+        let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller, replacement: replacement)
+        let ready = await coordinator.ensureClaudeNativeSession(session: session, intent: intent)
+        XCTAssertEqual(ready, .ready)
+        session.selectedModelRaw = "claude-sonnet-4-6:high"
+        let outcome = await coordinator.sendClaudeNativeMessage(
+            session: session, text: "ordinary after model switch", attachments: [], intent: intent,
+            allowsCatalogRouteControllerRecovery: false
+        )
+        XCTAssertEqual(outcome, .sent)
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertTrue(session.claudeController === replacement)
+        XCTAssertEqual(session.providerSessionID, "application-proof-session")
+    }
+
+    private actor EffortRequests {
+        private(set) var models: [String?] = []
+        private(set) var efforts: [String?] = []
+        func respond(_ request: [String: Any]) throws -> [String: Any] {
+            let settings = request["settings"] as? [String: Any]
+            models.append(settings?["model"] as? String)
+            efforts.append(settings?["effortLevel"] as? String)
+            if efforts.count == 1 { throw ResolverError.unsupportedModel }
+            return [:]
+        }
+    }
+
+    @MainActor
+    func testOptionalAutoFailureReestablishesSameModelManualProofBeforePrompt() async {
+        let controller = applicationController()
+        let requests = EffortRequests()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(
+            initialized: true, controlRequest: { try await requests.respond($0) }, write: { writes.append($0) }
+        )
+        let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller)
+        let outcome = await coordinator.sendClaudeNativeMessage(
+            session: session, text: "ordinary", attachments: [], intent: intent,
+            allowsCatalogRouteControllerRecovery: false,
+            autoEffortSelection: .init(
+                provider: .claudeCode, selectedModelRaw: session.selectedModelRaw,
+                manualEffortRaw: "high", effortRaw: "low"
+            )
+        )
+        XCTAssertEqual(outcome, .sent)
+        let models = await requests.models
+        let efforts = await requests.efforts
+        XCTAssertEqual(models, ["claude-opus-5-5:high", "claude-opus-5-5:high"])
+        XCTAssertEqual(efforts, ["low", "high"])
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertFalse(session.isMCPOriginated)
+        XCTAssertEqual(session.providerSessionID, "application-proof-session")
+    }
+
+    @MainActor
+    func testParkedNoteProofRefusalIsUnattemptedAndRetryableButWriteFailureIsUnknown() async throws {
+        // Only the typed entry refusal is definitely unsent; a writer's CancellationError is not.
+        for (invalidateProof, cancelBeforeWrite, writerThrowsCancellation) in [
+            (true, false, false), (false, true, false), (false, false, false), (false, false, true)
+        ] {
+            let isPreWriteRefusal = invalidateProof || cancelBeforeWrite
+            let controller = applicationController()
+            let gate = ApplicationGate()
+            let writes = WrittenLines()
+            await controller.test_installConfigurationTransport(initialized: true, write: {
+                writes.append($0)
+                if writerThrowsCancellation { throw CancellationError() }
+                if !isPreWriteRefusal { throw NativeAgentRuntimeControllerError.inputWriteFailed("uncertain write") }
+            })
+            await controller.test_setBeforeConfigurationSend { _ = await gate.respond() }
+            let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller)
+            var notAttempted = 0
+            var failed = 0
+            var accepted = 0
+            coordinator.installHostCapabilities(.init(
+                isSessionCurrent: { $0 === session }, requestUIRefresh: { _, _ in }, scheduleSave: { _ in },
+                stageClaudeResumeRecoveryHandoff: { _ in }, prependPendingHandoff: { text, _ in text },
+                decorateAgentSessionLinkPrompt: { text, _, _ in .init(text: text, claim: nil, mustAbortDispatch: false) },
+                acquireAgentSessionLinkPhysicalDispatch: { _, _ in true },
+                recordAgentSessionLinkPhysicalDispatchNotAttempted: { _, _ in notAttempted += 1 },
+                recordAgentSessionLinkPhysicalDispatchFailure: { _, _ in failed += 1 },
+                acceptAgentSessionLinkPromptClaim: { _, _, _ in accepted += 1 }
+            ), providerBindingService: AgentModeProviderBindingService())
+            var state = session.selfCompactState
+            guard case let .scheduled(noteAttempt) = state.reserve(note: "keep this exact note", idempotencyKey: "proof-race")
+            else { return XCTFail("Expected parked note reservation") }
+            let noteID = noteAttempt.id
+            state.active?.phase = .parked
+            state.active?.compactTurnSucceeded = true
+            session.selfCompactState = state
+            let auditID = UUID()
+            session.pendingTurnRuntimeAnchors.append(.init(userItemID: auditID, userSequenceIndex: 0, startedAt: Date()))
+            let disabled = AgentAutomationTurnAudit.Feature(configured: false, eligible: false, judgmentRequested: false, decision: .disabled)
+            session.appendAutomationAudit(.init(turnID: auditID, createdAt: Date(), router: disabled, autoEffort: disabled))
+            let send = Task {
+                await coordinator.sendClaudeNativeMessage(
+                    session: session, text: "ordinary", attachments: [], intent: intent,
+                    allowsCatalogRouteControllerRecovery: false
+                )
+            }
+            defer { send.cancel()
+                gate.resume()
+            }
+            try await gate.waitUntilEntered()
+            XCTAssertEqual(session.selfCompactState.active?.noteDispatchStarted, true)
+            XCTAssertEqual(writes.count, 0)
+            if invalidateProof {
+                _ = try await controller.applyModelAndEffortWithProof(model: "claude-sonnet-4-6:high", effortLevel: .high)
+            }
+            if cancelBeforeWrite { send.cancel() }
+            gate.resume()
+            let outcome = await send.value
+            guard case .failed = outcome else { return XCTFail("Expected send refusal/failure") }
+            XCTAssertEqual(accepted, 0)
+            XCTAssertEqual(notAttempted, isPreWriteRefusal ? 1 : 0)
+            XCTAssertEqual(failed, isPreWriteRefusal ? 0 : 1)
+            XCTAssertEqual(writes.count, isPreWriteRefusal ? 0 : 1)
+            XCTAssertEqual(session.automationTurnAudit.last?.providerDispatchAttempted, !isPreWriteRefusal)
+            XCTAssertEqual(session.automationTurnAudit.last?.providerTurnAccepted, false)
+            if isPreWriteRefusal {
+                XCTAssertEqual(session.selfCompactState.parkedNote?.dispatchID.requestID, noteID)
+                XCTAssertEqual(session.selfCompactState.active?.noteDispatchStarted, false)
+                XCTAssertEqual(session.selfCompactState.active?.note, "keep this exact note")
+                XCTAssertNil(session.selfCompactState.latest)
+                let retry = await coordinator.sendClaudeNativeMessage(
+                    session: session, text: "retry", attachments: [], intent: intent,
+                    allowsCatalogRouteControllerRecovery: false
+                )
+                XCTAssertEqual(retry, .sent)
+                XCTAssertEqual(writes.count, 1)
+                XCTAssertEqual(accepted, 1)
+                XCTAssertEqual(session.selfCompactState.latest?.requestID, noteID)
+                XCTAssertEqual(session.selfCompactState.latest?.noteDelivery, .prepended)
+            } else {
+                XCTAssertNil(session.selfCompactState.parkedNote)
+                XCTAssertEqual(session.selfCompactState.latest?.outcome, .deliveryUnknown)
+                XCTAssertEqual(session.selfCompactState.latest?.recoveryNote, "keep this exact note")
+            }
+        }
+    }
+
+    @MainActor
+    func testSupersededAutoErrorDoesNotFallbackForIdenticalOrABAConfiguration() async throws {
+        for interveningModels in [["claude-opus-5-5:high"], ["claude-sonnet-4-6:high", "claude-opus-5-5:high"]] {
+            let controller = applicationController()
+            let gate = ApplicationGate()
+            let controls = WrittenLines()
+            let writes = WrittenLines()
+            await controller.test_installConfigurationTransport(initialized: true, controlRequest: { request in
+                controls.append(Data())
+                if (request["settings"] as? [String: Any])?["effortLevel"] as? String == "low" {
+                    _ = await gate.respond()
+                    throw NativeAgentRuntimeControllerError.invalidControlResponse("late Auto rejection")
+                }
+                return [:]
+            }, write: { writes.append($0) })
+            let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller)
+            let send = Task {
+                await coordinator.sendClaudeNativeMessage(
+                    session: session, text: "ordinary", attachments: [], intent: intent,
+                    allowsCatalogRouteControllerRecovery: false,
+                    autoEffortSelection: .init(
+                        provider: .claudeCode,
+                        selectedModelRaw: session.selectedModelRaw,
+                        manualEffortRaw: "high",
+                        effortRaw: "low"
+                    )
+                )
+            }
+            defer { send.cancel()
+                gate.resume()
+            }
+            try await gate.waitUntilEntered()
+            for model in interveningModels {
+                _ = try await controller.applyModelAndEffortWithProof(model: model, effortLevel: .high)
+            }
+            gate.resume()
+            let outcome = await send.value
+            guard case .failed = outcome else { return XCTFail("Stale Auto error must refuse, not fall back and send") }
+            XCTAssertEqual(controls.count, 1 + interveningModels.count, "No manual fallback from a superseded application")
+            XCTAssertEqual(writes.count, 0)
+            XCTAssertEqual(session.providerSessionID, "application-proof-session")
+        }
+    }
+
+    @MainActor
+    func testLaunchSettingsChangeDuringApplicationRelaunchesAndDelivers() async throws {
+        let controller = applicationController()
+        let gate = ApplicationGate()
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(
+            initialized: true, controlRequest: { _ in await gate.respond() }, write: { writes.append($0) }
+        )
+        let replacement = applicationController()
+        await replacement.test_installConfigurationTransport(initialized: true, write: { writes.append($0) })
+        let (coordinator, session, intent) = ordinaryTurnFixture(controller: controller, replacement: replacement)
+        let send = Task {
+            await coordinator.sendClaudeNativeMessage(
+                session: session, text: "ordinary", attachments: [], intent: intent,
+                allowsCatalogRouteControllerRecovery: false
+            )
+        }
+        defer {
+            send.cancel()
+            gate.resume()
+        }
+        try await gate.waitUntilEntered()
+        let launch = try XCTUnwrap(coordinator.test_controllerLaunchSettings(for: session))
+        coordinator.test_setControllerLaunchSettings(.init(
+            runtimeVariant: launch.runtimeVariant, workspacePath: "/changed-during-application",
+            permissionMode: launch.permissionMode, allowNativeBashTool: launch.allowNativeBashTool,
+            mcpStrictMode: launch.mcpStrictMode
+        ), for: session)
+        gate.resume()
+        let outcome = await send.value
+        XCTAssertEqual(outcome, .sent, "A launch mismatch must relaunch and deliver without a user retry")
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertTrue(session.claudeController === replacement)
+        XCTAssertEqual(session.providerSessionID, "application-proof-session")
+    }
+
+    @MainActor
+    func testProductionFactoryAdapterAndControlResponseGateConfigurationProof() async throws {
+        let runtime = ClaudeAgentModeCoordinator.test_makeDefaultController(
+            runID: UUID(), tabID: UUID(), windowID: 1,
+            launchSettings: .init(
+                runtimeVariant: .standard, workspacePath: nil, permissionMode: nil,
+                allowNativeBashTool: nil, mcpStrictMode: nil
+            )
+        )
+        let adapter = try XCTUnwrap(runtime as? ClaudeCompatibleNativeSessionAdapter)
+        let underlying = await adapter.test_processController()
+        let controller = try XCTUnwrap(underlying, "The production factory must wrap the proof-capable process controller")
+        addTeardownBlock { await runtime.shutdown() }
+        let writes = WrittenLines()
+        await controller.test_installConfigurationTransport(initialized: true, controlRequest: nil, write: { writes.append($0) })
+        for (index, reject) in [true, false].enumerated() {
+            let application = Task {
+                try await runtime.applyModelAndEffortWithProof(model: "claude-opus-5-5:high", effortLevel: .low)
+            }
+            defer { application.cancel() }
+            try await AsyncTestWait.waitUntil("configuration request \(index) on production adapter wire") {
+                writes.count > index
+            }
+            let frame = try XCTUnwrap(writes.line(at: index))
+            let request = try XCTUnwrap(JSONSerialization.jsonObject(with: frame) as? [String: Any])
+            XCTAssertEqual(request["type"] as? String, "control_request")
+            let body = try XCTUnwrap(request["request"] as? [String: Any])
+            XCTAssertEqual(body["subtype"] as? String, "apply_flag_settings")
+            let settings = try XCTUnwrap(body["settings"] as? [String: Any])
+            XCTAssertEqual(settings["model"] as? String, "claude-opus-5-5")
+            XCTAssertEqual(settings["effortLevel"] as? String, "low")
+            let requestID = try XCTUnwrap(request["request_id"] as? String)
+            let response = try (
+                reject
+                    ? ClaudeSDKProtocolCodec.encodeControlResponseError(requestID: requestID, error: "rejected")
+                    : ClaudeSDKProtocolCodec.encodeControlResponseSuccess(requestID: requestID)
+            )
+            await controller.test_receiveConfigurationResponseLine(response)
+            if reject {
+                do {
+                    _ = try await application.value
+                    XCTFail("A production error response cannot certify application")
+                } catch let failure as NativeAgentRuntimeConfigurationFailure {
+                    guard case NativeAgentRuntimeControllerError.invalidControlResponse = failure.underlyingError else {
+                        return XCTFail("Unexpected underlying ACK error: \(failure.underlyingError)")
+                    }
+                }
+                XCTAssertEqual(writes.count, 1, "Only the settings request was written")
+            } else {
+                guard case let .applied(proof) = try await application.value else { return XCTFail("Missing ACK proof") }
+                _ = try await runtime.sendUserMessage("ordinary", configuration: proof)
+                try await AsyncTestWait.waitUntil("user message on production adapter wire") { writes.count == 3 }
+                let userFrame = try XCTUnwrap(writes.line(at: 2))
+                let user = try XCTUnwrap(JSONSerialization.jsonObject(with: userFrame) as? [String: Any])
+                XCTAssertEqual(user["type"] as? String, "user")
+                XCTAssertEqual(writes.count, 3, "Two settings requests followed by one user write")
+            }
+        }
+    }
+
     func testRepoPromptPermissionAutoApprovalAndAllowPayloadPreserveToolUseID() throws {
         let repoPromptPayload: [String: Any] = [
             "tool_name": "mcp__RepoPromptCE__read_file",

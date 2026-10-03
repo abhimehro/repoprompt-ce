@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RepoPromptProcess
 
 enum ACPRuntimeEventParsing {
     static func extractContentText(from value: Any?) -> String? {
@@ -629,8 +630,10 @@ enum ACPPermissionOptionPolicy {
     /// bare kind match would otherwise select it and broaden approval beyond the request.
     static func denylistedAutoSelectOptionIDs(for providerID: ACPProviderID) -> Set<String> {
         switch providerID {
-        case .openCode, .cursor, .antigravity, .devin:
+        case .openCode, .cursor, .antigravity:
             []
+        case .devin:
+            ["allow_always", "allow_always_global", "allow_server_session", "allow_server_always"]
         case .grokBuild:
             ["enable-always-approve"]
         }

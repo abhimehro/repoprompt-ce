@@ -1,3 +1,4 @@
+import Combine
 import Darwin
 import Foundation
 import MCP
@@ -25,6 +26,50 @@ final class AgentSessionLinkCancelledAttemptRouteTests: XCTestCase {
     private let clientName = AgentProviderKind.openCodeMCPClientID
 
     // MARK: - Connection-manager level
+
+    func testAuthoritativeRouteOwnerRequiresTrustedPeerDescendant() async throws {
+        #if DEBUG
+            let observer = try await makeRoutedObserver()
+            try await assertRouteAndCatalogReady(observer, "baseline")
+            let manager = observer.manager
+
+            await manager.debugSetObservedPeerPIDForTesting(Int(getpid()), connectionID: observer.connectionID)
+            let owned = await manager.isRunRouteAuthoritativelyCommitted(
+                runID: observer.runID,
+                windowID: observer.window.windowID,
+                tabID: observer.tabID,
+                expectedAgentPID: getpid()
+            )
+            XCTAssertTrue(owned)
+
+            let unrelated = await manager.isRunRouteAuthoritativelyCommitted(
+                runID: observer.runID,
+                windowID: observer.window.windowID,
+                tabID: observer.tabID,
+                expectedAgentPID: pid_t(Int32.max)
+            )
+            XCTAssertFalse(unrelated, "another process must not authorize the inherited route")
+
+            let wrongTab = await manager.isRunRouteAuthoritativelyCommitted(
+                runID: observer.runID,
+                windowID: observer.window.windowID,
+                tabID: UUID(),
+                expectedAgentPID: getpid()
+            )
+            XCTAssertFalse(wrongTab)
+
+            await manager.debugSetObservedPeerPIDForTesting(nil, connectionID: observer.connectionID)
+            let unverified = await manager.isRunRouteAuthoritativelyCommitted(
+                runID: observer.runID,
+                windowID: observer.window.windowID,
+                tabID: observer.tabID,
+                expectedAgentPID: getpid()
+            )
+            XCTAssertFalse(unverified, "missing trusted peer identity must fail closed")
+        #else
+            throw XCTSkip("Requires DEBUG MCP routing fixtures.")
+        #endif
+    }
 
     func testCancelledReusedRunAttemptAfterRelistKeepsCommittedRouteAndReadyCatalog() async throws {
         #if DEBUG
@@ -400,6 +445,135 @@ final class AgentSessionLinkCancelledAttemptRouteTests: XCTestCase {
 
     #if DEBUG
 
+        func testModelWindowIndexTracksAddRemoveReplacementAndAmbiguity() {
+            let manager = WindowStatesManager.shared
+            let original = manager.allWindows
+            defer { manager.allWindows = original }
+            let first = makeWindow()
+            let second = makeWindow()
+            manager.allWindows = [first]
+            XCTAssertTrue(manager.modelRoutingWindow(withID: first.windowID) === first)
+            manager.allWindows.insert(second, at: 0)
+            XCTAssertTrue(manager.modelRoutingWindow(withID: first.windowID) === first)
+            XCTAssertTrue(manager.modelRoutingWindow(withID: second.windowID) === second)
+            manager.allWindows.removeLast()
+            XCTAssertNil(manager.modelRoutingWindow(withID: first.windowID))
+            manager.allWindows = [first, first]
+            XCTAssertNil(manager.modelRoutingWindow(withID: first.windowID), "Duplicate windows must not be arbitrarily selected")
+            manager.allWindows = [second]
+            XCTAssertNil(manager.modelRoutingWindow(withID: first.windowID))
+            XCTAssertTrue(manager.modelRoutingWindow(withID: second.windowID) === second)
+        }
+
+        func testModelCallerUsesInstalledRouteAndNeverRepairsColdOrStaleContext() async throws {
+            let fixture = try await makeRoutedObserver(assertModelRoutePending: true)
+            let server = fixture.window.mcpServer
+            let metadata = MCPServerViewModel.RequestMetadata(
+                connectionID: fixture.connectionID, clientName: clientName,
+                windowID: fixture.window.windowID, runPurpose: .agentModeRun
+            )
+            let original = try XCTUnwrap(server.tabContextByConnectionID[fixture.connectionID])
+            let binding = fixture.session.persistentSessionBindingIdentity
+            let sessionCount = fixture.window.agentModeViewModel.sessions.count
+            let pendingCount = server.pendingPolicyRunIDMappingTokenIDByRunID.count
+            let contextGeneration = original.readFileAutoSelectionGeneration
+            let live = await server.resolveAgentSessionLinkModelObserverEndpoint(metadata: metadata, network: fixture.manager)
+            XCTAssertEqual(live, fixture.endpoint)
+
+            server.tabContextByConnectionID.removeValue(forKey: fixture.connectionID)
+            let cold = await server.resolveAgentSessionLinkModelObserverEndpoint(metadata: metadata, network: fixture.manager)
+            XCTAssertNil(cold)
+            XCTAssertNil(server.tabContextByConnectionID[fixture.connectionID], "Must not rehydrate a missing context")
+            server.tabContextByConnectionID[fixture.connectionID] = original
+            server.connectionIDByRunID[fixture.runID] = UUID()
+            let stale = await server.resolveAgentSessionLinkModelObserverEndpoint(metadata: metadata, network: fixture.manager)
+            XCTAssertNil(stale, "A displaced connection must not claim the successor's route")
+            server.connectionIDByRunID[fixture.runID] = fixture.connectionID
+            XCTAssertEqual(fixture.session.persistentSessionBindingIdentity, binding)
+            XCTAssertEqual(fixture.window.agentModeViewModel.sessions.count, sessionCount)
+            XCTAssertEqual(server.pendingPolicyRunIDMappingTokenIDByRunID.count, pendingCount)
+            XCTAssertEqual(server.tabContextByConnectionID[fixture.connectionID]?.readFileAutoSelectionGeneration, contextGeneration)
+            XCTAssertEqual(server.connectionIDToRunID[fixture.connectionID], fixture.runID)
+            await fixture.manager.removeConnection(fixture.connectionID)
+            let terminal = await server.resolveAgentSessionLinkModelObserverEndpoint(metadata: metadata, network: fixture.manager)
+            XCTAssertNil(terminal, "A retained presentation snapshot cannot revive a terminal connection")
+        }
+
+        func testSetModelThroughProductionRoutingAndWindowHostRejectsColdCallerWithoutRecovery() async throws {
+            let fixture = try await makeRoutedObserver()
+            let window = fixture.window
+            let vm = window.agentModeViewModel
+            let workspaceID = try XCTUnwrap(window.workspaceManager.activeWorkspaceID)
+            let workspaceIndex = try XCTUnwrap(window.workspaceManager.workspaces.firstIndex { $0.id == workspaceID })
+            let tabID = UUID()
+            window.workspaceManager.workspaces[workspaceIndex].composeTabs.append(ComposeTabState(id: tabID, name: "Model target"))
+            let target = vm.session(for: tabID)
+            target.selectedAgent = .claudeCode
+            target.hasLoadedPersistedState = true
+            let sessionID = try XCTUnwrap(vm.test_ensureSessionBoundToTab(target))
+            let identity = try XCTUnwrap(vm.agentSessionLinkModelIdentity(workspaceID: workspaceID, tabID: tabID, sessionID: sessionID))
+            let endpoint = try XCTUnwrap(identity.monitorEndpoint(windowID: window.windowID))
+            let host = WindowStatesManager.shared
+            let candidate = try XCTUnwrap(host.agentSessionLinkModelCandidate(for: endpoint))
+            let authority = DomainAgentSessionLinkAuthority(identity: DomainRuntimeIdentity(
+                runtimeID: UUID(), lifecycleGeneration: 1, processID: 1, mode: .app, createdAt: Date()
+            ))
+            guard case let .reserved(reservation, _) = await authority.reserveLink(observer: fixture.endpoint, target: endpoint) else {
+                return XCTFail("Expected managed reservation")
+            }
+            guard case .activated = await authority.activateLink(
+                reservation: reservation, initialSnapshot: host.agentSessionLinkObservationSnapshot(for: candidate), sourcePublicationSequence: 1
+            ) else { return XCTFail("Expected activated link") }
+            let bridge = AgentSessionLinkRuntimeBridge(authority: authority, host: host, toolAdvertisementInvalidator: { _ in })
+            let available = expectation(description: "Cached Claude availability")
+            let subscription = window.apiSettingsViewModel.$agentAvailability.first { $0.claudeCodeAvailable }.sink { _ in available.fulfill() }
+            window.apiSettingsViewModel.isClaudeCodeConnected = true
+            await fulfillment(of: [available], timeout: 2)
+            subscription.cancel()
+            let raw = "routing-test-model:high"
+            AgentAdvertisedModelCatalog.shared.record([
+                AgentModelOption(rawValue: raw, displayName: "Routing test", description: nil, isPlaceholderDefault: false, isProviderDefault: false)
+            ], for: .claudeCode, generation: AgentAdvertisedModelCatalog.shared.productionGeneration(for: .claudeCode))
+            defer {
+                target.saveDebounceTask?.cancel()
+                AgentAdvertisedModelCatalog.shared.invalidate(.claudeCode)
+            }
+            let service = AgentSessionLinkMCPToolService(
+                toolName: MCPWindowToolName.agentSessionLink,
+                captureRequestMetadata: { .init(connectionID: fixture.connectionID, clientName: self.clientName, windowID: window.windowID, runPurpose: .agentModeRun) },
+                requireTargetWindow: { XCTFail("set_model must bypass generic window routing")
+                    return window
+                },
+                resolveObserverEndpoint: { _, _ in XCTFail("set_model must not run recovery")
+                    return nil
+                },
+                withHeartbeat: { _, _, _, _, operation in try await operation() },
+                resolveModelObserverEndpoint: { metadata in
+                    await window.mcpServer.resolveAgentSessionLinkModelObserverEndpoint(metadata: metadata, network: fixture.manager)
+                }, bridge: bridge
+            )
+            let args: [String: Value] = [
+                "op": .string("set_model"), "session_id": .string(sessionID.uuidString),
+                "model_id": .string(AgentModelSelectionID(agentRaw: "claudeCode", modelRaw: raw).rawValue)
+            ]
+            let before = target.saveRequestGeneration
+            let response = try await service.execute(args: args)
+            guard case let .object(payload) = response else { return XCTFail("Expected receipt") }
+            XCTAssertEqual(payload["result"], .string("accepted"))
+            XCTAssertEqual(target.selectedModelRaw, raw)
+            XCTAssertEqual(target.saveRequestGeneration, before + 1)
+            XCTAssertNil(target.runID)
+            XCTAssertTrue(target.items.isEmpty)
+            target.saveDebounceTask?.cancel()
+            window.mcpServer.tabContextByConnectionID.removeValue(forKey: fixture.connectionID)
+            do {
+                _ = try await service.execute(args: args)
+                XCTFail("Cold caller must fail closed")
+            } catch { XCTAssertTrue(String(describing: error).contains("already-installed")) }
+            XCTAssertNil(window.mcpServer.tabContextByConnectionID[fixture.connectionID])
+            XCTAssertEqual(target.saveRequestGeneration, before + 1)
+        }
+
         // MARK: - Fixture
 
         private struct RoutedObserver {
@@ -418,7 +592,7 @@ final class AgentSessionLinkCancelledAttemptRouteTests: XCTestCase {
 
         /// An established Claude observer whose reused process run is routed on one live connection
         /// and whose catalog projection is ready for exactly this endpoint.
-        private func makeRoutedObserver() async throws -> RoutedObserver {
+        private func makeRoutedObserver(assertModelRoutePending: Bool = false) async throws -> RoutedObserver {
             let manager = ServerNetworkManager(
                 domainHost: AppDomainRuntimeComposition.shared.runtime.domainHost
             )
@@ -499,15 +673,33 @@ final class AgentSessionLinkCancelledAttemptRouteTests: XCTestCase {
                 connection: CancelledAttemptRouteTestConnection(),
                 pendingClientID: clientName
             )
-            let applied = await manager.debugApplyPendingPolicy(
-                clientName: clientName,
-                connectionID: connectionID,
-                clientPid: Int(getpid()),
-                bootstrapClientName: "repoprompt_ce_cli_debug",
-                sessionKey: "cancelled-attempt-\(runID.uuidString)",
-                pidGateTimeout: 0.25,
-                requireRunRouting: true
-            )
+            if assertModelRoutePending { await manager.debugSuspendNextPendingPolicyCommit() }
+            let application = Task {
+                await manager.debugApplyPendingPolicy(
+                    clientName: clientName,
+                    connectionID: connectionID,
+                    clientPid: Int(getpid()),
+                    bootstrapClientName: "repoprompt_ce_cli_debug",
+                    sessionKey: "cancelled-attempt-\(runID.uuidString)",
+                    pidGateTimeout: 0.25,
+                    requireRunRouting: true
+                )
+            }
+            if assertModelRoutePending {
+                do {
+                    try await AsyncTestWait.waitUntil("policy commit is parked") {
+                        await manager.debugIsPendingPolicyCommitSuspended()
+                    }
+                    let pending = await manager.cachedModelRunRoute(connectionID: connectionID)
+                    XCTAssertNil(pending, "Pending policy maps are not committed routing authority")
+                } catch {
+                    await manager.debugResumePendingPolicyCommit()
+                    _ = await application.value
+                    throw error
+                }
+                await manager.debugResumePendingPolicyCommit()
+            }
+            let applied = await application.value
             XCTAssertEqual(applied.outcome, "applied")
             _ = try await manager.debugListToolNames(for: connectionID)
 

@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 @testable import RepoPromptApp
+@testable import RepoPromptProcess
 import XCTest
 
 final class CursorACPLaunchResolverTests: XCTestCase {

@@ -15,12 +15,16 @@ actor MCPStdioServerTransport: Transport {
         case parentProcessChanged(initial: Int32, current: Int32)
         case stdoutBrokenPipe(bytesWritten: Int, totalBytes: Int)
         case stdoutWrite(errno: Int32, bytesWritten: Int, totalBytes: Int)
+        case stdoutPartialFrame(bytesWritten: Int, totalBytes: Int)
+        case stdoutWriteQueueFull(maximum: Int)
         case cancelled
     }
 
+    enum WriteGateEvent { case enqueued, handedOff, sealed }
+
     nonisolated let logger: Logger
     private let stdinFD: Int32
-    private let stdoutFD: Int32
+    private let outputSink: any MCPStdioOutputSink
     private let pollIntervalMilliseconds: Int32
     private let readBackpressureStallTimeout: Duration
     private let writeStallTimeout: Duration
@@ -30,6 +34,14 @@ actor MCPStdioServerTransport: Transport {
     private let parentPIDProvider: @Sendable () -> Int32
     private let deliveryTracker: MCPDomainResponseDeliveryTracker
     private let terminalState = MCPStdioTerminalState()
+    private let maximumQueuedWrites: Int
+    private let writeGateObserver: (@Sendable (WriteGateEvent) -> Void)?
+    private let beforeSealReaderTeardownForTesting: (@Sendable () async -> Void)?
+    private let readEOFObserverForTesting: (@Sendable () -> Void)?
+    private var writeOwnerActive = false
+    private var writeWaiters: [(token: UUID, continuation: CheckedContinuation<Void, Error>)] = []
+    private var writeSealed: TerminalError?
+    private var writableTask: Task<MCPStdioWritableResult, Never>?
     private var readTask: Task<Void, Never>?
     private var continuation: AsyncThrowingStream<Data, Error>.Continuation?
     private var stream: AsyncThrowingStream<Data, Error>?
@@ -37,6 +49,11 @@ actor MCPStdioServerTransport: Transport {
     init(
         stdinFD: Int32 = STDIN_FILENO,
         stdoutFD: Int32 = STDOUT_FILENO,
+        outputSink: (any MCPStdioOutputSink)? = nil,
+        maximumQueuedWrites: Int = 64,
+        writeGateObserver: (@Sendable (WriteGateEvent) -> Void)? = nil,
+        beforeSealReaderTeardownForTesting: (@Sendable () async -> Void)? = nil,
+        readEOFObserverForTesting: (@Sendable () -> Void)? = nil,
         pollIntervalMilliseconds: Int32 = 100,
         readBackpressureStallTimeout: Duration = .seconds(5),
         writeStallTimeout: Duration = .seconds(5),
@@ -46,8 +63,14 @@ actor MCPStdioServerTransport: Transport {
         deliveryTracker: MCPDomainResponseDeliveryTracker = MCPDomainResponseDeliveryTracker(),
         logger: Logger = Logger(label: "com.repoprompt.ce.mcp.headless-stdio")
     ) {
+        self.maximumQueuedWrites = max(1, maximumQueuedWrites)
+        self.writeGateObserver = writeGateObserver
+        self.beforeSealReaderTeardownForTesting = beforeSealReaderTeardownForTesting
+        self.readEOFObserverForTesting = readEOFObserverForTesting
         self.stdinFD = stdinFD
-        self.stdoutFD = stdoutFD
+        self.outputSink = outputSink ?? MCPStdioFileDescriptorOutputSink(
+            descriptor: stdoutFD, pollIntervalMilliseconds: pollIntervalMilliseconds
+        )
         self.pollIntervalMilliseconds = pollIntervalMilliseconds
         self.readBackpressureStallTimeout = readBackpressureStallTimeout
         self.writeStallTimeout = writeStallTimeout
@@ -60,22 +83,11 @@ actor MCPStdioServerTransport: Transport {
     }
 
     func connect() throws {
+        if let writeSealed {
+            throw writeSealed
+        }
         guard readTask == nil else { return }
-        signal(SIGPIPE, SIG_IGN)
-        var noSigPipe: Int32 = 1
-        guard setsockopt(
-            stdoutFD,
-            SOL_SOCKET,
-            SO_NOSIGPIPE,
-            &noSigPipe,
-            socklen_t(MemoryLayout<Int32>.size)
-        ) == 0 || errno == ENOTSOCK else {
-            throw TerminalError.stdoutWrite(errno: errno, bytesWritten: 0, totalBytes: 0)
-        }
-        let flags = fcntl(stdoutFD, F_GETFL)
-        guard flags >= 0, fcntl(stdoutFD, F_SETFL, flags | O_NONBLOCK) == 0 else {
-            throw TerminalError.stdoutWrite(errno: errno, bytesWritten: 0, totalBytes: 0)
-        }
+        try outputSink.prepare()
         var captured: AsyncThrowingStream<Data, Error>.Continuation?
         let created = AsyncThrowingStream<Data, Error>(
             bufferingPolicy: .bufferingOldest(maximumBufferedFrames)
@@ -89,6 +101,7 @@ actor MCPStdioServerTransport: Transport {
         let parentPIDProvider = parentPIDProvider
         let deliveryTracker = deliveryTracker
         let terminalState = terminalState
+        let readEOFObserverForTesting = readEOFObserverForTesting
         let maximumInboundFrameBytes = maximumInboundFrameBytes
         let maximumBufferedFrames = maximumBufferedFrames
         let readBackpressureStallTimeout = readBackpressureStallTimeout
@@ -102,37 +115,39 @@ actor MCPStdioServerTransport: Transport {
                         initial: initialParentPID,
                         current: currentParentPID
                     )
-                    await terminalState.record(terminal)
-                    captured.finish(throwing: terminal)
+                    terminalState.record(terminal, finishing: captured)
                     return
                 }
                 var descriptor = pollfd(fd: stdinFD, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
                 let pollResult = poll(&descriptor, 1, pollIntervalMilliseconds)
-                if pollResult == 0 { continue }
+                if pollResult == 0 {
+                    continue
+                }
                 if pollResult < 0 {
-                    if errno == EINTR { continue }
+                    if errno == EINTR {
+                        continue
+                    }
                     let terminal = TerminalError.stdinPoll(errno: errno)
-                    await terminalState.record(terminal)
-                    captured.finish(throwing: terminal)
+                    terminalState.record(terminal, finishing: captured)
                     return
                 }
                 let count = read(stdinFD, &buffer, buffer.count)
                 if count == 0 {
                     if pending.isEmpty {
-                        await terminalState.record(.stdinEOF)
-                        captured.finish()
+                        terminalState.record(.stdinEOF, finishing: captured)
                     } else {
                         let terminal = TerminalError.stdinTruncatedFrame(bytes: pending.count)
-                        await terminalState.record(terminal)
-                        captured.finish(throwing: terminal)
+                        terminalState.record(terminal, finishing: captured)
                     }
+                    readEOFObserverForTesting?()
                     return
                 }
                 if count < 0 {
-                    if errno == EINTR || errno == EAGAIN { continue }
+                    if errno == EINTR || errno == EAGAIN {
+                        continue
+                    }
                     let terminal = TerminalError.stdinRead(errno: errno)
-                    await terminalState.record(terminal)
-                    captured.finish(throwing: terminal)
+                    terminalState.record(terminal, finishing: captured)
                     return
                 }
                 pending.append(buffer, count: count)
@@ -141,8 +156,7 @@ actor MCPStdioServerTransport: Transport {
                         bytes: pending.count,
                         maximum: maximumInboundFrameBytes
                     )
-                    await terminalState.record(terminal)
-                    captured.finish(throwing: terminal)
+                    terminalState.record(terminal, finishing: captured)
                     return
                 }
                 while let newline = pending.firstIndex(of: 0x0A) {
@@ -153,8 +167,7 @@ actor MCPStdioServerTransport: Transport {
                             bytes: frame.count,
                             maximum: maximumInboundFrameBytes
                         )
-                        await terminalState.record(terminal)
-                        captured.finish(throwing: terminal)
+                        terminalState.record(terminal, finishing: captured)
                         return
                     }
                     if !frame.isEmpty {
@@ -176,8 +189,7 @@ actor MCPStdioServerTransport: Transport {
                                             frameBytes: data.count,
                                             maximumBufferedFrames: maximumBufferedFrames
                                         )
-                                        await terminalState.record(terminal)
-                                        captured.finish(throwing: terminal)
+                                        terminalState.record(terminal, finishing: captured)
                                         return
                                     }
                                 } else {
@@ -190,70 +202,155 @@ actor MCPStdioServerTransport: Transport {
                                 return
                             }
                         }
-                        if Task.isCancelled { break }
+                        if Task.isCancelled {
+                            break
+                        }
                     }
                 }
             }
-            await terminalState.record(.cancelled)
-            captured.finish(throwing: TerminalError.cancelled)
+            terminalState.record(.cancelled, finishing: captured)
         }
     }
 
     func disconnect() async {
+        await sealWrites(.cancelled)
         let ownedReadTask = readTask
         readTask = nil
         ownedReadTask?.cancel()
         if let ownedReadTask {
             await ownedReadTask.value
         }
-        await terminalState.record(.cancelled)
-        continuation?.finish()
+        terminalState.record(.cancelled, finishing: continuation)
         continuation = nil
         stream = nil
         deliveryTracker.close()
     }
 
     func send(_ data: Data) async throws {
+        try await acquireWriteOwnership()
         var bytes = data
-        if bytes.last != 0x0A { bytes.append(0x0A) }
+        if bytes.last != 0x0A {
+            bytes.append(0x0A)
+        }
         let deadline = ContinuousClock().now.advanced(by: writeStallTimeout)
         var written = 0
-        while written < bytes.count {
-            try Task.checkCancellation()
-            let result = bytes.withUnsafeBytes { rawBuffer -> Int in
-                guard let base = rawBuffer.baseAddress else { return 0 }
-                return write(stdoutFD, base.advanced(by: written), bytes.count - written)
+        do {
+            while written < bytes.count {
+                if let writeSealed {
+                    throw writeSealed
+                }
+                try Task.checkCancellation()
+                let result = bytes.withUnsafeBytes { rawBuffer in
+                    outputSink.write(UnsafeRawBufferPointer(rebasing: rawBuffer[written...]))
+                }
+                switch result {
+                case let .wrote(count):
+                    written += count
+                    continue
+                case .interrupted:
+                    continue
+                case .brokenPipe:
+                    throw TerminalError.stdoutBrokenPipe(bytesWritten: written, totalBytes: bytes.count)
+                case let .failed(error):
+                    throw TerminalError.stdoutWrite(errno: error, bytesWritten: written, totalBytes: bytes.count)
+                case .wouldBlock:
+                    break
+                }
+                guard ContinuousClock().now < deadline else {
+                    throw TerminalError.stdoutWrite(errno: ETIMEDOUT, bytesWritten: written, totalBytes: bytes.count)
+                }
+                let sink = outputSink
+                let wait = Task { await sink.awaitWritable() }
+                writableTask = wait
+                let readiness = await withTaskCancellationHandler {
+                    await wait.value
+                } onCancel: {
+                    wait.cancel()
+                }
+                writableTask = nil
+                if let writeSealed {
+                    throw writeSealed
+                }
+                try Task.checkCancellation()
+                if case let .failed(error) = readiness {
+                    throw TerminalError.stdoutWrite(errno: error, bytesWritten: written, totalBytes: bytes.count)
+                }
             }
-            if result > 0 {
-                written += result
-                continue
+            deliveryTracker.recordDeliveredServerFrame(bytes)
+            releaseWriteOwnership()
+        } catch is CancellationError {
+            if written == 0, writeSealed == nil {
+                releaseWriteOwnership()
+                throw CancellationError()
             }
-            if result < 0, errno == EINTR { continue }
-            if result < 0, errno == EPIPE {
-                let terminal = TerminalError.stdoutBrokenPipe(bytesWritten: written, totalBytes: bytes.count)
-                await terminalState.record(terminal)
-                throw terminal
-            }
-            if result < 0, errno != EAGAIN, errno != EWOULDBLOCK {
-                let terminal = TerminalError.stdoutWrite(errno: errno, bytesWritten: written, totalBytes: bytes.count)
-                await terminalState.record(terminal)
-                throw terminal
-            }
-            guard ContinuousClock().now < deadline else {
-                let terminal = TerminalError.stdoutWrite(errno: ETIMEDOUT, bytesWritten: written, totalBytes: bytes.count)
-                await terminalState.record(terminal)
-                throw terminal
-            }
-            var descriptor = pollfd(fd: stdoutFD, events: Int16(POLLOUT | POLLHUP | POLLERR), revents: 0)
-            let pollResult = poll(&descriptor, 1, min(pollIntervalMilliseconds, 50))
-            if pollResult < 0, errno != EINTR {
-                let terminal = TerminalError.stdoutWrite(errno: errno, bytesWritten: written, totalBytes: bytes.count)
-                await terminalState.record(terminal)
-                throw terminal
-            }
-            await Task.yield()
+            let terminal = writeSealed ?? .stdoutPartialFrame(bytesWritten: written, totalBytes: bytes.count)
+            await sealWrites(terminal)
+            throw terminal
+        } catch {
+            // A fatal write, even at zero bytes, invalidates this physical output stream.
+            let terminal = writeSealed ?? (error as? TerminalError)
+                ?? .stdoutWrite(errno: EIO, bytesWritten: written, totalBytes: bytes.count)
+            await sealWrites(terminal)
+            throw terminal
         }
-        deliveryTracker.recordDeliveredServerFrame(bytes)
+    }
+
+    private func acquireWriteOwnership() async throws {
+        try Task.checkCancellation()
+        if let writeSealed {
+            throw writeSealed
+        }
+        guard writeOwnerActive else {
+            writeOwnerActive = true
+            return
+        }
+        guard writeWaiters.count < maximumQueuedWrites else {
+            throw TerminalError.stdoutWriteQueueFull(maximum: maximumQueuedWrites)
+        }
+        let token = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                writeWaiters.append((token, continuation))
+                writeGateObserver?(.enqueued)
+            }
+        } onCancel: {
+            Task { await self.cancelQueuedWrite(token) }
+        }
+    }
+
+    private func cancelQueuedWrite(_ token: UUID) {
+        guard let index = writeWaiters.firstIndex(where: { $0.token == token }) else { return }
+        let waiter = writeWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func releaseWriteOwnership() {
+        guard writeSealed == nil else { return }
+        if writeWaiters.isEmpty {
+            writeOwnerActive = false
+        } else {
+            let waiter = writeWaiters.removeFirst()
+            writeGateObserver?(.handedOff)
+            waiter.continuation.resume()
+        }
+    }
+
+    private func sealWrites(_ terminal: TerminalError) async {
+        guard writeSealed == nil else { return }
+        // Seal before any actor suspension; neither a queued nor a resumed owner can append bytes.
+        writeSealed = terminal
+        // Claim and finish before effects can wake other tasks or observe the sealed writer.
+        // Read EOF/cancellation races on the detached reader through this same authority.
+        terminalState.record(terminal, finishing: continuation)
+        writableTask?.cancel()
+        let waiters = writeWaiters
+        writeWaiters.removeAll()
+        waiters.forEach { $0.continuation.resume(throwing: terminal) }
+        writeGateObserver?(.sealed)
+        deliveryTracker.close()
+        // Nil in production: holds the boundary after terminal ownership, before reader teardown.
+        await beforeSealReaderTeardownForTesting?()
+        readTask?.cancel()
     }
 
     func receive() -> AsyncThrowingStream<Data, Error> {
@@ -261,14 +358,18 @@ actor MCPStdioServerTransport: Transport {
     }
 
     func terminalError() async -> TerminalError? {
-        await terminalState.value()
+        terminalState.value()
     }
 
     func waitForDeliveryDrain(timeout: Duration) async -> Bool {
         let deadline = ContinuousClock().now.advanced(by: timeout)
         while ContinuousClock().now < deadline {
-            if deliveryTracker.snapshot().acceptedRequestsFullyResponded { return true }
-            if Task.isCancelled { return false }
+            if deliveryTracker.snapshot().acceptedRequestsFullyResponded {
+                return true
+            }
+            if Task.isCancelled {
+                return false
+            }
             do {
                 try await Task.sleep(for: .milliseconds(10))
             } catch {
@@ -283,26 +384,45 @@ actor MCPStdioServerTransport: Transport {
     }
 }
 
-private actor MCPStdioTerminalState {
+/// The detached reader and actor-owned writer share one synchronous terminal authority.
+/// All mutable state is protected by `lock`; claiming and finishing are one critical section.
+private final class MCPStdioTerminalState: @unchecked Sendable {
+    private let lock = NSLock()
     private var terminal: MCPStdioServerTransport.TerminalError?
     private var waiters: [CheckedContinuation<MCPStdioServerTransport.TerminalError, Never>] = []
 
-    func record(_ value: MCPStdioServerTransport.TerminalError) {
-        guard terminal == nil else { return }
-        terminal = value
-        let pending = waiters
-        waiters.removeAll()
+    func record(
+        _ value: MCPStdioServerTransport.TerminalError,
+        finishing continuation: AsyncThrowingStream<Data, Error>.Continuation?
+    ) {
+        let pending: [CheckedContinuation<MCPStdioServerTransport.TerminalError, Never>] = lock.withLock {
+            guard terminal == nil else { return [] }
+            terminal = value
+            if value == .stdinEOF {
+                continuation?.finish()
+            } else {
+                continuation?.finish(throwing: value)
+            }
+            let pending = waiters
+            waiters.removeAll()
+            return pending
+        }
         pending.forEach { $0.resume(returning: value) }
     }
 
     func value() -> MCPStdioServerTransport.TerminalError? {
-        terminal
+        lock.withLock { terminal }
     }
 
     func wait() async -> MCPStdioServerTransport.TerminalError {
-        if let terminal { return terminal }
-        return await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                if let terminal {
+                    continuation.resume(returning: terminal)
+                } else {
+                    waiters.append(continuation)
+                }
+            }
         }
     }
 }

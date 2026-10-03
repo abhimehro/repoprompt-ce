@@ -22,6 +22,114 @@ Legend:
 
 ---
 
+## Execution model: ten milestone PRs (hard ceiling; supersedes slice-per-PR)
+
+User decision, 2026-09-29. The whole remaining modularization is **at most 10 PRs**, with no exceptions and no splitting.
+
+- **Slices are work items.** The slice IDs in §2 (T*, A*–F*, X) are now checklists *inside* milestone PRs, not PRs. Where §2's per-slice PR counts, §2.9's totals, or the per-slice rules in §4.1 conflict with this section, this section wins.
+- **Scope freeze.** Anything found mid-milestone that the milestone's goal does not need goes to the **follow-up list** at the end of this section, not into a new PR.
+- **One PR per milestone.** Docs, fixes, and review responses go into the milestone PR they belong to.
+- **Prep and move are separate** only for WorkspaceContext (PR 4/5), the MCP server (PR 6/7), and the agent runtime (PR 9/10). Everywhere else, logic and moves share one PR, and the move audit (T0) proves the pure-move parts.
+- **Each PR body states** which it delivers: a measured build/test-time gain, or a named headless seam (X8).
+- **Review.** Exactly **one** Astra review per milestone PR:
+  - It starts at push, alongside CI, and is pinned to the head SHA.
+  - Model: `codexExec:gpt-6-astra-high` for PRs 2, 3, and 8; `codexExec:gpt-6-astra-xhigh` for PRs 4–7, 9, and 10.
+  - It reports **only** correctness, behavior change, concurrency and ordering, boundary/seam, or build-system problems. No style or nits; at most the top 10 findings by severity.
+  - There is one round of fixes, each finding dispositioned CONFIRMED, REFUTED, or UNRESOLVED.
+  - A second review happens only if a fix changed behavior.
+- **Size.** A milestone PR may be large. The move audit proves the moves, and reviewers focus on logic.
+
+### The ten PRs
+
+"Hard deps" must be **merged** before the PR starts.
+
+| PR | Milestone (slices) | Delivers | Hard deps | Lane |
+| --- | --- | --- | --- | --- |
+| 1 | #1117 T0: move audit, access-lift, test-import helper, `new-module` template | Tooling that proves every later move | — | gate |
+| 2 | Tooling + foundations: T1–T5 (catalog, import check, edge matrix, placement guardrail, ratchets, `dev-test MODULE=`, edit-locality metric, index freshness, ADR-08 admission v2, CI build-once, Sentry build conditional or main-only); A1–A5 (Foundation + notification names, instrumentation contracts, Regex, Process, SecureStorage); this plan rewrite | Build/test time (CI build-once, module tests, admission); headless Process seam | 1 | gate |
+| 3 | Platform: B1 FileSystem + `IgnoreMatcher`, B2 VCS queries, B3 CodeMap persistence, B4 settings core + global-ignore facet | Headless seams X8 (e), (f), (g); module tests for FS/VCS | 2 | M |
+| 4 | WorkspaceContext prep: C1 seams S8/S9/S17, C2 read-only snapshot and store carve-outs (in-app only) | Headless seam X8 (d) | 2 | P |
+| 5 | WorkspaceContext move: C3 | Build/test time (WorkspaceContext tests leave the app) | 3, 4 | M |
+| 6 | MCP server prep: D1 S5, D2 S6 `ToolInvocationContext`, D3 admission/settlement seam (in-app only) | Headless seams X8 (a), (b), (c) | 2 | P |
+| 7 | MCP server move: D4 | Build/test time (MCP tests leave the app) | 5, 6 | M |
+| 8 | AI: E1 contracts + E2 providers (incl. Diffing) | Build/test time (AI tests leave the app) | 2 | AI |
+| 9 | Agent runtime prep: F1 S3 hoists, F2 S4 Codex state, F3 session store (in-app only) | Cycle break; headless session-host contract | 2, 8 | AI |
+| 10 | Agent runtime move F4 + exit measurement X | Build/test time; X1–X9 measured | 7, 9 (and 3, 8 transitively) | M |
+
+**One change from the proposed lanes: PR 9 runs in lane AI after PR 8, not in lane P.**
+- **Critical path.** In lane P, PR 4 → PR 6 → PR 9 → PR 10 would be the critical path (≈ 43 agent-days after PR 2 at midpoints). Moving PR 9 behind PR 8 shortens that to ≈ 35.
+- **Conflict.** PR 8 rewrites the provider references that PR 9's runtime carve-outs also touch (10 runtime files [M]). Running PR 9 second removes that conflict instead of managing it.
+
+### Revised order after PR 2 (2026-10-01): seams for headless first
+
+User decision: "seam, then port." The in-app seam PRs that headless depends on move ahead of the platform moves. The ten-PR ceiling is unchanged; only the numbering after PR 2 changes.
+
+| New # | Milestone | Old # | Hard deps (merged) | Lane | Headless seam delivered |
+| --- | --- | --- | --- | --- | --- |
+| 3 | WorkspaceContext prep: invert WorkspaceContext → Features/VM edges (S8/S9/S17), read-only root-scoped snapshot (C1/C2) | 4 | 2 | P | X8 (d) |
+| 4 | MCP server prep: S5 invocation-context values, S6 `ToolInvocationContext`, admission/settlement seam (D1–D3) | 6 | 2 (soft: 3) | P | X8 (a)(b)(c) |
+| 5 | Platform: FileSystem + `IgnoreMatcher`, VCS queries, CodeMap persistence, settings core + ignore facet (B1–B4) | 3 | 2 | M | X8 (e)(f)(g) |
+| 6 | WorkspaceContext move (C3) | 5 | 3, 5 | M | — (build/test time) |
+| 7 | MCP server move (D4) | 7 | 4, 6 | M | — (build/test time) |
+| 8 | AI: contracts + providers (E1/E2) | 8 | 2 | AI | — |
+| 9 | Agent runtime prep (F1–F3) | 9 | 8 | AI | session-host contract |
+| 10 | Agent runtime move + exit (F4, X) | 10 | 7, 9 | M | — |
+
+- **DomainRuntime.** It is already its own target. Its seam is a guardrail, not a PR: no app dependency, and nothing moves out of it. That is enforced by the T1 edge matrix shipped in PR 2.
+- **Why the WorkspaceContext move still waits for Platform.** Index readiness on `7d9cecd2` shows the WorkspaceContext set (101 files) has 126 outbound file references into FileSystem and VCS. Its Features/MCP-ViewModel edges, which PR 3 removes, number about 40.
+- **Claims lists.** Each PR publishes its file claims before it moves or substantially edits any file. The PR-triage overseer sequences open contributor PRs against them.
+
+### Soft conflicts and churn rules
+
+| Pair | Overlap | Rule |
+| --- | --- | --- |
+| 3 ↔ 4 | PR 3 adds `import`s and access lifts in WorkspaceContext files that PR 4 edits | PR 4 never edits `Infrastructure/{FileSystem,VCS,Persistence}` or the settings store. Whichever lands second replays its mechanical import edits (access-lift or import script), not a hand merge |
+| 5 ↔ 6 | PR 5 relocates `Infrastructure/WorkspaceContext`, which MCP files import | PR 6 never edits files under `Infrastructure/WorkspaceContext`, `Features/Search`, or `Features/CodeMap`. PR 5 gets an announced **merge window**, and PR 6 rebases after it |
+| 7 ↔ 9 | PR 7 relocates `Infrastructure/MCP` (not `WindowTools`/`ViewModels`); PR 9 edits `Features/AgentMode` | PR 9 never edits `Infrastructure/MCP`. PR 7 gets a merge window |
+| 8 ↔ 9 | Both touch runtime provider references | Serialized in lane AI (PR 9 after PR 8) |
+| 3, 5, 7, 10 ↔ `main` feature work | Big relocations | Each move PR announces a merge window and is rebuilt by replaying its move script on the current `main` |
+| All ↔ `Package.swift`, `modules.json`, `ratchets.json` | Every PR edits them | These are append-only rows per target. Conflicts are resolved by keeping both rows and re-running the ratchet `update` |
+
+### Lanes and timeline (3 worktrees after PR 2; weeks from today)
+
+Estimates are milestone agent-days at about 0.8× the §2 slice sums, since a single PR per milestone saves the per-PR review and merge overhead.
+
+```
+week:      1    2    3    4    5    6    7    8    9   10
+gate  [1][====== 2 ======]
+M                         [==== 3 ====][= 5 =]   [7]   [==10==]
+P                         [== 4 ==][====== 6 ======]
+AI                        [==== 8 ====][===== 9 =====]
+```
+
+| PR | Agent-days [E] | Lane |
+| --- | --- | --- |
+| 1 | ≈ 0.5 (CI and merge) | gate |
+| 2 | 13–21 (two engineers can share the branch; a single PR) | gate |
+| 3 | 10–16 | M |
+| 4 | 6–9 | P |
+| 5 | 4–7 | M |
+| 6 | 11–17 | P |
+| 7 | 3–6 | M |
+| 8 | 9–14 | AI |
+| 9 | 10–16 | AI |
+| 10 | 6–11 | M |
+
+**Calendar.**
+- Critical path: 1 → 2 → 4 → 6 → 7 → 10, with PR 9 finishing in parallel.
+- Total: **≈ 40–65 agent-days ≈ 8–13 weeks, ≈ 10 expected**, with 3 lanes and ≈ 72–117 agent-days of total effort.
+- The largest remaining risk to the calendar is PR 2, the serial gate (≈ 3–4 weeks).
+
+**Worktrees.** Three lanes after PR 2. The ADR-08 admission scheduler in PR 2 handles heavy-slot contention. U2's condition still applies: if heavy-slot wait p90 exceeds 5 min, lane AI pauses behind lane M.
+
+### Follow-up list (out of scope for the ten PRs)
+
+- T6, cross-worktree cache sharing (conditional).
+- Everything in the appendix, "Later / further efficiencies".
+- The CI `SentryTelemetryPrivacyTests` filter matches no tests (conductor ticket `6b988fb3`, found in PR 2), so that job is not privacy-test evidence. Fix the filter or the test names.
+
+---
+
 ## 0. Summary
 
 - **Finish line.** Two goals:
@@ -127,6 +235,8 @@ Legend:
 ---
 
 ## 2. Slices
+
+> Under the ten-PR execution model, these slices are work items inside milestone PRs. The PR counts below are historical sizing only.
 
 Sizes come from text measurements in the first draft [M]. "Days" is agent-days [E]. Each PR lands within about a day, so a slice is its PR count. Readiness is re-run at the start of every slice (program plan §7 step 1), and a slice is re-estimated if its blockers differ.
 
@@ -251,6 +361,8 @@ The frozen branch touched these areas (`git diff --stat` [M]): MCP CLI 15 files,
 ---
 
 ## 4. Rules for every slice
+
+> Under the ten-PR execution model: "PR" in §4.1–4.2 means the milestone PR. The review rule is the single Astra review defined in the execution model, which supersedes per-slice review. The move audit (§4.4) still proves every pure-move part.
 
 ### 4.1 PR shape
 

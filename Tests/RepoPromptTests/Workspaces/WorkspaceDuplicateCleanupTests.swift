@@ -1,5 +1,6 @@
 @testable import RepoPromptApp
 @testable import RepoPromptDomainRuntime
+import RepoPromptSecureStorage
 import XCTest
 
 #if DEBUG

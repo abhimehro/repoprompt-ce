@@ -7,6 +7,8 @@
 
 import AppKit
 import Combine
+import RepoPromptFoundation
+import RepoPromptSecureStorage
 import Sparkle
 import SwiftUI
 

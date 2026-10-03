@@ -1,5 +1,6 @@
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptInstrumentation
 import XCTest
 
 /// Durable oversight intent: exact load classification, token-versioned mutation receipts,
@@ -9,6 +10,57 @@ import XCTest
 /// delete a re-added pair, or a blocked file can be silently overwritten, every layer above is
 /// reasoning about durable state that is not actually there.
 final class AgentSessionOversightIntentStoreTests: XCTestCase {
+    private final class RestoreEventRecorder: WorkspaceRestorePerfRecording, @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [(String, [String: String])] = []
+        private let fallback = NoopWorkspaceRestorePerfRecorder()
+
+        var isEnabled: Bool {
+            true
+        }
+
+        func timestampMSIfEnabled() -> Double? {
+            1
+        }
+
+        func timestampMS() -> Double {
+            fallback.timestampMS()
+        }
+
+        func elapsedMS(since startMS: Double) -> Double {
+            fallback.elapsedMS(since: startMS)
+        }
+
+        func formatMS(_ value: Double) -> String {
+            fallback.formatMS(value)
+        }
+
+        func formatElapsedMS(since startMS: Double) -> String {
+            fallback.formatElapsedMS(since: startMS)
+        }
+
+        func shortID(_ id: UUID?) -> String {
+            fallback.shortID(id)
+        }
+
+        @MainActor func nextAgentActivationTrueCount() -> Int {
+            0
+        }
+
+        func log(_: @autoclosure () -> String) {}
+        func event(_ name: String, fields: [String: String]) {
+            lock.lock()
+            recorded.append((name, fields))
+            lock.unlock()
+        }
+
+        func snapshot() -> [(String, [String: String])] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recorded
+        }
+    }
+
     private final class WriteFailureGate: @unchecked Sendable {
         private let lock = NSLock()
         private var failing = false
@@ -54,7 +106,8 @@ final class AgentSessionOversightIntentStoreTests: XCTestCase {
         mode: AgentSessionOversightPersistenceMode = .enabled,
         writer: (@Sendable (Data, URL) throws -> Void)? = nil,
         maxFileByteCount: Int = AgentSessionOversightIntentStore.maxFileByteCount,
-        maxDecodedRowCount: Int = AgentSessionOversightIntentStore.maxDecodedRowCount
+        maxDecodedRowCount: Int = AgentSessionOversightIntentStore.maxDecodedRowCount,
+        restorePerfRecorder: any WorkspaceRestorePerfRecording = NoopWorkspaceRestorePerfRecorder()
     ) -> AgentSessionOversightIntentStore {
         AgentSessionOversightIntentStore(
             fileURL: fileURL,
@@ -63,7 +116,8 @@ final class AgentSessionOversightIntentStoreTests: XCTestCase {
             writer: writer ?? { data, url in try data.write(to: url, options: .atomic) },
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
             maxFileByteCount: maxFileByteCount,
-            maxDecodedRowCount: maxDecodedRowCount
+            maxDecodedRowCount: maxDecodedRowCount,
+            restorePerfRecorder: restorePerfRecorder
         )
     }
 
@@ -122,7 +176,13 @@ final class AgentSessionOversightIntentStoreTests: XCTestCase {
     }
 
     func testMissingFileLoadsEmptyAndWritable() async throws {
-        let store = makeStore()
+        var rendered = false
+        NoopWorkspaceRestorePerfRecorder().log({ rendered = true
+            return "private payload" }())
+        XCTAssertFalse(rendered, "the disabled-path no-op must not render a private payload")
+
+        let recorder = RestoreEventRecorder()
+        let store = makeStore(restorePerfRecorder: recorder)
         guard case let .ready(load) = await store.loadForLaunch() else {
             return XCTFail("Expected a ready load")
         }
@@ -133,6 +193,26 @@ final class AgentSessionOversightIntentStoreTests: XCTestCase {
         let receipt = await store.insert(inserted)
         XCTAssertEqual(receipt.outcome, .applied)
         XCTAssertEqual(try decodedLinks(), [inserted])
+        let events = recorder.snapshot()
+        XCTAssertEqual(events.map(\.0), ["oversight.store.load", "oversight.store.receipt"])
+        XCTAssertEqual(events[0].1, ["result": "missing", "pairs": "0"])
+        XCTAssertEqual(events[1].1, [
+            "op": "insert", "outcome": "applied", "wroteFile": "1", "revision": "1", "transitions": "1"
+        ])
+        let diagnosticText = events.map { String(describing: $0) }.joined()
+        XCTAssertFalse(diagnosticText.contains(inserted.observerSessionID.uuidString))
+        XCTAssertFalse(diagnosticText.contains(inserted.targetSessionID.uuidString))
+        XCTAssertFalse(diagnosticText.contains(directory.path))
+
+        let previousLogging = WorkspaceRestorePerfLog.debugProcessOverrideEnabled
+        WorkspaceRestorePerfLog.setDebugProcessOverrideEnabled(true)
+        defer { WorkspaceRestorePerfLog.setDebugProcessOverrideEnabled(previousLogging) }
+        let marker = "oversight.contract.\(UUID().uuidString)"
+        AppWorkspaceRestorePerfRecorder().event(marker, fields: ["state": "ready state"])
+        let renderedEvents = WorkspaceRestorePerfLog.recentMetricLinesSnapshot(limit: 2000)
+            .filter { $0.contains(marker) }
+        XCTAssertEqual(renderedEvents.count, 1)
+        XCTAssertTrue(renderedEvents[0].hasSuffix("\(marker) state=ready_state"))
     }
 
     /// Add, Stop, and the presentation surface all call `loadForLaunch()`, so the classification has

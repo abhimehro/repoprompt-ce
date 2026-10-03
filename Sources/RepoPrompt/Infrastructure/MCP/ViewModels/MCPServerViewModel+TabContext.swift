@@ -2,7 +2,9 @@ import Combine
 import Foundation
 import MCP
 import RepoPromptDomainRuntime
+import RepoPromptFoundation
 import RepoPromptShared
+import RepoPromptWorkspaceCore
 
 #if DEBUG
     private func tabContextLog(_ message: @autoclosure () -> String) {
@@ -3488,8 +3490,15 @@ extension MCPServerViewModel {
         toolName: String,
         runPurpose: MCPRunPurpose? = nil
     ) -> String {
-        if runPurpose == .agentModeRun {
+        switch runPurpose {
+        case .agentModeRun:
             return agentModeRoutingRecoveryMessage(toolName: toolName)
+        case .discoverRun:
+            // Discovery connections cannot call bind_context; never suggest it.
+            return "No tab context is bound for \(toolName) in this Context Builder discovery run. " +
+                "Retry the tool call once. If it fails again, stop and report that the RepoPrompt connection lost its Context Builder routing."
+        case .unknown, nil:
+            break
         }
         return "No tab context is bound for \(toolName). To resolve:\n" +
             "• Call 'bind_context' with op='list' to see available windows and context_id values\n" +
@@ -3502,7 +3511,7 @@ extension MCPServerViewModel {
             "Retry the tool call once. If it fails again, tell the user the RepoPrompt connection failed and ask them to restart this Agent Mode run."
     }
 
-    private static func hint(_ hint: TabContextHint, matches context: TabContextSnapshot) -> Bool {
+    static func hint(_ hint: TabContextHint, matches context: TabContextSnapshot) -> Bool {
         guard hint.tabID == context.tabID else { return false }
         if let workspaceID = hint.workspaceID, context.workspaceID != workspaceID { return false }
         if let windowID = hint.windowID, context.windowID != windowID { return false }
@@ -4376,10 +4385,38 @@ extension MCPServerViewModel {
             token.promotedContext = promotedContext
             token.promotedContextClientName = clientName
             token.promotedContextWindowID = windowID
+        } else {
+            inheritDisplacedRunContextIfNeeded(for: token, clientName: clientName)
         }
         installReadFileAutoSelectionHandoverLineage(for: token)
         tabContextLog("registerPendingPolicyRunIDMapping connectionID=\(connectionID) runID=\(runID) windowID=\(windowID)")
         return token
+    }
+
+    /// A settlement-retained policy can be re-matched by a restarted MCP child after the
+    /// run's pending context was consumed. Copy (not move) the displaced connection's live
+    /// run context so rollback leaves the displaced owner intact and its teardown removes
+    /// only its own entry.
+    @MainActor
+    private func inheritDisplacedRunContextIfNeeded(
+        for token: PendingPolicyRunIDMappingToken,
+        clientName: String?
+    ) {
+        guard tabContextByConnectionID[token.connectionID] == nil,
+              let displacedConnectionID = token.displacedConnectionID,
+              token.displacedConnectionRunID == token.runID,
+              let displacedContext = tabContextByConnectionID[displacedConnectionID],
+              displacedContext.runID == token.runID,
+              displacedContext.windowID == presentationWindowByConnection[token.connectionID]
+        else { return }
+
+        var inherited = displacedContext
+        activateReadFileAutoSelection(&inherited)
+        tabContextByConnectionID[token.connectionID] = inherited
+        publishDomainRoutingBinding(connectionID: token.connectionID, context: inherited)
+        if let clientName { recordLastContext(clientName: clientName, context: inherited) }
+        beginMirroringForConnection(token.connectionID, context: inherited)
+        tabContextLog("registerPendingPolicyRunIDMapping inherited run context runID=\(token.runID) \(displacedConnectionID) -> \(token.connectionID)")
     }
 
     @MainActor
@@ -4959,6 +4996,7 @@ extension MCPServerViewModel {
                 fileToolLookupContextCacheByConnectionID.removeValue(forKey: connectionID)
                 pendingFileToolLookupContextResolutionByConnectionID.removeValue(forKey: connectionID)?.task.cancel()
                 tabContextByConnectionID.removeValue(forKey: connectionID)
+                publishDomainRoutingRelease(connectionID: connectionID)
                 presentationWindowByConnection.removeValue(forKey: connectionID)
 
                 if let boundRunID = context.runID,

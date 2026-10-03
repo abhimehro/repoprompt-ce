@@ -1297,6 +1297,9 @@ extension BootstrapSocketProxy {
         onStdinClosed: @escaping @Sendable () async -> Void = {},
         initialSocketBytes: Data = Data()
     ) async throws {
+        // Capture once for this physical socket before either pump starts. All
+        // frames, including terminal controls, must belong to this generation.
+        let backendGeneration = await bridgeLedger.snapshot().connectionGeneration
         let drainState = BridgeDrainState(clock: drainClock)
         try await withThrowingTaskGroup(of: BridgeTaskExit.self) { group in
             group.addTask {
@@ -1318,6 +1321,7 @@ extension BootstrapSocketProxy {
                     socketFD: socketFD,
                     stdoutFD: stdoutFD,
                     drainState: drainState,
+                    backendGeneration: backendGeneration,
                     initializeReplayState: initializeReplayState,
                     outstandingRequestReplayState: outstandingRequestReplayState,
                     bridgeLedger: bridgeLedger,
@@ -1648,6 +1652,7 @@ extension BootstrapSocketProxy {
         socketFD: Int32,
         stdoutFD: Int32 = STDOUT_FILENO,
         drainState: BridgeDrainState,
+        backendGeneration: UInt64,
         initializeReplayState: MCPInitializeReplayState?,
         outstandingRequestReplayState: MCPOutstandingRequestReplayState?,
         bridgeLedger: JSONRPCBridgeLedger,
@@ -1681,8 +1686,12 @@ extension BootstrapSocketProxy {
                 pending = Data(pending[(newline + 1)...])
                 debugLog("BootstrapSocketProxy: ← stdout bytes=\(data.count) sha256=\(MCPResponseDeliveryTracer.sha256Hex(data))")
 
+                try await bridgeLedger.validateConnectionGeneration(backendGeneration)
                 if let termination = Self.extractTerminateParams(from: data) {
-                    let terminalReason = await bridgeLedger.terminalizeConnection(reason: termination.reason.rawValue)
+                    let terminalReason = try await bridgeLedger.terminalizeConnection(
+                        reason: termination.reason.rawValue,
+                        expectedConnectionGeneration: backendGeneration
+                    )
                     throw SocketProxyError.terminatedByServer(
                         reason: TerminationReason(rawValue: terminalReason) ?? termination.reason,
                         message: termination.message
@@ -1693,7 +1702,8 @@ extension BootstrapSocketProxy {
                     frame: data,
                     direction: .serverToClient,
                     ledger: bridgeLedger,
-                    faultRule: faultRule
+                    faultRule: faultRule,
+                    expectedConnectionGeneration: backendGeneration
                 ) { framed in
                     // Progress notifications are an intentional stderr-only control surface.
                     // Delivery is best-effort: if the host closed stderr, drop the progress

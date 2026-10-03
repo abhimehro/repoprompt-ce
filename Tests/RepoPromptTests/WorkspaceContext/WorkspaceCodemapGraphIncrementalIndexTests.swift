@@ -1,6 +1,7 @@
 import Foundation
 @testable import RepoPromptApp
 import RepoPromptCodeMapCore
+import RepoPromptFoundation
 import XCTest
 
 /// Regression coverage for #1082: graph-index publication and graph commits must scale with the

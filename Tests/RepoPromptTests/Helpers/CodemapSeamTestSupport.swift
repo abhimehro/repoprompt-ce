@@ -60,6 +60,7 @@ final class CodemapStoreFixture: @unchecked Sendable {
         capabilityHooks: WorkspaceCodemapRootCapabilityServiceHooks = .none,
         enginePolicy: WorkspaceCodemapBindingEnginePolicy = .default,
         graphPullPause: WorkspaceCodemapGraphPullPause = .production,
+        overlay: WorkspaceCodemapLiveOverlay = WorkspaceCodemapLiveOverlay(),
         forbidCodeMapGitProcesses: Bool = false,
         beforeArtifactBuild: @escaping @Sendable (String) async -> Void = { _ in }
     ) throws {
@@ -137,6 +138,7 @@ final class CodemapStoreFixture: @unchecked Sendable {
                         ),
                         sourceReader: registry.makeValidatedSourceReaderClient(),
                         catalogClient: registry.makeBindingCatalogClient(),
+                        overlay: overlay,
                         policy: enginePolicy,
                         graphPullPause: graphPullPause
                     )

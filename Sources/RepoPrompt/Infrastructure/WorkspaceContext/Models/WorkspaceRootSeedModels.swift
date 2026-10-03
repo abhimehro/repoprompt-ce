@@ -1,5 +1,79 @@
 import CryptoKit
 import Foundation
+import RepoPromptInstrumentation
+import RepoPromptWorkspaceCore
+
+enum FileContentFreshnessPolicy {
+    /// Trust the existing file metadata/cache fast path.
+    case cachedMetadata
+    /// Validate disk metadata before trusting cached content; never return stale fallback on validation/load failure.
+    case validateDiskMetadata
+}
+
+/// Snapshot of file content plus a stable in-memory revision for search cache identity.
+struct FileSearchContentSnapshot {
+    let content: String?
+    let contentRevision: UInt64?
+    let modificationDate: Date
+    let isFresh: Bool
+}
+
+/// Every case carries only String, Bool, or Sendable WorkspaceRootRef values.
+extension WorkspaceLookupRootScope: @unchecked Sendable {}
+
+/// Immutable authority for exactly the roots selected by one lookup scope.
+/// The catalog is immutable; root tokens revoke detached reads when a captured root unloads.
+struct WorkspaceContextRootSnapshot: @unchecked Sendable {
+    struct Root: Equatable {
+        let reference: WorkspaceRootRef
+        let lifetimeID: UUID
+        let catalogGeneration: UInt64
+    }
+
+    let scope: WorkspaceLookupRootScope
+    let roots: [Root]
+    let catalog: WorkspaceSearchCatalogSnapshot
+    private let lifetimeTokens: [WorkspaceContextRootLifetimeToken]
+
+    init(
+        scope: WorkspaceLookupRootScope,
+        roots: [Root],
+        catalog: WorkspaceSearchCatalogSnapshot,
+        lifetimeTokens: [WorkspaceContextRootLifetimeToken]
+    ) {
+        self.scope = scope
+        self.roots = roots
+        self.catalog = catalog
+        self.lifetimeTokens = lifetimeTokens
+    }
+
+    var rootRefs: [WorkspaceRootRef] {
+        roots.map(\.reference)
+    }
+
+    /// Checks captured roots only. The store checks scope membership and catalog freshness.
+    func lifetimeIsCurrent() -> Bool {
+        lifetimeTokens.allSatisfy(\.isCurrent)
+    }
+}
+
+/// A root-local revocation handle. The store invalidates it before removing the root.
+final class WorkspaceContextRootLifetimeToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+
+    var isCurrent: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return valid
+    }
+
+    func revoke() {
+        lock.lock()
+        valid = false
+        lock.unlock()
+    }
+}
 
 struct WorkspaceRootByteExactPathKey: Hashable, Comparable {
     let value: String
@@ -711,7 +785,7 @@ struct WorkspaceRootMaterializationHint: Equatable, @unchecked Sendable {
     }
 
     func validated(
-        matching binding: AgentSessionWorktreeBinding,
+        matching binding: WorkspaceSessionWorktreeBinding,
         sessionID: UUID,
         startupContext: WorktreeStartupContext?
     ) -> Self {
@@ -730,7 +804,7 @@ struct WorkspaceRootMaterializationHint: Equatable, @unchecked Sendable {
     }
 
     func fallbackReason(
-        matching binding: AgentSessionWorktreeBinding,
+        matching binding: WorkspaceSessionWorktreeBinding,
         sessionID: UUID,
         startupContext: WorktreeStartupContext?
     ) -> WorkspaceRootSeedFallbackReason? {

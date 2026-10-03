@@ -3,6 +3,7 @@ import CoreFoundation
 import CoreServices
 import Dispatch
 import Foundation
+import RepoPromptWorkspaceCore
 
 struct FSEventCallbackEntry {
     let path: String
