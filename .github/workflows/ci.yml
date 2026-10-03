@@ -278,6 +278,31 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
+      - name: Verify blueprint darwin gitleaks pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          # .devin/blueprint.yaml installs gitleaks on macOS snapshots with
+          # version parsed from this file and per-arch darwin SHA-256s pinned
+          # in-repo. Recompute the expected digests from the release's own
+          # checksums file and fail on drift instead of letting a wrong pin
+          # brick macOS setup on a developer machine.
+          version="$(awk 'match($0, /gitleaks_[0-9.]+_linux_x64\.tar\.gz/) {
+            print substr($0, RSTART + 9, RLENGTH - 26); exit }' .github/workflows/ci.yml)"
+          [ -n "${version}" ] || { echo "could not parse gitleaks version from ci.yml" >&2; exit 1; }
+          sums="$(curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
+          for arch in arm64 x64; do
+            pinned="$(sed -n "s/.*arch=\"${arch}\"; *sha=\"\([0-9a-f]*\)\".*/\1/p" .devin/blueprint.yaml)"
+            [ "$(echo "${pinned}" | wc -l)" -eq 1 ] && [ -n "${pinned}" ] \
+              || { echo "expected exactly one pinned darwin_${arch} digest in .devin/blueprint.yaml" >&2; exit 1; }
+            asset="gitleaks_${version}_darwin_${arch}.tar.gz"
+            expected="$(echo "${sums}" | awk -v a="${asset}" '$2 == a { print $1 }')"
+            [ -n "${expected}" ] || { echo "no checksum published for ${asset}" >&2; exit 1; }
+            [ "${pinned}" = "${expected}" ] \
+              || { echo "blueprint darwin_${arch} digest mismatch: pinned=${pinned} expected=${expected}" >&2; exit 1; }
+            echo "darwin_${arch} digest verified for gitleaks ${version}"
+          done
+
       - name: Scan introduced commit range
         env:
           EVENT_NAME: ${{ github.event_name }}

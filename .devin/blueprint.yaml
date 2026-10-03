@@ -5,7 +5,8 @@ runs-on: macos
 # and the darwin SHA-256 digests are pinned in-repo below (same approach as
 # ci.yml:277's pinned linux digest) so the integrity anchor stays reviewable.
 # A version bump in ci.yml fails the digest check loudly until the pins here
-# are bumped to match.
+# are bumped to match; the ci.yml secret-scan job also verifies these darwin
+# pins against the release checksums on every run, so drift is caught on CI.
 initialize: |
   set -euo pipefail
   # Version follows ci.yml's pinned gitleaks install; fail loudly if unparsed.
@@ -32,18 +33,21 @@ initialize: |
   install -m 0755 "${tmpdir}/gitleaks" "${bindir}/gitleaks" \
     || sudo -n install -m 0755 "${tmpdir}/gitleaks" "${bindir}/gitleaks" \
     || { echo "failed to install gitleaks into ${bindir} (needs a writable prefix or interactive sudo)" >&2; exit 1; }
-  # Lenient match: gitleaks prints the version with and without a leading 'v'
-  # across releases; report both values on mismatch.
+  # gitleaks prints the version with and without a leading 'v' across
+  # releases; compare exactly after stripping it and report both values.
   actual="$("${bindir}/gitleaks" version)"
-  case "${actual}" in
-    *"${version}"*) ;;
-    *) echo "gitleaks reports '${actual}', expected ${version}" >&2; exit 1 ;;
-  esac
-  # preflight.sh resolves gitleaks via PATH, so a different winner is fatal,
-  # not advisory.
+  [ "${actual#v}" = "${version}" ] \
+    || { echo "gitleaks reports '${actual}', expected ${version}" >&2; exit 1; }
+  # preflight.sh resolves gitleaks via PATH. A *different* binary winning is
+  # fatal (it would shadow the verified install); nothing resolving on this
+  # shell's PATH only warns, since session PATHs include ${bindir}.
   resolved="$(command -v gitleaks || true)"
-  [ "${resolved}" = "${bindir}/gitleaks" ] \
-    || { echo "PATH resolves gitleaks to '${resolved:-<none>}', expected ${bindir}/gitleaks" >&2; exit 1; }
+  if [ -n "${resolved}" ] && [ "${resolved}" != "${bindir}/gitleaks" ]; then
+    echo "PATH resolves gitleaks to '${resolved}', which would shadow the verified ${bindir}/gitleaks" >&2
+    exit 1
+  elif [ -z "${resolved}" ]; then
+    echo "warning: gitleaks not on this shell's PATH; ensure ${bindir} is on PATH for sessions" >&2
+  fi
   echo "gitleaks ${actual} installed at ${bindir}/gitleaks"
 # Install project dependencies (runs during builds, surfaced to agent at session start).
 maintenance: |
