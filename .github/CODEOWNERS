@@ -1,0 +1,78 @@
+# Code ownership for abhimehro/repoprompt-ce
+#
+# Order matters: the last matching pattern takes precedence. Because a single
+# owner is listed everywhere, the grouped sections below document which areas
+# are security-sensitive (issue #286) so that ownership stays explicit if the
+# default rule is ever narrowed.
+
+# Default owner for the entire repository
+* @abhimehro
+
+# --------------------------------------------------------------------------
+# Supply chain: dependency manifests and vendored code
+# These files decide which third-party code is built and shipped.
+# --------------------------------------------------------------------------
+
+/Package.swift          @abhimehro
+/Package.resolved       @abhimehro
+/Packages/              @abhimehro
+/Vendor/                @abhimehro
+
+# --------------------------------------------------------------------------
+# CI/CD and repository automation
+# Workflows run with signing secrets and publish releases;
+# APPROVED_CONTRIBUTORS is parsed by pr-gate.yml for authorization.
+# --------------------------------------------------------------------------
+
+/.github/workflows/     @abhimehro
+/.github/APPROVED_CONTRIBUTORS @abhimehro
+
+# --------------------------------------------------------------------------
+# Configuration parsing
+# Rollout/identity/version config consumed by Scripts/ and release tooling.
+# --------------------------------------------------------------------------
+
+/version.env            @abhimehro
+/release-rollout.json   @abhimehro
+/tip-rollout.json       @abhimehro
+/Scripts/apple_identity_policy.json @abhimehro
+/SECURITY.md            @abhimehro
+
+# --------------------------------------------------------------------------
+# Subprocess launching and process-environment handling
+# ProcessLauncher / CommandPathResolver / ProcessEnvironmentSanitizer spawn
+# child processes; VCS runners shell out to git/jj; Scripts/ (incl. the
+# conductor daemon) launch subprocesses and own the dev job queue.
+# --------------------------------------------------------------------------
+
+/Sources/RepoPromptProcess/                 @abhimehro
+/Sources/RepoPrompt/Infrastructure/VCS/     @abhimehro
+/Scripts/                                   @abhimehro
+/conductor                                  @abhimehro
+
+# --------------------------------------------------------------------------
+# Network requests
+# HTTP client boundary, AI provider runtimes (outbound API calls plus the
+# subprocesses they spawn), and the Sparkle update feed.
+# --------------------------------------------------------------------------
+
+/Sources/RepoPromptFoundation/Networking/   @abhimehro
+/Sources/RepoPrompt/Infrastructure/AI/      @abhimehro
+/Sources/RepoPrompt/App/Sparkle/            @abhimehro
+
+# --------------------------------------------------------------------------
+# MCP sockets and filesystem permissions
+# MCP bootstrap/unix-socket transports, socket directory permissions, the MCP
+# CLI and core services, plus the workspace filesystem boundary (file content
+# access, path resolution, durable persistence) and Keychain secure storage.
+# --------------------------------------------------------------------------
+
+/Sources/RepoPrompt/Infrastructure/MCP/              @abhimehro
+/Sources/RepoPromptMCP/                              @abhimehro
+/Sources/RepoPromptMCPCore/                          @abhimehro
+/Sources/RepoPromptShared/MCP/                       @abhimehro
+/Sources/RepoPrompt/Infrastructure/FileSystem/       @abhimehro
+/Sources/RepoPrompt/Infrastructure/WorkspaceContext/ @abhimehro
+/Sources/RepoPrompt/Infrastructure/Persistence/      @abhimehro
+/Sources/RepoPromptSecureStorage/                    @abhimehro
+/Sources/RepoPromptDomainRuntime/                    @abhimehro
