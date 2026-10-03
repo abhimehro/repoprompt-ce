@@ -27,7 +27,7 @@ initialize: |
   trap 'rm -rf "${tmpdir}"' EXIT
   archive="${tmpdir}/${asset}"
   # ~10 MB tarball: --max-time is per-attempt (90s each), --retry-max-time
-  # caps the retry window at 120s — worst case ≈5min total, not unbounded.
+  # caps the retry window at 120s — worst case ≈3.5min total, not unbounded.
   curl --proto '=https' --tlsv1.2 -fsSL \
     --retry 3 --retry-delay 2 --retry-max-time 120 --retry-all-errors \
     --connect-timeout 10 --max-time 90 \
