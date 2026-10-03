@@ -336,14 +336,19 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt")"
           # Drive the check from the arch/sha pairs actually declared in the
           # blueprint, so added or reformatted case arms are verified too.
+          # Strip YAML comments first: a doc line mentioning `arch = "` must
+          # not inflate `declared` and fail Style on a comment-only edit.
           # Both counts are occurrence-level (grep -o, not grep -c): `declared`
           # counts every `arch = "` token regardless of the value's format,
-          # while `pairs` needs the strict `arch="..."; sha="..."` shape, so a
-          # reformat (space, uppercase, collapsed line) keeps `declared` high
-          # and the count mismatch fails loudly instead of dropping coverage.
-          pairs="$(grep -oE 'arch="[a-z0-9_]+"; *sha *= *"[^"]*"' .devin/blueprint.yaml \
+          # while `pairs` needs the strict `arch="..."; sha="..."` shape. A
+          # reformat that breaks that shape (spacing around `=`, non-lowercase
+          # arch, arch/sha split across lines) keeps `declared` high and fails
+          # loudly instead of dropping coverage; two arms collapsed onto one
+          # line stay covered since both digests are still extracted.
+          stripped="$(sed 's/#.*//' .devin/blueprint.yaml)"
+          pairs="$(printf '%s\n' "${stripped}" | grep -oE 'arch="[a-z0-9_]+"; *sha *= *"[^"]*"' \
             | sed 's/.*arch="\([^"]*\)"; *sha *= *"\([^"]*\)".*/\1 \2/' || true)"
-          declared="$(grep -oE 'arch *= *"' .devin/blueprint.yaml | wc -l | tr -d ' ' || true)"
+          declared="$(printf '%s\n' "${stripped}" | grep -oE 'arch *= *"' | wc -l | tr -d ' ' || true)"
           found="$(printf '%s\n' "${pairs}" | grep -c . || true)"
           unique="$(printf '%s\n' "${pairs}" | awk 'NF && !seen[$1]++ { n++ } END { print n+0 }')"
           [ "${declared}" -gt 0 ] && [ "${found}" -eq "${declared}" ] && [ "${unique}" -eq "${declared}" ] \
