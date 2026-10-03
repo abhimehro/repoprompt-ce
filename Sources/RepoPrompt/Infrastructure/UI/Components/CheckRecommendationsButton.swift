@@ -8,6 +8,11 @@ struct CheckRecommendationsButton: View {
     var showIcon: Bool = true
     var closeAction: (() -> Void)?
 
+    /// Shared so the hover tooltip and VoiceOver hint cannot drift.
+    /// Kilo warned `.accessibilityLabel(label)` is a no-op because the button
+    /// already renders `Text(label)`.
+    private static let setupWizardGuidance = "Open the Setup Wizard to optimize your provider settings"
+
     var body: some View {
         Button(action: {
             // Close settings first before showing recommendation wizard
@@ -27,6 +32,8 @@ struct CheckRecommendationsButton: View {
             }
         }
         .buttonStyle(CustomButtonStyle())
+        .hoverTooltip(Self.setupWizardGuidance)
+        .accessibilityHint(Self.setupWizardGuidance)
     }
 }
 
