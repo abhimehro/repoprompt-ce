@@ -1,4 +1,4 @@
-<!-- markdownlint-disable MD013 MD043 -->
+<!-- markdownlint-disable MD013 -->
 # Initial security scan
 
 Issue: abhimehro/repoprompt-ce#286
@@ -27,14 +27,20 @@ autobuild, which looks for a committed Xcode project/workspace. This repo
 generates its Xcode workspace (`.build/xcode`) and builds via SwiftPM, so the
 `0 results` for Swift should be read as *no findings reported*, not *complete
 coverage confirmed*. The new `security.yml` scans Swift on `macos-26` with a
-manual `swift build`, which compiles the package's products (test targets are not built) for extraction.
+manual `swift build`, which compiles the package's products
+(test targets are not built) for extraction.
 
 ## Open findings (5, all HIGH)
 
-All open alerts are the same CodeQL Actions rule —
-[`actions/cache-poisoning/poisonable-step`](https://docs.github.com/en/code-security/code-scanning/introduction-to-code-scanning/about-code-scanning):
-a step that runs code controlled by a fork/PR while reusing a cache scoped to
-the base ref, allowing cache poisoning of trusted builds.
+All five open alerts are the same CodeQL Actions rule —
+`actions/cache-poisoning/poisonable-step`. Per the alert messages, each flagged
+`run:` step executes in a privileged (`push` to `main` / `workflow_dispatch`)
+workflow after a checkout whose ref arrives through a caller-controlled channel
+— `needs.validate-ref.outputs.commit`, `needs.validate-ref.outputs.tooling-commit`,
+and `needs.setup.outputs.*` in `release.yml` / `main-tip.yml`. If an attacker can
+influence that input ref, their code runs (and can poison caches) in a default-
+branch-privileged context. The alerted lines are the steps consuming the
+checkout, not cache steps — neither workflow uses `actions/cache` directly.
 
 - #10 `main-tip.yml:742` — high — [alert](https://github.com/abhimehro/repoprompt-ce/security/code-scanning/10)
 - #9 `release.yml:75` — high — [alert](https://github.com/abhimehro/repoprompt-ce/security/code-scanning/9)
@@ -97,7 +103,8 @@ scanned:
 ## Going forward
 
 - `.github/workflows/security.yml` now runs CodeQL (Swift on `macos-26`,
-  Python, Actions) on every PR and push to `main` plus a weekly scheduled scan,
-  and `actions/dependency-review-action` on every PR.
+  Python, Actions) on every PR targeting `main` and push to `main` plus a
+  weekly scheduled scan, and `actions/dependency-review-action` on every PR
+  targeting `main`.
 - Remediation owners still needed for the 5 open HIGH cache-poisoning alerts
   in `release.yml` / `main-tip.yml`.

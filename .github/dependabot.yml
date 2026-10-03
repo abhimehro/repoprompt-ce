@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows/ (security.yml and the
+  # rest of CI) refreshed; the dependency-review gate vets the bumps it opens.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10

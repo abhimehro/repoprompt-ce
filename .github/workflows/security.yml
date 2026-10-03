@@ -1,5 +1,10 @@
 name: Security
 
+# This workflow is the repo's CodeQL *advanced* setup. GitHub rejects SARIF
+# uploads from advanced workflows while default setup is enabled, so default
+# setup is intentionally disabled (Settings > Code security). Re-enabling it
+# will make every CodeQL job here fail — see docs/security/initial-scan.md.
+
 on:
   pull_request:
     branches:
@@ -31,7 +36,7 @@ jobs:
           # Swift is the primary language (~93% of code). Swift requires a
           # macOS runner and a real build (CodeQL has no buildless mode for
           # Swift, and autobuild looks for an Xcode project that is generated,
-          # not committed). `swift build` compiles every SwiftPM target, which
+          # not committed). `swift build` compiles the package's products, which
           # is what CodeQL needs to extract.
           - language: swift
             runs-on: macos-26
@@ -62,13 +67,22 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
 
       # Manual Swift build, single architecture per GitHub's CodeQL guidance.
-      # No build cache is restored on purpose: the compiler must actually run
-      # during this job or the Swift database would be empty.
+      # Dependencies resolve through the repo's bounded-retry helper (same as
+      # ci.yml); the compiled cache is intentionally NOT restored because the
+      # compiler must actually run during this job or the database is empty.
+      # run_without_github_tokens.sh keeps ambient credentials out of the
+      # build, matching the repo's other build entry points.
+      - name: Resolve Swift package dependencies
+        if: matrix.language == 'swift'
+        run: python3 Scripts/ci_resolve_packages.py
       - name: Build Swift package for analysis
         if: matrix.language == 'swift'
-        run: swift build --arch arm64 --force-resolved-versions
+        run: Scripts/run_without_github_tokens.sh swift build --arch arm64 --force-resolved-versions
 
+      # Dependabot PRs get a read-only GITHUB_TOKEN, so security-events: write
+      # is unavailable there; skipping the upload keeps those PRs green.
       - name: Perform CodeQL analysis
+        if: github.actor != 'dependabot[bot]'
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: "/language:${{ matrix.language }}"
@@ -88,3 +102,7 @@ jobs:
 
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # high keeps adoption noise down; the repo's only dependency
+          # ecosystem is SwiftPM (Package.resolved), which the action reads.
+          fail-on-severity: high

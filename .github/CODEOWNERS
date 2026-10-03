@@ -42,13 +42,19 @@
 # Subprocess launching and process-environment handling
 # ProcessLauncher / CommandPathResolver / ProcessEnvironmentSanitizer spawn
 # child processes; VCS runners shell out to git/jj; Scripts/ (incl. the
-# conductor daemon) launch subprocesses and own the dev job queue.
+# conductor daemon) launch subprocesses and own the dev job queue. The root
+# Makefile, .command launchers, agent skill scripts, and the .jules agent
+# notes are the other places that drive command execution.
 # --------------------------------------------------------------------------
 
 /Sources/RepoPromptProcess/                 @abhimehro
 /Sources/RepoPrompt/Infrastructure/VCS/     @abhimehro
 /Scripts/                                   @abhimehro
 /conductor                                  @abhimehro
+/Makefile                                   @abhimehro
+/*.command                                  @abhimehro
+/.agents/skills/**/scripts/                 @abhimehro
+/.jules/                                    @abhimehro
 
 # --------------------------------------------------------------------------
 # Network requests
