@@ -8,32 +8,43 @@ struct CheckRecommendationsButton: View {
     var showIcon: Bool = true
     var closeAction: (() -> Void)?
 
-    /// Shared so the hover tooltip and VoiceOver hint cannot drift.
-    /// Kilo warned `.accessibilityLabel(label)` is a no-op because the button
-    /// already renders `Text(label)`.
+    @FocusState private var isFocused: Bool
+
+    /// Shared by hover and keyboard guidance and the VoiceOver hint.
     private static let setupWizardGuidance = "Open the Setup Wizard to optimize your provider settings"
 
     var body: some View {
-        Button(action: {
-            // Close settings first before showing recommendation wizard
-            closeAction?()
-            NotificationCenter.default.post(
-                name: .showRecommendationWizard,
-                object: nil,
-                userInfo: ["windowID": windowID]
-            )
-        }) {
-            HStack(spacing: 6) {
-                if showIcon {
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: 12))
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: {
+                // Close settings first before showing recommendation wizard
+                closeAction?()
+                NotificationCenter.default.post(
+                    name: .showRecommendationWizard,
+                    object: nil,
+                    userInfo: ["windowID": windowID]
+                )
+            }) {
+                HStack(spacing: 6) {
+                    if showIcon {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 12))
+                    }
+                    Text(label)
                 }
-                Text(label)
+            }
+            .buttonStyle(CustomButtonStyle())
+            .focused($isFocused)
+            .hoverTooltip(Self.setupWizardGuidance)
+            .accessibilityHint(Self.setupWizardGuidance)
+
+            if isFocused {
+                Text(Self.setupWizardGuidance)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 240, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .buttonStyle(CustomButtonStyle())
-        .hoverTooltip(Self.setupWizardGuidance)
-        .accessibilityHint(Self.setupWizardGuidance)
     }
 }
 
