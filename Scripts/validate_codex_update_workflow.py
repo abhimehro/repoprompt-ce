@@ -13,7 +13,7 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKFLOW = ROOT / ".github" / "workflows" / "codex-update-candidate.yml"
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-UPLOAD_ACTION = "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"
+UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 EXPECTED_STEP_NAMES = (
     "Check out trusted main",
     "Validate candidate selector",
