@@ -1156,11 +1156,16 @@ final class DirectHeadlessOracleGroupTests: XCTestCase {
             )
         }
         let deadline = ContinuousClock.now + .seconds(5)
-        while try (fixture.calls().count) < 2, ContinuousClock.now < deadline {
+        while try (fixture.childProcessIDs().count) < 2, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
         let pids = try fixture.calls().map(\.processID)
         XCTAssertEqual(pids.count, 2)
+        let childPIDs = try fixture.childProcessIDs()
+        XCTAssertEqual(childPIDs.count, 2)
+        for pid in childPIDs {
+            XCTAssertEqual(kill(pid, 0), 0, "sleep process did not start: \(pid)")
+        }
         let owner = try OracleConversationOwner(
             kind: "direct-headless",
             identifier: fixture.profileName
@@ -1196,6 +1201,10 @@ final class DirectHeadlessOracleGroupTests: XCTestCase {
         XCTAssertEqual(cancelledLanes.compactMap { $0["status"] as? String }, ["cancelled", "cancelled"])
         for pid in pids {
             XCTAssertEqual(kill(pid, 0), -1, "provider process still alive: \(pid)")
+            XCTAssertEqual(errno, ESRCH)
+        }
+        for pid in childPIDs {
+            XCTAssertEqual(kill(pid, 0), -1, "sleep process still alive: \(pid)")
             XCTAssertEqual(errno, ESRCH)
         }
         guard case let .group(group)? = try await prepared.oracleStore.loadMostRecentConversation(owner: owner) else {
@@ -1686,6 +1695,7 @@ private struct Fixture {
     let profile: URL
     let executable: URL
     let callLog: URL
+    let childPIDLog: URL
     let profileName: String
 
     init(name: String) throws {
@@ -1695,6 +1705,7 @@ private struct Fixture {
             .appendingPathComponent("rp-headless-oracle-profile-\(name)-\(UUID().uuidString)", isDirectory: true)
         executable = profile.appendingPathComponent("codex-stub")
         callLog = profile.appendingPathComponent("calls.log")
+        childPIDLog = profile.appendingPathComponent("children.log")
         profileName = "oracle-\(name)"
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
@@ -1714,7 +1725,13 @@ private struct Fixture {
           "${REPOPROMPT_MCP_ORACLE_GROUP_CLAIM_ID:-}" >> '\(callLog.path)'
         /bin/cat >/dev/null
         case "$model" in
-          cancel-*) trap 'exit 0' TERM INT; /bin/sleep 30 & wait ;;
+          cancel-*)
+            /bin/sleep 30 &
+            child=$!
+            trap 'kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; exit 0' TERM INT
+            /usr/bin/printf '%s\\n' "$child" >> '\(childPIDLog.path)'
+            wait "$child"
+            ;;
           fail) /usr/bin/printf '%s\\n' 'fake provider failure' >&2; exit 7 ;;
           exact) /usr/bin/printf '%s\\n' '{"type":"message","text":"  exact response  "}'; exit 0 ;;
         esac
@@ -1758,6 +1775,13 @@ private struct Fixture {
                     claimID: fields[5].isEmpty ? nil : fields[5]
                 )
             }
+    }
+
+    func childProcessIDs() throws -> [Int32] {
+        guard FileManager.default.fileExists(atPath: childPIDLog.path) else { return [] }
+        return try String(contentsOf: childPIDLog, encoding: .utf8)
+            .split(separator: "\n")
+            .compactMap { Int32($0) }
     }
 
     func cleanup() {
