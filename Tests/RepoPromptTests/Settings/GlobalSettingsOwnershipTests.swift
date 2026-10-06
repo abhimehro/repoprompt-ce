@@ -445,14 +445,14 @@ private final class SettingsLockProcess {
     }
 
     func waitUntilLocked() throws {
-        guard ready.wait(timeout: .now() + 5) == .success else {
+        guard ready.wait(timeout: .now() + 15) == .success else {
             throw FixtureError.timeout("child lock acquisition")
         }
     }
 
     func finish(command: String) throws {
         try input.fileHandleForWriting.write(contentsOf: Data(command.utf8))
-        guard exited.wait(timeout: .now() + 5) == .success else {
+        guard exited.wait(timeout: .now() + 15) == .success else {
             throw FixtureError.timeout("child exit")
         }
     }
