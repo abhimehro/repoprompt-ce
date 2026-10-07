@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import RepoPromptSettingsCore
 @_spi(TestSupport) @testable import RepoPromptApp
 import RepoPromptDomainRuntime
 import RepoPromptSecureStorage
@@ -81,7 +82,7 @@ final class ACPAdvertisedCommandControllerTests: XCTestCase {
             attachments: [],
             taskLabelKind: nil
         )
-        let controller = try ACPAgentSessionController(provider: provider, runRequest: request)
+        let controller = try ACPAgentSessionController(provider: provider, runRequest: request, allowsProviderProcessLaunchForTesting: true)
         controllers.append(controller)
         _ = try await controller.bootstrap()
         return Fixture(controller: controller, provider: provider, promptLog: promptLog, request: request)
@@ -272,7 +273,7 @@ final class ACPAdvertisedCommandControllerTests: XCTestCase {
             )
         }
         // Opened while an applicable permission level was selected.
-        let controller = try ACPAgentSessionController(provider: provider, runRequest: request(launchPermissionMode: "auto"))
+        let controller = try ACPAgentSessionController(provider: provider, runRequest: request(launchPermissionMode: "auto"), allowsProviderProcessLaunchForTesting: true)
         controllers.append(controller)
         _ = try await controller.bootstrap()
         try await AsyncTestWait.waitUntil("the load advertisement to be captured") {
@@ -318,6 +319,11 @@ final class ACPAdvertisedCommandControllerTests: XCTestCase {
 
 @MainActor
 final class AgentSessionLinkACPCompactRunnerTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        GlobalSettingsStore.installApplicationModelIdentityPolicy()
+    }
+
     private var harnesses: [AgentSessionLinkRunnerHarness] = []
     private var temporaryURLs: [URL] = []
 
@@ -785,7 +791,7 @@ final class AgentSessionLinkACPCompactTransactionTests: XCTestCase {
                 profile: fixture.session.permissionProfile
             )
         ))
-        let controller = try ACPAgentSessionController(provider: fixture.provider, runRequest: request)
+        let controller = try ACPAgentSessionController(provider: fixture.provider, runRequest: request, allowsProviderProcessLaunchForTesting: true)
         liveControllers.append(controller)
         let bootstrap = try await controller.bootstrap()
         if waitForAdvertisement {

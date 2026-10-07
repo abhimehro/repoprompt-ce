@@ -2,8 +2,10 @@ import AppKit
 import Combine
 import MCP
 import RepoPromptDomainRuntime
+import RepoPromptFileSystem
 import RepoPromptFoundation
 import RepoPromptInstrumentation
+import RepoPromptSettingsCore
 import RepoPromptWorkspaceCore
 import SwiftUI
 
@@ -1020,6 +1022,10 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     }
 
     // MARK: - Dependencies
+
+    func cursorModelMenuItems() -> [StableMenuItem] {
+        promptManager.cursorContextBuilderMenuItems(options: modelOptions(for: .cursor), canApply: { [weak self] in self?.agentRunState.isRunning == false })
+    }
 
     private let promptManager: PromptViewModel
     private weak var workspaceManager: WorkspaceManagerViewModel?

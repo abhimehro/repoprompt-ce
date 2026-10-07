@@ -99,6 +99,7 @@ struct AgentApprovalCard: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+            .disabled(!request.supportsPlainApprove)
             .keyboardShortcut(.return, modifiers: [])
         }
     }
@@ -107,7 +108,7 @@ struct AgentApprovalCard: View {
         if request.proposedExecpolicyAmendmentJSON != nil {
             return "Approve & Remember"
         }
-        return "Always Allow"
+        return request.sessionApprovalLabel
     }
 
     private func alwaysAllowDecision() {

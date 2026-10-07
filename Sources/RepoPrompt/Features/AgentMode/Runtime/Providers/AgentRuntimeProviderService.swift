@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import RepoPromptProcess
+import RepoPromptSettingsCore
 
 enum ClaudeCodeRuntimeVariant: String {
     case standard
@@ -51,15 +52,16 @@ enum AgentProviderKind: String, CaseIterable, Hashable {
     static let claudeMCPClientID = "claude-code"
     static let codexMCPClientID = "codex-mcp-client"
     static let openCodeMCPClientID = "opencode"
-    static let cursorMCPClientID = "cursor"
+    /// Cursor's ACP MCP child reports this exact initialize name; pending discovery contexts use exact keys.
+    static let cursorMCPClientID = "Cursor"
     /// Devin's built-in Rust MCP client reports this exact initialize name.
     static let devinMCPClientID = "rmcp"
-    /// Grok Build presents `grok-shell-<injected server name>` (e.g. `grok-shell-RepoPromptCE`)
+    /// Grok Build presents `grok-shell-<injected server name>` (here `grok-shell-RepoPromptCEGrokRuntime`)
     /// to MCP servers. The hint must equal that exact registered name: the pending run-scoped
     /// tab-context store keys are raw client names (no family canonicalization), so a
     /// family-only hint would never bind the run's frozen tab context. The canonical
     /// `grok-shell` family in `MCPClientIdentity` still covers family-level matching.
-    static let grokBuildMCPClientID = "grok-shell-\(RepoPromptMCPServerConfiguration.defaultServerName)"
+    static let grokBuildMCPClientID = "grok-shell-\(RepoPromptMCPServerConfiguration.grokBuildRuntimeServerName)"
 
     var commandName: String {
         switch self {
@@ -325,7 +327,8 @@ final class AgentRuntimeProviderService {
                 enableDebugLogging: Self.enableDebugLogging,
                 modelString: modelString,
                 includeRepoPromptMCPServer: true,
-                cleanupProjectMCPApproval: true
+                cleanupProjectMCPApproval: true,
+                modelOverrides: modelParameterSelections.map { .init(configID: $0.configID, valueRaw: $0.valueRaw) }
             )
             if Self.enableDebugLogging {
                 Self.logger.debug("Created CursorACPHeadlessAgentProvider")

@@ -3,6 +3,7 @@ import Foundation
 import os
 import RepoPromptFoundation
 import RepoPromptProcess
+import RepoPromptSettingsCore
 
 actor ACPAgentSessionController {
     struct RequestTimeouts {
@@ -259,6 +260,7 @@ actor ACPAgentSessionController {
     }
 
     private let provider: any ACPAgentProvider
+    private let allowsProviderProcessLaunchForTesting: Bool
     private let runRequest: ACPRunRequest
     private let launchConfiguration: ACPLaunchConfiguration
     private let launchedPermissionMode: String?
@@ -287,6 +289,17 @@ actor ACPAgentSessionController {
             case .idle, .launching, .initialized, .openingSession, .sessionOpen, .promptRunning:
                 break
             }
+        }
+    }
+
+    /// Provider-owned execution readiness, independent of the app's published run state.
+    var hasExecutionInFlight: Bool {
+        if activePromptTurnID != nil { return true }
+        switch state {
+        case .launching, .initialized, .openingSession, .promptRunning, .closing:
+            return true
+        case .idle, .sessionOpen, .failed, .closed:
+            return false
         }
     }
 
@@ -393,9 +406,11 @@ actor ACPAgentSessionController {
         provider: any ACPAgentProvider,
         runRequest: ACPRunRequest,
         diagnosticSink: DiagnosticSink? = nil,
-        requestTimeouts: RequestTimeouts = .default
+        requestTimeouts: RequestTimeouts = .default,
+        allowsProviderProcessLaunchForTesting: Bool = false
     ) throws {
         self.provider = provider
+        self.allowsProviderProcessLaunchForTesting = allowsProviderProcessLaunchForTesting
         providerSessionIdentity = ACPProviderSessionIdentity(
             providerID: provider.providerID,
             loadSessionID: runRequest.resumeSessionID,
@@ -564,6 +579,7 @@ actor ACPAgentSessionController {
         guard state == .idle else {
             throw ControllerError.invalidState(expected: "idle", actual: state)
         }
+        try ProviderProcessLaunchPolicy.check(allowsLaunchInTests: allowsProviderProcessLaunchForTesting)
         promptImagesSupported = false
         state = .launching
         log("Launching ACP transport")
@@ -606,7 +622,9 @@ actor ACPAgentSessionController {
                 command: resolvedCommand,
                 arguments: launchConfiguration.arguments,
                 environment: environment,
-                workingDirectory: workingDirectory
+                workingDirectory: workingDirectory,
+                purpose: .provider,
+                allowsProviderProcessLaunchForTesting: allowsProviderProcessLaunchForTesting
             )
         } catch {
             await recordRunLaunchContract(
@@ -701,6 +719,13 @@ actor ACPAgentSessionController {
         log("Opening ACP session")
         logSessionMCPInjection()
         let openSessionResult = try await openSession()
+        if let notification = sessionConfiguration.postOpenNotification {
+            try sendJSONLine([
+                "jsonrpc": "2.0",
+                "method": notification.method,
+                "params": notification.params.mapValues { $0.toAny() }
+            ])
+        }
         sessionID = openSessionResult.sessionID
         state = .sessionOpen
 
@@ -1269,6 +1294,28 @@ actor ACPAgentSessionController {
         }
     }
 
+    /// Cursor persists bracket overrides in existing model strings; ACP requires separate exact model/config calls.
+    func applyCursorModelSelection(
+        _ raw: String,
+        overrides: [CursorAIModelCatalog.ModelSpecifier.Override] = []
+    ) async throws {
+        let specifier = try CursorAIModelCatalog.ModelSpecifier(raw: raw)
+        try await setSessionModel(specifier.baseModelRaw)
+        var encoded = raw
+        for override in overrides {
+            guard let updated = try CursorAIModelCatalog.ModelSpecifier(raw: encoded).replacing(configID: override.configID, valueRaw: override.valueRaw) else {
+                throw CursorAIModelCatalog.ModelSpecifier.invalid(override.configID)
+            }
+            encoded = updated
+        }
+        let values = try CursorAIModelCatalog.ModelSpecifier(raw: encoded).selections(in: currentDiscoveredSessionModels())
+        let selections = values.map {
+            ACPModelParameterSelection(providerID: .cursor, baseModelRaw: $0.baseModelRaw, kind: $0.kind, configID: $0.configID, valueRaw: $0.valueRaw)
+        }
+        let report = try await applySessionModelParameterSelections(selections)
+        try report.validateNoSkippedSelections()
+    }
+
     func applySessionModelParameterSelections(
         _ selections: [ACPModelParameterSelection]
     ) async throws -> ACPModelParameterApplicationReport {
@@ -1479,20 +1526,15 @@ actor ACPAgentSessionController {
                     "outcome": "cancelled"
                 ]
             ]
-        case .accept:
-            [
-                "outcome": [
-                    "outcome": "selected",
-                    "optionId": preferredAllowOptionID(for: pending.options, sessionScoped: false)
-                ]
-            ]
-        case .acceptForSession, .acceptWithExecpolicyAmendment:
-            [
-                "outcome": [
-                    "outcome": "selected",
-                    "optionId": preferredAllowOptionID(for: pending.options, sessionScoped: true)
-                ]
-            ]
+        case .accept, .acceptForSession, .acceptWithExecpolicyAmendment:
+            if let optionID = preferredAllowOptionID(
+                for: pending.options,
+                sessionScoped: decision != .accept
+            ) {
+                ["outcome": ["outcome": "selected", "optionId": optionID]]
+            } else {
+                ["outcome": ["outcome": "cancelled"]]
+            }
         case .decline:
             if let optionID = preferredRejectOptionID(for: pending.options) {
                 [
@@ -2151,14 +2193,20 @@ actor ACPAgentSessionController {
             )
         }
 
-        let rawInput = resolvedToolCall["rawInput"] as? [String: Any]
         let autoApprovalPayload = repoPromptPermissionAutoApprovalPayload(
             toolTitle: toolTitle,
             toolKind: toolKind,
             toolCall: resolvedToolCall,
-            rawInput: rawInput,
             options: optionDictionaries
         )
+        let plainAllowOptionID = preferredAllowOptionID(for: options, sessionScoped: false)
+        let plainAllowOptions = options.filter { $0.optionID == plainAllowOptionID }
+        let sessionApprovalScope: AgentApprovalSessionScope? = if provider.providerID == .grokBuild {
+            normalizedPermissionOptionValue(preferredAllowOptionID(for: options, sessionScoped: true)) == "allow-edits-session"
+                ? .editsSession : .oneTime
+        } else {
+            nil
+        }
         let request = AgentApprovalRequest(
             requestID: .acp(id.displayValue),
             method: "session/request_permission",
@@ -2173,6 +2221,11 @@ actor ACPAgentSessionController {
                 options: options.map { (optionID: $0.optionID, kind: $0.kind) },
                 providerID: provider.providerID
             ) != nil,
+            plainApproveAvailable: ACPPermissionOptionPolicy.overseerOneTimeAllowOptionID(
+                options: plainAllowOptions.map { (optionID: $0.optionID, kind: $0.kind) },
+                providerID: provider.providerID
+            ) != nil,
+            sessionApprovalScope: sessionApprovalScope,
             details: approvalDetails(
                 toolTitle: toolTitle,
                 toolKind: toolKind,
@@ -2181,10 +2234,12 @@ actor ACPAgentSessionController {
             )
         )
 
+        let devinAttestedToolName = provider.providerID == .devin
+            ? (resolvedToolCall["_meta"] as? [String: Any])?["cognition.ai/toolName"] as? String
+            : nil
         if let autoApproval = autoApprovalSelection(
-            requestToolName: provider.providerID == .devin
-                ? ((resolvedToolCall["_meta"] as? [String: Any])?["cognition.ai/toolName"] as? String ?? toolTitle)
-                : toolTitle,
+            requestToolName: devinAttestedToolName ?? toolTitle,
+            requestToolNameIsProviderAttested: devinAttestedToolName != nil,
             requestPayload: autoApprovalPayload,
             options: options
         ) {
@@ -2292,11 +2347,7 @@ actor ACPAgentSessionController {
                 diagnose(.phaseStarted("session/load"))
                 let requestResponse = try await sendRequestResponse(
                     method: "session/load",
-                    params: [
-                        "sessionId": existingSessionID,
-                        "cwd": sessionConfiguration.workingDirectory,
-                        "mcpServers": sessionConfiguration.mcpServers.map(\.acpJSONObject)
-                    ]
+                    params: sessionOpenParams(existingSessionID: existingSessionID)
                 )
                 let response = requestResponse.result
                 applyOpenedSessionConfiguration(
@@ -2344,10 +2395,7 @@ actor ACPAgentSessionController {
         diagnose(.phaseStarted("session/new"))
         let requestResponse = try await sendRequestResponse(
             method: "session/new",
-            params: [
-                "cwd": sessionConfiguration.workingDirectory,
-                "mcpServers": sessionConfiguration.mcpServers.map(\.acpJSONObject)
-            ]
+            params: sessionOpenParams()
         )
         let response = requestResponse.result
         guard let sessionID = response["sessionId"] as? String else {
@@ -2372,6 +2420,20 @@ actor ACPAgentSessionController {
             providerSessionIdentity: identity,
             invalidatedResumeSessionID: nil
         )
+    }
+
+    private func sessionOpenParams(existingSessionID: String? = nil) -> [String: Any] {
+        var params: [String: Any] = [
+            "cwd": sessionConfiguration.workingDirectory,
+            "mcpServers": sessionConfiguration.mcpServers.map(\.acpJSONObject)
+        ]
+        if let existingSessionID {
+            params["sessionId"] = existingSessionID
+        }
+        if !sessionConfiguration.metadata.isEmpty {
+            params["_meta"] = sessionConfiguration.metadata.mapValues { $0.toAny() }
+        }
+        return params
     }
 
     private func sendRequest(
@@ -3777,6 +3839,8 @@ actor ACPAgentSessionController {
         if let rawInputJSON, !rawInputJSON.isEmpty {
             details.append(AgentApprovalDetail(label: "Input", value: rawInputJSON, isCode: true))
         }
+        // Grok's raw option list does not match the scoped approval actions RPCE offers.
+        guard provider.providerID != .grokBuild else { return details }
         let optionLabels = options.map {
             Self.optionLabel(name: $0.name, optionID: $0.optionID)
         }
@@ -3839,32 +3903,59 @@ actor ACPAgentSessionController {
         ])
     }
 
-    private func preferredAllowOptionID(for options: [PermissionOption], sessionScoped: Bool) -> String {
-        let preferences: [PermissionOptionPreference] = switch provider.providerID {
-        case .openCode, .cursor, .antigravity, .devin:
-            genericAllowOptionPreferences(sessionScoped: sessionScoped)
-        case .grokBuild:
-            grokBuildAllowOptionPreferences(sessionScoped: sessionScoped)
-        }
+    /// The option an `.accept`-family decision submits, or nil when the agent offered no
+    /// selectable allow option. The denylist-filtered fallback must stay allow-kind:
+    /// without it, a Devin prompt whose only allow-typed entry is a denylisted
+    /// `switch_*`/`plan_*` would collapse to submitting its `reject_once` (or an empty ID)
+    /// for an accept decision — answering the opposite of what was decided.
+    private func preferredAllowOptionID(for options: [PermissionOption], sessionScoped: Bool) -> String? {
         let filteredOptions = safePermissionOptionsForAutoSelection(options)
-        return optionID(for: filteredOptions, preferences: preferences) ?? filteredOptions.first?.optionID ?? ""
+        // Devin is exact-ID only: broadening options (mode switches, persistent/global or
+        // server-wide grants) are unreachable here, which is why the denylist needs no
+        // `switch_*`/`plan_*`/`_always` pattern rules. Routing Devin through the
+        // kind-preference fallback below would silently loosen this — don't.
+        if provider.providerID == .devin {
+            if sessionScoped, let option = filteredOptions.first(where: { $0.optionID == "allow_session" }) {
+                return option.optionID
+            }
+            return filteredOptions.first(where: { $0.optionID == "allow_once" })?.optionID
+        }
+        if provider.providerID == .grokBuild {
+            // Grok's only genuine session grant is the exact edit option. All other
+            // approvals must be genuinely one-time, including ID and kind fallbacks.
+            let scopedOptions = filteredOptions.filter { option in
+                (
+                    sessionScoped
+                        && normalizedPermissionOptionValue(option.optionID) == "allow-edits-session"
+                        && normalizedPermissionOptionValue(option.kind) == "allow_always"
+                )
+                    || ACPPermissionOptionPolicy.overseerOneTimeAllowOptionID(
+                        options: [(optionID: option.optionID, kind: option.kind)], providerID: .grokBuild
+                    ) != nil
+            }
+            return optionID(for: scopedOptions, preferences: grokBuildAllowOptionPreferences(sessionScoped: sessionScoped))
+        }
+        // Generic provider IDs cannot turn an explicitly persistent kind into one-time consent.
+        let scopedOptions = sessionScoped ? filteredOptions : filteredOptions.filter {
+            normalizedPermissionOptionValue($0.kind) != "allow_always"
+        }
+        if let preferred = optionID(for: scopedOptions, preferences: genericAllowOptionPreferences(sessionScoped: sessionScoped)) {
+            return preferred
+        }
+        return optionID(
+            for: scopedOptions,
+            preferences: sessionScoped ? [.kind("allow_always"), .kind("allow_once")] : [.kind("allow_once")]
+        )
     }
 
     private func grokBuildAllowOptionPreferences(sessionScoped: Bool) -> [PermissionOptionPreference] {
-        if sessionScoped {
-            return [
-                .optionID("allow-edits-session"),
-                .optionID("always"),
-                .optionID("allow_always"),
-                .kind("allow_always")
-            ]
-        }
-        return [
+        let oneTime: [PermissionOptionPreference] = [
             .optionID("allow-once"),
             .optionID("once"),
             .optionID("allow_once"),
             .kind("allow_once")
         ]
+        return sessionScoped ? [.optionID("allow-edits-session")] + oneTime : oneTime
     }
 
     private func preferredRejectOptionID(for options: [PermissionOption]) -> String? {
@@ -3914,15 +4005,13 @@ actor ACPAgentSessionController {
         return [
             .optionID("once"),
             .optionID("allow_once"),
-            .kind("allow_once"),
-            .optionID("always"),
-            .optionID("allow_always"),
-            .kind("allow_always")
+            .kind("allow_once")
         ]
     }
 
     private func autoApprovalSelection(
         requestToolName: String?,
+        requestToolNameIsProviderAttested: Bool,
         requestPayload: [String: Any],
         options: [PermissionOption]
     ) -> AutoApprovalSelection? {
@@ -3932,6 +4021,7 @@ actor ACPAgentSessionController {
         ), isStrictACPRepoPromptPermissionMatch(
             match,
             requestToolName: requestToolName,
+            requestToolNameIsProviderAttested: requestToolNameIsProviderAttested,
             requestPayload: requestPayload
         )
         else {
@@ -3980,30 +4070,58 @@ actor ACPAgentSessionController {
         }
     }
 
+    /// ACP permission requests carry no provider-attested MCP server identity for most hosts, so
+    /// RepoPrompt provenance is accepted only from (in order of trust):
+    /// - a host-supplied RepoPrompt server field;
+    /// - a provider-attested invocation name (Devin `cognition.ai/toolName`);
+    /// - a RepoPrompt-prefixed title/name, but only when the host classifies the call as an MCP-style
+    ///   `other` operation (or gives no kind). Hosts derive titles for built-in kinds such as `edit`,
+    ///   `read`, or `execute` from file paths and commands, so a title like `mcp__RepoPromptCE__git`
+    ///   on an `edit` request is argument-controlled text, not identity (#1243).
+    ///
+    /// Known residual: an `other`/unclassified request from a foreign MCP tool whose host title
+    /// spells a RepoPrompt-prefixed name still matches, because most ACP hosts provide no attested
+    /// server identity. Failing closed there would force manual approval of every RepoPrompt call
+    /// on OpenCode, Cursor, and Antigravity, so title fallback is kept intentionally.
     private func isStrictACPRepoPromptPermissionMatch(
         _ match: MCPIntegrationHelper.RepoPromptPermissionAutoApprovalMatch,
         requestToolName: String?,
+        requestToolNameIsProviderAttested: Bool,
         requestPayload: [String: Any]
     ) -> Bool {
+        if MCPIntegrationHelper.repoPromptPermissionServerIdentifier(in: requestPayload) != nil {
+            return true
+        }
         switch match.source {
         case .serverIdentifier:
-            return true
+            // A display label alone (e.g. `git (RepoPromptCE MCP Server)`) never suffices.
+            return false
         case .topLevelToolName:
-            if let requestToolName, MCPIntegrationHelper.isRepoPromptToolNameWithServerPrefix(requestToolName) {
-                return true
+            guard let requestToolName, MCPIntegrationHelper.isRepoPromptToolNameWithServerPrefix(requestToolName) else {
+                return false
             }
-            return MCPIntegrationHelper.repoPromptPermissionServerIdentifier(in: requestPayload) != nil
+            return requestToolNameIsProviderAttested || Self.acpKindAllowsTitleDerivedIdentity(requestPayload)
         case .nestedToolName:
             return MCPIntegrationHelper.repoPromptPermissionContainsServerPrefixedToolName(in: requestPayload)
-                || MCPIntegrationHelper.repoPromptPermissionServerIdentifier(in: requestPayload) != nil
+                && Self.acpKindAllowsTitleDerivedIdentity(requestPayload)
         }
+    }
+
+    private static func acpKindAllowsTitleDerivedIdentity(_ requestPayload: [String: Any]) -> Bool {
+        guard let kind = (requestPayload["kind"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+            !kind.isEmpty
+        else {
+            return true
+        }
+        return kind == "other"
     }
 
     private func repoPromptPermissionAutoApprovalPayload(
         toolTitle: String?,
         toolKind: String?,
         toolCall: [String: Any],
-        rawInput: [String: Any]?,
         options: [[String: Any]]
     ) -> [String: Any] {
         var payload: [String: Any] = [
@@ -4016,14 +4134,8 @@ actor ACPAgentSessionController {
         if let toolKind, !toolKind.isEmpty {
             payload["kind"] = toolKind
         }
-        if let rawInputValue = toolCall["rawInput"] {
-            payload["rawInput"] = rawInputValue
-        }
-        if let rawInput {
-            for (key, value) in rawInput where payload[key] == nil {
-                payload[key] = value
-            }
-        }
+        // `rawInput` is the tool's model-controlled arguments; it is deliberately not merged into
+        // the auto-approval payload so arguments can never supply RepoPrompt provenance (#1243).
         return payload
     }
 

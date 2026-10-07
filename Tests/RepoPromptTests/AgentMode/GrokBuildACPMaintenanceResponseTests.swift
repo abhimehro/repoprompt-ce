@@ -1,9 +1,11 @@
 import Foundation
+import RepoPromptSettingsCore
 @_spi(TestSupport) @testable import RepoPromptApp
 import XCTest
 
 final class GrokBuildACPMaintenanceResponseTests: XCTestCase {
     override func setUp() {
+        GlobalSettingsStore.installApplicationModelIdentityPolicy()
         super.setUp()
         AgentACPModelRegistry.shared.test_reset(providerID: .grokBuild)
     }
@@ -34,7 +36,8 @@ final class GrokBuildACPMaintenanceResponseTests: XCTestCase {
             includeRepoPromptMCPServer: false
         )
         let controller = try ACPAgentSessionController(
-            provider: GrokBuildACPAgentProvider(config: config), runRequest: request
+            provider: GrokBuildACPAgentProvider(config: config), runRequest: request,
+            allowsProviderProcessLaunchForTesting: true
         )
         let stream = await controller.currentEventsStream()
         do {

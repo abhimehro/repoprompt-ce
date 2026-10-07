@@ -4,6 +4,7 @@ import MCP
 import RepoPromptDomainRuntime
 import RepoPromptFoundation
 import RepoPromptShared
+import RepoPromptVCS
 import RepoPromptWorkspaceCore
 
 #if DEBUG
@@ -827,11 +828,11 @@ extension MCPServerViewModel {
             && tabContextByConnectionID[connectionID]?.tabID == expectedTabID
     }
 
-    /// Final synchronous fence for a catalog-qualified provider dispatch.
+    /// Final synchronous mapping fence for an actor-qualified provider dispatch.
     ///
-    /// The server actor already qualified the token's policy and connection lifecycle. This
-    /// MainActor check closes the remaining handover interval by requiring that the exact
-    /// connection observed by `tools/list` still owns the bidirectional route at composition time.
+    /// Recheck the actor's live lifecycle/removal state synchronously as well as both mapping
+    /// directions: cleanup can suspend after removal starts but before mappings are retracted.
+    /// Neither this fence nor its lifecycle read depends on catalog/tool-list freshness.
     @MainActor
     func hasCurrentRunCatalogRouteToken(
         _ token: AgentSessionLinkRunCatalogRouteToken,
@@ -843,6 +844,7 @@ extension MCPServerViewModel {
                 connectionID: token.connectionID,
                 expectedTabID: expectedTabID
             )
+            && ServerNetworkManager.shared.hasLiveProviderInputConnection(token)
     }
 
     /// Proactively removes all cached tab-context state for a closing tab while preserving window affinity.
@@ -4431,7 +4433,7 @@ extension MCPServerViewModel {
             {
                 let sanitized = sanitizeTaskName(taskName)
                 if !sanitized.isEmpty {
-                    renameComposeTabIfNeeded(tabID: context.tabID, newName: sanitized)
+                    renameComposeTabIfDefault(tabID: context.tabID, newName: sanitized)
                 }
             }
         }
@@ -4507,12 +4509,10 @@ extension MCPServerViewModel {
     }
 
     @MainActor
-    private func renameComposeTabIfNeeded(tabID: UUID, newName: String) {
-        if let existing = promptVM.currentComposeTabs.first(where: { $0.id == tabID }),
-           existing.name == newName
-        {
-            return
-        }
+    private func renameComposeTabIfDefault(tabID: UUID, newName: String) {
+        guard let tab = workspaceManager?.composeTab(with: tabID),
+              tab.hasDefaultName,
+              tab.name != newName else { return }
         promptVM.renameComposeTab(tabID, to: newName)
     }
 

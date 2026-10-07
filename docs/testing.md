@@ -53,6 +53,21 @@ make dev-provider-test
 
 A focused green run is evidence for the named contract, not a substitute for full-suite or CI coverage when the changed boundary is broad. The hosted root-test workflow discovers one current root XCTest population through `swift test list`, counts methods per suite, assigns every discovered suite to one of four deterministic method-count-weighted LPT shards, and executes each suite in its own XCTest process. Root CI has no contract/integration tier split or contributor-maintained registry; provider-package tests remain a separate lane.
 
+## Provider subprocess isolation
+
+Provider CLI launches fail closed in processes hosting the XCTest runtime, including nested
+XCTest runners and release-mode test bundles. Detection does not inspect user arguments or
+inherited XCTest environment variables, so those production inputs cannot cause a refusal.
+**Separate non-XCTest child processes spawned by tests are not guarded.** Such fixtures must
+use synthetic commands or injected provider doubles, never an installed provider CLI.
+
+Inject controller/provider doubles rather than relying on an installed CLI. Intentional fixture-process
+tests can set `allowsProviderProcessLaunchForTesting: true` on their `CLIProcessConfiguration`
+or `ACPAgentSessionController`, or scope a launch/probe with
+`ProviderProcessLaunchPolicy.$allowsLaunchForTesting.withValue(true)`. These opt-ins are local
+to the configured instance or task, not a process-global environment switch. Mark a process
+`.tool` only for genuinely non-provider tooling, such as Git worktree operations.
+
 ## Oracle image delivery
 
 Feature map (app-backed only):
@@ -86,6 +101,17 @@ copied into fixtures. Direct-headless Oracle rejects images. Originals are this-
 continuations do not automatically resend them or use saved thumbnails. Missing
 credentials, unsupported negotiated capabilities or unapproved uploads mean **not run**,
 not PASS.
+
+## Cursor model controls: live verification map
+
+Use conductor for build/health checks (`make dev-build`, `make dev-smoke`); launch/relaunch requires approval. Drive the UI with Cua Driver in background delivery.
+
+| Feature | User / agent path | Observable proof | Prerequisites / traps |
+| --- | --- | --- | --- |
+| Cursor model refresh | Settings → CLI Providers → expand Cursor CLI → Refresh Models | Spinner finishes; result reports models advertised by Cursor, or a retryable error; previous models/selections survive failure | Authenticated `agent acp`. Advertised count is not selectable count: model membership remains release-gated. |
+| Cursor effort pins | Settings → Agent Models (or Models popover) → choose Cursor and an effort-bearing model → effort chip → select advertised choice | Chip reflects choice; reopen surface and inspect persisted model parameters via `agent_manage list_agents`; run applies the advertised config ID / wire value | Models such as Composer may advertise speed only, so no effort chip. Switch models and confirm pins stay per-model. Unsupported saved pins must not be erased by discovery. |
+
+Focused checks: `make dev-test FILTER=Cursor` covers discovery, refresh failure/retry, runtime parameter resolution, per-model persistence, and exact ACP binding. A successful metadata probe alone does not prove the UI or effective inference routing.
 
 ## Workspace projection decode diagnostics
 

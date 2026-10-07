@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptSettingsCore
 import XCTest
 
 /// Runner-level harness for the cross-window oversight prompt supplement.
@@ -113,7 +114,7 @@ final class AgentSessionLinkRunnerHarness {
             headlessProviderFactory: headlessProviderFactory,
             acpProviderFactory: acpProviderFactory,
             acpControllerFactory: { provider, request in
-                try ACPAgentSessionController(provider: provider, runRequest: request)
+                try ACPAgentSessionController(provider: provider, runRequest: request, allowsProviderProcessLaunchForTesting: true)
             },
             connectionPolicyInstaller: policyInstaller,
             expectedPIDPolicyArmer: { _ in true },

@@ -1,6 +1,7 @@
 import Foundation
 import OSLog
 import RepoPromptFoundation
+import RepoPromptSettingsCore
 
 struct WorkspaceDuplicateGroupSummary: Identifiable, Equatable {
     struct DuplicateWorkspaceRow: Identifiable, Equatable {
@@ -219,6 +220,16 @@ struct ComposeTabState: Codable, Identifiable, Equatable {
     var contextOverrides: ContextBuilderOverrides
     /// Active Context Builder tab config. Encodes/decodes under the legacy JSON key `discover`.
     var contextBuilder: ContextBuilderTabConfig
+
+    /// Matches empty, chat-placeholder and T-number titles eligible for automatic naming.
+    var hasDefaultName: Bool {
+        if ChatSession.isPlaceholderName(name) { return true }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { return false }
+        let prefix = trimmed.prefix(1)
+        guard prefix == "T" || prefix == "t" else { return false }
+        return Int(trimmed.dropFirst()) != nil
+    }
 
     init(
         id: UUID = UUID(),

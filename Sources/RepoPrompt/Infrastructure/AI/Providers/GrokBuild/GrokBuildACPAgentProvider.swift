@@ -1,5 +1,6 @@
 import Foundation
 import RepoPromptProcess
+import RepoPromptSettingsCore
 
 struct GrokBuildACPAgentProvider: ACPAgentProvider {
     private let config: GrokBuildAgentConfig
@@ -19,7 +20,12 @@ struct GrokBuildACPAgentProvider: ACPAgentProvider {
         launchResolver: GrokBuildACPLaunchResolver = GrokBuildACPLaunchResolver()
     ) {
         self.config = config
-        self.repoPromptMCPConfiguration = repoPromptMCPConfiguration
+        self.repoPromptMCPConfiguration = RepoPromptMCPServerConfiguration(
+            name: RepoPromptMCPServerConfiguration.grokBuildRuntimeServerName,
+            command: repoPromptMCPConfiguration.command,
+            args: repoPromptMCPConfiguration.args,
+            env: repoPromptMCPConfiguration.env
+        )
         self.launchResolver = launchResolver
     }
 
@@ -47,7 +53,9 @@ struct GrokBuildACPAgentProvider: ACPAgentProvider {
             }
         }
 
-        var environment: [String: String] = [:]
+        var environment = config.backgroundFeatureEnvironment.merging(GrokBuildAgentConfig.importIsolationEnvironment) { _, isolation in
+            isolation
+        }
         if let apiKey = config.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty {
             // Never log this value; it exists only as a child-process launch override.
             environment["XAI_API_KEY"] = apiKey
@@ -78,10 +86,17 @@ struct GrokBuildACPAgentProvider: ACPAgentProvider {
             .new
         }
 
+        let fullAccess = config.alwaysApproveTools || request.autoApproveAllToolPermissions
+        // Grok 1.0.45 ignores autoMode: false on open; the notification also
+        // disables auto mode inherited from Claude's permission settings.
         return try ACPSessionConfiguration(
             mode: mode,
             workingDirectory: standardizedWorkingDirectory(from: request.workspacePath),
-            mcpServers: config.includeRepoPromptMCPServer ? [repoPromptMCPConfiguration] : []
+            mcpServers: config.includeRepoPromptMCPServer ? [repoPromptMCPConfiguration] : [],
+            metadata: fullAccess ? [:] : ["yoloMode": .bool(false), "autoMode": .bool(false)],
+            postOpenNotification: fullAccess ? nil : .init(
+                method: "_x.ai/yolo_mode_changed", params: ["auto_mode": .bool(false)]
+            )
         )
     }
 

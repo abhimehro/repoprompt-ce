@@ -220,17 +220,37 @@ RepoPrompt CE cannot impose one MCP tool-call timeout across external ACP provid
 
 - **OpenCode:** Timeout values are milliseconds. For a 10,000-second call, set `"timeout": 10000000` on the existing RepoPrompt MCP server entry, preserving its `type`, `command`, and `environment` fields.
 - **Cursor Agent:** Current builds expose no supported ACP, CLI, environment, or configuration override that RepoPrompt CE can set to 10,000 seconds. Do not add a speculative CE timeout control; add one only if Cursor documents a supported configuration surface.
-- **Grok Build:** The session-injected RepoPrompt MCP server follows Grok's default MCP timeout. To pin one, add `tool_timeout_sec` under `[mcp_servers.RepoPromptCE]` in `~/.grok/config.toml` (Grok's per-server MCP config; seconds).
+- **Grok Build:** RepoPrompt CE does not set a timeout for its session-injected `RepoPromptCEGrokRuntime` server. Without a valid same-named Grok configuration override, Grok's default applies. A per-server `tool_timeout_sec` override requires a server entry with a transport; a timeout-only `[mcp_servers.RepoPromptCEGrokRuntime]` table is rejected ("has no transport", Grok 1.0.46).
 
 ### Grok Build provider notes
 
-`AgentProviderKind.grokBuild` drives `grok agent stdio` (ACP protocolVersion 1). Verified wire facts as of grok 1.0.3 (2026-08-13):
+`AgentProviderKind.grokBuild` drives `grok agent --no-leader stdio` (ACP protocolVersion 1). Verified wire facts as of grok 1.0.3 (2026-08-13):
 
 - Model advertisement is a top-level `SessionModelState` (`models` in `session/new`/`session/load` responses), not modern `configOptions`; explicit selection goes through `session/set_model` (`{sessionId, modelId}`). The controller consults the provider's `ACPDirectSessionModelProvider` conformance only when no modern model selector exists; malformed modern selectors never fall back.
 - Usage arrives in the `session/prompt` response `_meta.usage` (same field names as the ACP-standard top-level `usage`); Grok emits no `usage_update` notifications.
-- Full access is a launch flag (`grok agent --always-approve stdio`), never controller-side permission-option auto-selection; `enable-always-approve` is denylisted from every option picker.
-- Auth: RepoPrompt never sends ACP `authenticate`; Grok's own precedence (config.toml key → `~/.grok/auth.json` → `XAI_API_KEY` env, the last injected from the existing `.grokAPI` keychain account at provider construction) applies.
+- Full access is a launch flag (`grok agent --always-approve --no-leader stdio`), never controller-side permission-option auto-selection; `enable-always-approve` is denylisted from every option picker.
+- Auth: RPCE never sends ACP `authenticate`. Grok checks a model key (`api_key`/`env_key`), then a configured auth-provider branch, then an eligible session token, then `XAI_API_KEY`, subject to `[auth] preferred_method` and `disable_api_key_auth`. The auth-provider branch does not fall through when its cached token is absent. RPCE reads a stored key from the existing `.grokAPI` keychain account at provider construction and passes it as the launch-environment `XAI_API_KEY`. Credential order is source-only at Grok 1.0.45 (`2bdd1d6a`), not live-tested.
 - MCP client name is `grok-shell-<injected server name>`; `MCPClientIdentity` maps the `grok-shell` prefix family.
+
+#### Current Grok MCP launch policy
+
+- Agent Mode, Context Builder discovery, model discovery and one-shot (Oracle/Chat) launches set `GROK_CLAUDE_MCPS_ENABLED=0` and `GROK_CURSOR_MCPS_ENABLED=0` as process-local overrides. This isolates Claude Code and Cursor MCP imports, including project-local Cursor imports. It does not change `HOME`, `GROK_HOME`, credentials or the user's configuration files.
+- Agent Mode and Context Builder inject the fixed server name `RepoPromptCEGrokRuntime`, with exact client-ID hint `grok-shell-RepoPromptCEGrokRuntime`. Grok renders its tools as `RepoPromptCEGrokRuntime__<tool>`; RPCE recognizes these aliases for known RepoPrompt tools while retaining canonical internal tool identities. Other providers keep `RepoPromptCE`.
+- The Grok-only name avoids the recorded collision with an imported `RepoPromptCE`: Grok drops client servers whose names match disabled imports, on both new and loaded sessions. It is not collision-proof if the user also configured or disabled `RepoPromptCEGrokRuntime` itself. Existing Grok grants for the old server name are not migrated, so users may see renewed permission prompts.
+- Model discovery injects no RPCE server and always uses the existing neutral `RepoPromptGrokBuildACPDiscovery` temporary directory, reusing one verified session there rather than following subscribed workspaces. Closing a window cancels its discovery subscription, not the shared polling service.
+- **Project-config limit:** Grok's project `.mcp.json` is not controlled by the two import switches. Neutral polling avoids the user's project file, but Context Builder and Agent Mode retain their real workspace and may still load it. Grok-native MCP configuration is not filtered or rewritten by this policy.
+
+#### Grok background-feature launch policy
+
+- Agent Mode and model discovery set `GROK_MEMORY=0`, `GROK_SUBAGENTS=0`, `GROK_WORKFLOWS=0` and `GROK_AUTO_WAKE=0` to disable Grok's memory, subagents, workflows and auto-wake. Switch behavior is source-verified against Grok 1.0.45 (`2bdd1d6a`), not live-proven; pinned/remote settings can affect feature-specific resolution, and auto-wake requirements pins can override the environment. Imported hooks are separate and not controlled by these switches. In the pinned source, an explicit `/workflow resume` of an existing resumable workflow record in a loaded session is not gated by `GROK_WORKFLOWS` ([`ManageOp::Resume`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/session/acp_session_impl/workflow.rs)); this is not observed live, and passive or model-initiated restart is not established.
+- `GrokBuildAgentConfig.backgroundFeatureEnvironment` defaults to empty, leaving the ACP caller's background policy unchanged (Context Builder). One-shot (Oracle/Chat) is a separate path that never reads this field and remains unchanged. No user configuration or global environment is changed.
+- The ACP launch adapter merges this policy once; the MCP import-isolation overrides above win on a collision, and stored-key injection as `XAI_API_KEY` remains unchanged. Headless and polling config reconstructions preserve the caller's background-feature environment.
+
+#### Grok cancellation boundaries
+
+- **Turn cancellation:** stopping or steering an active ACP turn sends a bare `session/cancel` with only `sessionId`. [Grok's cancellation handler](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/session/acp_session_impl/cancel.rs) cancels every non-workflow subagent in that session, including earlier turns' background children, and kills running foreground commands. These effects are source-verified at Grok 1.0.45, not limited to the current turn.
+- **Idle `stop_session`:** MCP `agent_manage.stop_session` cancels only an active RPCE run. For an idle session it returns `stop_requested: false`, sends no `session/cancel` and leaves the controller alive; it is not background-work cleanup.
+- **Controller teardown:** `ACPAgentSessionController.shutdown()` calls `cancelPrompt()` whenever a session ID exists, including when idle. It attempts the same bare cancellation before closing stdio and terminating the provider process, so a received cancel has the subagent and foreground-command effects above. Teardown is distinct from an idle `stop_session`; the launch policy does not change either path.
 
 ## How a new provider plugs in
 

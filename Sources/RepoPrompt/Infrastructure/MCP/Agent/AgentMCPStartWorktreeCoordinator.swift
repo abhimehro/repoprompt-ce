@@ -2,6 +2,8 @@ import Foundation
 import MCP
 import RepoPromptInstrumentation
 import RepoPromptProcess
+import RepoPromptSettingsCore
+import RepoPromptVCS
 import RepoPromptWorkspaceCore
 
 @MainActor
@@ -441,6 +443,7 @@ struct AgentMCPStartWorktreeCoordinator {
     ) async throws {
         let runner = CLIProcessRunner(config: CLIProcessConfiguration(
             command: "git",
+            processPurpose: .tool,
             workingDirectory: repository.rootPath,
             enableDebugLogging: false
         ))

@@ -1,9 +1,15 @@
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
+import RepoPromptSettingsCore
 import XCTest
 
 @MainActor
 final class ACPIntegratedAgentModeRunnerExecutionTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        GlobalSettingsStore.installApplicationModelIdentityPolicy()
+    }
+
     func testCompletedTerminalUsesSharedExecutionClassification() async {
         let classification = await ACPIntegratedAgentModeRunner.testClassifyTransientTerminal(
             state: .completed,
@@ -163,16 +169,10 @@ final class ACPIntegratedAgentModeRunnerExecutionTests: XCTestCase {
         XCTAssertEqual(model, AgentModel.cursorAuto.rawValue)
     }
 
-    func testCursorUnknownConcreteModelFailsClosedBeforePrompt() {
-        XCTAssertThrowsError(try ACPIntegratedAgentModeRunner.testExplicitSelectedModel(
+    func testCursorNewConcreteModelReachesRuntimeValidationWithoutReleaseGate() throws {
+        XCTAssertEqual(try ACPIntegratedAgentModeRunner.testExplicitSelectedModel(
             agentKind: .cursor,
-            modelString: "cursor-future-model"
-        )) { error in
-            guard case let AIProviderError.invalidConfiguration(detail) = error else {
-                return XCTFail("Expected invalid Cursor model configuration, got \(error)")
-            }
-            XCTAssertTrue(detail.contains("cursor-future-model"))
-            XCTAssertTrue(detail.contains("supported model catalog"))
-        }
+            modelString: "grok-4.7"
+        ), "grok-4.7")
     }
 }

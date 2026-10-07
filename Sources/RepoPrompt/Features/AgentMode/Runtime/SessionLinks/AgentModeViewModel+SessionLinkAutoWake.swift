@@ -571,8 +571,9 @@ extension AgentModeViewModel {
             if route == .waitingContinuation, session.selectedAgent == .codexExec {
                 let expectedWaitID = session.instructionWaitID
                 let expectedControllerID = session.codexController.map(ObjectIdentifier.init)
-                let readiness = await ensureProviderInputCatalogReady(for: session)
-                guard readiness == .ready || readiness == .notRequired,
+                let readiness = await qualifyProviderInputRoute(for: session)
+                guard readiness.allowsDispatch,
+                      agentSessionLinkHasCurrentProviderInputRoute(for: session, qualification: readiness),
                       let current = agentSessionLinkAutoWakeSession(for: endpoint),
                       current === session,
                       current.oversight.pendingAutoWake?.wakeID == wakeID,
@@ -1277,12 +1278,28 @@ extension AgentModeViewModel {
         guard agentSessionLinkAcquirePhysicalDispatch(for: session, dispatchID: claim.dispatchID) else {
             return
         }
-        _ = resumeWaitingInstructionContinuation(
+        // The continuation is also a physical acceptance boundary. Carry the note first, just as
+        // native/ACP provider sends do; never consume either receipt before the resume succeeds.
+        let carry = AgentSelfCompactParkedPrefix.prepare(claim.fragment, session: session) {}
+        if let noteID = carry.dispatchID {
+            guard AgentSelfCompactParkedPrefix.markAttempted(noteID, session: session) else { return }
+        }
+        let accepted = resumeWaitingInstructionContinuation(
             session: session,
-            providerText: claim.fragment,
+            providerText: carry.text,
             claim: claim,
             origin: .laneUpdateAutoWake(wakeID: wakeID)
         )
+        if let noteID = carry.dispatchID {
+            if accepted {
+                AgentSelfCompactParkedPrefix.markAccepted(noteID, session: session)
+            } else {
+                var state = session.selfCompactState
+                _ = state.noteDefinitivelyNotAttempted(noteID)
+                session.selfCompactState = state
+            }
+            scheduleSave(for: session)
+        }
     }
 
     // MARK: - Routine wake interval
@@ -1831,7 +1848,7 @@ extension AgentModeViewModel {
             && !session.bindingTransitionInProgress
             && !session.terminalCommitInProgress
             && !session.mcpFollowUpRunPending
-            && !session.selfCompactState.blocksAutomaticWake
+            && !agentSelfCompactBlocksNotificationWake(session)
             && !session.isComposerSubmissionInFlight
             && !session.isPreparingInitialWorktree
             && !session.isChangingExecutionLocation

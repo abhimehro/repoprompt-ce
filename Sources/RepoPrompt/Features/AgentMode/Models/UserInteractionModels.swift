@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RepoPromptFileSystem
 
 enum StableUserInteractionIdentity {
     static func uuid(from seed: String) -> UUID {
@@ -942,6 +943,12 @@ struct AgentPermissionsRequest: Identifiable, Hashable {
     }
 }
 
+/// Provider-projected scope of the session decision; nil preserves legacy presentation.
+enum AgentApprovalSessionScope: Hashable {
+    case oneTime
+    case editsSession
+}
+
 struct AgentApprovalRequest: Identifiable, Hashable {
     let id: UUID
     let requestID: AgentApprovalRequestID
@@ -957,6 +964,10 @@ struct AgentApprovalRequest: Identifiable, Hashable {
     let proposedExecpolicyAmendmentJSON: String?
     /// ACP-only snapshot of genuine one-time allow availability; submission rechecks the live request.
     let overseerOneTimeAllowAvailable: Bool?
+    /// ACP-only availability of the ordinary one-time decision, derived from live provider options.
+    let plainApproveAvailable: Bool?
+    /// Live request scope only; this does not store or grant consent.
+    let sessionApprovalScope: AgentApprovalSessionScope?
     let details: [AgentApprovalDetail]
 
     init(
@@ -973,6 +984,8 @@ struct AgentApprovalRequest: Identifiable, Hashable {
         grantRoot: String? = nil,
         proposedExecpolicyAmendmentJSON: String? = nil,
         overseerOneTimeAllowAvailable: Bool? = nil,
+        plainApproveAvailable: Bool? = nil,
+        sessionApprovalScope: AgentApprovalSessionScope? = nil,
         details: [AgentApprovalDetail] = []
     ) {
         self.id = id ?? Self.stableID(
@@ -995,6 +1008,8 @@ struct AgentApprovalRequest: Identifiable, Hashable {
         self.grantRoot = grantRoot
         self.proposedExecpolicyAmendmentJSON = proposedExecpolicyAmendmentJSON
         self.overseerOneTimeAllowAvailable = overseerOneTimeAllowAvailable
+        self.plainApproveAvailable = plainApproveAvailable
+        self.sessionApprovalScope = sessionApprovalScope
         self.details = details
     }
 
@@ -1020,7 +1035,16 @@ struct AgentApprovalRequest: Identifiable, Hashable {
         }
     }
 
+    var supportsPlainApprove: Bool {
+        guard case .acp = requestID else { return true }
+        return plainApproveAvailable == true
+    }
+
     var supportsAlwaysAllow: Bool {
-        true
+        sessionApprovalScope != .oneTime
+    }
+
+    var sessionApprovalLabel: String {
+        sessionApprovalScope == .editsSession ? "Allow edits this session" : "Always Allow"
     }
 }

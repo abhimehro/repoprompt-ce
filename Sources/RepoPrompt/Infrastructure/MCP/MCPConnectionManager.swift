@@ -1,3 +1,5 @@
+import RepoPromptSettingsCore
+
 // MARK: - Connection Management Components
 
 import CryptoKit
@@ -734,13 +736,92 @@ actor ServerNetworkManager {
     private let defaultDomainHost: MCPDomainHost
     private var domainHost: MCPDomainHost {
         #if DEBUG
-            if let runtime = AppDomainRuntimeComposition.shared.runtimeForTesting { return runtime.domainHost }
+            if let runtime = AppDomainRuntimeComposition.shared.runtimeForTesting {
+                return runtime.domainHost
+            }
         #endif
         return defaultDomainHost
     }
 
-    private var isRunningState: Bool = false
-    private var lifecycleGeneration: UInt64 = 0
+    /// The actor remains the sole writer. A synchronous reader at provider composition must see
+    /// removal/Stop immediately, before their async cleanup can retract MainActor route mappings.
+    private final class ConnectionLifecycleState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var running = false
+        private var generation: UInt64 = 0
+        private var generationsByID: [UUID: UInt64] = [:]
+        private var removingIDs: Set<UUID> = []
+        private var watchdogTerminalIDs: Set<UUID> = []
+        private var transportTerminalIDs: Set<UUID> = []
+
+        var isRunning: Bool {
+            get { lock.withLock { running } }
+            set { lock.withLock { running = newValue } }
+        }
+
+        var lifecycleGeneration: UInt64 {
+            get { lock.withLock { generation } }
+            set { lock.withLock { generation = newValue } }
+        }
+
+        var connectionGenerations: [UUID: UInt64] {
+            get { lock.withLock { generationsByID } }
+            _modify {
+                lock.lock()
+                defer { lock.unlock() }
+                yield &generationsByID
+            }
+        }
+
+        var removingConnections: Set<UUID> {
+            get { lock.withLock { removingIDs } }
+            _modify {
+                lock.lock()
+                defer { lock.unlock() }
+                yield &removingIDs
+            }
+        }
+
+        var watchdogTerminalConnections: Set<UUID> {
+            get { lock.withLock { watchdogTerminalIDs } }
+            _modify {
+                lock.lock()
+                defer { lock.unlock() }
+                yield &watchdogTerminalIDs
+            }
+        }
+
+        var transportTerminalConnections: Set<UUID> {
+            get { lock.withLock { transportTerminalIDs } }
+            _modify {
+                lock.lock()
+                defer { lock.unlock() }
+                yield &transportTerminalIDs
+            }
+        }
+
+        func isLive(connectionID: UUID, generation expectedGeneration: UInt64) -> Bool {
+            lock.withLock {
+                running && generation == expectedGeneration
+                    && generationsByID[connectionID] == expectedGeneration
+                    && !removingIDs.contains(connectionID)
+                    && !watchdogTerminalIDs.contains(connectionID)
+                    && !transportTerminalIDs.contains(connectionID)
+            }
+        }
+    }
+
+    private nonisolated let connectionLifecycleState = ConnectionLifecycleState()
+    private var isRunningState: Bool {
+        get { connectionLifecycleState.isRunning }
+        set { connectionLifecycleState.isRunning = newValue }
+    }
+
+    private var lifecycleGeneration: UInt64 {
+        get { connectionLifecycleState.lifecycleGeneration }
+        set { connectionLifecycleState.lifecycleGeneration = newValue }
+    }
+
     private var isEnabledState: Bool = true
 
     init(
@@ -1023,11 +1104,27 @@ actor ServerNetworkManager {
     #endif
 
     private var connections: [UUID: any MCPServerConnection] = [:]
-    private var connectionsBeingRemoved: Set<UUID> = []
-    private var executionWatchdogTerminalConnections: Set<UUID> = []
-    private var transportTerminalConnections: Set<UUID> = []
+    private var connectionsBeingRemoved: Set<UUID> {
+        get { connectionLifecycleState.removingConnections }
+        _modify { yield &connectionLifecycleState.removingConnections }
+    }
+
+    private var executionWatchdogTerminalConnections: Set<UUID> {
+        get { connectionLifecycleState.watchdogTerminalConnections }
+        _modify { yield &connectionLifecycleState.watchdogTerminalConnections }
+    }
+
+    private var transportTerminalConnections: Set<UUID> {
+        get { connectionLifecycleState.transportTerminalConnections }
+        _modify { yield &connectionLifecycleState.transportTerminalConnections }
+    }
+
     private var toolExecutionWatchdogEnvironment = MCPToolExecutionWatchdogEnvironment.continuous()
-    private var connectionLifecycleGenerationByID: [UUID: UInt64] = [:]
+    private var connectionLifecycleGenerationByID: [UUID: UInt64] {
+        get { connectionLifecycleState.connectionGenerations }
+        _modify { yield &connectionLifecycleState.connectionGenerations }
+    }
+
     private var bootstrapClaimedPIDByConnectionID: [UUID: Int] = [:]
     private var bootstrapObservedPeerPIDByConnectionID: [UUID: Int] = [:]
     private let terminalRecordClaimsByConnectionID = MCPDomainTerminalClaimRegistry<MCPTerminalRecord>()
@@ -2440,7 +2537,10 @@ actor ServerNetworkManager {
     ) async -> Bool {
         guard await AppDomainRuntimeComposition.shared.isActive(identity.catalogRegistrationHandle) else { return false }
         if let token = identity.modelRouteToken,
-           await cachedModelCatalogRouteToken(connectionID: token.connectionID) != token { return false }
+           await cachedModelCatalogRouteToken(connectionID: token.connectionID) != token
+        {
+            return false
+        }
         return await MainActor.run {
             let window = identity.modelRouteToken != nil ? WindowStatesManager.shared.modelRoutingWindow(withID: identity.windowID)
                 : WindowStatesManager.shared.window(withID: identity.windowID)
@@ -3617,7 +3717,16 @@ actor ServerNetworkManager {
         return true
     }
 
-    /// Returns the exact route/policy/connection token used to qualify a server-observed catalog.
+    /// Final synchronous lifecycle fence for a previously actor-qualified provider route.
+    /// Reads the same removal/generation state as the actor, not a delayed catalog projection.
+    nonisolated func hasLiveProviderInputConnection(_ token: AgentSessionLinkRunCatalogRouteToken) -> Bool {
+        connectionLifecycleState.isLive(
+            connectionID: token.connectionID,
+            generation: token.connectionLifecycleGeneration
+        )
+    }
+
+    /// Returns exact actor-owned route/policy/connection proof, independently of catalog discovery.
     func authoritativeRunCatalogRouteToken(
         runID: UUID,
         windowID: Int,
@@ -3962,7 +4071,9 @@ actor ServerNetworkManager {
     ) async -> UUID? {
         // Completion must retain the original call attribution without invoking the generic
         // cold-route recovery sweep after a disconnect or handover.
-        if modelOnly { return callTimeRunID }
+        if modelOnly {
+            return callTimeRunID
+        }
         if let callTimeRunID {
             if MCPIntegrationHelper.isRepoPromptToolNameAfterNormalization(toolName),
                let completionTimeRunID = await runIDForConnection(connectionID),
@@ -15442,9 +15553,9 @@ actor ServerNetworkManager {
         blocks.compactMap { block -> String? in
             switch block {
             case .text(text: let text, annotations: _, _meta: _):
-                return text
+                text
             default:
-                return nil
+                nil
             }
         }.joined(separator: "\n")
     }
