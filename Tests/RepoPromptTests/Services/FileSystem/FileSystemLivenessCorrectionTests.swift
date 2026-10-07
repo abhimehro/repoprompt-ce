@@ -734,7 +734,7 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
         )
 
         var event = await iterator.next()
-        if case .fileModified(let path, _) = event?.delta, path == "Initial.swift" {
+        if case let .fileModified(path, _) = event?.delta, path == "Initial.swift" {
             event = await iterator.next()
         }
         let expectedDelta = RepoPromptApp.FileSystemDelta.fileAdded("AfterRecovery.swift")
