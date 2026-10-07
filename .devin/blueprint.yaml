@@ -7,7 +7,7 @@ runs-on: macos
 # A version bump in ci.yml fails the digest check loudly until the pins here
 # are bumped to match; the ci.yml blueprint-pin-check job re-verifies these
 # darwin pins against the release checksums on every run and gates the merge
-# One-time setup (e.g., install system tools, global CLIs).
+# via `style`, so drift cannot land on main.
 initialize: |
   set -euo pipefail
   # Version follows ci.yml's pinned gitleaks install; fail loudly if unparsed.
