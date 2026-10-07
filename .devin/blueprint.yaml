@@ -7,7 +7,7 @@ runs-on: macos
 # A version bump in ci.yml fails the digest check loudly until the pins here
 # are bumped to match; the ci.yml blueprint-pin-check job re-verifies these
 # darwin pins against the release checksums on every run and gates the merge
-# via `style`, so drift cannot land on main.
+# One-time setup (e.g., install system tools, global CLIs).
 initialize: |
   set -euo pipefail
   # Version follows ci.yml's pinned gitleaks install; fail loudly if unparsed.
@@ -27,7 +27,7 @@ initialize: |
   trap 'rm -rf "${tmpdir}"' EXIT
   archive="${tmpdir}/${asset}"
   # ~10 MB tarball: --max-time is per-attempt (90s each), --retry-max-time
-  # caps the retry window at 120s — worst case ≈3.5min total, not unbounded.
+  # caps the retry window at 120s -- worst case ~3.5min total, not unbounded.
   curl --proto '=https' --tlsv1.2 -fsSL \
     --retry 3 --retry-delay 2 --retry-max-time 120 --retry-all-errors \
     --connect-timeout 10 --max-time 90 \
@@ -47,7 +47,7 @@ initialize: |
   # preflight.sh resolves gitleaks via PATH. A *different* binary winning is
   # fatal (it would shadow the verified install). When nothing resolves on
   # this shell's PATH, prove the install is reachable once ${bindir} is added
-  # — unreachable is still fatal, reachable warns with the concrete remedy.
+  # - unreachable is still fatal, reachable warns with the concrete remedy.
   resolved="$(command -v gitleaks || true)"
   if [ -n "${resolved}" ] && [ "${resolved}" != "${bindir}/gitleaks" ]; then
     echo "PATH resolves gitleaks to '${resolved}', which would shadow the verified ${bindir}/gitleaks" >&2
