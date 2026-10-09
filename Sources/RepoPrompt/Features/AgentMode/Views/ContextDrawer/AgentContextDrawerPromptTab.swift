@@ -262,7 +262,8 @@ struct AgentContextDrawerPromptTab: View {
             copyPresetPopover(state)
         }
         .hoverTooltip("Choose clipboard packaging preset")
-        .accessibilityLabel("Choose clipboard packaging preset")
+        .accessibilityLabel("Copy Preset")
+        .accessibilityValue(state.selectedOption.label)
     }
 
     private func promptsButton(_ state: RenderState) -> some View {
@@ -282,7 +283,8 @@ struct AgentContextDrawerPromptTab: View {
             promptsPopover(state)
         }
         .hoverTooltip(state.isManualPreset ? "Choose stored prompts" : "View preset-supplied prompts")
-        .accessibilityLabel(state.isManualPreset ? "Choose stored prompts" : "View preset-supplied prompts")
+        .accessibilityLabel("Prompts")
+        .accessibilityValue(promptSummaryText(state))
     }
 
     private func fileTreeButton(_ state: RenderState) -> some View {
@@ -302,7 +304,8 @@ struct AgentContextDrawerPromptTab: View {
             fileTreePopover(state)
         }
         .hoverTooltip(state.resolvedConfig.effectiveFileTreeMode.caption)
-        .accessibilityLabel(state.resolvedConfig.effectiveFileTreeMode.caption)
+        .accessibilityLabel("File Tree")
+        .accessibilityValue(fileTreeLabel(state.resolvedConfig.effectiveFileTreeMode))
     }
 
     private func codeMapButton(_ state: RenderState) -> some View {
@@ -322,7 +325,8 @@ struct AgentContextDrawerPromptTab: View {
             codeMapPopover(state)
         }
         .hoverTooltip(state.resolvedConfig.codeMapUsage.caption)
-        .accessibilityLabel(state.resolvedConfig.codeMapUsage.caption)
+        .accessibilityLabel("Code Map")
+        .accessibilityValue(codeMapLabel(state.resolvedConfig.codeMapUsage))
     }
 
     private func gitButton(_ state: RenderState) -> some View {
@@ -342,7 +346,8 @@ struct AgentContextDrawerPromptTab: View {
             gitPopover(state)
         }
         .hoverTooltip("Choose git diff inclusion for copied context")
-        .accessibilityLabel("Choose git diff inclusion for copied context")
+        .accessibilityLabel("Git")
+        .accessibilityValue(gitLabel(state.resolvedConfig.gitInclusion))
     }
 
     private func copyButtonGridCell(_ state: RenderState) -> some View {
@@ -1095,7 +1100,7 @@ private struct AgentContextDrawerGitPopover: View {
             .disabled(!gitViewModel.hasCurrentSelectedChangedFiles || isCopyingSelected || showCopiedSelectedFeedback)
             .opacity(showCopiedSelectedFeedback ? 0.7 : 1.0)
             .hoverTooltip("Copy diff of selected files")
-            .accessibilityLabel("Copy diff of selected files")
+            .accessibilityLabel(showCopiedSelectedFeedback ? "Copied!" : "Copy diff of selected files")
 
             Button(showCopiedAllFeedback ? "Copied!" : "Copy All") {
                 copyAllDiff()
@@ -1105,7 +1110,7 @@ private struct AgentContextDrawerGitPopover: View {
             .disabled(gitViewModel.unstagedFiles.isEmpty || isCopyingAll || showCopiedAllFeedback)
             .opacity(showCopiedAllFeedback ? 0.7 : 1.0)
             .hoverTooltip("Copy diff of all working tree files")
-            .accessibilityLabel("Copy diff of all working tree files")
+            .accessibilityLabel(showCopiedAllFeedback ? "Copied!" : "Copy diff of all working tree files")
         }
     }
 
