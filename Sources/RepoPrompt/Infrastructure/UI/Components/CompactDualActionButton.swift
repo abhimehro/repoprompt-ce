@@ -95,6 +95,7 @@ struct CompactDualActionButton: View {
                     .frame(width: 24)
                     .contentShape(Rectangle())
             }
+            .accessibilityLabel("\(label) secondary action")
             .buttonStyle(PlainButtonStyle())
             .background(backgroundForPart(isHovering: isHoveringSecondaryPart, isPressed: isPressedSecondary))
             .onHover { hovering in
