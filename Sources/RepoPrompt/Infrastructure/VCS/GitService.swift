@@ -7345,9 +7345,8 @@ actor GitService {
                 // Unix timestamp
                 if let timestamp = Int(line.dropFirst("author-time ".count)) {
                     let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime]
-                    currentAuthorTime = formatter.string(from: date)
+                    // Direct .formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
+                    currentAuthorTime = date.formatted(.iso8601)
                 }
             } else if line.hasPrefix("\t") {
                 // Content line
