@@ -488,6 +488,7 @@ public extension String {
         guard countStart < closeIndex else { return 0 }
 
         let countStr = line[countStart ..< closeIndex]
+        guard countStr.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return 0 }
         return Int(countStr) ?? 0
     }
 
@@ -508,7 +509,9 @@ public extension String {
         }
 
         let countStr = line[countStart ..< closeIndex]
-        guard let oldCount = Int(countStr) else {
+        guard countStr.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+              let oldCount = Int(countStr)
+        else {
             let newIndent = Swift.max(0, delta)
             return "<s\(newIndent)>\(line)"
         }
