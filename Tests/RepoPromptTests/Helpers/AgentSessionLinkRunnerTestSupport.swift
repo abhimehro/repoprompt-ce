@@ -382,6 +382,14 @@ final class AgentSessionLinkCapturingACPProvider: ACPAgentProvider, @unchecked S
         return captured
     }
 
+    var supportsParameterizedModelPicker: Bool {
+        providerID == .devin
+    }
+
+    func modelParameterKind(for input: ACPModelParameterClassificationInput) -> ACPModelParameterKind? {
+        providerID == .devin && input.category == "thought_level" ? .thinking : nil
+    }
+
     func support(for _: ACPRunRequest) async throws -> ACPSupportResult {
         .supported
     }
@@ -479,6 +487,8 @@ enum AgentSessionLinkACPServerScript {
     ///   `session/new`; `__malformed__` sends a non-list `availableCommands`.
     /// - `ACP_ADVERTISE_AFTER_PROMPT` (comma list, may be empty): a replacement list during each prompt.
     /// - `ACP_PROMPT_LOG` (path): each `session/prompt` `prompt` array, one JSON line per prompt.
+    /// - `ACP_RPC_LOG` (path): actual JSON-RPC requests and successful responses.
+    /// - `ACP_DEVIN_FIXTURE` (`1`): advertises SWE-2 with medium/high/max thinking choices.
     /// - `ACP_USAGE_UPDATE_ON_PROMPT` (`used,size`): a `usage_update` during each prompt.
     /// - `ACP_FOREIGN_ADVERTISE_AFTER_PROMPT` (comma list): a list for another session during each prompt.
     /// - `ACP_UNMATCHED_RESPONSE_ON_PROMPT`: a response with an unknown id during each prompt (a protocol
@@ -496,20 +506,28 @@ enum AgentSessionLinkACPServerScript {
 
         fail_marker = os.environ.get("ACP_FAIL_PROMPTS_CONTAINING")
         prompt_log = os.environ.get("ACP_PROMPT_LOG")
-        current_model = "model-a"
+        devin_fixture = os.environ.get("ACP_DEVIN_FIXTURE") == "1"
+        current_model = "swe-2-high" if devin_fixture else "model-a"
+        current_thinking = "high"
         current_mode = "ask"
+
+        def trace(direction, payload):
+            path = os.environ.get("ACP_RPC_LOG")
+            if path:
+                with open(path, "a") as log:
+                    log.write(json.dumps({"direction": direction, "payload": payload}) + "\n")
 
         def config_options():
             # The controller refuses to run against a runtime that does not advertise a modern
             # session-mode select, so both selects are required here.
-            return [
+            options = [
                 {
                     "id": "model",
                     "name": "Model",
                     "category": "model",
                     "type": "select",
                     "currentValue": current_model,
-                    "options": [{"value": "model-a", "name": "Model A"}]
+                    "options": [{"value": "swe-2-high", "name": "SWE-2"}] if devin_fixture else [{"value": "model-a", "name": "Model A"}]
                 },
                 {
                     "id": "mode",
@@ -525,6 +543,13 @@ enum AgentSessionLinkACPServerScript {
                     ]
                 }
             ]
+            if devin_fixture:
+                options.append({
+                    "id": "thought_level", "name": "Thinking", "category": "thought_level",
+                    "type": "select", "currentValue": current_thinking,
+                    "options": [{"value": value, "name": value} for value in ["medium", "high", "max"]]
+                })
+            return options
 
         def notify_update(session_id, update):
             print(json.dumps({
@@ -547,7 +572,9 @@ enum AgentSessionLinkACPServerScript {
             })
 
         def respond(request_id, result=None):
-            print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result or {}}), flush=True)
+            response = {"jsonrpc": "2.0", "id": request_id, "result": result or {}}
+            trace("response", response)
+            print(json.dumps(response), flush=True)
 
         def respond_error(request_id, message):
             print(json.dumps({
@@ -561,6 +588,7 @@ enum AgentSessionLinkACPServerScript {
                 request = json.loads(line)
             except Exception:
                 continue
+            trace("request", request)
             method = request.get("method")
             params = request.get("params") or {}
             if method == os.environ.get("ACP_HOLD_METHOD"):
@@ -591,6 +619,8 @@ enum AgentSessionLinkACPServerScript {
                     current_model = params.get("value")
                 elif params.get("configId") == "mode":
                     current_mode = params.get("value")
+                elif params.get("configId") == "thought_level":
+                    current_thinking = params.get("value")
                 respond(request.get("id"), {"configOptions": config_options()})
             elif method == "session/prompt":
                 if prompt_log:

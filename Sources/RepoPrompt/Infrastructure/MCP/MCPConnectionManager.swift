@@ -2303,17 +2303,32 @@ actor ServerNetworkManager {
         return (UserDefaults.standard.object(forKey: "mcp.preserveOnePerClient") as? Bool) ?? true
     }
 
-    /// 🆕 Task-local keys to expose current routing hints inside tool calls
-    @TaskLocal
-    static var currentConnectionID: UUID?
-    @TaskLocal
-    static var currentProgressState: MCPRequestProgressContext?
-    @TaskLocal
-    static var currentTabContextHint: MCPServerViewModel.TabContextHint?
-    @TaskLocal
-    static var currentToolDispatchAuthorization: ToolDispatchAuthorization?
-    @TaskLocal
-    static var currentExplicitWindowRoutingHint: MCPExplicitWindowRoutingHint?
+    /// 🆕 Task-local keys to expose current routing hints inside tool calls.
+    /// Boxed so macOS 14 never runs the miscompiled back-deployed `withValue` fallback (#1039).
+    static let currentConnectionIDTaskLocal = BoxedTaskLocal<UUID?>(nil)
+    static var currentConnectionID: UUID? {
+        currentConnectionIDTaskLocal.get()
+    }
+
+    static let currentProgressStateTaskLocal = BoxedTaskLocal<MCPRequestProgressContext?>(nil)
+    static var currentProgressState: MCPRequestProgressContext? {
+        currentProgressStateTaskLocal.get()
+    }
+
+    static let currentTabContextHintTaskLocal = BoxedTaskLocal<MCPServerViewModel.TabContextHint?>(nil)
+    static var currentTabContextHint: MCPServerViewModel.TabContextHint? {
+        currentTabContextHintTaskLocal.get()
+    }
+
+    static let currentToolDispatchAuthorizationTaskLocal = BoxedTaskLocal<ToolDispatchAuthorization?>(nil)
+    static var currentToolDispatchAuthorization: ToolDispatchAuthorization? {
+        currentToolDispatchAuthorizationTaskLocal.get()
+    }
+
+    static let currentExplicitWindowRoutingHintTaskLocal = BoxedTaskLocal<MCPExplicitWindowRoutingHint?>(nil)
+    static var currentExplicitWindowRoutingHint: MCPExplicitWindowRoutingHint? {
+        currentExplicitWindowRoutingHintTaskLocal.get()
+    }
 
     nonisolated static func explicitWindowRoutingHint(
         connectionID: UUID,
@@ -3524,17 +3539,17 @@ actor ServerNetworkManager {
         // supplies a new one for a new top-level request.
         let effectiveProgressState = progressContext
             ?? (connectionID == currentConnectionID ? currentProgressState : nil)
-        return try await $currentProgressState.withValue(effectiveProgressState) {
+        return try await currentProgressStateTaskLocal.withValue(effectiveProgressState) {
             #if DEBUG || EDIT_FLOW_PERF
                 let effectiveLifecycleCorrelation = lifecycleCorrelation ?? EditFlowPerf.currentLifecycleCorrelation
                 guard let effectiveLifecycleCorrelation else {
-                    return try await $currentConnectionID.withValue(connectionID, operation: operation)
+                    return try await currentConnectionIDTaskLocal.withValue(connectionID, operation: operation)
                 }
-                return try await EditFlowPerf.$currentLifecycleCorrelation.withValue(effectiveLifecycleCorrelation) {
-                    try await $currentConnectionID.withValue(connectionID, operation: operation)
+                return try await EditFlowPerf.currentLifecycleCorrelationTaskLocal.withValue(effectiveLifecycleCorrelation) {
+                    try await currentConnectionIDTaskLocal.withValue(connectionID, operation: operation)
                 }
             #else
-                return try await $currentConnectionID.withValue(connectionID, operation: operation)
+                return try await currentConnectionIDTaskLocal.withValue(connectionID, operation: operation)
             #endif
         }
     }
@@ -11695,15 +11710,47 @@ actor ServerNetworkManager {
             return .rejected(runID: policyRunID, reason: "session_token_bound_to_other_run")
         }
 
+        let pendingPolicyApplicationID = UUID()
+        let routingAuthorityGeneration = policy.runID.map {
+            runRoutingAuthorityGenerationByRunID[$0, default: 0]
+        }
+        pendingPolicyApplicationIDByConnectionID[connectionID] = pendingPolicyApplicationID
+        if let runID = policy.runID {
+            pendingPolicyApplicationIDByRunID[runID] = pendingPolicyApplicationID
+        }
+
+        // Capture readiness ownership before any application await. A restarted process may
+        // acquire a new waiter for this same run while this application's tail is suspended.
+        let routingWaitGeneration: UUID? = if requireRunRouting, let runID = policy.runID {
+            await MCPRoutingWaiter.generation(runID: runID)
+        } else {
+            nil
+        }
+
+        guard isPendingPolicyApplicationOwner(
+            pendingPolicyApplicationID,
+            connectionID: connectionID,
+            runID: policy.runID,
+            routingAuthorityGeneration: routingAuthorityGeneration
+        ) else {
+            if policy.oneShot {
+                _ = rollbackOneShotPendingPolicyReservation(
+                    id: policy.id, key: matchedQueueEntry.key, connectionID: connectionID
+                )
+            }
+            finishPendingPolicyApplication(pendingPolicyApplicationID, connectionID: connectionID, runID: policy.runID)
+            return .rejected(runID: policy.runID, reason: "stale_connection")
+        }
+
         // This is the authoritative child-observation boundary: the connection has
         // matched and reserved the exact run-owned name/PID policy and passed existing
         // run-affinity checks, but run-route installation has not started. Observation
         // remains sticky if a later route installation is rolled back.
-        if requireRunRouting, let runID = policy.runID {
+        if requireRunRouting, let runID = policy.runID, let routingWaitGeneration {
             #if DEBUG
                 await debugSuspendPendingPolicyObservationIfNeeded()
             #endif
-            let wasFirstObservation = await MCPRoutingWaiter.notifyConnectionObserved(runID: runID)
+            let wasFirstObservation = await MCPRoutingWaiter.notifyConnectionObserved(runID: runID, generation: routingWaitGeneration)
             #if DEBUG
                 if wasFirstObservation {
                     debugRecordRunRoutingEvent(
@@ -11720,6 +11767,21 @@ actor ServerNetworkManager {
             #endif
         }
 
+        guard isPendingPolicyApplicationOwner(
+            pendingPolicyApplicationID,
+            connectionID: connectionID,
+            runID: policy.runID,
+            routingAuthorityGeneration: routingAuthorityGeneration
+        ) else {
+            if policy.oneShot {
+                _ = rollbackOneShotPendingPolicyReservation(
+                    id: policy.id, key: matchedQueueEntry.key, connectionID: connectionID
+                )
+            }
+            finishPendingPolicyApplication(pendingPolicyApplicationID, connectionID: connectionID, runID: policy.runID)
+            return .rejected(runID: policy.runID, reason: "stale_connection")
+        }
+
         let restorePoint = PendingPolicyRestorePoint(
             restrictedTools: restrictedToolsByConnection[connectionID],
             additionalTools: additionalToolsByConnection[connectionID],
@@ -11732,15 +11794,6 @@ actor ServerNetworkManager {
             runPolicyState: policy.runID.flatMap { runPolicyStateByRunID[$0] },
             runWindowID: policy.runID.flatMap { presentationWindowByRun[$0] }
         )
-        let pendingPolicyApplicationID = UUID()
-        let routingAuthorityGeneration = policy.runID.map {
-            runRoutingAuthorityGenerationByRunID[$0, default: 0]
-        }
-        pendingPolicyApplicationIDByConnectionID[connectionID] = pendingPolicyApplicationID
-        if let runID = policy.runID {
-            pendingPolicyApplicationIDByRunID[runID] = pendingPolicyApplicationID
-        }
-
         // Stage the complete policy before registering the run mapping. The mapping
         // signals MCPRoutingWaiter, so restrictions and run identity must already be
         // visible before the bootstrap gate can be released.
@@ -11789,6 +11842,7 @@ actor ServerNetworkManager {
                 connectionID: connectionID,
                 restorePoint: restorePoint,
                 applicationID: pendingPolicyApplicationID,
+                routingWaitGeneration: routingWaitGeneration,
                 signalRoutingFailure: false
             )
             return .rejected(runID: policy.runID, reason: "stale_connection")
@@ -11842,6 +11896,7 @@ actor ServerNetworkManager {
                     connectionID: connectionID,
                     restorePoint: restorePoint,
                     applicationID: pendingPolicyApplicationID,
+                    routingWaitGeneration: routingWaitGeneration,
                     pendingPolicyRunIDMappingToken: pendingPolicyRunIDMappingToken
                 )
                 return .rejected(
@@ -11889,6 +11944,7 @@ actor ServerNetworkManager {
                     connectionID: connectionID,
                     restorePoint: restorePoint,
                     applicationID: pendingPolicyApplicationID,
+                    routingWaitGeneration: routingWaitGeneration,
                     pendingPolicyRunIDMappingToken: pendingPolicyRunIDMappingToken,
                     signalRoutingFailure: false
                 )
@@ -11909,6 +11965,7 @@ actor ServerNetworkManager {
                 connectionID: connectionID,
                 restorePoint: restorePoint,
                 applicationID: pendingPolicyApplicationID,
+                routingWaitGeneration: routingWaitGeneration,
                 pendingPolicyRunIDMappingToken: pendingPolicyRunIDMappingToken
             )
             return .rejected(runID: policy.runID, reason: "policy_removed")
@@ -11919,6 +11976,33 @@ actor ServerNetworkManager {
                 runID: runID,
                 successorConnectionID: connectionID
             )
+        }
+
+        // Catalog publication crosses actors after one-shot consumption. Revocation or a
+        // successor install during that await must also fence this completion tail.
+        guard isPendingPolicyApplicationOwner(
+            pendingPolicyApplicationID,
+            connectionID: connectionID,
+            runID: policy.runID,
+            routingAuthorityGeneration: routingAuthorityGeneration
+        ),
+            isPendingPolicyApplicationCurrent(
+                connectionID: connectionID,
+                clientName: clientName,
+                expectedLifecycleGeneration: expectedLifecycleGeneration
+            )
+        else {
+            await rollbackPendingPolicyApplication(
+                policy,
+                clientName: clientName,
+                connectionID: connectionID,
+                restorePoint: restorePoint,
+                applicationID: pendingPolicyApplicationID,
+                routingWaitGeneration: routingWaitGeneration,
+                pendingPolicyRunIDMappingToken: pendingPolicyRunIDMappingToken,
+                signalRoutingFailure: false
+            )
+            return .rejected(runID: policy.runID, reason: "stale_connection")
         }
 
         finishPendingPolicyApplication(
@@ -11932,8 +12016,8 @@ actor ServerNetworkManager {
                 windowID: policy.windowID
             )
         }
-        if requireRunRouting, let runID = policy.runID {
-            await MCPRoutingWaiter.notifyRouted(runID: runID)
+        if requireRunRouting, let runID = policy.runID, let routingWaitGeneration {
+            await MCPRoutingWaiter.notifyRouted(runID: runID, generation: routingWaitGeneration)
         }
 
         let grantDescription = Self.describeGrantedTools(restricted: policy.restrictedTools)
@@ -12033,6 +12117,7 @@ actor ServerNetworkManager {
         connectionID: UUID,
         restorePoint: PendingPolicyRestorePoint,
         applicationID: UUID,
+        routingWaitGeneration: UUID? = nil,
         pendingPolicyRunIDMappingToken: MCPServerViewModel.PendingPolicyRunIDMappingToken? = nil,
         signalRoutingFailure: Bool = true
     ) async {
@@ -12045,7 +12130,8 @@ actor ServerNetworkManager {
                         pendingPolicyRunIDMappingToken,
                         clientName: clientName,
                         windowID: policy.windowID,
-                        signalRoutingFailure: signalRoutingFailure
+                        signalRoutingFailure: signalRoutingFailure && routingWaitGeneration != nil,
+                        routingWaitGeneration: routingWaitGeneration
                     )
                 }
                 window.mcpServer.removeTabContext(
@@ -12057,7 +12143,8 @@ actor ServerNetworkManager {
                 window.mcpServer.cleanupRunIDMapping(
                     runID: runID,
                     connectionID: connectionID,
-                    signalRoutingFailure: signalRoutingFailure
+                    signalRoutingFailure: signalRoutingFailure && routingWaitGeneration != nil,
+                    routingWaitGeneration: routingWaitGeneration
                 )
                 return .restored
             }
@@ -13245,7 +13332,7 @@ actor ServerNetworkManager {
                             lifecycleCorrelation: lifecycleCorrelation,
                             progressHandle: capturedProgressState
                         ) {
-                            await Self.$currentTabContextHint.withValue(capturedTabContextHint) {
+                            await Self.currentTabContextHintTaskLocal.withValue(capturedTabContextHint) {
                                 let permitPreDispatchEnvelopeState = EditFlowPerf.begin(
                                     EditFlowPerf.Stage.MCPToolCall.permitPreDispatchEnvelope,
                                     EditFlowPerf.Dimensions(toolName: toolName)
@@ -14791,8 +14878,8 @@ actor ServerNetworkManager {
                                                 windowIdentity: windowDispatchIdentity,
                                                 recordScope: shouldTrackToolOwnership
                                             ) {
-                                                try await Self.$currentToolDispatchAuthorization.withValue(dispatchAuthorization) {
-                                                    let value = try await Self.$currentExplicitWindowRoutingHint.withValue(explicitWindowRoutingHint) {
+                                                try await Self.currentToolDispatchAuthorizationTaskLocal.withValue(dispatchAuthorization) {
+                                                    let value = try await Self.currentExplicitWindowRoutingHintTaskLocal.withValue(explicitWindowRoutingHint) {
                                                         try await EditFlowPerf.measure(
                                                             EditFlowPerf.Stage.MCPToolCall.dispatch,
                                                             EditFlowPerf.Dimensions(toolName: toolName)

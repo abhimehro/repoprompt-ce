@@ -7,6 +7,7 @@ import RepoPromptFileSystem
 import RepoPromptFoundation
 import RepoPromptInstrumentation
 import RepoPromptSettingsCore
+import RepoPromptShared
 import RepoPromptVCS
 import RepoPromptWorkspaceCore
 #if DEBUG
@@ -491,7 +492,11 @@ actor WorkspaceFileContextStore {
         let flightID: UUID
     }
 
-    @TaskLocal private static var activeCodemapRecoveryApplication: CodemapRecoveryApplication?
+    // Boxed: runtime-sized payloads must not use `@TaskLocal` directly (#1039).
+    private nonisolated static let activeCodemapRecoveryApplicationTaskLocal = BoxedTaskLocal<CodemapRecoveryApplication?>(nil)
+    private nonisolated static var activeCodemapRecoveryApplication: CodemapRecoveryApplication? {
+        activeCodemapRecoveryApplicationTaskLocal.get()
+    }
 
     /// Physical-catalog recovery owned by one root epoch after its root authority was revoked.
     ///
@@ -13983,7 +13988,7 @@ actor WorkspaceFileContextStore {
         rootEpoch: WorkspaceCodemapRootEpoch,
         flightID: UUID
     ) async -> Bool {
-        await Self.$activeCodemapRecoveryApplication.withValue(
+        await Self.activeCodemapRecoveryApplicationTaskLocal.withValue(
             CodemapRecoveryApplication(rootEpoch: rootEpoch, flightID: flightID)
         ) {
             await performLoadedRootCatalogReconciliation(rootID: rootEpoch.rootID).succeeded
@@ -21883,8 +21888,10 @@ actor WorkspaceFileContextStore {
         let snapshotState = EditFlowPerf.begin(EditFlowPerf.Stage.ReadFile.pathLookupStaticSnapshotBuild)
         defer { EditFlowPerf.end(EditFlowPerf.Stage.ReadFile.pathLookupStaticSnapshotBuild, snapshotState) }
         let allowedRootIDs = Set(roots.map(\.id))
+        // Records land in path-keyed dictionaries, so iteration order is irrelevant; sorting every
+        // path here dominated chat token estimation on large workspaces.
         var fileRecords: [String: FileRecord] = [:]
-        for file in filesByID.values.sorted(by: { $0.standardizedFullPath < $1.standardizedFullPath }) {
+        for file in filesByID.values {
             guard allowedRootIDs.contains(file.rootID),
                   isDiscoverableFileID(file.id),
                   let root = rootStatesByID[file.rootID]?.root,
@@ -21898,7 +21905,7 @@ actor WorkspaceFileContextStore {
             ) as FileRecord
         }
         var folderRecords: [String: FolderRecord] = [:]
-        for folder in foldersByID.values.sorted(by: { $0.standardizedFullPath < $1.standardizedFullPath }) {
+        for folder in foldersByID.values {
             guard allowedRootIDs.contains(folder.rootID),
                   isDiscoverableFolderID(folder.id),
                   let root = rootStatesByID[folder.rootID]?.root,
