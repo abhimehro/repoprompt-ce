@@ -735,7 +735,13 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
 
         var event = await iterator.next()
         if case let .fileModified(path, _) = event?.delta, path == "Initial.swift" {
-            event = await iterator.next()
+            let nextEvent = Task { await iterator.next() }
+            let timeout = Task {
+                try await Task.sleep(for: .seconds(5))
+                nextEvent.cancel()
+            }
+            event = await nextEvent.value
+            timeout.cancel()
         }
         let expectedDelta = RepoPromptApp.FileSystemDelta.fileAdded("AfterRecovery.swift")
         XCTAssertEqual(event?.delta, expectedDelta)

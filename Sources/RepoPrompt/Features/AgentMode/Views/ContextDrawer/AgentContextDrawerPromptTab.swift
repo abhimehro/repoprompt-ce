@@ -302,7 +302,8 @@ struct AgentContextDrawerPromptTab: View {
             fileTreePopover(state)
         }
         .hoverTooltip(state.resolvedConfig.effectiveFileTreeMode.caption)
-        .accessibilityLabel(state.resolvedConfig.effectiveFileTreeMode.caption)
+        .accessibilityLabel("File Tree")
+        .accessibilityValue(state.resolvedConfig.effectiveFileTreeMode.caption)
     }
 
     private func codeMapButton(_ state: RenderState) -> some View {
@@ -322,7 +323,8 @@ struct AgentContextDrawerPromptTab: View {
             codeMapPopover(state)
         }
         .hoverTooltip(state.resolvedConfig.codeMapUsage.caption)
-        .accessibilityLabel(state.resolvedConfig.codeMapUsage.caption)
+        .accessibilityLabel("Code Map")
+        .accessibilityValue(state.resolvedConfig.codeMapUsage.caption)
     }
 
     private func gitButton(_ state: RenderState) -> some View {
