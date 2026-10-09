@@ -3,7 +3,7 @@ import RepoPromptSettingsCore
 
 /// Pre-allocation policy for ordinary, top-level sessions created by an overseer.
 enum AgentSessionLanePolicy {
-    static let agentSessionLaneMaximumCount = 8
+    static let agentSessionLaneMaximumCount = 12
 
     enum RoleResolutionError: Error, Equatable {
         case roleUnavailable
@@ -78,7 +78,10 @@ enum AgentSessionLanePolicy {
         else {
             throw RoleResolutionError.roleUnavailable
         }
-        let effort = AgentExternalMCPRunStarter.extractReasoningEffort(from: effective.modelRaw)
+        // Devin encodes thinking in its model ID, not in the native reasoning-effort field.
+        let effort = effective.agent == .devin
+            ? (model: effective.modelRaw, effort: nil)
+            : AgentExternalMCPRunStarter.extractReasoningEffort(from: effective.modelRaw)
         return RoleSelection(
             role: role,
             agentRaw: effective.agent.rawValue,
