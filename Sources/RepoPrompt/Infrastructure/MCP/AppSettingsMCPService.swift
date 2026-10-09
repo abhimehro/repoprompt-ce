@@ -318,9 +318,8 @@ final class AppSettingsMCPService: Service {
     }
 
     private static func iso8601Timestamp() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: Date())
+        // Direct .formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
+        Date().formatted(.iso8601)
     }
 
     private static func valuesEqual(_ lhs: Value, _ rhs: Value) -> Bool {
