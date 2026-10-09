@@ -14699,7 +14699,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         var outcome: DomainCommandOutcome
         var currentWorkspace = workspace
         var currentFileURL = fileURL
-        var currentOperationID = operationID
 
         while true {
             do {
@@ -14707,7 +14706,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                     currentWorkspace,
                     fileURL: currentFileURL,
                     canonicalRootPath: canonicalRootPath,
-                    operationID: currentOperationID
+                    operationID: operationID
                 )
             } catch {
                 reportDomainAuthorityFailure(
@@ -14732,7 +14731,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                     isSavedWorkspace: true
                 )
                 currentFileURL = workspaceFileURL(for: currentWorkspace)
-                currentOperationID = UUID()
                 continue
             }
 
@@ -14787,7 +14785,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         return PersistentFolderOpenResolutionDetails(
             workspace: canonical,
             provenance: provenance,
-            operationID: currentOperationID,
+            operationID: operationID,
             creationCommitted: provenance == .created,
             activationState: activationState
         )
