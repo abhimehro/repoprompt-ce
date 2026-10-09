@@ -319,6 +319,7 @@ enum AgentSessionLinkTextRedactor {
             // Well-known provider key shapes that can appear without any assignment context.
             (#"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{16,}"#, placeholder),
             (#"\bgh[pousr]_[A-Za-z0-9]{16,}"#, placeholder),
+            (#"\bgithub_pat_[A-Za-z0-9_]{12,}"#, placeholder),
             (#"\bxox[abposr]-[A-Za-z0-9-]{10,}"#, placeholder),
             (#"\bAKIA[0-9A-Z]{16}\b"#, placeholder)
         ]
