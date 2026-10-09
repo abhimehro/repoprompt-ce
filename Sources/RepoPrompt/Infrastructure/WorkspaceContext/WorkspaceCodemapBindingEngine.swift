@@ -4,7 +4,6 @@ import RepoPromptCodeMapCore
 import RepoPromptFileSystem
 import RepoPromptFoundation
 import RepoPromptPersistence
-import RepoPromptShared
 import RepoPromptVCS
 import RepoPromptWorkspaceCore
 
@@ -359,12 +358,7 @@ actor WorkspaceCodemapBindingEngine {
             let mutationByteCount: UInt64
         }
 
-        // Boxed: runtime-sized payloads must not use `@TaskLocal` directly (#1039).
-        private nonisolated static let debugManifestStoreAttemptContextTaskLocal =
-            BoxedTaskLocal<DebugManifestStoreAttemptContext?>(nil)
-        private nonisolated static var debugManifestStoreAttemptContext: DebugManifestStoreAttemptContext? {
-            debugManifestStoreAttemptContextTaskLocal.get()
-        }
+        @TaskLocal private static var debugManifestStoreAttemptContext: DebugManifestStoreAttemptContext?
     #endif
 
     private enum ManifestMutationSubmissionResult {
@@ -8803,7 +8797,7 @@ actor WorkspaceCodemapBindingEngine {
                         deferredRetry: debugDeferredRetry,
                         mutationByteCount: debugMutationByteCount
                     )
-                    let result = try await Self.debugManifestStoreAttemptContextTaskLocal.withValue(
+                    let result = try await Self.$debugManifestStoreAttemptContext.withValue(
                         debugContext
                     ) {
                         try await mergeManifestChanges(

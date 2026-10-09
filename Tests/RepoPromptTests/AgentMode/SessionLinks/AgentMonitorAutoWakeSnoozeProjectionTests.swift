@@ -74,6 +74,7 @@ final class AgentMonitorAutoWakeSnoozeProjectionTests: XCTestCase {
     private func props(_ fixture: Fixture) -> AgentMonitorPillProps {
         AgentMonitorPillProps(
             sessionID: fixture.endpoint.sessionID,
+            sidebarOversightMenu: nil,
             outbound: [AgentMonitorPillProps.Outbound(
                 linkID: fixture.reference.linkID,
                 generation: fixture.reference.generation,

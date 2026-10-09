@@ -1,6 +1,5 @@
 import Foundation
 import MCP
-import RepoPromptShared
 
 package enum DomainMutationJournalStatus: String, Codable {
     case admitted
@@ -478,9 +477,7 @@ package struct DomainMutationCommitController {
 }
 
 package enum MCPDomainMutationCommitContext {
-    // Boxed: runtime-sized payloads must not use `@TaskLocal` directly (#1039).
-    package static let controllerTaskLocal = BoxedTaskLocal<DomainMutationCommitController?>(nil)
-    package static var controller: DomainMutationCommitController? { controllerTaskLocal.get() }
+    @TaskLocal package static var controller: DomainMutationCommitController?
 
     package static func admitPhysicalTargets(
         _ paths: [String],

@@ -27,19 +27,7 @@ final class AgentSessionLinkLocationPresentationRefreshTests: XCTestCase {
         private(set) var passiveNoticePublicationCount = 0
         private(set) var observationSnapshotCount = 0
 
-        func agentSessionLinkCandidate(
-            for endpoint: DomainAgentSessionLinkEndpointIdentity, includeLocation _: Bool
-        ) -> AgentSessionLinkEndpointCandidate? {
-            candidates.first { $0.domainEndpoint == endpoint }
-        }
-
-        func agentSessionLinkCandidates(
-            forSessionIDs sessionIDs: Set<UUID>, includeLocation _: Bool
-        ) -> [UUID: [AgentSessionLinkEndpointCandidate]] {
-            Dictionary(uniqueKeysWithValues: sessionIDs.map { id in (id, candidates.filter { $0.sessionID == id }) })
-        }
-
-        func agentSessionLinkCandidates(includeLocation _: Bool) -> [AgentSessionLinkEndpointCandidate] {
+        func agentSessionLinkCandidates() -> [AgentSessionLinkEndpointCandidate] {
             candidates
         }
 

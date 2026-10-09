@@ -57,66 +57,26 @@ extension AgentModeViewModel {
     ///
     /// - Parameter isWindowClosing: the owning window's `isClosing` flag. A closing window's tabs are
     ///   never offered as endpoints.
-    func agentSessionLinkCandidates(isWindowClosing: Bool, includeLocation: Bool = true) -> [AgentSessionLinkEndpointCandidate] {
+    func agentSessionLinkCandidates(isWindowClosing: Bool) -> [AgentSessionLinkEndpointCandidate] {
         guard let workspaceManager else { return [] }
-        return workspaceManager.workspaces.filter { $0.id == workspaceManager.activeWorkspaceID }.flatMap { workspace in
-            workspace.composeTabs.compactMap { tab in
-                guard let sessionID = tab.activeAgentSessionID else { return nil }
-                return agentSessionLinkCandidate(
-                    tabID: tab.id, sessionID: sessionID, tabName: tab.name,
-                    isWindowClosing: isWindowClosing, includeLocation: includeLocation
-                )
+        var candidates: [AgentSessionLinkEndpointCandidate] = []
+        for workspace in workspaceManager.workspaces {
+            // Only the active workspace of this window has live tab bindings; a background
+            // workspace's tabs are persisted projections, not live endpoints.
+            guard workspace.id == workspaceManager.activeWorkspaceID else { continue }
+            for tab in workspace.composeTabs {
+                guard let sessionID = tab.activeAgentSessionID,
+                      let candidate = agentSessionLinkCandidate(
+                          tabID: tab.id,
+                          sessionID: sessionID,
+                          tabName: tab.name,
+                          isWindowClosing: isWindowClosing
+                      )
+                else { continue }
+                candidates.append(candidate)
             }
         }
-    }
-
-    /// Fresh exact addressing shares the indexed model route, but keeps real presentation fields.
-    func agentSessionLinkCandidate(
-        for endpoint: DomainAgentSessionLinkEndpointIdentity,
-        includeLocation: Bool
-    ) -> AgentSessionLinkEndpointCandidate? {
-        guard endpoint.windowID == windowID,
-              let candidate = agentSessionLinkCandidate(
-                  workspaceID: endpoint.workspaceID, tabID: endpoint.tabID,
-                  sessionID: endpoint.sessionID, isWindowClosing: false,
-                  includeLocation: includeLocation
-              ), candidate.domainEndpoint == endpoint else { return nil }
-        return candidate
-    }
-
-    func agentSessionLinkCandidates(
-        forSessionIDs sessionIDs: Set<UUID>, includeLocation: Bool
-    ) -> [UUID: [AgentSessionLinkEndpointCandidate]] {
-        var result = Dictionary(uniqueKeysWithValues: sessionIDs.map { ($0, [AgentSessionLinkEndpointCandidate]()) })
-        guard let workspaceManager, let workspaceID = workspaceManager.activeWorkspaceID else { return result }
-        for sessionID in sessionIDs {
-            result[sessionID] = workspaceManager.agentSessionLifecycleTabs(workspaceID: workspaceID, sessionID: sessionID)
-                .compactMap { tab in
-                    agentSessionLinkCandidate(
-                        tabID: tab.id, sessionID: sessionID,
-                        tabName: tab.name, isWindowClosing: false, includeLocation: includeLocation
-                    )
-                }
-        }
-        return result
-    }
-
-    /// Batch callers already read the name from the current model in this synchronous MainActor
-    /// pass. Reuse that value while retaining the existing indexed identity/incarnation validation.
-    private func agentSessionLinkCandidate(
-        workspaceID: UUID, tabID: UUID, sessionID: UUID,
-        tabName: String? = nil,
-        isWindowClosing: Bool, includeLocation: Bool
-    ) -> AgentSessionLinkEndpointCandidate? {
-        guard let identity = agentSessionLinkModelIdentity(
-            workspaceID: workspaceID, tabID: tabID, sessionID: sessionID
-        ), let session = sessions[tabID],
-        let name = tabName ?? workspaceManager?.modelRoutingTab(workspaceID: workspaceID, tabID: tabID)?.name else { return nil }
-        return agentSessionLinkCandidate(
-            session: session, identity: identity, tabName: name,
-            providerDisplayName: session.selectedAgent.displayName,
-            isWindowClosing: isWindowClosing, includeLocation: includeLocation
-        )
+        return candidates
     }
 
     // MARK: - Discovery epochs and lazy binding descriptors
@@ -888,24 +848,6 @@ extension AgentModeViewModel {
         }
     }
 
-    func agentSessionLinkHoldComputerUseAdmission(_ endpoint: DomainAgentSessionLinkEndpointIdentity) -> (@MainActor () -> Void)? {
-        guard agentSessionLinkObserverEndpoint(tabID: endpoint.tabID) == endpoint,
-              let session = sessions[endpoint.tabID] else { return nil }
-        return session.holdCodexComputerUseAdmission()
-    }
-
-    func agentSessionLinkWillActivate(_ endpoint: DomainAgentSessionLinkEndpointIdentity) async {
-        guard agentSessionLinkObserverEndpoint(tabID: endpoint.tabID) == endpoint,
-              let session = sessions[endpoint.tabID] else { return }
-        await codexCoordinator.revokeCodexComputerUse(session: session, reason: "session-link")
-    }
-
-    /// Names also invalidate archived/unlinked consumers whose exact projection props are equal.
-    func agentSessionLinkPublishCreatorNames(_ names: [UUID: String]) {
-        guard names != sidebarCreatorDisplayNames else { return }
-        agentSessionLinkMutateProjectionStorage(creatorNames: names) { _ in }
-    }
-
     /// Applies one logical exact-projection storage transaction and publishes one presentation
     /// invalidation only after every write and removal is visible.
     ///
@@ -921,20 +863,12 @@ extension AgentModeViewModel {
     /// already the completed state, and the rebuild is skipped for every other endpoint's refresh.
     /// The notification is posted for every changed transaction exactly as before.
     private func agentSessionLinkMutateProjectionStorage(
-        creatorNames: [UUID: String]? = nil,
         _ mutation: (inout [DomainAgentSessionLinkEndpointIdentity: AgentMonitorPillProps]) -> Void
     ) {
         var updated = monitorPillPropsByEndpoint
         mutation(&updated)
-        let propsChanged = updated != monitorPillPropsByEndpoint
-        guard propsChanged || creatorNames.map({ $0 != sidebarCreatorDisplayNames }) == true else { return }
-        if let creatorNames {
-            sidebarCreatorDisplayNames = creatorNames
-        }
+        guard updated != monitorPillPropsByEndpoint else { return }
         monitorPillPropsByEndpoint = updated
-        if propsChanged {
-            agentSessionLinkReconcileOversightColourSlots()
-        }
         syncStatusPillsUIStateIfMonitorStale()
         NotificationCenter.default.post(
             name: .agentSessionLinkOverseerProjectionDidChange,
@@ -947,74 +881,14 @@ extension AgentModeViewModel {
     /// A session UUID match is insufficient: an in-place rebind advances the endpoint generations,
     /// and a projection addressed to the retired incarnation must fail closed.
     func agentSessionLinkIsOverseer(tabID: UUID, expectedSessionID: UUID) -> Bool {
-        agentSessionLinkOversightRole(tabID: tabID, expectedSessionID: expectedSessionID).overseeingCount > 0
-    }
-
-    /// Presentation-only roles for the exact current incarnation. Neither a durable
-    /// session UUID nor a cached map key alone proves that this projection is current.
-    func agentSessionLinkOversightRole(tabID: UUID, expectedSessionID: UUID) -> (overseeingCount: Int, isOverseen: Bool) {
-        agentSessionLinkOversightRole(
-            tabID: tabID,
-            expectedSessionID: expectedSessionID,
-            endpoint: agentSessionLinkObserverEndpoint(tabID: tabID)
-        )
-    }
-
-    /// Bulk equivalent of the scalar accessor for the HUD. Resolve the first exact
-    /// owning workspace (as `agentSessionLifecycleIdentity` does) in one membership
-    /// pass, rather than scanning every workspace's tabs once for each sidebar row.
-    /// This is a transient read-only projection, not a second identity cache.
-    func agentSessionLinkOversightRoles(for rows: [SidebarSession]) -> [UUID: (overseeingCount: Int, isOverseen: Bool)] {
-        let expectedSessionIDs = Dictionary(rows.compactMap { row in
-            row.sessionID.map { (row.tabID, $0) }
-        }, uniquingKeysWith: { first, _ in first })
-        return agentSessionLinkOversightRoles(expectedSessionIDs: expectedSessionIDs)
-    }
-
-    /// Also serves role-only HUD invalidation, using identities from the existing
-    /// snapshot rather than reconstructing sidebar rows on activity notifications.
-    func agentSessionLinkOversightRoles(expectedSessionIDs: [UUID: UUID]) -> [UUID: (overseeingCount: Int, isOverseen: Bool)] {
-        guard !expectedSessionIDs.isEmpty, !monitorPillPropsByEndpoint.isEmpty else { return [:] }
-        var resolvedTabIDs: Set<UUID> = []
-        var roles: [UUID: (overseeingCount: Int, isOverseen: Bool)] = [:]
-        for workspace in workspaceManager?.workspaces ?? [] {
-            for tab in workspace.composeTabs {
-                guard let expectedSessionID = expectedSessionIDs[tab.id],
-                      tab.activeAgentSessionID == expectedSessionID,
-                      resolvedTabIDs.insert(tab.id).inserted,
-                      let session = sessions[tab.id],
-                      session.activeAgentSessionID == expectedSessionID
-                else { continue }
-                let identity = AgentSessionLifecycleAuthority.Identity(
-                    workspaceID: workspace.id,
-                    tabID: tab.id,
-                    sessionID: expectedSessionID,
-                    persistentBindingGeneration: session.persistentSessionBindingIdentity?.generation,
-                    bindingTransitionGeneration: session.bindingTransitionGeneration
-                )
-                roles[tab.id] = agentSessionLinkOversightRole(
-                    tabID: tab.id,
-                    expectedSessionID: expectedSessionID,
-                    endpoint: identity.monitorEndpoint(windowID: windowID)
-                )
-            }
-        }
-        return roles
-    }
-
-    private func agentSessionLinkOversightRole(
-        tabID: UUID,
-        expectedSessionID: UUID,
-        endpoint: DomainAgentSessionLinkEndpointIdentity?
-    ) -> (overseeingCount: Int, isOverseen: Bool) {
         guard sessions[tabID]?.activeAgentSessionID == expectedSessionID,
-              let endpoint,
+              let endpoint = agentSessionLinkObserverEndpoint(tabID: tabID),
               let props = monitorPillPropsByEndpoint[endpoint],
               props.endpoint == endpoint
         else {
-            return (0, false)
+            return false
         }
-        return (props.outbound.count, props.hasInbound)
+        return props.isOverseer
     }
 
     /// Convenience for callers that already hold a live tab identity.
@@ -1023,92 +897,27 @@ extension AgentModeViewModel {
         return agentSessionLinkIsOverseer(tabID: tabID, expectedSessionID: sessionID)
     }
 
-    /// Reconciles the palette allocator with the overseers present in the published projections.
-    /// Runs inside the sole storage-mutation boundary so every change notification already observes
-    /// a settled slot map. A row's overseer appears either in its own inbound rows or, when only the
-    /// overseer's row is projected here, through that row's outbound list.
-    private func agentSessionLinkReconcileOversightColourSlots() {
-        var firstLinkCreatedAt: [UUID: Date] = [:]
-        func consider(_ overseerSessionID: UUID, createdAt: Date) {
-            if let existing = firstLinkCreatedAt[overseerSessionID], existing <= createdAt {
-                return
-            }
-            firstLinkCreatedAt[overseerSessionID] = createdAt
-        }
-        for props in monitorPillPropsByEndpoint.values {
-            for row in props.inbound {
-                consider(row.observerSessionID, createdAt: row.linkCreatedAt ?? .distantFuture)
-            }
-            if let sessionID = props.endpoint?.sessionID ?? props.sessionID {
-                for row in props.outbound {
-                    consider(sessionID, createdAt: row.linkCreatedAt ?? .distantFuture)
-                }
-            }
-        }
-        agentOversightColourAllocator.reconcile(activeOverseerFirstLinkDates: firstLinkCreatedAt)
-    }
-
-    /// The row's oversight roles for the Fb mark model: its own palette slot when it oversees,
-    /// plus its overseers in link-creation order. Everything comes from the published projection
-    /// and the in-memory allocator — no disk reads, no authority hop.
-    func agentSidebarOversightRole(
-        tabID: UUID,
-        expectedSessionID: UUID
-    ) -> AgentSessionOversightRole {
-        guard let endpoint = agentSidebarOversightTargetEndpoint(
-            tabID: tabID,
-            expectedSessionID: expectedSessionID
-        ),
-            let props = monitorPillPropsByEndpoint[endpoint],
-            props.endpoint == endpoint
-        else {
-            return .none
-        }
-        let allocator = agentOversightColourAllocator
-        return AgentSessionOversightRole.make(
-            inbound: props.inbound.map {
-                .init(
-                    observerSessionID: $0.observerSessionID,
-                    displayName: $0.displayName,
-                    linkID: $0.linkID,
-                    linkCreatedAt: $0.linkCreatedAt
-                )
-            },
-            outbound: props.outbound.map { .init(displayName: $0.displayName) },
-            ownSessionID: props.sessionID ?? expectedSessionID,
-            slot: { allocator.slot(for: $0) }
-        )
-    }
-
     /// Current target-centric oversight choices for one exact active sidebar row.
     ///
     /// The tab and session checks reject stale sidebar snapshots, while the two endpoint checks keep
     /// an in-place rebind from inheriting either the enclosing projection or its target menu.
     func agentSidebarOversightMenuProps(
         tabID: UUID,
-        expectedSessionID: UUID?
+        expectedSessionID: UUID
     ) -> AgentSidebarOversightMenuProps? {
-        guard let expectedSessionID,
-              let endpoint = agentSidebarOversightTargetEndpoint(tabID: tabID, expectedSessionID: expectedSessionID),
-              var menu = AgentSessionLinkRuntimeBridge.shared.sidebarOversightMenu(for: endpoint),
-              menu.targetEndpoint == endpoint, menu.targetSessionID == expectedSessionID
-        else { return nil }
-        let creatorID = agentSessionLinkLaneCreatorSessionID(tabID: endpoint.tabID, expectedSessionID: endpoint.sessionID)
-        menu.creatorSessionID = creatorID
-        menu.createdByLabel = creatorID.map { sidebarCreatorDisplayNames[$0] ?? agentSessionLinkLocalCreatorLabel(creatorID: $0) }
-        // Match the pill's persistence blocker without changing lifecycle eligibility.
-        return menu.withObserverIneligibleReason(
-            agentSessionLinkPersistencePresentation.addBlockerMessage ?? menu.observerIneligibleReason
-        )
-    }
-
-    func agentSidebarOversightSummary(tabID: UUID, expectedSessionID: UUID?) -> AgentSidebarOversightSummary? {
-        guard let expectedSessionID,
-              let endpoint = agentSidebarOversightTargetEndpoint(tabID: tabID, expectedSessionID: expectedSessionID),
-              var summary = AgentSessionLinkRuntimeBridge.shared.sidebarOversightSummary(for: endpoint)
-        else { return nil }
-        summary.observerIneligibleReason = agentSessionLinkPersistencePresentation.addBlockerMessage ?? summary.observerIneligibleReason
-        return summary
+        guard let endpoint = agentSidebarOversightTargetEndpoint(
+            tabID: tabID,
+            expectedSessionID: expectedSessionID
+        ),
+            let props = monitorPillPropsByEndpoint[endpoint],
+            props.endpoint == endpoint,
+            let menu = props.sidebarOversightMenu,
+            menu.targetEndpoint == endpoint,
+            menu.targetSessionID == expectedSessionID
+        else {
+            return nil
+        }
+        return menu
     }
 
     /// Exact current endpoint behind one active sidebar row, independent of whether its target menu
@@ -1159,69 +968,6 @@ extension AgentModeViewModel {
             .alreadyInRequestedState
         case let .failed(message):
             .failed(message: message)
-        }
-    }
-
-    /// Inverse-direction add for the sidebar's "Oversee" menu: the row
-    /// rendered by the sidebar is the *observer*. Uses the general exact-endpoint Add so the row
-    /// may acquire its first outbound link — the sidebar's existing-overseer precondition does
-    /// not apply to this direction.
-    func addAgentOversightLink(
-        observerEndpoint: DomainAgentSessionLinkEndpointIdentity,
-        targetEndpoint: DomainAgentSessionLinkEndpointIdentity
-    ) async -> AgentSidebarOversightActionOutcome {
-        switch await AgentSessionLinkRuntimeBridge.shared.addMonitorLink(
-            observerEndpoint: observerEndpoint,
-            targetEndpoint: targetEndpoint
-        ) {
-        case .added:
-            .changed
-        case .alreadyLinked:
-            .alreadyInRequestedState
-        case let .failed(failure):
-            .failed(message: failure.uiMessage)
-        case let .rejected(message):
-            .failed(message: message)
-        }
-    }
-
-    /// Pasted-ID resolution for the sidebar's inbound `Session ID…` sheet (choose a prospective
-    /// overseer for this row). The bridge enforces the Oversee-by rule: the pasted session must
-    /// already hold an outbound link.
-    func resolveSidebarOverseerCandidate(
-        rawSessionID: String,
-        excludingTargetSessionID: UUID
-    ) async -> Result<AgentOversightSessionIDResolution, AgentOversightResolutionMessage> {
-        await AgentSessionLinkRuntimeBridge.shared.resolveSidebarOverseerCandidate(
-            rawSessionID: rawSessionID,
-            excludingTargetSessionID: excludingTargetSessionID
-        )
-    }
-
-    /// Pasted-ID resolution for the sidebar's outbound `Session ID…` sheet (choose a prospective
-    /// target for this row-as-observer). Reuses the composer pill's resolver, except that an
-    /// already-linked pair resolves to `.alreadyLinked` — the sheet closes silently rather than
-    /// showing the "You're already overseeing this session." error.
-    func resolveSidebarTargetCandidate(
-        rawSessionID: String,
-        observerEndpoint: DomainAgentSessionLinkEndpointIdentity
-    ) -> Result<AgentOversightSessionIDResolution, AgentOversightResolutionMessage> {
-        let existingTargetIDs = Set(
-            monitorPillPropsByEndpoint[observerEndpoint]?.outbound.map(\.targetSessionID) ?? []
-        )
-        switch AgentSessionLinkRuntimeBridge.shared
-            .resolveTargetCandidate(
-                observerSessionID: observerEndpoint.sessionID,
-                rawTargetSessionID: rawSessionID,
-                existingOutboundTargetIDs: existingTargetIDs
-            )
-        {
-        case let .success(candidate):
-            return .success(.candidate(candidate))
-        case .failure(.alreadyMonitoring):
-            return .success(.alreadyLinked)
-        case let .failure(failure):
-            return .failure(AgentOversightResolutionMessage(message: failure.uiMessage))
         }
     }
 
@@ -1296,6 +1042,7 @@ extension AgentModeViewModel {
         return AgentMonitorPillProps(
             sessionID: overlaid.sessionID,
             endpoint: overlaid.endpoint,
+            sidebarOversightMenu: overlaid.sidebarOversightMenu,
             outbound: outbound,
             inbound: overlaid.inbound,
             recentNotices: overlaid.recentNotices,
@@ -1478,6 +1225,7 @@ extension AgentModeViewModel {
         guard let published else {
             return AgentMonitorPillProps(
                 sessionID: sessionID,
+                sidebarOversightMenu: nil,
                 outbound: [],
                 inbound: [],
                 recentNotices: [],

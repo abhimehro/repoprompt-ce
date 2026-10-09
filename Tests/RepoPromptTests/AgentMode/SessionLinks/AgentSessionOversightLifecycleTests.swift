@@ -15,19 +15,7 @@ final class AgentSessionOversightLifecycleTests: XCTestCase {
     private final class FakeHost: AgentSessionLinkEndpointHost {
         var candidates: [AgentSessionLinkEndpointCandidate] = []
 
-        func agentSessionLinkCandidate(
-            for endpoint: DomainAgentSessionLinkEndpointIdentity, includeLocation _: Bool
-        ) -> AgentSessionLinkEndpointCandidate? {
-            candidates.first { $0.domainEndpoint == endpoint }
-        }
-
-        func agentSessionLinkCandidates(
-            forSessionIDs sessionIDs: Set<UUID>, includeLocation _: Bool
-        ) -> [UUID: [AgentSessionLinkEndpointCandidate]] {
-            Dictionary(uniqueKeysWithValues: sessionIDs.map { id in (id, candidates.filter { $0.sessionID == id }) })
-        }
-
-        func agentSessionLinkCandidates(includeLocation _: Bool) -> [AgentSessionLinkEndpointCandidate] {
+        func agentSessionLinkCandidates() -> [AgentSessionLinkEndpointCandidate] {
             candidates
         }
 

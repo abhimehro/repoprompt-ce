@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import RepoPromptDomainRuntime
 import RepoPromptInstrumentation
 import RepoPromptSettingsCore
 
@@ -308,17 +307,6 @@ final class AgentTabSession: ObservableObject {
     var mcpStateObservationCancellable: AnyCancellable?
     var mcpControlCleanupTask: Task<Void, Never>?
     var mcpControlActivationGeneration: UInt64 = 0
-    private(set) var codexComputerUseOwnershipTransitionHolds: Set<UUID> = []
-    var codexComputerUseRevocationDepth = 0
-
-    /// A scoped eligibility fence, not link authority. Independent ownership transitions cannot
-    /// release each other's hold, and a rebound endpoint still releases its captured session.
-    func holdCodexComputerUseAdmission() -> @MainActor () -> Void {
-        let token = UUID()
-        codexComputerUseOwnershipTransitionHolds.insert(token)
-        return { [weak self] in self?.codexComputerUseOwnershipTransitionHolds.remove(token) }
-    }
-
     var mcpFollowUpRunPendingUpdatedAt: Date?
     var mcpFollowUpRunPending: Bool = false {
         didSet {
@@ -331,12 +319,7 @@ final class AgentTabSession: ObservableObject {
 
     var isMCPInstructionDispatchInProgress: Bool = false
     /// Whether this session was originally created by an MCP client.
-    var isMCPOriginated: Bool = false {
-        didSet {
-            if oldValue != isMCPOriginated { AgentSessionLinkCandidateReadinessSignal.didChange() }
-        }
-    }
-
+    var isMCPOriginated: Bool = false
     /// Lifetime classification for sessions created, controlled, parented, or pending activation through MCP.
     /// A nonzero activation generation remains authoritative after live control is released.
     var isMCPRelated: Bool {
@@ -633,8 +616,6 @@ final class AgentTabSession: ObservableObject {
         let origin: CodexFallbackOrigin
         let dispatchTicket: UInt64?
         var stopFence: AgentRunStartStopFence?
-        /// Explicit composer provenance; absent/internal contexts never inherit companion access.
-        var isLocalUserInput: Bool = false
     }
 
     struct CodexFallbackBlockingTurn: Equatable {
@@ -1219,12 +1200,9 @@ final class AgentTabSession: ObservableObject {
         var capabilities: CodexCapabilitySettings = .disabled
     }
 
-    // In-memory authority for this chat, never written to AgentSession persistence. Runtime
-    // reconnects may reuse it; session shutdown, explicit off and ownership drift revoke it.
-    var codexComputerUseArmingRequestID: UUID?
     var pendingCodexComputerUseActivation: AgentModeViewModel.CodexComputerUseActivation?
     var codexControllerFeatureState: CodexControllerFeatureState?
-    var isCodexComputerUseArmed: Bool {
+    var wantsCodexComputerUseForNextTurn: Bool {
         pendingCodexComputerUseActivation != nil
     }
 
@@ -1331,12 +1309,7 @@ final class AgentTabSession: ObservableObject {
 
     private(set) var persistenceMutationGeneration: UInt64 = 0
     var saveRequestGeneration: UInt64 = 0
-    var parentSessionID: UUID? {
-        didSet {
-            if (oldValue == nil) != (parentSessionID == nil) { AgentSessionLinkCandidateReadinessSignal.didChange() }
-        }
-    }
-
+    var parentSessionID: UUID?
     var createdByOverseerSessionID: UUID?
     var hasLoadedPersistedState: Bool = false {
         didSet {

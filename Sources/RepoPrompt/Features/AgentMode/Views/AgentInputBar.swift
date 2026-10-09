@@ -14,7 +14,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct AgentComposerActions {
-    var toggleComputerUse: (UUID, ObjectIdentifier) async -> Void = { _, _ in }
     let storeDraft: (_ tabID: UUID, _ text: String, _ acknowledgedSequence: UInt64) -> Void
     let loadDraft: (_ tabID: UUID) -> AgentComposerDraftSnapshot
     let claimSubmit: (_ attempt: AgentComposerSubmitAttempt) -> AgentModeViewModel.AgentComposerSubmitClaimResult
@@ -118,7 +117,6 @@ struct AgentInputBar: View {
         // an idle session also invalidates the equatable view's retained actions.
         let cursorSession = agentModeVM.activeSession
         return AgentComposerActions(
-            toggleComputerUse: { tabID, identity in await agentModeVM.toggleComputerUse(tabID: tabID, expectedSessionIdentity: identity) },
             storeDraft: { tabID, text, sequence in
                 agentModeVM.storeDraftText(for: tabID, text, acknowledgingThrough: sequence)
             },
@@ -188,9 +186,6 @@ struct AgentInputBar: View {
         AgentStatusPillsRow(
             agentModeVM: agentModeVM,
             statusPillsUI: statusPillsUI,
-            computerUse: composerUI.props.computerUse,
-            computerUseTarget: composerUI.props.submitTarget,
-            toggleComputerUse: composerActions.toggleComputerUse,
             openContextDrawerFiles: openContextDrawerFiles,
             oracleViewModel: oracleViewModel,
             promptManager: promptManager,

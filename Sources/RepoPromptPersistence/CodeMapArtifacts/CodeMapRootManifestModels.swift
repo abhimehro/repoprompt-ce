@@ -1045,3 +1045,9 @@ private extension String {
         }
     }
 }
+
+private extension Data {
+    var lowercaseHex: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+}

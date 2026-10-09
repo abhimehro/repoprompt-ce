@@ -2,7 +2,6 @@
     import CryptoKit
     import Foundation
     import RepoPromptInstrumentation
-    import RepoPromptShared
     import RepoPromptWorkspaceCore
 
     enum DebugWorktreeStartupBenchmarkError: Error, Equatable {
@@ -179,11 +178,7 @@
         static let shared = WorktreeStartupBenchmarkDiagnostics()
         static let enabledDefaultsKey = "enableWorktreeStartupBenchmarkDiagnostics"
         static let requiredWorkspaceNamePrefixes = ["RPCE 8E Bench ", "RPCE Search Bench "]
-        // Boxed: runtime-sized payloads must not use `@TaskLocal` directly (#1039).
-        static let currentPendingStartTaskLocal = BoxedTaskLocal<DebugWorktreeStartupBenchmarkPendingStart?>(nil)
-        static var currentPendingStart: DebugWorktreeStartupBenchmarkPendingStart? {
-            currentPendingStartTaskLocal.get()
-        }
+        @TaskLocal static var currentPendingStart: DebugWorktreeStartupBenchmarkPendingStart?
 
         struct RouteControl: Equatable {
             let observe: Bool
