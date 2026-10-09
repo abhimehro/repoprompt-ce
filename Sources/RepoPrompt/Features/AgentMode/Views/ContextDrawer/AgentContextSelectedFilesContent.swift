@@ -129,7 +129,8 @@ struct AgentContextSelectedFilesContent: View {
             .buttonStyle(CustomButtonStyle(verticalPadding: 3, horizontalPadding: 8))
             .disabled(split.rows.isEmpty || !canMutate || model == nil)
             .hoverTooltip(canMutate ? (split.rows.isEmpty ? "No Agent context files to clear" : "Clear the displayed Agent selection") : "Selection mutation is unavailable for this Agent context")
-            .accessibilityLabel(canMutate ? (split.rows.isEmpty ? "No Agent context files to clear" : "Clear the displayed Agent selection") : "Selection mutation is unavailable for this Agent context")
+            .accessibilityLabel("Clear selection")
+            .accessibilityHint(canMutate ? (split.rows.isEmpty ? "No Agent context files to clear" : "Clear the displayed Agent selection") : "Selection mutation is unavailable for this Agent context")
         }
     }
 
