@@ -816,6 +816,7 @@ allowed_tracked_docs=(
   "docs/migrations/build-modularization/build-ratchets.json"
   "docs/open-source-readiness.md"
   "docs/privacy/telemetry.md"
+  "docs/qa-review.md"
   "docs/releasing.md"
   "docs/security/initial-scan.md"
   "docs/testing.md"
