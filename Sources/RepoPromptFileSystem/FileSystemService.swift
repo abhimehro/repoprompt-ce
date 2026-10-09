@@ -376,7 +376,7 @@ package actor FileSystemService {
                 changePublisher.send(publication)
                 return servicePublicationSequence
             }
-            EditFlowPerf.currentFileSystemPublicationCorrelationTaskLocal.withValue(publicationCorrelation) {
+            EditFlowPerf.$currentFileSystemPublicationCorrelation.withValue(publicationCorrelation) {
                 changePublisher.send(publication)
             }
         #else

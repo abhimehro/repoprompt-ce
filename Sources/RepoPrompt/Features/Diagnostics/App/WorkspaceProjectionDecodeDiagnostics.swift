@@ -1,5 +1,4 @@
 import Foundation
-import RepoPromptShared
 
 #if DEBUG
     /// Opt-in, task-scoped instrumentation of the real presentation decoder. See
@@ -88,12 +87,7 @@ import RepoPromptShared
             }
         }
 
-        // Boxed: struct payloads must not use `@TaskLocal` directly (#1039).
-        static let contextTaskLocal = BoxedTaskLocal<Context?>(nil)
-        static var context: Context? {
-            contextTaskLocal.get()
-        }
-
+        @TaskLocal static var context: Context?
         @TaskLocal private static var attempt: Attempt?
 
         static func beginNormalization() -> NormalizationInterval? {

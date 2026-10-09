@@ -465,8 +465,6 @@ struct CLIProvidersSettingsView: View {
 
                     directProviderInlineControls(for: .claude)
 
-                    ProviderUsageQuotaSection(provider: .claude)
-
                     Text("Routing GLM models through claude? See CC Zai below.")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -1858,10 +1856,6 @@ struct CLIProvidersSettingsView: View {
                                 .fontWeight(.semibold)
                             codexAccountSummary(account)
                         }
-
-                        Divider()
-                        // Account-scoped plan usage. Distinct from per-session context usage.
-                        ProviderUsageQuotaSection(provider: .codex)
                     }
 
                     HStack(spacing: 8) {
@@ -2621,7 +2615,6 @@ struct CLIProvidersSettingsView: View {
     }
 
     private func signOutFromClaudeCode() {
-        Task { await WindowStatesManager.shared.providerQuotaRuntime.claude.invalidate() }
         viewModel.isClaudeCodeConnected = false
         viewModel.claudeCodeError = nil
         UserDefaults.standard.set(false, forKey: "ClaudeCodeConnected")

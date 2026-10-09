@@ -2,8 +2,6 @@ import SwiftUI
 
 struct AgentApprovalCard: View {
     let request: AgentApprovalRequest
-    var allowsRememberedDecision = true
-    var titleOverride: String?
     let onDecision: (_ decision: AgentApprovalDecision) -> Void
 
     var body: some View {
@@ -37,7 +35,7 @@ struct AgentApprovalCard: View {
                 .font(.title2)
                 .foregroundColor(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text(titleOverride ?? request.title)
+                Text(request.title)
                     .font(.headline)
                 Text("Needs your approval")
                     .font(.caption)
@@ -84,7 +82,7 @@ struct AgentApprovalCard: View {
 
             Spacer()
 
-            if allowsRememberedDecision, request.supportsAlwaysAllow {
+            if request.supportsAlwaysAllow {
                 Button(action: alwaysAllowDecision) {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.seal")
@@ -119,31 +117,6 @@ struct AgentApprovalCard: View {
         } else {
             onDecision(.acceptForSession)
         }
-    }
-}
-
-struct AgentPermissionsApprovalCard: View {
-    let request: AgentPermissionsRequest
-    let onDecision: (_ decision: AgentApprovalDecision) -> Void
-
-    var body: some View {
-        AgentApprovalCard(
-            request: AgentApprovalRequest(
-                id: request.id,
-                requestID: .codex(request.requestID),
-                method: request.method,
-                kind: .fileChange,
-                threadID: request.threadID,
-                turnID: request.turnID,
-                itemID: request.itemID,
-                reason: request.reason,
-                cwd: request.cwd,
-                details: request.details
-            ),
-            allowsRememberedDecision: false,
-            titleOverride: "Permission Approval",
-            onDecision: onDecision
-        )
     }
 }
 

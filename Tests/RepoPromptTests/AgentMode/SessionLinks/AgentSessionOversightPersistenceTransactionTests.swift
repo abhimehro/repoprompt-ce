@@ -15,26 +15,18 @@ final class AgentSessionOversightPersistenceTransactionTests: XCTestCase {
 
     private final class FakeHost: AgentSessionLinkEndpointHost {
         var candidates: [AgentSessionLinkEndpointCandidate] = []
-        var beforeUUIDCensus: ((Set<UUID>) -> Void)?
+        /// Answers by call index so a test can make an endpoint disappear at one exact point in the
+        /// Add flow — the establishment re-reads candidates after reserving, and that is the window
+        /// a durable insert has to be able to compensate itself out of.
+        var candidatesByCall: ((Int) -> [AgentSessionLinkEndpointCandidate])?
+        private(set) var candidateCallCount = 0
         /// Lets a test land endpoint or eligibility drift in the final post-activation tail, when
         /// the bridge invalidates the target's tool advertisement after projection publication.
         var onToolAdvertisementInvalidation: ((UUID) -> Void)?
 
-        func agentSessionLinkCandidate(
-            for endpoint: DomainAgentSessionLinkEndpointIdentity, includeLocation _: Bool
-        ) -> AgentSessionLinkEndpointCandidate? {
-            candidates.first { $0.domainEndpoint == endpoint }
-        }
-
-        func agentSessionLinkCandidates(
-            forSessionIDs sessionIDs: Set<UUID>, includeLocation _: Bool
-        ) -> [UUID: [AgentSessionLinkEndpointCandidate]] {
-            beforeUUIDCensus?(sessionIDs)
-            return Dictionary(uniqueKeysWithValues: sessionIDs.map { id in (id, candidates.filter { $0.sessionID == id }) })
-        }
-
-        func agentSessionLinkCandidates(includeLocation _: Bool) -> [AgentSessionLinkEndpointCandidate] {
-            candidates
+        func agentSessionLinkCandidates() -> [AgentSessionLinkEndpointCandidate] {
+            candidateCallCount += 1
+            return candidatesByCall?(candidateCallCount) ?? candidates
         }
 
         func agentSessionLinkObservationSnapshot(
@@ -463,7 +455,9 @@ final class AgentSessionOversightPersistenceTransactionTests: XCTestCase {
         let fixture = makeFixture()
         let everything = fixture.host.candidates
         let withoutTarget = everything.filter { $0.sessionID != fixture.target.sessionID }
-        fixture.bridge.test_beforeSynchronousSeed = { fixture.host.candidates = withoutTarget }
+        // Calls 1 and 2 are the preflight and the establishment's own resolution; call 3 is the
+        // live re-read between reservation and seed, which is where a real rebind would land.
+        fixture.host.candidatesByCall = { call in call >= 3 ? withoutTarget : everything }
 
         let outcome = await add(fixture)
 
@@ -522,10 +516,14 @@ final class AgentSessionOversightPersistenceTransactionTests: XCTestCase {
         let storedTokenBefore = await fixture.store.token(for: fixture.pair)
         let tokenBefore = try XCTUnwrap(storedTokenBefore)
         let referenceBefore = await liveReference(fixture)
-        fixture.host.beforeUUIDCensus = { ids in
-            guard ids == [fixture.observer.sessionID, fixture.target.sessionID] else { return }
-            // Preflight succeeded; fresh pair resolution after the unchanged durable assertion fails.
-            fixture.host.candidates.removeAll { $0.sessionID == fixture.target.sessionID }
+        let baseCandidateReads = fixture.host.candidateCallCount
+        let allCandidates = fixture.host.candidates
+        fixture.host.candidatesByCall = { call in
+            // The constrained Add preflight succeeds. After its `.unchanged` durable reassertion, the
+            // establishment's fresh resolver sees a transiently unavailable target.
+            call >= baseCandidateReads + 2
+                ? allCandidates.filter { $0.sessionID != fixture.target.sessionID }
+                : allCandidates
         }
 
         let outcome = await fixture.bridge.addMonitorLink(
@@ -919,7 +917,12 @@ final class AgentSessionOversightPersistenceTransactionTests: XCTestCase {
     /// launch rather than compensated away.
     func testFreezeBetweenReservationAndActivationGrantsNothingAndPreservesTheToken() async {
         let fixture = makeFixture()
-        fixture.bridge.test_beforeSynchronousSeed = { fixture.bridge.freezeForTermination() }
+        let everything = fixture.host.candidates
+        // Call 3 is the live re-read the establishment performs immediately after reserving.
+        fixture.host.candidatesByCall = { [weak bridge = fixture.bridge] call in
+            if call == 3 { bridge?.freezeForTermination() }
+            return everything
+        }
 
         let outcome = await add(fixture)
 

@@ -1,6 +1,5 @@
 import Foundation
 import MCP
-import RepoPromptShared
 
 package enum MCPDomainHostLifecycle: String, CaseIterable, Sendable {
     case accepting
@@ -57,9 +56,7 @@ package struct MCPDomainAdmittedContext: Equatable, Sendable {
 }
 
 package enum MCPDomainAdmittedContextValues {
-    // Boxed: runtime-sized payloads must not use `@TaskLocal` directly (#1039).
-    package static let currentTaskLocal = BoxedTaskLocal<MCPDomainAdmittedContext?>(nil)
-    package static var current: MCPDomainAdmittedContext? { currentTaskLocal.get() }
+    @TaskLocal package static var current: MCPDomainAdmittedContext?
 }
 
 package struct MCPDomainHostInvocation: Sendable {
@@ -299,11 +296,11 @@ package actor MCPDomainHost {
                 guard resolvedIsActive else {
                     throw MCPDomainHostError.staleRegistration(toolName: toolName)
                 }
-                let value = try await MCPDomainInvocationSecurityContext.currentTaskLocal.withValue(
+                let value = try await MCPDomainInvocationSecurityContext.$current.withValue(
                     securityContext
                 ) {
                     try admissionDeadline?.check()
-                    return try await MCPDomainAdmittedContextValues.currentTaskLocal.withValue(
+                    return try await MCPDomainAdmittedContextValues.$current.withValue(
                         admittedContext
                     ) {
                         try admissionDeadline?.check()

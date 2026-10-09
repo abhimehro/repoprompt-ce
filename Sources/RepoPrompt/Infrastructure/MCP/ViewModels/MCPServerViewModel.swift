@@ -3142,6 +3142,9 @@ final class MCPServerViewModel: ObservableObject {
                 self?.externalClientErrorCount = count
             }
             .store(in: &cancellables)
+
+        // Cleanup old events periodically (once per app launch is enough)
+        monitor.cleanupOldEvents()
     }
 
     /// Updates published properties and sets the overlay visibility.
@@ -3847,11 +3850,11 @@ final class MCPServerViewModel: ObservableObject {
                         EditFlowPerf.Stage.MCPToolCall.providerExecution,
                         EditFlowPerf.Dimensions(toolName: name)
                     ) {
-                        try await AgentSelfMCPCallOrigin.currentTaskLocal.withValue(selfCallOrigin) {
+                        try await AgentSelfMCPCallOrigin.$current.withValue(selfCallOrigin) {
                             // Explicitly captured before this Task/start-gate hop; compatibility
                             // helpers project this same packet rather than a successor live route.
                             try await MCPInvocationContextBridge.withInvocation(invocationContext) {
-                                try await AgentSessionLinkWaitCallOrigin.currentTaskLocal.withValue(waitCallOrigin) {
+                                try await AgentSessionLinkWaitCallOrigin.$current.withValue(waitCallOrigin) {
                                     try await body()
                                 }
                             }

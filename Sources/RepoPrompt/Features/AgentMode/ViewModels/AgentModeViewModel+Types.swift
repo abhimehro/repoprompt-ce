@@ -2,6 +2,18 @@ import Foundation
 import RepoPromptDomainRuntime
 import RepoPromptFoundation
 
+struct AgentPersistentSessionBindingIdentity: Equatable, Hashable {
+    let tabID: UUID
+    let sessionID: UUID
+    let generation: UUID
+
+    init(tabID: UUID, sessionID: UUID, generation: UUID = UUID()) {
+        self.tabID = tabID
+        self.sessionID = sessionID
+        self.generation = generation
+    }
+}
+
 enum AgentSidebarThreadKey: Hashable, Equatable {
     case session(UUID)
     case tab(UUID)

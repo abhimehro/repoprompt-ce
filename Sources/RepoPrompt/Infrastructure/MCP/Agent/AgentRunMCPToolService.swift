@@ -542,23 +542,13 @@ struct AgentRunMCPToolService {
         var selection: AgentMCPSelectionResolver.ResolvedSelection
         var routedReasoningEffortRaw: String?
         var routerSelectedTarget = false
-        let shouldRouteStart = Self.shouldRouteModelForStart(requestedModelID: requestedModelID, hasExplicitModelParameters: args["model_parameters"] != nil)
-        let canBalanceStart = shouldRouteStart && resolvedTabID == nil && agentModeVM.modelRouterSettingsStore.modelRouterConfiguration().usageBalancing.enabled
-        let usageBaseline: AgentMCPSelectionResolver.ResolvedSelection? = canBalanceStart ? try? AgentMCPSelectionResolver.resolve(
-            modelID: requestedModelID, defaultTaskLabel: defaultTaskLabel,
-            availability: targetWindow.apiSettingsViewModel.agentModeAvailabilityContext,
-            workspaceID: workspace.id
-        ) : nil
-        let baselineTarget = usageBaseline.flatMap { value -> AgentRoutingExecutableTarget? in
-            guard let agent = value.agentRaw, let model = value.modelRaw else { return nil }
-            return .init(agentRaw: agent, modelRaw: model, reasoningEffortRaw: nil, modelParameters: value.modelParameterSelections)
-        }
         do {
-            if shouldRouteStart, let routed = try await agentModeVM.routeSubagentTargetIfEnabled(
+            if Self.shouldRouteModelForStart(
+                requestedModelID: requestedModelID,
+                hasExplicitModelParameters: args["model_parameters"] != nil
+            ), let routed = try await agentModeVM.routeSubagentTargetIfEnabled(
                 task: message,
-                surface: .general,
-                baseline: baselineTarget,
-                allowUsageBalance: resolvedTabID == nil && usageBaseline?.usageBalancingEligible == true
+                surface: .general
             ) {
                 selection = AgentMCPSelectionResolver.ResolvedSelection(
                     agentRaw: routed.agentRaw,
@@ -578,7 +568,7 @@ struct AgentRunMCPToolService {
                     ])
                 #endif
             } else {
-                selection = try usageBaseline ?? AgentMCPSelectionResolver.resolve(
+                selection = try AgentMCPSelectionResolver.resolve(
                     modelID: requestedModelID,
                     defaultTaskLabel: defaultTaskLabel,
                     availability: targetWindow.apiSettingsViewModel.agentModeAvailabilityContext,
@@ -730,7 +720,7 @@ struct AgentRunMCPToolService {
             }
             #if DEBUG
                 if let worktreeStartupBenchmarkToken {
-                    try await WorktreeStartupBenchmarkDiagnostics.currentPendingStartTaskLocal.withValue(
+                    try await WorktreeStartupBenchmarkDiagnostics.$currentPendingStart.withValue(
                         DebugWorktreeStartupBenchmarkPendingStart(
                             token: worktreeStartupBenchmarkToken,
                             startAttemptID: UUID()

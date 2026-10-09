@@ -21,16 +21,10 @@ package enum EditFlowPerf {
         package let requestIdentity: MCPRequestTimelineIdentity?
     }
 
-    // Boxed: `LifecycleCorrelation` carries a `UUID` (#1039).
-    package static let currentLifecycleCorrelationTaskLocal = BoxedTaskLocal<LifecycleCorrelation?>(nil)
-    package static var currentLifecycleCorrelation: LifecycleCorrelation? {
-        currentLifecycleCorrelationTaskLocal.get()
-    }
-
-    package static let currentFileSystemPublicationCorrelationTaskLocal = BoxedTaskLocal<LifecycleCorrelation?>(nil)
-    package static var currentFileSystemPublicationCorrelation: LifecycleCorrelation? {
-        currentFileSystemPublicationCorrelationTaskLocal.get()
-    }
+    @TaskLocal
+    package static var currentLifecycleCorrelation: LifecycleCorrelation?
+    @TaskLocal
+    package static var currentFileSystemPublicationCorrelation: LifecycleCorrelation?
 
     #if DEBUG || EDIT_FLOW_PERF
         package struct IntervalState {

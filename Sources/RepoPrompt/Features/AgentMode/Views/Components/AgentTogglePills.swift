@@ -104,67 +104,15 @@ struct AgentInterviewPill: View {
     }
 }
 
-/// Shared round control for the composer status row.
-struct AgentIconTogglePill: View {
-    let systemImage: String
-    let isOn: Bool
-    /// Drives only the outline; fill and icon color always follow `isOn`.
-    let isOutlineHighlighted: Bool
-    let isBusy: Bool
-    let onToggle: () -> Void
-
-    @ObservedObject private var fontScale = FontScaleManager.shared
-
-    init(
-        systemImage: String,
-        isOn: Bool,
-        isOutlineHighlighted: Bool? = nil,
-        isBusy: Bool,
-        onToggle: @escaping () -> Void
-    ) {
-        self.systemImage = systemImage
-        self.isOn = isOn
-        self.isOutlineHighlighted = isOutlineHighlighted ?? isOn
-        self.isBusy = isBusy
-        self.onToggle = onToggle
-    }
-
-    var body: some View {
-        let cornerRadius = AgentPillMetrics.cornerRadius()
-        let size = AgentPillMetrics.height()
-        Button(action: onToggle) {
-            ZStack {
-                if isOn {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.12))
-                }
-                if isBusy {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: systemImage)
-                        .font(fontScale.preset.swiftUIFont(sizeAtNormal: 14, weight: .semibold))
-                        .foregroundStyle(isOn ? Color.accentColor : .secondary)
-                }
-            }
-            .frame(width: size, height: size)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(isOutlineHighlighted ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.15), lineWidth: isOutlineHighlighted ? 0.8 : 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 // MARK: - Model Router Pill
 
 struct AgentModelRouterPill: View {
     let props: AgentModelRouterPillProps
     let onToggle: () -> Void
 
-    private var jevTooltip: String {
+    @ObservedObject private var fontScale = FontScaleManager.shared
+
+    private var tooltip: String {
         if let reason = props.disabledReason { return reason }
         if props.isRouting { return "Router is choosing a target for this new session" }
         return props.isOn
@@ -172,27 +120,36 @@ struct AgentModelRouterPill: View {
             : "Router off: New sessions use their current or requested target"
     }
 
-    private var tooltip: String {
-        guard props.usageBalancing else { return jevTooltip }
-        return jevTooltip + "\nUsage balancing on: new sessions may move to a comparable model with more plan quota left. Change in Settings › Router."
-    }
-
-    private var isHighlighted: Bool {
-        props.isOn || props.usageBalancing
-    }
-
     var body: some View {
-        AgentIconTogglePill(
-            systemImage: "arrow.triangle.branch",
-            isOn: props.isOn,
-            isOutlineHighlighted: isHighlighted,
-            isBusy: props.isRouting,
-            onToggle: onToggle
-        )
+        let cornerRadius = AgentPillMetrics.cornerRadius()
+        let size = AgentPillMetrics.height()
+        Button(action: onToggle) {
+            ZStack {
+                if props.isOn {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                }
+                if props.isRouting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(fontScale.preset.swiftUIFont(sizeAtNormal: 14, weight: .semibold))
+                        .foregroundStyle(props.isOn ? Color.accentColor : .secondary)
+                }
+            }
+            .frame(width: size, height: size)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(props.isOn ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.15), lineWidth: props.isOn ? 0.8 : 0.5)
+            )
+        }
+        .buttonStyle(.plain)
         .disabled(!props.isAvailable || props.isRouting)
         .hoverTooltip(tooltip, .top)
         .accessibilityLabel("Model Router")
-        .accessibilityValue((props.isOn ? "On" : "Off") + (props.usageBalancing ? ", usage balancing on" : ""))
+        .accessibilityValue(props.isOn ? "On" : "Off")
     }
 }
 

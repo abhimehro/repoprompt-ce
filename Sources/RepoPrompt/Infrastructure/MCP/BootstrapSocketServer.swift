@@ -763,7 +763,7 @@ actor BootstrapSocketServer {
             }
         }
         if let lifecycleCorrelation {
-            await EditFlowPerf.currentLifecycleCorrelationTaskLocal.withValue(lifecycleCorrelation) {
+            await EditFlowPerf.$currentLifecycleCorrelation.withValue(lifecycleCorrelation) {
                 await handleNewConnection(
                     handshakeID: handshakeID,
                     handshakeSocket: handshakeSocket,

@@ -1,6 +1,5 @@
 import Foundation
 import RepoPromptInstrumentation
-import RepoPromptShared
 import RepoPromptVCS
 #if DEBUG
     import CryptoKit
@@ -566,11 +565,7 @@ enum WorktreeStartupInstrumentation {
             var markerPublications: [BenchmarkMarkerPublication] = []
         }
 
-        // Boxed: runtime-sized payloads must not use `@TaskLocal` directly (#1039).
-        static let currentBenchmarkMetricTagTaskLocal = BoxedTaskLocal<BenchmarkMetricTag?>(nil)
-        static var currentBenchmarkMetricTag: BenchmarkMetricTag? {
-            currentBenchmarkMetricTagTaskLocal.get()
-        }
+        @TaskLocal static var currentBenchmarkMetricTag: BenchmarkMetricTag?
     #endif
 
     struct Event: Equatable {

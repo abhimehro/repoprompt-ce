@@ -89,12 +89,7 @@ enum MCPInvocationContextFailure: Error, Equatable {
 /// The single app-binding ingress bridge. Capture before callbacks/detached tasks, then
 /// forward the value explicitly; those hops must not rely on TaskLocal inheritance.
 enum MCPInvocationContextBridge {
-    // Boxed: runtime-sized payloads must not use `@TaskLocal` directly (#1039).
-    static let currentTaskLocal = BoxedTaskLocal<ToolInvocationContext?>(nil)
-    static var current: ToolInvocationContext? {
-        currentTaskLocal.get()
-    }
-
+    @TaskLocal static var current: ToolInvocationContext?
     @TaskLocal static var diagnosticSink: (@Sendable (MCPInvocationContextFailure) -> Void)?
 
     static func require(
@@ -132,7 +127,7 @@ enum MCPInvocationContextBridge {
         _ context: ToolInvocationContext,
         operation: () async throws -> T
     ) async rethrows -> T {
-        try await currentTaskLocal.withValue(context, operation: operation)
+        try await $current.withValue(context, operation: operation)
     }
 
     private static func failure(

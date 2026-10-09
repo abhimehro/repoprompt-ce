@@ -38,8 +38,7 @@ extension AgentModeViewModel {
             isOn: configuration.enabled,
             isAvailable: available || configuration.enabled,
             isRouting: isRouting,
-            disabledReason: disabledReason,
-            usageBalancing: configuration.usageBalancing.enabled
+            disabledReason: disabledReason
         )
     }
 
@@ -124,8 +123,11 @@ extension AgentModeViewModel {
         guard configuration.enabled,
               freshTaskRoutingEligibility(session: session, text: text)
         else {
-            return await submitUserTurnAfterUsageBalancing(
-                text: text, claim: claim, session: session, destinationTabID: destinationTabID
+            return await submitUserTurnAfterAutoEffort(
+                text: text,
+                claim: claim,
+                session: session,
+                destinationTabID: destinationTabID
             )
         }
         guard let runtime = modelRouterRuntime,
@@ -133,7 +135,7 @@ extension AgentModeViewModel {
               let backendID = configuration.selectedBackendID,
               runtime.isBackendReady(backendID)
         else {
-            return await submitUserTurnAfterUsageBalancing(
+            return await submitUserTurnAfterAutoEffort(
                 text: text, claim: claim, session: session, destinationTabID: destinationTabID,
                 routerAudit: .init(configured: true, eligible: true, judgmentRequested: false, decision: .unavailable)
             )
@@ -184,8 +186,7 @@ extension AgentModeViewModel {
             eligible: true,
             judgmentRequested: stagedResult.judgmentRequested,
             decision: .selected,
-            fallbackApplied: stagedResult.effortFallback,
-            usageBalancingReason: stagedResult.usageBalancingReason
+            fallbackApplied: stagedResult.effortFallback
         )
         let fallbackAudit = AgentAutomationTurnAudit.Feature(
             configured: true,
@@ -244,7 +245,7 @@ extension AgentModeViewModel {
             }
             return result
         case .abstained, .failed:
-            return await submitUserTurnAfterUsageBalancing(
+            return await submitUserTurnAfterAutoEffort(
                 text: text, claim: claim, session: session, destinationTabID: destinationTabID,
                 routerAudit: fallbackAudit
             )
@@ -255,7 +256,7 @@ extension AgentModeViewModel {
 
     /// A routed fresh task already received its initial effort from Model Router. All other
     /// eligible user turns use the same decision path, whether sent by the composer or MCP.
-    func submitUserTurnAfterAutoEffort(
+    private func submitUserTurnAfterAutoEffort(
         text: String,
         claim: AgentComposerSubmitClaim,
         session: TabSession,
@@ -278,15 +279,6 @@ extension AgentModeViewModel {
         let selection = choice.selection
         guard composerSubmitClaimIsCurrent(claim), sessions[destinationTabID] === session
         else { return .blocked(message: Self.staleComposerSubmitTargetMessage) }
-        if let routerAudit, routerAudit.usageBalancingReason != nil {
-            guard modelRouterSettingsStore.modelRouterConfiguration().usageBalancing.enabled,
-                  routerAudit.chosenModelRaw == session.selectedModelRaw,
-                  routerAudit.usageBalancingProviderRaw == session.selectedAgent.rawValue,
-                  routerAudit.chosenEffortRaw == session.selectedReasoningEffortRaw
-            else {
-                return .blocked(message: "The usage-balanced selection changed before submission. Send again with the current selection.")
-            }
-        }
         let result = submitUserTurn(
             text: text,
             tabID: destinationTabID,
@@ -422,20 +414,15 @@ extension AgentModeViewModel {
 
     func routeSubagentTargetIfEnabled(
         task: String,
-        surface: AgentModelCatalog.AgentSelectionSurface,
-        baseline: AgentRoutingExecutableTarget? = nil,
-        allowUsageBalance: Bool = true
+        surface: AgentModelCatalog.AgentSelectionSurface
     ) async throws -> AgentRoutingExecutableTarget? {
         let configuration = modelRouterSettingsStore.modelRouterConfiguration()
-        let fallback = { [self] in
-            baseline.flatMap { allowUsageBalance ? localUsageDecision(basedOn: $0, scope: .subagent, surface: surface)?.candidate.target : nil }
-        }
-        guard configuration.enabled else { return fallback() }
+        guard configuration.enabled else { return nil }
         guard let runtime = modelRouterRuntime,
               configuration.validity == .valid,
               let backendID = configuration.selectedBackendID,
               runtime.isBackendReady(backendID)
-        else { return fallback() }
+        else { return nil }
         let result = await routeModelThenEffort(
             requestID: UUID(),
             text: task,
@@ -444,8 +431,7 @@ extension AgentModeViewModel {
             providers: providers(for: .subagent, configuration: configuration),
             configuration: configuration,
             backendID: backendID,
-            runtime: runtime,
-            allowUsageBalance: allowUsageBalance
+            runtime: runtime
         )
         guard modelRouterConfigurationIsCurrent(configuration, backendID: backendID) else {
             throw GlobalModelRoutingError.stale
@@ -456,7 +442,7 @@ extension AgentModeViewModel {
         case .cancelled:
             throw GlobalModelRoutingError.cancelled
         case .abstained, .failed:
-            return fallback()
+            return nil
         }
     }
 
@@ -468,8 +454,7 @@ extension AgentModeViewModel {
         providers: Set<AgentProviderKind>,
         configuration: AgentTaskRouterConfiguration,
         backendID: AgentTaskRouterBackendID,
-        runtime: AgentTaskRouterRuntime,
-        allowUsageBalance: Bool = true
+        runtime: AgentTaskRouterRuntime
     ) async -> StagedTaskRoutingResult {
         let builder = AgentTaskRoutingCandidateBuilder()
         let routingText = AgentTaskRoutingTaskExcerpt.make(from: text)
@@ -485,8 +470,7 @@ extension AgentModeViewModel {
             )
         }
 
-        var selectedModel: AgentTaskRoutingCandidateBuilder.Candidate
-        var usageBalancingReason: String?
+        let selectedModel: AgentTaskRoutingCandidateBuilder.Candidate
         var modelEvidence: AgentTaskRoutingDecisionEvidence?
         var judgmentRequested = false
         if models.count == 1 {
@@ -512,13 +496,6 @@ extension AgentModeViewModel {
             else { return StagedTaskRoutingResult(candidates: models, outcome: modelOutcome, judgmentRequested: true) }
             selectedModel = match
             modelEvidence = evidence
-            if allowUsageBalance, configuration.usageBalancing.enabled, !Task.isCancelled,
-               modelRouterConfigurationIsCurrent(configuration, backendID: backendID), let advisor = runtime.usageBalancer
-            {
-                let decision = advisor.choose(selected: match, candidates: models, evidence: evidence, configuration: configuration)
-                selectedModel = decision.candidate
-                usageBalancingReason = decision.reason
-            }
         }
 
         guard !Task.isCancelled else {
@@ -528,13 +505,11 @@ extension AgentModeViewModel {
             candidates: models,
             outcome: .selected(opaqueKey: selectedModel.opaqueKey, evidence: modelEvidence),
             judgmentRequested: judgmentRequested,
-            effortFallback: true,
-            usageBalancingReason: usageBalancingReason
+            effortFallback: true
         )
         guard let efforts = try? builder.buildEfforts(
             for: selectedModel,
-            availability: modelRouterAvailabilityContext,
-            allowPaidFast: configuration.allowPaidFastRouting
+            availability: modelRouterAvailabilityContext
         ), let firstEffort = efforts.first else {
             return modelFallback
         }
@@ -542,8 +517,7 @@ extension AgentModeViewModel {
             return StagedTaskRoutingResult(
                 candidates: efforts,
                 outcome: .selected(opaqueKey: firstEffort.opaqueKey, evidence: nil),
-                judgmentRequested: judgmentRequested,
-                usageBalancingReason: usageBalancingReason
+                judgmentRequested: judgmentRequested
             )
         }
         guard let effortRequest = try? AgentTaskRoutingEnvelopeBuilder().build(
@@ -559,10 +533,8 @@ extension AgentModeViewModel {
         judgmentRequested = true
         let effortOutcome = await runtime.coordinator.route(backendID: backendID, request: effortRequest)
         switch effortOutcome {
-        case let .selected(key, _):
-            guard let target = efforts.only(where: { $0.opaqueKey == key })?.target,
-                  configuration.allowPaidFastRouting || !AgentTaskRoutingCandidateBuilder.isPaidFast(target) else { return modelFallback }
-            return StagedTaskRoutingResult(candidates: efforts, outcome: effortOutcome, judgmentRequested: true, usageBalancingReason: usageBalancingReason)
+        case .selected:
+            return StagedTaskRoutingResult(candidates: efforts, outcome: effortOutcome, judgmentRequested: true)
         case .cancelled:
             return StagedTaskRoutingResult(candidates: models, outcome: .cancelled, judgmentRequested: judgmentRequested)
         case .abstained, .failed:
@@ -570,8 +542,7 @@ extension AgentModeViewModel {
                 candidates: modelFallback.candidates,
                 outcome: modelFallback.outcome,
                 judgmentRequested: true,
-                effortFallback: true,
-                usageBalancingReason: usageBalancingReason
+                effortFallback: true
             )
         }
     }
@@ -618,7 +589,7 @@ extension AgentModeViewModel {
         }
     }
 
-    func freshTaskRoutingEligibility(session: TabSession, text: String?) -> Bool {
+    private func freshTaskRoutingEligibility(session: TabSession, text: String?) -> Bool {
         guard isModelRouterEligibleFirstSendDestination(session),
               session.providerSessionID == nil,
               session.codexConversationID == nil,
@@ -656,7 +627,7 @@ extension AgentModeViewModel {
         )
     }
 
-    func executableTarget(for session: TabSession) -> AgentRoutingExecutableTarget {
+    private func executableTarget(for session: TabSession) -> AgentRoutingExecutableTarget {
         AgentRoutingExecutableTarget(
             agentRaw: session.selectedAgent.rawValue,
             modelRaw: session.selectedModelRaw,
@@ -665,7 +636,7 @@ extension AgentModeViewModel {
         )
     }
 
-    func applyRoutingTarget(_ target: AgentRoutingExecutableTarget, to session: TabSession) -> Bool {
+    private func applyRoutingTarget(_ target: AgentRoutingExecutableTarget, to session: TabSession) -> Bool {
         guard let agent = AgentProviderKind(rawValue: target.agentRaw),
               AgentModelCatalog.isAgentAvailable(agent, availability: modelRouterAvailabilityContext)
         else { return false }
@@ -680,15 +651,11 @@ extension AgentModeViewModel {
     }
 
     private func restoreRoutingSelection(_ rollback: RoutedSelectionRollback, on session: TabSession) {
-        restoreUsageStartingTarget(rollback.target, on: session)
-    }
-
-    func restoreUsageStartingTarget(_ target: AgentRoutingExecutableTarget, on session: TabSession) {
-        guard let agent = AgentProviderKind(rawValue: target.agentRaw) else { return }
+        guard let agent = AgentProviderKind(rawValue: rollback.target.agentRaw) else { return }
         session.selectedAgent = agent
-        session.selectedModelRaw = target.modelRaw
-        session.selectedReasoningEffortRaw = target.reasoningEffortRaw
-        session.acpModelParameterSelections = target.modelParameters
+        session.selectedModelRaw = rollback.target.modelRaw
+        session.selectedReasoningEffortRaw = rollback.target.reasoningEffortRaw
+        session.acpModelParameterSelections = rollback.target.modelParameters
         if session.tabID == currentTabID {
             applySessionToBindings(session)
         }

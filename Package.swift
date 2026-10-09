@@ -53,7 +53,6 @@ var repoPromptAppDependencies: [Target.Dependency] = [
     "RepoPromptVCS",
     "RepoPromptPersistence",
     "RepoPromptSettingsCore",
-    "RepoPromptProviderQuota",
     "RepoPromptCodeMapCore",
     "RepoPromptRegexCore",
     "RepoPromptWorkspaceCore",
@@ -93,7 +92,6 @@ var repoPromptTestDependencies: [Target.Dependency] = [
     "RepoPromptVCS",
     "RepoPromptPersistence",
     "RepoPromptSettingsCore",
-    "RepoPromptProviderQuota",
     "RepoPromptDomainRuntime",
     "RepoPromptCodeMapCore",
     "RepoPromptMCPCore",
@@ -137,18 +135,6 @@ let package = Package(
             name: "RepoPrompt",
             dependencies: ["RepoPromptApp"],
             path: "Sources/RepoPromptExecutable"
-        ),
-        .target(
-            name: "RepoPromptProviderQuota",
-            dependencies: [],
-            path: "Sources/RepoPromptProviderQuota",
-            swiftSettings: swift6LanguageMode
-        ),
-        .testTarget(
-            name: "RepoPromptProviderQuotaTests",
-            dependencies: ["RepoPromptProviderQuota"],
-            path: "Tests/RepoPromptProviderQuotaTests",
-            swiftSettings: swift6LanguageMode
         ),
         .target(
             name: "RepoPromptDomainRuntime",
@@ -222,13 +208,13 @@ let package = Package(
         ),
         .testTarget(
             name: "RepoPromptSettingsCoreTests",
-            dependencies: ["RepoPromptSettingsCore", "RepoPromptProviderQuota"],
+            dependencies: ["RepoPromptSettingsCore"],
             path: "Tests/RepoPromptSettingsCoreTests",
             swiftSettings: [.define("DEBUG", .when(configuration: .debug))]
         ),
         .target(
             name: "RepoPromptSettingsCore",
-            dependencies: ["RepoPromptFoundation", "RepoPromptDomainRuntime", "RepoPromptProviderQuota", "RepoPromptShared"],
+            dependencies: ["RepoPromptFoundation", "RepoPromptDomainRuntime", "RepoPromptShared"],
             path: "Sources/RepoPromptSettingsCore",
             swiftSettings: repoPromptSettingsCoreSwiftSettings
         ),
