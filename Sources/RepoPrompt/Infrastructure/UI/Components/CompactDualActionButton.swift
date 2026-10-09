@@ -95,6 +95,7 @@ struct CompactDualActionButton: View {
                     .frame(width: 24)
                     .contentShape(Rectangle())
             }
+            .accessibilityLabel("\(label) secondary action")
             .buttonStyle(PlainButtonStyle())
             .background(backgroundForPart(isHovering: isHoveringSecondaryPart, isPressed: isPressedSecondary))
             .onHover { hovering in
@@ -124,7 +125,6 @@ struct CompactDualActionButton: View {
         .scaleEffect((isPressedMain || isPressedSecondary) ? 0.98 : 1.0)
         .animation(.easeInOut(duration: 0.1), value: isPressedMain || isPressedSecondary)
         .hoverTooltip(helpText)
-        .accessibilityLabel(helpText ?? "\(label) secondary action")
     }
 
     // MARK: - Backgrounds
