@@ -470,6 +470,7 @@ struct ToolCardCancelButton: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
+        .accessibilityLabel("Cancel Tool Execution")
     }
 }
 
