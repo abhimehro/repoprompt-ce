@@ -1,6 +1,6 @@
 # Open-Source and Release Readiness Notes
 
-Current as of 2026-09-17. This is a contributor/maintainer inventory for RepoPrompt CE's public-readiness work. It documents the current state and follow-ups; it is not legal advice or a substitute for legal review.
+Current as of 2026-10-04. This is a contributor/maintainer inventory for RepoPrompt CE's public-readiness work. It documents the current state and follow-ups; it is not legal advice or a substitute for legal review.
 
 ## Release metadata and signing
 
@@ -8,13 +8,13 @@ Release/debug packaging currently derives app identity from [`version.env`](../v
 
 - `APP_NAME=RepoPrompt`
 - `DISPLAY_NAME="RepoPrompt CE"`
-- `MARKETING_VERSION=1.4.1`
-- `BUILD_NUMBER=37`
+- `MARKETING_VERSION=1.5.0`
+- `BUILD_NUMBER=38`
 - `BUNDLE_ID=com.pvncher.repoprompt.ce`
 - `SIGNING_TEAM_ID=648A27MST5`
 
 RepoPrompt CE continues the public CE release line from `version.env` (currently
-`1.4.1 (37)`). The separate CE
+`1.5.0 (38)`). The separate CE
 bundle identifier, Sparkle key pair, and appcast intentionally do not inherit
 the closed app's version history. Treat these values as maintainer-owned
 release metadata. Contributors should not change bundle IDs, signing team IDs,
