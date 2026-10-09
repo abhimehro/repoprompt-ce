@@ -190,7 +190,10 @@ public struct MCPTerminalRecord: Codable, Equatable, Sendable {
         let standaloneSecretPatterns = [
             #"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+"#,
             #"\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b"#,
-            #"\bsk-[a-zA-Z0-9_-]{16,}\b"#
+            #"\bsk-[a-zA-Z0-9_-]{16,}\b"#,
+            #"\bgh[pousr]_[A-Za-z0-9]{16,}\b"#,
+            #"\bxox[abposr]-[A-Za-z0-9-]{10,}\b"#,
+            #"\bAKIA[0-9A-Z]{16}\b"#
         ]
         for pattern in standaloneSecretPatterns {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
