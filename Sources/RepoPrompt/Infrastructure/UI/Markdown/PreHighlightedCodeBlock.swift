@@ -39,6 +39,8 @@ struct PreHighlightedCodeBlock: View {
                     )
             }
             .buttonStyle(.plain)
+            .hoverTooltip("Copy code to clipboard")
+            .accessibilityLabel("Copy code to clipboard")
             .padding(8)
             .onHover { hovering in
                 withAnimation(.easeInOut(duration: 0.1)) {
