@@ -179,6 +179,7 @@ struct AgentModelsSettingsView: View {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "info.circle")
                             .foregroundColor(.secondary)
+                            .accessibilityHidden(true)
                         Text(viewModel.noWorkspaceExplanation)
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -446,6 +447,7 @@ struct AgentModelsSettingsView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "info.circle")
                         .foregroundColor(.secondary)
+                        .accessibilityHidden(true)
                     Text("Connect a CLI agent to configure Context Builder.")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -545,6 +547,7 @@ struct AgentModelsSettingsView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "info.circle")
                         .foregroundColor(.secondary)
+                        .accessibilityHidden(true)
                     Text("Connect Claude Code, Codex, OpenCode, Cursor, or Grok Build to configure role defaults.")
                         .font(.caption)
                         .foregroundColor(.secondary)
