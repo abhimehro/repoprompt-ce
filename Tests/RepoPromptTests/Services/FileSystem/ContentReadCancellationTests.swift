@@ -2757,7 +2757,7 @@ final class ContentReadCancellationTests: XCTestCase {
             if await predicate() {
                 return true
             }
-            await Task.yield()
+            try? await Task.sleep(nanoseconds: 500_000)
         }
         return await predicate()
     }
