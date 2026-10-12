@@ -13,7 +13,8 @@ enum ClaudeReasoningExtractionFeature {
         static func append(_ line: String) {
             lock.lock()
             defer { lock.unlock() }
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            // Direct Date().formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
+            let timestamp = Date().formatted(.iso8601)
             let payload = "\(timestamp) \(line)\n"
             guard let data = payload.data(using: .utf8) else { return }
             let fileManager = FileManager.default
