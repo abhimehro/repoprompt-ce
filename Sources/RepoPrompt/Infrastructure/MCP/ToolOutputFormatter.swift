@@ -5611,17 +5611,17 @@ extension ToolOutputFormatter {
         if isoDate.count >= 10 {
             let prefix = isoDate.prefix(10)
             let chars = Array(prefix)
-            if chars[4] == "-" && chars[7] == "-" &&
-               chars[0].isNumber && chars[1].isNumber && chars[2].isNumber && chars[3].isNumber &&
-               chars[5].isNumber && chars[6].isNumber &&
-               chars[8].isNumber && chars[9].isNumber {
+            let isYear = chars[0].isNumber && chars[1].isNumber && chars[2].isNumber && chars[3].isNumber
+            let isMonth = chars[5].isNumber && chars[6].isNumber
+            let isDay = chars[8].isNumber && chars[9].isNumber
+            if chars[4] == "-", chars[7] == "-", isYear, isMonth, isDay {
                 return String(prefix)
             }
         }
         let parsedDate: Date? = (try? Date(isoDate, strategy: .iso8601))
             ?? (try? Date(isoDate, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
         if let date = parsedDate {
-            return date.formatted(Date.ISO8601FormatStyle().year().month().day())
+            return String(date.formatted(.iso8601).prefix(10))
         }
         return isoDate
     }
