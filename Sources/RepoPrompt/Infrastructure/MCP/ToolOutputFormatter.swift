@@ -5597,44 +5597,31 @@ extension ToolOutputFormatter {
     // MARK: Git Date Helpers
 
     private static func formatGitDate(_ isoDate: String) -> String {
-        // Try to parse ISO8601 and format nicely, fallback to raw string
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateStyle = .medium
-            display.timeStyle = .short
-            return display.string(from: date)
-        }
-        // Try without fractional seconds
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateStyle = .medium
-            display.timeStyle = .short
-            return display.string(from: date)
+        // Fast path: try parsing ISO8601 using Swift Foundation strategy without allocating ISO8601DateFormatter
+        let parsedDate: Date? = (try? Date(isoDate, strategy: .iso8601))
+            ?? (try? Date(isoDate, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+        if let date = parsedDate {
+            return date.formatted(date: .medium, time: .short)
         }
         return isoDate
     }
 
     private static func formatGitDateShort(_ isoDate: String) -> String {
-        // Short date only (for blame)
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateFormat = "yyyy-MM-dd"
-            return display.string(from: date)
-        }
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: isoDate) {
-            let display = DateFormatter()
-            display.dateFormat = "yyyy-MM-dd"
-            return display.string(from: date)
-        }
-        // Fallback: try to extract just the date part
+        // Fast path: if isoDate starts with YYYY-MM-DD, prefix(10) is already the short date
         if isoDate.count >= 10 {
-            return String(isoDate.prefix(10))
+            let prefix = isoDate.prefix(10)
+            let chars = Array(prefix)
+            if chars[4] == "-" && chars[7] == "-" &&
+               chars[0].isNumber && chars[1].isNumber && chars[2].isNumber && chars[3].isNumber &&
+               chars[5].isNumber && chars[6].isNumber &&
+               chars[8].isNumber && chars[9].isNumber {
+                return String(prefix)
+            }
+        }
+        let parsedDate: Date? = (try? Date(isoDate, strategy: .iso8601))
+            ?? (try? Date(isoDate, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+        if let date = parsedDate {
+            return date.formatted(Date.ISO8601FormatStyle().year().month().day())
         }
         return isoDate
     }
