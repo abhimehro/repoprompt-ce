@@ -2716,6 +2716,7 @@ final class ContentReadCancellationTests: XCTestCase {
             if snapshot.isIdle {
                 return snapshot
             }
+            try? await Task.sleep(nanoseconds: 500_000)
             await Task.yield()
         }
         return await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
@@ -2730,6 +2731,7 @@ final class ContentReadCancellationTests: XCTestCase {
             if predicate(snapshot) {
                 return snapshot
             }
+            try? await Task.sleep(nanoseconds: 500_000)
             await Task.yield()
         }
         return await limiter.snapshotForTesting()
@@ -2744,6 +2746,7 @@ final class ContentReadCancellationTests: XCTestCase {
             if predicate(snapshot) {
                 return snapshot
             }
+            try? await Task.sleep(nanoseconds: 500_000)
             await Task.yield()
         }
         return await cache.snapshotForTesting()
@@ -2757,6 +2760,7 @@ final class ContentReadCancellationTests: XCTestCase {
             if await predicate() {
                 return true
             }
+            try? await Task.sleep(nanoseconds: 500_000)
             await Task.yield()
         }
         return await predicate()
