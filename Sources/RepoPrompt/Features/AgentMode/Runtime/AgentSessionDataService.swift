@@ -19,26 +19,6 @@ enum AgentSessionDataError: Error {
     case noActiveWorkspace
 }
 
-// MARK: - Agent Session Metadata
-
-/// Lightweight metadata for agent session listing
-struct AgentSessionMeta {
-    let id: UUID
-    let composeTabID: UUID?
-    let name: String
-    let lastModified: Date
-    let itemCount: Int
-    let agentKind: String?
-    let agentModel: String?
-    let lastRunState: String?
-    let acpModelParameterSelections: [ACPModelParameterSelection]
-    let parentSessionID: UUID?
-    let createdByOverseerSessionID: UUID?
-    let isMCPOriginated: Bool
-    let worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary]
-    let activeWorktreeMergeSummaries: [AgentSessionWorktreeMergeSummary]
-}
-
 private actor AgentSessionDiskWriter {
     private struct PendingWrite {
         var pendingData: Data?
@@ -216,6 +196,9 @@ actor AgentSessionDataService {
         private var workspaceRootOverrideForTesting: URL?
         private var testWorktreeMergeReconciliationHooks: AgentSessionWorktreeMergeReconciliationHooks?
         private var testBeforeLoadRepairWriteHook: (@Sendable (URL) async -> Void)?
+        private var testBeforeDeletionAdmissionHook: (@Sendable (URL) async -> Void)?
+        /// Passive gate run inside `preparePersistedHydration` once the load result is known.
+        private var testAfterHydrationPrepareHook: (@Sendable (UUID) async throws -> Void)?
     #endif
     private var metadataIndexReconciliationTasksByFolder: [URL: MetadataIndexReconciliationTaskState] = [:]
     private var metadataIndexReconciledThisProcess: Set<URL> = []
@@ -274,6 +257,8 @@ actor AgentSessionDataService {
         let codexMcpSessionKey: String?
         let parentSessionID: UUID?
         let createdByOverseerSessionID: UUID?
+        let organizationalParentID: UUID?
+        let delegationScopeID: UUID?
         let worktreeBindings: [AgentSessionWorktreeBinding]?
         let worktreeMergeOperations: [AgentSessionWorktreeMergeOperation]?
         let pendingHandoffPayload: String?
@@ -1156,7 +1141,9 @@ actor AgentSessionDataService {
     }
 
     func metadataRecordForSessionID(_ id: UUID, for workspace: WorkspaceModel) async throws -> AgentSessionMetadataRecord? {
-        let folder = try ensureAgentSessionsFolder(for: workspace)
+        // Exact metadata lookup is a read, including for a workspace with no sessions directory.
+        // Oversight uses it before consent; it must not create folders or normalize saved state.
+        let folder = resolvedWorkspaceFolderURL(for: workspace).appendingPathComponent("AgentSessions")
         let fileURL = agentSessionFileURL(id: id, in: folder)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return nil
@@ -1501,6 +1488,8 @@ actor AgentSessionDataService {
                 codexMcpSessionKey: header.codexMcpSessionKey,
                 parentSessionID: header.parentSessionID,
                 createdByOverseerSessionID: header.createdByOverseerSessionID,
+                organizationalParentID: header.organizationalParentID,
+                delegationScopeID: header.delegationScopeID,
                 pendingHandoffPayload: header.pendingHandoffPayload,
                 pendingHandoffCreatedAt: header.pendingHandoffCreatedAt,
                 pendingHandoffSourceItemID: header.pendingHandoffSourceItemID,
@@ -1843,11 +1832,17 @@ actor AgentSessionDataService {
     ///    await, so no metadata cleanup, next batch file, or view-model teardown can run while the
     ///    session still looks alive to oversight.
     private func deleteSessionFileDurably(sessionID: UUID, fileURL: URL) async throws {
-        // The local tombstone is inserted synchronously on actor entry, exactly as before, so the
-        // reporter's actor hop cannot open a window in which a concurrent save is still accepted.
+        #if DEBUG
+            if let testBeforeDeletionAdmissionHook {
+                await testBeforeDeletionAdmissionHook(fileURL)
+            }
+        #endif
+        // Admission must precede the local tombstone: post-write cleanup can remove a tombstoned
+        // file, so even that cleanup needs an attempt counted by the termination fence. Saves that
+        // enter during this hop are covered by the writer drain and the existing post-write checks.
+        let attempt = try await AgentSessionDurableDeletionReporter.beginDurableDeletion(sessionID: sessionID)
         deletedSessionFileURLs.insert(fileURL)
         deletionAttemptCountByFileURL[fileURL, default: 0] += 1
-        let attempt = await AgentSessionDurableDeletionReporter.beginDurableDeletion(sessionID: sessionID)
         #if DEBUG
             let tombstoneWaiters = deletionTombstoneWaitersByURL.removeValue(forKey: fileURL) ?? []
             for waiter in tombstoneWaiters {
@@ -1901,6 +1896,10 @@ actor AgentSessionDataService {
             await diskWriter.test_setBeforeWriteHook(hook)
         }
 
+        func test_setBeforeDeletionAdmissionHook(_ hook: (@Sendable (URL) async -> Void)?) {
+            testBeforeDeletionAdmissionHook = hook
+        }
+
         func test_setWorktreeMergeReconciliationHooks(
             _ hooks: AgentSessionWorktreeMergeReconciliationHooks?
         ) {
@@ -1909,6 +1908,16 @@ actor AgentSessionDataService {
 
         func test_setBeforeLoadRepairWriteHook(_ hook: (@Sendable (URL) async -> Void)?) {
             testBeforeLoadRepairWriteHook = hook
+        }
+
+        /// Holds or fails real hydration preparation after its disk result is known (nil or payload);
+        /// it never alters the prepared result. Fixtures must reset it to nil.
+        func test_setAfterHydrationPrepareHook(_ hook: (@Sendable (UUID) async throws -> Void)?) {
+            testAfterHydrationPrepareHook = hook
+        }
+
+        func runAfterHydrationPrepareHookForTesting(sessionID: UUID) async throws {
+            try await testAfterHydrationPrepareHook?(sessionID)
         }
 
         func test_waitUntilDeletionTombstone(for fileURL: URL) async {

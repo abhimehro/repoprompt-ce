@@ -581,9 +581,12 @@ struct AgentSessionLinkMCPToolService {
     /// The bridge owns authority and sequencing; this surface owns only parsing and receipts.
     private func executeCreateLane(args: [String: Value]) async throws -> Value {
         let observerEndpoint = try await resolveCallerEndpointIdentity()
-        if let refusal = await bridge.laneCreationCallerPreflight(observerEndpoint) {
+        if let refusal = await bridge.laneCreationCallerPreflight(
+            observerEndpoint,
+            idempotencyKey: args["idempotency_key"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        ) {
             if refusal == .denied { throw Self.unavailableError }
-            return AgentSessionLaneMCPToolService.refusal(refusal.rawValue)
+            return AgentSessionLaneMCPToolService.refusal(refusal)
         }
         let key = try Self.parseIdempotencyKey(args["idempotency_key"], op: "create_lane")
         guard args["role"] == nil || args["model_id"] == nil else {
@@ -634,7 +637,6 @@ struct AgentSessionLinkMCPToolService {
         } else {
             workspaceSelector = nil
         }
-        let callerWindow = try requireTargetWindow()
         let receipt = await bridge.createLane(
             observerEndpoint: observerEndpoint,
             request: AgentSessionLaneCreateRequest(
@@ -648,8 +650,10 @@ struct AgentSessionLinkMCPToolService {
             ),
             resolveDestination: {
                 AgentSessionLaneMCPToolService.resolveDestination(
-                    workspaceSelector: workspaceSelector, callerWindow: callerWindow
-                ).map { (windowID: $0.windowID, workspaceID: $0.workspaceID, workspaceName: $0.workspaceName) }
+                    workspaceSelector: workspaceSelector,
+                    callerWindowID: observerEndpoint.windowID,
+                    callerWorkspaceID: observerEndpoint.workspaceID
+                )
             }
         )
         if receipt.reason == .denied { throw Self.unavailableError }
@@ -1708,7 +1712,7 @@ struct AgentSessionLinkMCPToolService {
 
     /// Denial for a caller that holds no oversight authority at all.
     static let unavailableError = MCPError.invalidParams(
-        "agent_session_link is not available for this session."
+        "agent_session_link is not available for this session on this exact route. From a supported Agent Mode session, call become_overseer with the exact target session_id and optional message to request one target-scoped approval and automatic preparation/link/dispatch without another user turn. session_admin scope_status lists operations and current grants when available. Activation alone grants no target authority."
     )
 
     static func outboundOperationUnavailableError(_ operation: String) -> MCPError {
@@ -2238,7 +2242,7 @@ enum AgentSessionLinkResponseRenderer {
              .endpointMissingWorkspace, .endpointReadiness, .endpointStopFence,
              .endpointPostSession, .endpointPostObserver, .endpointPostTarget,
              .endpointPostWindow, .endpointPostReadiness,
-             .targetLoading, .targetNotIdle, .shuttingDown, .notSupported,
+             .targetLoading, .targetRestoreUnavailable, .targetCreationIncomplete, .targetNotIdle, .shuttingDown, .notSupported,
              .noProviderSession, .managementRevoked, .targetAwaitingInteraction, .targetBusy, .targetStopped,
              .steerUnavailable, .steerNotAccepted, .steerUnconfirmed:
             failure.message

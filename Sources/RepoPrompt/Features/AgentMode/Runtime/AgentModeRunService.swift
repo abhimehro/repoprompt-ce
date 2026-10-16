@@ -136,6 +136,16 @@ final class AgentModeRunService {
         )
     }
 
+    func oracleToolSettlementCallbacks(
+        session: AgentTabSession,
+        invocationID: UUID,
+        toolName: String,
+        isOwnerCurrent: @escaping @MainActor @Sendable () -> Bool
+    ) -> OracleToolSettlementCallbacks? {
+        guard session.selectedAgent.acpProviderID != nil else { return nil }
+        return acpRunner.oracleToolSettlementCallbacks(session: session, invocationID: invocationID, toolName: toolName, isOwnerCurrent: isOwnerCurrent)
+    }
+
     /// Whether this session's run pipeline sends `command` as its exact native text.
     ///
     /// Claude Code always does. An ACP session does only while its live controller advertises the
@@ -184,6 +194,10 @@ final class AgentModeRunService {
             return nil
         }
         assert(session.tabID == tabID, "AgentModeRunService.startRun requires the originating tab ID to match the AgentTabSession tab ID")
+        if let message = session.operationAdmissionFailureMessage {
+            startOutcome?.recordStartFailure(message: message)
+            return session.selectedAgent == .codexExec ? .preDispatchRejected(message: message) : nil
+        }
         let selectedAgent = session.selectedAgent
         if let selfCompactDispatchID {
             guard session.selfCompactState.active?.id == selfCompactDispatchID.requestID,
@@ -345,6 +359,7 @@ final class AgentModeRunService {
         targetRunAttemptID: UUID?,
         targetController: ACPAgentSessionController
     ) async -> Bool {
+        guard session.operationAdmissionFailureMessage == nil else { return false }
         let selectedAgent = session.selectedAgent
         let runtimePermission = dependencies.providerRuntimePermissionResolver(selectedAgent, session.permissionProfile)
         guard selectedAgent.acpProviderID != nil,
@@ -781,7 +796,7 @@ final class AgentModeRunService {
         _ managed: AgentTabSession.ACPSteeringManagedContext,
         session: AgentTabSession
     ) -> Bool {
-        let candidate = managed.candidate
+        let candidate = managed.endpoint
         return session.tabID == candidate.tabID
             && session.activeAgentSessionID == candidate.sessionID
             && session.persistentSessionBindingIdentity?.generation == candidate.persistentBindingGeneration

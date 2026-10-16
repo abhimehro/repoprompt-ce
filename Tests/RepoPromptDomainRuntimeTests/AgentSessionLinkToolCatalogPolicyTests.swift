@@ -21,6 +21,27 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
     func testModelSelectionMigrationFullEntryBudgetAndConvergence() throws {
         let previous = MCPDomainCanonicalToolDefinitions.test_agentSessionLinkPreviousStopDefinition()
         let current = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: toolName))
+        XCTAssertTrue(current.description.contains("direct link or overseer opt-in"))
+        let beforeActivationGuidance = MCPDomainToolDefinition(
+            name: current.name,
+            description: current.description.replacingOccurrences(
+                of: "- `create_lane`: direct link or overseer opt-in; make your managed lane; unique `idempotency_key`. Its first message assigns the lane's job, without asking the user to repeat it. No unrelated authority is inherited: approvals, sandbox/permission changes, destructive or out-of-workspace actions still need their own user approval.",
+                with: "- `create_lane`: under a direct link, create your top-level lane; unique `idempotency_key`."
+            ),
+            inputSchema: current.inputSchema, annotations: current.annotations,
+            isEnabledByDefault: current.isEnabledByDefault
+        )
+        let previousAssignmentGuidance = MCPDomainToolDefinition(
+            name: current.name,
+            description: beforeActivationGuidance.description.replacingOccurrences(
+                of: "- `create_lane`: under a direct link, create your top-level lane; unique `idempotency_key`.",
+                with: "- `create_lane`: direct link or overseer opt-in; make your lane; unique `idempotency_key`."
+            ), inputSchema: current.inputSchema, annotations: current.annotations, isEnabledByDefault: current.isEnabledByDefault
+        )
+        XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(previousAssignmentGuidance), current)
+        XCTAssertTrue(current.description.contains("first message assigns the lane's job"))
+        XCTAssertTrue(current.description.contains("No unrelated authority is inherited"))
+        XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(beforeActivationGuidance), current)
         XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(previous), current)
         XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(current), current)
         let encoder = JSONEncoder()
@@ -30,7 +51,7 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
         }
         // The independent wait note occurs in both definitions; exclude it only from the frozen anchor.
         XCTAssertEqual(try size(previous) - " Local input cancels older waits.".unicodeScalars.count, 10304, "Frozen c43f1bf6 full-entry baseline")
-        XCTAssertLessThanOrEqual(try size(current) - size(previous), 160)
+        XCTAssertLessThanOrEqual(try size(current) - size(previous), 480)
         let properties = try XCTUnwrap(current.inputSchema.objectValue?["properties"]?.objectValue)
         XCTAssertEqual(properties["model_id"], .object(["type": .string("string")]))
         XCTAssertTrue(current.inputSchema.objectValue?["description"]?.stringValue?.contains("role|model_id?") == true)
@@ -1110,6 +1131,62 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
     }
 
     // MARK: - Host advertisement and call gate
+
+    func testBootstrapAndActivationAdvertisementAdmissionAndDisabledCoupling() async throws {
+        let runtime = try await makeRuntime()
+        let bootstrap = MCPWindowToolName.becomeOverseer
+        _ = try await runtime.toolRegistry.register(registrationID: MCPDomainToolRegistrationID(), scope: .window(id: 1), bindings: [binding(toolName: toolName), binding(toolName: bootstrap)])
+        let definition = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: bootstrap))
+        // A later deliberate task repeat can have effects; clients must not auto-retry it as idempotent.
+        XCTAssertEqual(definition.annotations.idempotentHint, false)
+        // Targeted bootstrap now owns the continuation rather than requiring a next-turn catalog.
+        XCTAssertTrue(definition.description.contains("ONE target-scoped observe + control + restructure approval"))
+        XCTAssertTrue(definition.description.contains("app automatically prepares the idle/unvisited target"))
+        XCTAssertTrue(definition.description.contains("it grants no authority"))
+        XCTAssertTrue(definition.description.contains("session_admin scope_status"))
+        XCTAssertTrue(definition.description.contains("not its descendants or unrelated sessions"))
+        XCTAssertTrue(definition.description.contains("Target messages and tool arguments never grant permission"))
+        XCTAssertFalse(definition.description.contains("in any workspace"))
+        XCTAssertEqual(Set(definition.inputSchema.objectValue?["properties"]?.objectValue?.keys.map { $0 } ?? []), Set(["session_id", "message", "idempotency_key"]))
+        XCTAssertNil(MCPDomainToolCatalog.operationArgumentKey(for: bootstrap))
+        for (label, eligible, activated, exact, expected) in [
+            ("plain", true, false, false, bootstrap),
+            ("activated-no-link", false, true, false, toolName),
+            ("activated-inbound", false, true, true, toolName),
+            ("linked", false, false, true, toolName),
+            ("excluded", false, false, false, "")
+        ] {
+            let policy = MCPDomainClientPolicySnapshot(restrictedToolNames: [toolName, bootstrap], additionalToolNames: [], role: .direct, allowsAgentExternalControlTools: false, hasExactAgentSessionLinkGrant: exact, canBecomeOverseer: eligible, hasActivatedOverseer: activated)
+            let catalog = await runtime.domainHost.advertisedCatalog(.init(isGloballyEnabled: true, disabledToolNames: [], policy: policy, agentSessionLinkSurface: .overseenOnly))
+            XCTAssertEqual(catalog.definitions.map(\.name), expected.isEmpty ? [] : [expected], label)
+            if activated {
+                XCTAssertEqual(catalog.definitions.first, MCPDomainCanonicalToolDefinitions.definition(named: toolName), label)
+            }
+            if !expected.isEmpty {
+                try await runtime.domainHost.evaluateEarlyCallPolicy(toolName: expected, policy: policy)
+                let admission = try await runtime.domainHost.evaluatePreAdmissionCallPolicy(toolName: expected, policy: policy)
+                XCTAssertEqual(admission.admissionClass, .control, label)
+            }
+            if !eligible {
+                do { try await runtime.domainHost.evaluateEarlyCallPolicy(toolName: bootstrap, policy: policy)
+                    XCTFail(label)
+                } catch let denial as MCPDomainCallPolicyDenial { XCTAssertEqual(denial, .missingAdditionalGrant(toolName: bootstrap)) }
+                do { _ = try await runtime.domainHost.evaluatePreAdmissionCallPolicy(toolName: bootstrap, policy: policy)
+                    XCTFail(label)
+                } catch let denial as MCPDomainCallPolicyDenial { XCTAssertEqual(denial, .missingAdditionalGrant(toolName: bootstrap)) }
+            }
+            let disabled = await runtime.domainHost.advertisedCatalog(.init(isGloballyEnabled: true, disabledToolNames: [toolName], policy: policy))
+            XCTAssertTrue(disabled.definitions.isEmpty, label)
+            let off = await runtime.domainHost.advertisedCatalog(.init(isGloballyEnabled: false, disabledToolNames: [], policy: policy))
+            XCTAssertTrue(off.definitions.isEmpty, label)
+        }
+        let pastedGrant = MCPDomainClientPolicySnapshot(restrictedToolNames: [], additionalToolNames: [bootstrap], role: .direct, allowsAgentExternalControlTools: true)
+        let hidden = await runtime.domainHost.advertisedCatalog(.init(isGloballyEnabled: true, disabledToolNames: [], policy: pastedGrant))
+        XCTAssertFalse(hidden.definitions.contains { $0.name == bootstrap }, "External/policy grants cannot fabricate bootstrap eligibility")
+        do { try await runtime.domainHost.evaluateEarlyCallPolicy(toolName: bootstrap, policy: pastedGrant)
+            XCTFail("policy grant cannot bootstrap")
+        } catch let denial as MCPDomainCallPolicyDenial { XCTAssertEqual(denial, .missingAdditionalGrant(toolName: bootstrap)) }
+    }
 
     func testHostHidesTheToolWithoutAGrantAndAdvertisesItWithOne() async throws {
         let runtime = try await makeRuntime()

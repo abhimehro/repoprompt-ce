@@ -118,7 +118,7 @@ extension AgentModeViewModel {
         return .ready(token)
     }
 
-    private func agentSessionLinkHasActiveOutboundLink(
+    func agentSessionLinkHasActiveOutboundLink(
         _ endpoint: DomainAgentSessionLinkEndpointIdentity
     ) async -> Bool {
         #if DEBUG
@@ -309,12 +309,9 @@ extension AgentModeViewModel {
     /// Opens, holds, or closes the Codex session-link catalog-repair cycle for one exact accepted
     /// projection.
     ///
-    /// The condition being recognized is a *returned* catalog that says `agent_session_link` is
-    /// absent while the link authority says this exact endpoint still holds a live outbound grant.
-    /// `notifyToolListChangedForAgentSession` republishes precisely that pair when a restored grant
-    /// activates against a run whose client has not yet re-read `tools/list`, and
-    /// `agentSessionLinkPromptContext` then fails closed for the whole established run — so Auto-wake
-    /// is blocked behind a projection nothing in the existing pipeline can heal.
+    /// The exact client-shaped expected and returned oversight surfaces disagree. Invalidation
+    /// preserves returned evidence, so activation without links and same-name schema transitions
+    /// are discovered here without treating catalog state as prompt or target authority.
     ///
     /// Opening belongs here rather than in the coordinator because this is the only frame where the
     /// mismatch and the projection storage that produced it are visible in one synchronous MainActor
@@ -354,9 +351,7 @@ extension AgentModeViewModel {
         guard session.selectedAgent == .codexExec,
               AgentSessionLinkCodexCatalogRepair.isStuckProjection(projection),
               session.codexController != nil,
-              // Disablement is a reason not to repair, never a reason to reconnect: the returned
-              // catalog is then truthfully absent and the user asked for that.
-              ToolAvailabilityStore.shared.isEnabled(MCPWindowToolName.agentSessionLink)
+              agentSessionLinkCatalogRepairIsEnabled(for: session)
         else {
             return
         }
@@ -371,6 +366,21 @@ extension AgentModeViewModel {
             ))
         }
         codexCoordinator.codexRepairSessionLinkCatalogIfQuiescent(for: session)
+    }
+
+    /// Shared by opening and spending a repair cycle, so a later tool disablement is
+    /// rechecked. Scope-only administration discovery remains independent of oversight.
+    func agentSessionLinkCatalogRepairIsEnabled(for session: TabSession) -> Bool {
+        let availability = ToolAvailabilityStore.shared
+        if availability.isEnabled(MCPWindowToolName.agentSessionLink) { return true }
+        guard availability.isEnabled(MCPWindowToolName.sessionAdmin),
+              let endpoint = agentSessionLinkObserverEndpoint(tabID: session.tabID),
+              let projection = agentSessionLinkRunCatalogProjectionByEndpoint[endpoint],
+              projection.runID == session.runID else { return false }
+        return AgentSessionLinkCatalogSurface.differs(
+            toolName: MCPWindowToolName.sessionAdmin,
+            expected: projection.expectedSurface, returned: projection.returnedSurface
+        )
     }
 
     /// Stores one exact incarnation's passive status-notice queue.

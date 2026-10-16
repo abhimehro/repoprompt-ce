@@ -362,7 +362,16 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         let session = viewModel.session(for: tabID)
         session.selectedAgent = .codexExec
         session.hasLoadedPersistedState = true
-        let sessionID = try XCTUnwrap(viewModel.test_ensureSessionBoundToTab(session))
+        // Provider dispatch exercises an existing restored session, not first-save preparation.
+        let sessionID = UUID()
+        _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(
+            sessionID: sessionID, on: session, updateWorkspaceMetadata: true
+        ))
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        _ = try XCTUnwrap(
+            session.permitsBoundOperationAndSave ? session.currentRestorationBindingToken : nil,
+            "The fixture must establish restoration before exercising provider dispatch."
+        )
         let inventory = MonitorInventoryPublisher(
             viewModel: viewModel,
             observerSessionID: sessionID,
@@ -828,7 +837,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         )
         let note = "resume βeta\nwithout edits"
         var state = AgentSelfCompactState()
-        _ = state.reserve(note: note, idempotencyKey: "codex-native-note", owner: owner)
+        _ = state.reserve(note: note, idempotencyKey: "codex-native-note", maximumNoteUTF8Bytes: AgentSessionSelfCompactNotePolicy.fallbackMaximumUTF8Bytes, owner: owner)
         state.active?.phase = .dispatchingNote
         state.active?.compactProviderConversation = fixture.session.codexConversationID
         let dispatchID = try AgentSelfCompactionDispatchID(
@@ -1704,7 +1713,16 @@ final class AgentSessionLinkNativeAndHeadlessPromptAdapterTests: XCTestCase {
         let session = viewModel.session(for: tabID)
         session.selectedAgent = agent
         session.hasLoadedPersistedState = true
-        let sessionID = try XCTUnwrap(viewModel.test_ensureSessionBoundToTab(session))
+        // Provider dispatch exercises an existing restored session, not first-save preparation.
+        let sessionID = UUID()
+        _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(
+            sessionID: sessionID, on: session, updateWorkspaceMetadata: true
+        ))
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        _ = try XCTUnwrap(
+            session.permitsBoundOperationAndSave ? session.currentRestorationBindingToken : nil,
+            "The fixture must establish restoration before exercising provider dispatch."
+        )
         return Fixture(
             viewModel: viewModel,
             session: session,
@@ -2064,6 +2082,11 @@ final class AgentSessionLinkNativeAndHeadlessPromptAdapterTests: XCTestCase {
         session.selectedAgent = .claudeCode
         session.hasLoadedPersistedState = true
         session.testInstallPersistentSessionBinding(sessionID: UUID())
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        _ = try XCTUnwrap(
+            session.permitsBoundOperationAndSave ? session.currentRestorationBindingToken : nil,
+            "The fixture must establish restoration before exercising provider dispatch."
+        )
         session.installRunID(UUID())
         session.claudeController = fake
         let intent = try claudeRunIntent(for: session, source: "test.claude.lost-fake-refusal")
@@ -2096,7 +2119,7 @@ final class AgentSessionLinkNativeAndHeadlessPromptAdapterTests: XCTestCase {
         )
     }
 
-    func testClaudeNativeActiveSteeringFailsClosedWithoutRecyclingOwnedEventStream() async {
+    func testClaudeNativeActiveSteeringFailsClosedWithoutRecyclingOwnedEventStream() async throws {
         let controller = MonitorFakeNativeController()
         var factoryCalls = 0
         let coordinator = ClaudeAgentModeCoordinator(
@@ -2111,6 +2134,11 @@ final class AgentSessionLinkNativeAndHeadlessPromptAdapterTests: XCTestCase {
         session.selectedAgent = .claudeCode
         session.hasLoadedPersistedState = true
         session.testInstallPersistentSessionBinding(sessionID: UUID())
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        _ = try XCTUnwrap(
+            session.permitsBoundOperationAndSave ? session.currentRestorationBindingToken : nil,
+            "The fixture must establish restoration before exercising provider dispatch."
+        )
         let runID = UUID()
         session.installRunID(runID)
         session.runState = .running
@@ -2188,6 +2216,11 @@ final class AgentSessionLinkNativeAndHeadlessPromptAdapterTests: XCTestCase {
         session.selectedAgent = .claudeCode
         session.hasLoadedPersistedState = true
         session.testInstallPersistentSessionBinding(sessionID: UUID())
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        _ = try XCTUnwrap(
+            session.permitsBoundOperationAndSave ? session.currentRestorationBindingToken : nil,
+            "The fixture must establish restoration before exercising provider dispatch."
+        )
         let runID = UUID()
         session.installRunID(runID)
         session.runState = .running
@@ -2252,7 +2285,8 @@ final class AgentSessionLinkNativeAndHeadlessPromptAdapterTests: XCTestCase {
         XCTAssertEqual(firstSentCount, 0)
         XCTAssertEqual(firstShutdownCount, 1)
         XCTAssertEqual(firstResumeIDs.count, 1)
-        XCTAssertNil(firstResumeIDs[0])
+        let firstResumeID = try XCTUnwrap(firstResumeIDs.first)
+        XCTAssertNil(firstResumeID)
         XCTAssertEqual(replacementResumeIDs, ["monitor-native-session"])
         XCTAssertEqual(replacementMessages, ["continue oversight"])
         XCTAssertEqual(session.runID, runID, "route recovery preserves the logical process run")
@@ -2765,6 +2799,16 @@ private actor MonitorRemovalConnection: MCPServerConnection {
 actor MonitorFakeNativeController: NativeAgentRuntimeControlling {
     private var configuration = SessionLinkNativeConfigurationFixture()
     private(set) var sentMessages: [String] = []
+    private var lastSentTurnID: UUID?
+
+    func completeLastTurn(text: String? = nil, status: NativeAgentRuntimeTurnStatus = .completed) {
+        guard let lastSentTurnID else { return }
+        _ = events // Buffer an immediate reply even if the real runner has not subscribed yet.
+        if let text { continuation?.yield(.stream(.init(type: "content", text: text))) }
+        continuation?.yield(.turnCompleted(turnID: lastSentTurnID, status: status))
+        self.lastSentTurnID = nil
+    }
+
     private(set) var shutdownCount = 0
     private(set) var startOrResumeExistingSessionIDs: [String?] = []
     private var rejectResume = false
@@ -2849,13 +2893,17 @@ actor MonitorFakeNativeController: NativeAgentRuntimeControlling {
         try configuration.validate(proof)
         sentMessages.append(text)
         if failSendAfterRecord { throw NativeAgentRuntimeControllerError.processNotRunning }
-        return UUID()
+        let turnID = UUID()
+        lastSentTurnID = turnID
+        return turnID
     }
 
     func sendUserMessage(_ text: String) async throws -> UUID {
         sentMessages.append(text)
         if failSendAfterRecord { throw NativeAgentRuntimeControllerError.processNotRunning }
-        return UUID()
+        let turnID = UUID()
+        lastSentTurnID = turnID
+        return turnID
     }
 
     func interruptTurn(reason _: String) async -> NativeAgentRuntimeInterruptOutcome {

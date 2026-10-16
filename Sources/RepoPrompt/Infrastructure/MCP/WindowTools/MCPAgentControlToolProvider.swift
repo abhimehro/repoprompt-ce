@@ -3,6 +3,7 @@ import JSONSchema
 import MCP
 import Ontology
 import OrderedCollections
+import RepoPromptDomainRuntime
 import RepoPromptShared
 
 @MainActor
@@ -22,8 +23,23 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
             agentExploreTool(),
             agentRunTool(),
             agentManageTool(),
-            agentSessionLinkTool()
+            agentSessionLinkTool(),
+            becomeOverseerTool()
         ]
+    }
+
+    private func becomeOverseerTool() -> Tool {
+        let definition = MCPDomainCanonicalToolDefinitions.definition(named: MCPWindowToolName.becomeOverseer)!
+        let schema = try! JSONDecoder().decode(JSONSchema.self, from: JSONEncoder().encode(definition.inputSchema))
+        return runtime.tool(
+            name: definition.name,
+            freshnessPolicy: .none,
+            description: definition.description,
+            annotations: definition.annotations.mcpAnnotations,
+            inputSchema: schema
+        ) { [dependencies] _, args in
+            try await dependencies.executeBecomeOverseer(args)
+        }
     }
 
     /// Cross-window oversight of sessions the user explicitly granted this session access to.
@@ -56,7 +72,7 @@ final class MCPAgentControlToolProvider: MCPAppToolProviding {
             - `respond`: [manage] answer the exact current `interaction_id` only when its pending result is respondable. Manual-only prompts belong to the target's user; a mismatch applies nothing.
             - `steer`: [manage] direct that target now with a new `idempotency_key`; pending prompts block steering. ACP live steering is supported.
             - `stop`: [manage] cancel the target's current run — equivalent to its user pressing Stop. Requires a new `idempotency_key`. Dismisses pending prompts and withdraws queued inbound sends; never deletes the session or ends oversight.
-            - `create_lane`: under a direct link, create your top-level lane; unique `idempotency_key`.
+            - `create_lane`: direct link or overseer opt-in; make your lane; unique `idempotency_key`.
             - `retire_lane`: [manage + created by you] unlink/stash idle lane, never delete; no idempotency key.
             - `set_model`: [manage] same agent, idle; next turn.
 
