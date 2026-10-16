@@ -1,3 +1,7 @@
-## 2025-10-01 - Missing Accessibility Labels on Icon-Only Copy Buttons
-**Learning:** Icon-only buttons used for copying code (e.g., in CodeBlockView) have a hover tooltip but lack explicit screen reader accessibility labels (`.accessibilityLabel`). Screen readers may read out meaningless icon names or nothing.
-**Action:** Added `.accessibilityLabel("Copy code to clipboard")` to copy buttons in `CodeBlockView.swift`. Next time, ensure all icon-only interactive elements have `accessibilityLabel` alongside their `hoverTooltip`.
+## 2024-05-14 - Missing accessibilityLabel on hoverTooltip icon-only buttons
+**Learning:** Found that custom `.hoverTooltip(_)` modifier on icon-only buttons in SwiftUI does not automatically provide an accessibility label, requiring explicit `.accessibilityLabel(_)` next to it to ensure full screen reader accessibility.
+**Action:** Always verify if a button using `.hoverTooltip` (especially icon-only ones) also includes an `.accessibilityLabel`.
+
+## 2024-05-14 - Concise accessibilityLabel with accessibilityHint
+**Learning:** Avoid using the exact same long string for both `.accessibilityLabel` and `.accessibilityHint`. A screen reader will read the verbose sentence back-to-back.
+**Action:** The `.accessibilityLabel` should be concise (e.g., "Clear selection") while the `.accessibilityHint` can provide the extra, more verbose context.
