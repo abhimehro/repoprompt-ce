@@ -95,7 +95,7 @@ struct RoutingModelProfileResolver {
 
     var snapshotDate: String {
         guard let date = document?.issuedAt else { return "unknown" }
-        return ISO8601DateFormatter().string(from: date).prefix(10).description
+        return date.formatted(.iso8601).prefix(10).description
     }
 
     func resolve(

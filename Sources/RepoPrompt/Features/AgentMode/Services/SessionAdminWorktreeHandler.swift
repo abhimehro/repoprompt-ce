@@ -571,7 +571,7 @@ final class SessionAdminWorktreeHandler: AgentSessionAdministrationOperationHand
                 if let scope = record.delegationScopeID, chainScopeIDs.contains(scope) {
                     entry["delegation_scope_id"] = .string(scope.uuidString)
                 }
-                entry["created_at"] = .string(ISO8601DateFormatter().string(from: record.createdAt))
+                entry["created_at"] = .string(record.createdAt.formatted(.iso8601))
             }
             entries.append(.object(entry))
         }

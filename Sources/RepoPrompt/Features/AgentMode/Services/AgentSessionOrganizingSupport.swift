@@ -171,7 +171,7 @@ struct AgentSessionAdminItemResult {
 
 enum AgentSessionAdminRendering {
     static func iso(_ date: Date) -> String {
-        ISO8601DateFormatter().string(from: date)
+        date.formatted(.iso8601)
     }
 
     /// Set (to `true`) when a call committed durable side effects that per-item `changed` statuses
