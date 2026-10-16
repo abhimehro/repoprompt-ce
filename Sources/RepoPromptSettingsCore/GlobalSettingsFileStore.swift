@@ -1129,9 +1129,8 @@ package final class GlobalSettingsFileStore: GlobalSettingsFileStoring {
     }
 
     private static func backupTimestamp(for date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        // Direct Date.ISO8601FormatStyle(includingFractionalSeconds: true) avoids expensive ISO8601DateFormatter allocation per call.
+        date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
             .replacingOccurrences(of: ":", with: "-")
     }
 
