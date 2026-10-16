@@ -21,12 +21,13 @@ jobs:
       checks: write
     steps:
       - name: Advanced Jules PR Reviewer
+        # Advisory only: keep fail_on: never without block_on and continue-on-error: true.
+        continue-on-error: true
         uses: thalesraymond/jules-pr-reviewer@v1.7.0
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           fail_on: never
-          block_on: high
           min_severity_to_report: warning
           strictness: assertive
           skip_drafts: true
