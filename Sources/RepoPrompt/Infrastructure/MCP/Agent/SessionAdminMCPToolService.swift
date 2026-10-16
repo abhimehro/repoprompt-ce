@@ -649,7 +649,7 @@ struct SessionAdminMCPToolService {
         if let limit = guardrails.maxDepth { value["max_depth"] = .int(limit) }
         if let limit = guardrails.maxWorktrees { value["max_worktrees"] = .int(limit) }
         if let expiresAt = guardrails.expiresAt {
-            value["expires_at"] = .string(ISO8601DateFormatter().string(from: expiresAt))
+            value["expires_at"] = .string(expiresAt.formatted(.iso8601))
         }
         return .object(value)
     }
