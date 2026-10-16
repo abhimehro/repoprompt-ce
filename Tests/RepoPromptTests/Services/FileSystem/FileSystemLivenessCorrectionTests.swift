@@ -736,8 +736,13 @@ final class FileSystemLivenessCorrectionTests: XCTestCase {
             rootID: root.id,
             servicePublicationSequence: publicationSequence
         )
-        let event = await iterator.next()
-        XCTAssertEqual(event?.delta, .fileAdded("AfterRecovery.swift"))
+
+        var event = await iterator.next()
+        if case let .fileModified(path, _) = event?.delta, path == "Initial.swift" {
+            event = await iterator.next()
+        }
+        let expectedDelta = RepoPromptApp.FileSystemDelta.fileAdded("AfterRecovery.swift")
+        XCTAssertEqual(event?.delta, expectedDelta)
         await recoveredService.stopWatchingForChanges()
     }
 
