@@ -87,7 +87,7 @@ def extract(archive: Path, destination: Path, app_name: str) -> None:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 with source.open(info) as reader, output.open("wb") as writer:
                     shutil.copyfileobj(reader, writer)
-                os.chmod(output, mode & 0o777)
+                os.chmod(output, 0o755 if (mode & 0o111) else 0o644)
             else:
                 fail(f"unsupported staged archive member type: {member}")
     for output, target in links:
