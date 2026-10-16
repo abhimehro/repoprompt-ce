@@ -296,6 +296,8 @@ enum AgentSessionLinkTextRedactor {
 
     private static let rules: [Rule] = {
         let specs: [(pattern: String, template: String)] = [
+            // Embedded credentials in URLs (e.g. https://user:pass@example.com).
+            (#"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"#, "$1\(placeholder)@"),
             // `Authorization: Bearer …` / `Authorization: Basic …` headers in pasted logs.
             (#"(?i)\b(authorization\s*+[:=]\s*+)(?:(?:bearer|basic|token)\s*+)?\S+"#, "$1\(placeholder)"),
             // Bare credential schemes.

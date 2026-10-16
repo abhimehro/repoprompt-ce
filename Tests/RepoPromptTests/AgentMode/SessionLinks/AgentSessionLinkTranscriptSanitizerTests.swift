@@ -185,6 +185,10 @@ final class AgentSessionLinkTranscriptSanitizerTests: XCTestCase {
         }
 
         XCTAssertEqual(
+            AgentSessionLinkTextRedactor.redact("clone https://user:password123@github.com/repo.git", homeDirectory: home),
+            "clone https://[redacted]@github.com/repo.git"
+        )
+        XCTAssertEqual(
             AgentSessionLinkTextRedactor.redact("built \(home)/projects/app", homeDirectory: home),
             "built ~/projects/app"
         )
