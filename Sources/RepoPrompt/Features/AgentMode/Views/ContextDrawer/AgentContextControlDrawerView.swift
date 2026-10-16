@@ -382,6 +382,7 @@ struct AgentContextControlDrawerView: View {
             }
             .buttonStyle(.plain)
             .hoverTooltip("Close Context Composer")
+            .accessibilityLabel("Close Context Composer")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
