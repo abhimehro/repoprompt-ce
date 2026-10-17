@@ -1,9 +1,9 @@
 import Foundation
 import MCP
+import os
 @testable import RepoPromptApp
 import RepoPromptSettingsCore
 import XCTest
-import os
 
 #if DEBUG
     @MainActor
