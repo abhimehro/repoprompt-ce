@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import os
 @testable import RepoPromptApp
 import RepoPromptSettingsCore
 import XCTest
@@ -143,9 +144,12 @@ import XCTest
                 let validationEntered = XCTestExpectation(description: "first tab validation held")
                 validationEntered.assertForOverFulfill = false
                 let gate = driver.fixture.makeGate()
+                let validationArmed = OSAllocatedUnfairLock(initialState: false)
                 let armValidationGate = {
+                    validationArmed.withLock { $0 = true }
                     driver.manager.rootReconciliationGateForTesting = { event in
-                        guard event.phase == .probeResponse else { return }
+                        guard validationArmed.withLock({ $0 }), event.phase == .probeResponse else { return }
+                        validationArmed.withLock { $0 = false }
                         validationEntered.fulfill()
                         await gate.wait()
                     }

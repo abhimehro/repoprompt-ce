@@ -77,8 +77,8 @@ final class ClaudeRunTelemetryDisplayGateTests: XCTestCase {
             let run1 = await pipeline.beginRun()
             await pipeline.event("five_hour", 0.30, lease: run1, at: t0.addingTimeInterval(60))
             await pipeline.event("seven_day", 0.85, lease: run1, at: t0.addingTimeInterval(60))
-            let firstRun = await waitUntil { pipeline.store.indicatorState?.usedPercent == 85 }
-            XCTAssertTrue(firstRun, "run 1 raises the weekly window to 85%")
+            let firstRun = await waitUntil { pipeline.store.indicatorState?.shortWindowPercent == 30 && pipeline.store.indicatorState?.usedPercent == 85 }
+            XCTAssertTrue(firstRun, "run 1 raises the five hour window to 30%")
 
             // A new run resets the telemetry snapshot and reports only the 5-hour window.
             let run2 = await pipeline.beginRun()
@@ -86,6 +86,7 @@ final class ClaudeRunTelemetryDisplayGateTests: XCTestCase {
             let secondRun = await waitUntil { rowValues(pipeline.store).contains { $0.hasPrefix("35%") } }
             XCTAssertTrue(secondRun, "run 2's 5-hour reading is displayed")
             XCTAssertEqual(pipeline.store.indicatorState?.usedPercent, 85, "run 1's newer weekly reading is kept, not the older CLI 60%")
+            XCTAssertEqual(pipeline.store.indicatorState?.shortWindowPercent, 35, "run 2's newer short window reading is kept")
             await pipeline.stop()
         }
     }
@@ -96,12 +97,12 @@ final class ClaudeRunTelemetryDisplayGateTests: XCTestCase {
             settings.setClaudeCLIUsageGrant(ClaudeCLIUsageGrant(credentialProfileID: profile, grantedAt: Date()))
             let t0 = Date().addingTimeInterval(-600)
             let pipeline = await Pipeline.start(settings: settings, base: cliSnapshot(fiveHour: 40, weekly: 10, observedAt: t0), profile: profile)
-            let base = await waitUntil { pipeline.store.indicatorState?.usedPercent == 40 }
+            let base = await waitUntil { pipeline.store.indicatorState?.shortWindowPercent == 40 }
             XCTAssertTrue(base)
 
             let run = await pipeline.beginRun()
             await pipeline.event("five_hour", 0.70, lease: run, at: t0.addingTimeInterval(60))
-            let seventy = await waitUntil { pipeline.store.indicatorState?.usedPercent == 70 }
+            let seventy = await waitUntil { pipeline.store.indicatorState?.shortWindowPercent == 70 }
             XCTAssertTrue(seventy)
 
             // Same window, no utilization; then an unrelated weekly event as a sync point.
@@ -109,7 +110,7 @@ final class ClaudeRunTelemetryDisplayGateTests: XCTestCase {
             await pipeline.event("seven_day", 0.20, lease: run, at: t0.addingTimeInterval(180))
             let synced = await waitUntil { rowValues(pipeline.store).contains { $0.hasPrefix("20%") } }
             XCTAssertTrue(synced, "later telemetry was displayed")
-            XCTAssertEqual(pipeline.store.indicatorState?.usedPercent, 70, "a missing utilization keeps 70%, not the older CLI 40%")
+            XCTAssertEqual(pipeline.store.indicatorState?.shortWindowPercent, 70, "a missing utilization keeps 70%, not the older CLI 40%")
             await pipeline.stop()
         }
     }
