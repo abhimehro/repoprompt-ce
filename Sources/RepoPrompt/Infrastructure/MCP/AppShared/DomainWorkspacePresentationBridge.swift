@@ -3,6 +3,7 @@
 #endif
 import Foundation
 import RepoPromptDomainRuntime
+import RepoPromptShared
 
 struct DomainWorkspaceSaveOperationIDs {
     let working: UUID
@@ -47,6 +48,12 @@ private enum DomainWorkspaceModelEncoder {
 struct DomainWorkspaceAuthorityClient {
     let store: DomainWorkspaceStore
     let windowID: Int
+    var metadataPathPolicy: AppMetadataPathPolicy?
+
+    /// Admit through the same policy the runtime writer uses, before UI relocation mutates disk.
+    func admitStorageRoot(_ root: URL) throws {
+        try metadataPathPolicy?.admitWorkspaceRoot(root)
+    }
 
     /// The exact digest used by document submission, shared with presentation write receipts.
     static func documentDigest(for workspace: WorkspaceModel) throws -> String {
@@ -454,6 +461,16 @@ final class DomainWorkspacePresentationBridge {
             }
             workspaceManager?.finishWorkspaceChooserRetry(refreshID)
         }
+    }
+
+    /// Admission joins the existing catalog owner before creating or re-submitting a provisional
+    /// binding. Reading a newer revision alone never qualifies a local whole-document write.
+    func refreshForAgentAdmission() async -> Bool {
+        guard let runID = subscriptionRunID, isCurrentRun(runID) else { return false }
+        requestCatalogRefresh(isRetry: false)
+        guard let task = catalogRefreshTask else { return false }
+        await task.value
+        return isCurrentRun(runID)
     }
 
     /// Close/stop cancellation: never publishes an error. A task already inside runtime I/O may finish

@@ -91,7 +91,7 @@ final class AgentSessionLinkPromptRendererTests: XCTestCase {
             "agent_session_link", "managed=&quot;true&quot;", "untrusted data",
             "idempotency_key", "idle_for_send", "sendable", "pending_interaction",
             "interaction_id", "manual-only", "item_id", "awaiting_user",
-            "Idle alone does not prove completion", "only the newest is current"
+            "Idle does not prove completion", "only the newest is current"
         ] {
             XCTAssertTrue(rendered.contains(required), "missing required guidance: \(required)")
         }
@@ -150,7 +150,7 @@ final class AgentSessionLinkPromptRendererTests: XCTestCase {
             rendered.contains("you will be told once"),
             "the final-revocation notice is not guaranteed, so the guidance must not promise it"
         )
-        XCTAssertTrue(rendered.contains("Revocation may close an inventory without a notice"))
+        XCTAssertTrue(rendered.contains("Revocation may close an inventory silently"))
     }
 
     func testNeverLeaksStatusProviderOrLocationData() {

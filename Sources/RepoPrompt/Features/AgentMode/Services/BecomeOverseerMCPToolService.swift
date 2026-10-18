@@ -5,8 +5,14 @@ import RepoPromptDomainRuntime
 /// Bootstrap only: exact installed model route, memory-only eligibility, and no invented grant.
 @MainActor
 struct BecomeOverseerMCPToolService {
-    static let nextTurnResult = "Overseer enabled. For one saved target, call become_overseer with session_id and optional message: one approval and the app prepares, links and dispatches automatically. For anything broader (finding, listing, organizing or cleaning up sessions), call session_admin request_scope now, for example {op:\"request_scope\", kind:\"workspace\", capabilities:[\"observe\",\"organize\"]}; the user sees one card and you are notified. If the user turned on Overseer full access, skip requests entirely: just call the operation (session_admin inventory/rename/retire/link, agent_session_link create_lane, agent_run start/steer) and it is allowed. Then use session_admin inventory. session_admin scope_status lists every op, the capability it needs and your current grants. Activation alone grants no authority."
-    static let devinResult = nextTurnResult
+    /// Read the setting for each call, never freeze mode-specific instructions at first access.
+    static var nextTurnResult: String {
+        OverseerAuthorizationEngine.current.bootstrapGuidance
+    }
+
+    static var devinResult: String {
+        nextTurnResult
+    }
 
     /// Transport-owned proof adapted to the bridge's synchronous, network-independent commit fence.
     struct ActivationCommitFence {

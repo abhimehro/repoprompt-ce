@@ -85,10 +85,13 @@ package final class DomainDelegationScopeLinkConsent: @unchecked Sendable {
 
     package func permits(scopeID: UUID, observer: UUID, target: UUID, at date: Date) -> Bool {
         guard let grant = lock.withLock({ grants[scopeID] }), grant.granteeSessionID == observer,
-              case let .session(approvedTarget) = grant.kind, approvedTarget == target,
               grant.capabilities.isSuperset(of: [.observe, .control, .restructure]),
               grant.guardrails.expiresAt.map({ $0 > date }) ?? true else { return false }
-        return true
+        switch grant.kind {
+        case let .session(approvedTarget): return approvedTarget == target
+        case .allSessions: return grant.unrestricted
+        case .tree, .workspace: return false
+        }
     }
 }
 
@@ -553,6 +556,9 @@ package enum DomainDelegationScopeDenial: Error, Hashable, Sendable {
     /// The presented card does not cover this call (different items, arguments, key, or scope
     /// generation). Reported only to the card's grantee, with the approved items.
     case confirmationMismatch
+    /// The caller's live scope covers the target, but no unique session writer is available.
+    /// Emit only after membership and capabilities have been authorized, never from a UUID probe.
+    case mutationOwnerUnavailable
 
     // Uniform (diagnostic only).
     case callerNotAgentSession
@@ -589,6 +595,7 @@ package enum DomainDelegationScopeDenial: Error, Hashable, Sendable {
         case .revoked: "scope_revoked"
         case .confirmationRequired: "confirmation_required"
         case .confirmationMismatch: "confirmation_mismatch"
+        case .mutationOwnerUnavailable: "mutation_owner_unavailable"
         default: nil
         }
     }
@@ -612,6 +619,7 @@ package enum DomainDelegationScopeDenial: Error, Hashable, Sendable {
         case .selfTarget: "self_target"
         case .operationNotScopeAuthorizable: "operation_not_scope_authorizable"
         case .confirmationMismatch: "confirmation_mismatch"
+        case .mutationOwnerUnavailable: "mutation_owner_unavailable"
         case .duplicateScopeID: "duplicate_scope_id"
         case .approvalExceedsRequest: "approval_exceeds_request"
         case .capabilitiesEmpty: "capabilities_empty"

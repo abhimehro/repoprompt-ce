@@ -434,12 +434,28 @@ extension AgentComposerSubmissionAttemptTests {
         )
         XCTAssertNotEqual(selected, baseline)
         XCTAssertTrue(store.modelRouterConfiguration().enabled)
-        XCTAssertEqual(viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName, viewModel.selectedModelDisplayName)
+        XCTAssertEqual(
+            viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName,
+            "\(viewModel.selectedModelDisplayName) \(ClaudeCodeEffortLevel.parse(session.selectedClaudeEffortRaw)?.displayName ?? String())"
+        )
+
+        // Claude keeps its manual effort separately from the Codex-oriented selection field.
+        session.selectedReasoningEffortRaw = nil
+        session.selectedClaudeEffortRaw = ClaudeCodeEffortLevel.high.rawValue
+        viewModel.syncStatusPillsUIState()
+        XCTAssertEqual(
+            viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName,
+            "\(viewModel.selectedModelDisplayName) High"
+        )
+
         viewModel.selectedModelRaw = baseline.modelRaw
         XCTAssertEqual(session.selectedModelRaw, baseline.modelRaw)
         XCTAssertNil(viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName)
         viewModel.selectedModelRaw = selected.modelRaw
-        XCTAssertEqual(viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName, viewModel.selectedModelDisplayName)
+        XCTAssertEqual(
+            viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName,
+            "\(viewModel.selectedModelDisplayName) \(ClaudeCodeEffortLevel.parse(session.selectedClaudeEffortRaw)?.displayName ?? String())"
+        )
         session.appendAutomationAudit(AgentAutomationTurnAudit(
             turnID: UUID(),
             createdAt: Date(),
@@ -451,6 +467,56 @@ extension AgentComposerSubmissionAttemptTests {
         ))
         viewModel.syncStatusPillsUIState()
         XCTAssertNil(viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName)
+    }
+
+    func testCodexEffortSelectionRefreshesRoutedModelPillWithoutManualSync() async throws {
+        let (viewModel, store) = try await makeRoutingViewModel(backend: ComposerRoutingBackend(outcome: .selectLast))
+        store.setAutoEffortEnabled(false)
+        let tabID = UUID()
+        viewModel.test_setCurrentTabIDOverride(tabID)
+        let session = viewModel.session(for: tabID)
+        viewModel.selectedAgent = .codexExec
+        viewModel.selectedModelRaw = "gpt-6.1-sol"
+        viewModel.selectReasoningEffort(.high)
+        session.appendAutomationAudit(AgentAutomationTurnAudit(
+            turnID: UUID(),
+            createdAt: Date(),
+            router: .init(
+                configured: true, eligible: true, judgmentRequested: true, decision: .selected,
+                chosenModelRaw: session.selectedModelRaw, chosenEffortRaw: "high"
+            ),
+            autoEffort: .init(configured: false, eligible: false, judgmentRequested: false, decision: .disabled),
+            acceptedProviderRaw: session.selectedAgent.rawValue,
+            acceptedModelRaw: session.selectedModelRaw,
+            acceptedEffortRaw: "high"
+        ))
+        viewModel.syncStatusPillsUIState()
+        XCTAssertEqual(
+            viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName,
+            "\(viewModel.selectedModelDisplayName) High"
+        )
+
+        // Exercise the same action as the effort picker, without manually publishing status pills.
+        viewModel.selectReasoningEffort(.low)
+        XCTAssertEqual(session.selectedReasoningEffortRaw, "low")
+        XCTAssertEqual(
+            viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName,
+            "\(viewModel.selectedModelDisplayName) Low"
+        )
+
+        store.setAutoEffortEnabled(true)
+        viewModel.selectReasoningEffort(.high)
+        XCTAssertEqual(
+            viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName,
+            viewModel.selectedModelDisplayName,
+            "Auto Effort hides the manual fallback effort"
+        )
+        store.setAutoEffortEnabled(false)
+        viewModel.selectReasoningEffort(.low)
+        XCTAssertEqual(
+            viewModel.ui.statusPills.snapshot.modelRouter.routedModelDisplayName,
+            "\(viewModel.selectedModelDisplayName) Low"
+        )
     }
 
     func testFakeRouterAbstentionSubmitsWithCurrentSelection() async throws {
@@ -806,6 +872,82 @@ extension AgentComposerSubmissionAttemptTests {
         session.selectedAgent = .claudeCode
         viewModel.restoreUsageStartingTarget(baseline, on: session)
         XCTAssertEqual(viewModel.executableTarget(for: session), baseline)
+    }
+
+    func testLocalInputOnlyComposerClaimGivesRetainedQueuedRowPositiveOrigin() async throws {
+        let (viewModel, _) = try await makeRoutingViewModel(backend: ComposerRoutingBackend(outcome: .abstain))
+        let tabID = UUID()
+        viewModel.test_setCurrentTabIDOverride(tabID)
+        let session = viewModel.session(for: tabID)
+        _ = viewModel.test_installPersistentSessionBinding(sessionID: UUID(), on: session)
+        session.hasLoadedPersistedState = true
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        session.installLocalInputSeed(.init())
+        session.selectedAgent = .claudeCode
+        session.installRunID(UUID())
+        session.runState = .running
+        session.isMCPInstructionDispatchInProgress = true // fake retained interrupt owner, no transport
+        let claim = try routingClaim(viewModel: viewModel, session: session, text: "Research only; do not edit.")
+        defer { viewModel.releaseComposerSubmitClaim(claim) }
+        let result = await viewModel.submitUserTurnAfterAutoEffort(text: "Research only; do not edit.", claim: claim, session: session, destinationTabID: tabID)
+        XCTAssertEqual(result, .submitted)
+        let composerRow = try XCTUnwrap(session.items.last(where: { $0.kind == .user }))
+        XCTAssertEqual(composerRow.userInputOrigin, .localComposer)
+        XCTAssertEqual(session.pendingClaudeSteeringInstructions.count, 1)
+        XCTAssertEqual(session.test_unsettledLocalComposerCandidateCount, 0)
+        // Legacy shared default is deliberately still true for unrelated admission policy. It is
+        // not proof of authorship: MCP/API callers never supply the positive composer token.
+        XCTAssertEqual(viewModel.submitUserTurn(text: "MCP-origin instruction", tabID: tabID), .submitted)
+        XCTAssertNil(session.items.last(where: { $0.kind == .user })?.userInputOrigin)
+        session.agentTask?.cancel()
+        session.saveDebounceTask?.cancel()
+        session.derivedTranscriptRefreshTask?.cancel()
+    }
+
+    /// The queued-interrupt settle must outlive reply finalization: when `endActiveAssistantSegment`
+    /// runs its flag-only batch after the input settled, the retained record stays offerable.
+    func testLocalComposerQueuedInterruptOriginSurvivesReplyFinalizationBatch() async throws {
+        let (viewModel, _) = try await makeRoutingViewModel(backend: ComposerRoutingBackend(outcome: .abstain))
+        let tabID = UUID()
+        viewModel.test_setCurrentTabIDOverride(tabID)
+        let session = viewModel.session(for: tabID)
+        _ = viewModel.test_installPersistentSessionBinding(sessionID: UUID(), on: session)
+        session.hasLoadedPersistedState = true
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        session.installLocalInputSeed(.init())
+        session.selectedAgent = .claudeCode
+        session.installRunID(UUID())
+        session.runState = .running
+        session.isMCPInstructionDispatchInProgress = true // fake retained interrupt owner, no transport
+        let claim = try routingClaim(viewModel: viewModel, session: session, text: "W1")
+        defer { viewModel.releaseComposerSubmitClaim(claim) }
+        let result = await viewModel.submitUserTurnAfterAutoEffort(text: "W1", claim: claim, session: session, destinationTabID: tabID)
+        XCTAssertEqual(result, .submitted)
+
+        let composerRow = try XCTUnwrap(session.items.last(where: { $0.kind == .user }))
+        XCTAssertEqual(composerRow.userInputOrigin, .localComposer)
+        XCTAssertTrue(session.localInputIndex.records.contains { $0.itemID == composerRow.id })
+        let epoch = session.localInputIndex.epoch
+        let producedThrough = session.localInputIndex.producedThrough
+
+        // The reply arrives and streams; its finalization touches no tracked membership or content.
+        var reply = AgentChatItem.assistant("W1 sent", sequenceIndex: session.nextSequenceIndex)
+        reply.isStreaming = true
+        session.appendItem(reply)
+        viewModel.endActiveAssistantSegment(session)
+
+        XCTAssertEqual(
+            session.localInputIndex.epoch,
+            epoch,
+            "flag-only reply finalization must not rotate the local-input epoch"
+        )
+        XCTAssertEqual(session.localInputIndex.producedThrough, producedThrough)
+        let snapshot = try XCTUnwrap(session.localInputIndex.snapshot)
+        XCTAssertTrue(snapshot.records.contains { $0.itemID == composerRow.id && $0.content?.text != nil })
+
+        session.agentTask?.cancel()
+        session.saveDebounceTask?.cancel()
+        session.derivedTranscriptRefreshTask?.cancel()
     }
 
     func testDecisionsAdapterStagesPrimaryAndSubagentThroughSameBackend() async throws {

@@ -2,6 +2,7 @@
 import RepoPromptDomainRuntime
 import RepoPromptSecureStorage
 import RepoPromptSettingsCore
+import RepoPromptShared
 import XCTest
 
 #if DEBUG
@@ -215,6 +216,7 @@ import XCTest
             originalStoragePath = UserDefaults.standard.string(forKey: "GlobalCustomStorageURL")
             storageRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("AgentAdmissionRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent(MCPFilesystemIdentity.current.applicationStateDirectoryName, isDirectory: true)
             try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
             UserDefaults.standard.set(storageRoot.path, forKey: "GlobalCustomStorageURL")
             await WorkspaceDiskWriterComposition.processWriter.removeAllForTesting()
@@ -1522,11 +1524,18 @@ import XCTest
             }
             XCTAssertEqual(workingAttemptCount, 1)
             do {
-                _ = try await admissionTask.value
-                XCTFail("Cancellation must not return a provider-facing target")
-            } catch is CancellationError {
+                let result = try await admissionTask.value
+                if case let .recoveryRequired(retainedIdentity, _, _, recovery) = result {
+                    XCTAssertEqual(retainedIdentity, identity)
+                    guard case .retryablePartial = recovery else {
+                        await retryFence.release()
+                        return XCTFail("Cancellation must retain the incomplete recovery evidence")
+                    }
+                } else {
+                    XCTFail("Cancellation must return retained recovery evidence, never a provider-facing target")
+                }
             } catch {
-                XCTFail("Expected CancellationError, got \(error)")
+                XCTFail("Cancellation erased the retained recovery evidence: \(error)")
             }
             XCTAssertTrue(admissionCompleted)
             guard case .retryablePartial = recoveryOutcome else {
@@ -1712,11 +1721,15 @@ import XCTest
             admissionTask.cancel()
             await persistenceFence.release()
             do {
-                _ = try await admissionTask.value
-                XCTFail("Cancellation must not return a provider-facing target")
-            } catch is CancellationError {
+                let result = try await admissionTask.value
+                if case let .recoveryRequired(retainedIdentity, _, _, recovery) = result {
+                    XCTAssertEqual(retainedIdentity, admissionIdentity)
+                    XCTAssertEqual(recovery, .blockedManual(failureCategory))
+                } else {
+                    XCTFail("Cancellation must return retained recovery evidence, never a provider-facing target")
+                }
             } catch {
-                XCTFail("Expected CancellationError, got \(error)")
+                XCTFail("Cancellation erased the retained recovery evidence: \(error)")
             }
             await fulfillment(of: [recoveryCompleted], timeout: 5)
             guard let identity = admissionIdentity else {
@@ -1924,11 +1937,15 @@ import XCTest
             admissionTask.cancel()
             await persistenceFence.release()
             do {
-                _ = try await admissionTask.value
-                XCTFail("Cancellation must not return a provider-facing target")
-            } catch is CancellationError {
+                let result = try await admissionTask.value
+                if case let .recoveryRequired(retainedIdentity, _, _, recovery) = result {
+                    XCTAssertEqual(retainedIdentity, admissionIdentity)
+                    XCTAssertEqual(recovery, .failed(.persistenceFailure))
+                } else {
+                    XCTFail("Cancellation must return retained recovery evidence, never a provider-facing target")
+                }
             } catch {
-                XCTFail("Expected CancellationError, got \(error)")
+                XCTFail("Cancellation erased the retained recovery evidence: \(error)")
             }
             await fulfillment(of: [retainedRecoveryCompleted], timeout: 5)
             guard let identity = admissionIdentity else {

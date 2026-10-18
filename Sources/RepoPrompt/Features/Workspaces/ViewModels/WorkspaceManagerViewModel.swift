@@ -6,6 +6,7 @@ import RepoPromptDomainRuntime
 import RepoPromptFileSystem
 import RepoPromptFoundation
 import RepoPromptInstrumentation
+import RepoPromptShared
 import RepoPromptVCS
 import RepoPromptWorkspaceCore
 import SwiftUI
@@ -64,12 +65,18 @@ private enum WorkspaceExitPerf {
 }
 
 enum WorkspaceStoragePaths {
+    /// The one-click backup uses a fixed destination (not a user-selected export).
+    /// Debug must not replace or consume the release app's recovery archive.
+    static var userDataBackupDirectoryName: String {
+        MCPFilesystemIdentity.current.buildFlavor == .debug ? "RepoPrompt-Debug-Backup" : "RepoPrompt-Backup"
+    }
+
     static let defaultRoot: URL = {
         let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         return home
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            .appendingPathComponent(MCPFilesystemIdentity.current.applicationStateDirectoryName, isDirectory: true)
             .appendingPathComponent("Workspaces", isDirectory: true)
     }()
 }
@@ -764,6 +771,23 @@ enum WorkspaceOpenError: LocalizedError {
 struct WorkspacePersistenceRejection: Equatable {
     let reason: String
     let category: WorkspacePersistenceFailureCategory
+    let domainDiagnostic: String?
+    let domainErrorCode: DomainCommandErrorCode?
+    let workingCommitted: Bool
+
+    init(
+        reason: String,
+        category: WorkspacePersistenceFailureCategory,
+        domainDiagnostic: String? = nil,
+        domainErrorCode: DomainCommandErrorCode? = nil,
+        workingCommitted: Bool = false
+    ) {
+        self.reason = reason
+        self.category = category
+        self.domainDiagnostic = domainDiagnostic
+        self.domainErrorCode = domainErrorCode
+        self.workingCommitted = workingCommitted
+    }
 }
 
 enum WorkspacePersistenceOutcome: Equatable {
@@ -780,9 +804,18 @@ enum WorkspacePersistenceOutcome: Equatable {
 
     static func rejected(
         reason: String,
-        category: WorkspacePersistenceFailureCategory
+        category: WorkspacePersistenceFailureCategory,
+        domainDiagnostic: String? = nil,
+        domainErrorCode: DomainCommandErrorCode? = nil,
+        workingCommitted: Bool = false
     ) -> Self {
-        .rejected(WorkspacePersistenceRejection(reason: reason, category: category))
+        .rejected(WorkspacePersistenceRejection(
+            reason: reason,
+            category: category,
+            domainDiagnostic: domainDiagnostic,
+            domainErrorCode: domainErrorCode,
+            workingCommitted: workingCommitted
+        ))
     }
 
     var workspaceID: UUID? {
@@ -817,6 +850,21 @@ enum WorkspacePersistenceOutcome: Equatable {
     var normalizedFailureCategory: WorkspacePersistenceFailureCategory? {
         guard case let .rejected(rejection) = self else { return nil }
         return rejection.category
+    }
+
+    var domainDiagnostic: String? {
+        guard case let .rejected(rejection) = self else { return nil }
+        return rejection.domainDiagnostic
+    }
+
+    var domainErrorCode: DomainCommandErrorCode? {
+        guard case let .rejected(rejection) = self else { return nil }
+        return rejection.domainErrorCode
+    }
+
+    var workingCommitted: Bool {
+        guard case let .rejected(rejection) = self else { return false }
+        return rejection.workingCommitted
     }
 }
 
@@ -947,28 +995,32 @@ enum WorkspacePersistenceFailureCategory: String, CaseIterable, Equatable {
 private struct WorkspacePersistenceFailure: Error, Equatable {
     let category: WorkspacePersistenceFailureCategory
     let domainErrorCode: DomainCommandErrorCode?
+    let domainDiagnostic: String?
     let authorityStarted: Bool
     let acceptedOutcomeApplied: Bool
 
     init(
         category: WorkspacePersistenceFailureCategory,
         domainErrorCode: DomainCommandErrorCode? = nil,
+        domainDiagnostic: String? = nil,
         authorityStarted: Bool = false,
         acceptedOutcomeApplied: Bool = false
     ) {
         self.category = category
         self.domainErrorCode = domainErrorCode
+        self.domainDiagnostic = domainDiagnostic
         self.authorityStarted = authorityStarted
         self.acceptedOutcomeApplied = acceptedOutcomeApplied
     }
 
-    init(outcome: DomainCommandOutcome) {
+    init(outcome: DomainCommandOutcome, workingCommitted: Bool = false) {
         category = WorkspacePersistenceFailureCategory.classify(
             domainErrorCode: outcome.errorCode
         )
         domainErrorCode = outcome.errorCode
+        domainDiagnostic = outcome.diagnostic
         authorityStarted = true
-        acceptedOutcomeApplied = false
+        acceptedOutcomeApplied = workingCommitted
     }
 
     var publicReason: String {
@@ -1208,10 +1260,16 @@ class WorkspaceManagerViewModel: ObservableObject {
     /// Installed by composition with weak Bridge captures; the manager owns no refresh task.
     private var domainCatalogRefreshRequest: ((_ isRetry: Bool) -> Void)?
     private var domainCatalogRefreshCancellation: (() -> Void)?
+    private var domainCatalogRefreshAwaiter: (() async -> Bool)?
 
-    func installDomainCatalogRefresh(request: @escaping (_ isRetry: Bool) -> Void, cancel: @escaping () -> Void) {
+    func installDomainCatalogRefresh(
+        request: @escaping (_ isRetry: Bool) -> Void,
+        cancel: @escaping () -> Void,
+        awaitRefresh: (() async -> Bool)? = nil
+    ) {
         domainCatalogRefreshRequest = request
         domainCatalogRefreshCancellation = cancel
+        domainCatalogRefreshAwaiter = awaitRefresh
     }
 
     /// The chooser's Retry: delegates to the Bridge's sole refresh task (`reloadExternalChanges`).
@@ -4730,6 +4788,7 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     private nonisolated func ensureBaseRootExists(at baseRoot: URL) throws {
+        try AppProfileLocations.current.validateMetadataFile(baseRoot)
         let fm = FileManager.default
         if !fm.fileExists(atPath: baseRoot.path) {
             try fm.createDirectory(at: baseRoot, withIntermediateDirectories: true)
@@ -4775,8 +4834,8 @@ class WorkspaceManagerViewModel: ObservableObject {
         self.promptViewModel.attachWorkspaceManager(self)
         self.fileManager.setWorkspaceManager(self)
 
-        if let path = UserDefaults.standard.string(forKey: "GlobalCustomStorageURL") {
-            globalCustomStorageURL = URL(fileURLWithPath: path)
+        if let path = WorkspaceStoragePreference.customStoragePath() {
+            globalCustomStorageURL = AppProfileLocations.current.customWorkspaceDirectory(selectedDirectory: URL(fileURLWithPath: path))
         }
 
         if let sessionRuntimeWorkspace {
@@ -8127,6 +8186,17 @@ class WorkspaceManagerViewModel: ObservableObject {
         return baseline
     }
 
+    /// Presentation mutations need one qualified local descendant before selecting a writer.
+    /// The subsequent domain save still checks the exact revision and document digest.
+    func canCommitComposeTabPresentation(workspaceID: UUID) -> Bool {
+        guard !isPreparingForWindowClose, !isSessionRuntimeProjection,
+              let workspace = workspace(withID: workspaceID),
+              !agentAdmissionRecoveryOwnsWorkspace(workspaceID),
+              workspaceAgentAdmissionCoordinator.activeCount(for: workspaceID) == 0
+        else { return false }
+        return workspace.isEphemeral || fullDocumentWriteBaseline(workspaceID: workspaceID) != nil
+    }
+
     private func preserveSameDocumentWriteBaseline(workspaceID: UUID, revisions: DomainRevisionState?, digest: String?) {
         guard let revisions, let digest,
               let baseline = fullDocumentWriteBaselines[workspaceID],
@@ -10997,6 +11067,63 @@ class WorkspaceManagerViewModel: ObservableObject {
         _ identity: AgentProvisionalAdmissionIdentity,
         source: WorkspaceSaveSource = WorkspaceSaveSource("agentSessionLifecycleAdmission")
     ) async -> AgentAdmissionPersistenceReceipt {
+        let receipt = await persistAgentAdmissionAttempt(identity, source: source)
+        // A pre-commit conflict may have been a peer's ordinary save. Reconcile through the
+        // existing document/protected-identity owner once, then save the same provisional tab.
+        // A working commit (including one later superseded) belongs to recovery, never replay.
+        guard receipt.commitEvidence == .none, !receipt.outcome.workingCommitted,
+              receipt.outcome.normalizedFailureCategory == .authorityRevisionConflict
+              || receipt.outcome.normalizedFailureCategory == .workspaceChanged,
+              !Task.isCancelled, !isPreparingForWindowClose,
+              activeWorkspaceID == identity.workspaceID,
+              let local = workspace(withID: identity.workspaceID), !local.isEphemeral,
+              Self.provisionalAdmissionProjection(in: local, identity: identity).containsIdentity,
+              let provisionalTab = local.composeTabs.first(where: { $0.id == identity.tabID }),
+              let client = domainWorkspaceAuthorityClient,
+              let refresh = domainCatalogRefreshAwaiter,
+              let before = await client.canonicalWorkspaceSnapshot(identity.workspaceID),
+              before.health.acceptsMutations, before.revisions.dirtyRevision == nil,
+              let canonicalBefore = try? Self.decodeDomainWorkspaceProjection(
+                  documentBytes: before.document.documentBytes, fileURL: before.document.fileURL
+              ),
+              case .absent = Self.provisionalAdmissionProjection(in: canonicalBefore, identity: identity),
+              await refresh(), !Task.isCancelled, !isPreparingForWindowClose,
+              activeWorkspaceID == identity.workspaceID,
+              let after = await client.canonicalWorkspaceSnapshot(identity.workspaceID),
+              after.health.acceptsMutations,
+              let canonicalAfter = try? Self.decodeDomainWorkspaceProjection(
+                  documentBytes: after.document.documentBytes, fileURL: after.document.fileURL
+              )
+        else { return receipt }
+
+        // An own save may have settled while projection was awaited. Exact canonical evidence
+        // is stronger than the lost response; do not publish the same identity again.
+        if Self.provisionalAdmissionProjection(in: canonicalAfter, identity: identity).containsIdentity {
+            let evidence: AgentAdmissionPersistenceCommitEvidence = after.revisions.dirtyRevision == nil
+                ? .saved(revision: after.revisions.savedRevision, digest: after.document.contentDigest)
+                : .canonicalWorking(revision: after.revisions.workingRevision, digest: after.document.contentDigest)
+            return AgentAdmissionPersistenceReceipt(outcome: receipt.outcome, commitEvidence: evidence)
+        }
+        guard !Task.isCancelled, !isPreparingForWindowClose,
+              activeWorkspaceID == identity.workspaceID,
+              after.revisions.dirtyRevision == nil,
+              case .absent = Self.provisionalAdmissionProjection(in: canonicalAfter, identity: identity),
+              let current = workspace(withID: identity.workspaceID),
+              Self.provisionalAdmissionProjection(in: current, identity: identity).containsIdentity,
+              current.composeTabs.first(where: { $0.id == identity.tabID }) == provisionalTab,
+              let baseline = fullDocumentWriteBaseline(workspaceID: identity.workspaceID),
+              baseline.workingRevision == after.revisions.workingRevision,
+              baseline.contentDigest == after.document.contentDigest,
+              baseline.fileURL == after.document.fileURL
+        else { return receipt }
+        markWorkspaceDirty(workspaceID: identity.workspaceID)
+        return await persistAgentAdmissionAttempt(identity, source: source)
+    }
+
+    private func persistAgentAdmissionAttempt(
+        _ identity: AgentProvisionalAdmissionIdentity,
+        source: WorkspaceSaveSource
+    ) async -> AgentAdmissionPersistenceReceipt {
         let outcome = await pollAndSaveStateWithOutcomeAsync(
             workspaceID: identity.workspaceID,
             source: source,
@@ -12370,6 +12497,34 @@ class WorkspaceManagerViewModel: ObservableObject {
         return refreshed
     }
 
+    /// Must run inside the admission lease, before a new provisional binding is installed.
+    /// Identity-only refresh can observe a newer digest without adopting its complete document.
+    /// Join the existing projection owner to obtain that witness instead of rebasing stale bytes.
+    func prepareAgentAdmissionWriteBaseline(workspaceID: UUID) async throws -> WorkspacePersistenceOutcome? {
+        guard let workspace = workspace(withID: workspaceID), !workspace.isEphemeral,
+              domainWorkspaceAuthorityClient != nil
+        else { return nil }
+        if fullDocumentWriteBaseline(workspaceID: workspaceID) != nil { return nil }
+        guard let refresh = domainCatalogRefreshAwaiter, await refresh() else {
+            try Task.checkCancellation()
+            return .rejected(
+                reason: "workspace_save_failed", category: .workspaceChanged,
+                domainDiagnostic: "agent_admission_document_adoption_unavailable"
+            )
+        }
+        try Task.checkCancellation()
+        try await refreshCanonicalWorkspaceForAgentAdmission(workspaceID: workspaceID)
+        guard !isPreparingForWindowClose, activeWorkspaceID == workspaceID,
+              fullDocumentWriteBaseline(workspaceID: workspaceID) != nil
+        else {
+            return .rejected(
+                reason: "workspace_save_failed", category: .workspaceChanged,
+                domainDiagnostic: "agent_admission_document_adoption_changed"
+            )
+        }
+        return nil
+    }
+
     func withAgentSessionAdmission<T>(
         workspaceID: UUID,
         admissionID: UUID,
@@ -12997,7 +13152,10 @@ class WorkspaceManagerViewModel: ObservableObject {
             )
             return .rejected(
                 reason: failure.publicReason,
-                category: failure.category
+                category: failure.category,
+                domainDiagnostic: failure.domainDiagnostic,
+                domainErrorCode: failure.domainErrorCode,
+                workingCommitted: failure.acceptedOutcomeApplied
             )
         }
         await workspaceDiskWriter.flush(url: fileURL)
@@ -14344,6 +14502,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         let directory: URL
         if let directoryURL {
+            try AppProfileLocations.current.validateMetadataFile(directoryURL)
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             directory = directoryURL
         } else {
@@ -14375,8 +14534,9 @@ class WorkspaceManagerViewModel: ObservableObject {
             )
         }
         let directory = appSupport
-            .appendingPathComponent("RepoPrompt CE", isDirectory: true)
+            .appendingPathComponent(MCPFilesystemIdentity.current.applicationStateDirectoryName, isDirectory: true)
             .appendingPathComponent("workspace-cleanup-backups", isDirectory: true)
+        try AppProfileLocations.current.validateMetadataFile(directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
@@ -15997,7 +16157,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 return .failure(WorkspacePersistenceFailure(category: .workspaceChanged))
             } catch let error as DomainWorkspaceAuthorityOperationError {
                 reportDomainAuthorityIssue(error.outcome, operation: "save_workspace")
-                return .failure(WorkspacePersistenceFailure(outcome: error.outcome))
+                return .failure(WorkspacePersistenceFailure(outcome: error.outcome, workingCommitted: error.workingCommitted))
             } catch {
                 reportDomainAuthorityFailure(
                     error,
@@ -16031,6 +16191,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
         do {
             let (merged, data, indexFieldsChanged, preservedDiskRepoPaths) = try await Task.detached(priority: .utility) {
+                try AppProfileLocations.current.validateMetadataFile(fileURL)
                 let workspaceDir = fileURL.deletingLastPathComponent()
                 let chatsDir = workspaceDir.appendingPathComponent("Chats", isDirectory: true)
                 let fm = FileManager.default
@@ -16970,7 +17131,11 @@ class WorkspaceManagerViewModel: ObservableObject {
         scheduleNormalizationWriteback: Bool,
         workspaceDiskWriter: WorkspaceDiskWriter<WorkspaceAppDiskWritePolicy> = WorkspaceDiskWriterComposition.processWriter
     ) throws -> WorkspaceFileLoadResult {
+        try AppProfileLocations.current.validateMetadataFile(fileURL)
         let cachedResult = try WorkspaceFileDecodeCache.shared.loadWorkspace(at: fileURL)
+        if let customRoot = cachedResult.workspace.customStoragePath {
+            try AppProfileLocations.current.validateCustomWorkspaceDirectory(customRoot)
+        }
         let normalizationSaveTask: Task<Void, Never>?
         if scheduleNormalizationWriteback,
            !cachedResult.workspace.isEphemeral,
@@ -17073,6 +17238,7 @@ class WorkspaceManagerViewModel: ObservableObject {
 
     nonisolated func ensureWorkspaceDirectoryExists(for workspace: WorkspaceModel, baseRoot: URL) throws -> URL {
         let dir = workspaceDirectory(for: workspace, baseRoot: baseRoot)
+        try AppProfileLocations.current.validateMetadataFile(dir)
         let chats = chatsFolder(for: workspace, baseRoot: baseRoot)
         let fm = FileManager.default
 
@@ -17105,6 +17271,8 @@ class WorkspaceManagerViewModel: ObservableObject {
             return
         }
 
+        try AppProfileLocations.current.validateMetadataFile(currentGlobal)
+        try AppProfileLocations.current.validateMetadataFile(defaultWorkspaceRoot())
         for ws in workspaces {
             let oldFolder = currentGlobal.appendingPathComponent(directoryName(for: ws))
             let newFolder = defaultWorkspaceRoot().appendingPathComponent(directoryName(for: ws))
@@ -17137,11 +17305,15 @@ class WorkspaceManagerViewModel: ObservableObject {
     }
 
     private func moveFolderContents(from oldFolder: URL, to newFolder: URL) throws {
+        try AppProfileLocations.current.validateMetadataFile(oldFolder)
+        try AppProfileLocations.current.validateMetadataFile(newFolder)
         let fm = FileManager.default
         let items = try fm.contentsOfDirectory(atPath: oldFolder.path)
         for item in items {
             let srcURL = oldFolder.appendingPathComponent(item)
             let dstURL = newFolder.appendingPathComponent(item)
+            try AppProfileLocations.current.validateMetadataFile(srcURL)
+            try AppProfileLocations.current.validateMetadataFile(dstURL)
             if fm.fileExists(atPath: dstURL.path) {
                 try fm.removeItem(at: dstURL)
             }
@@ -17157,11 +17329,20 @@ class WorkspaceManagerViewModel: ObservableObject {
         }
     }
 
-    func updateGlobalStoragePath(_ newURL: URL) throws {
+    func updateGlobalStoragePath(_ selectedURL: URL) throws {
+        let locations = AppProfileLocations.current
+        let newURL = locations.identity.buildFlavor == .debug
+            ? try locations.customWorkspaceRoot(selectedDirectory: selectedURL) : selectedURL
         let oldBase = currentBaseRoot
+        try locations.validateMetadataFile(oldBase)
+        try locations.validateMetadataFile(newURL)
+        try domainWorkspaceAuthorityClient?.admitStorageRoot(newURL)
+        try FileManager.default.createDirectory(at: newURL, withIntermediateDirectories: true)
         for ws in workspaces {
             let oldFolder = oldBase.appendingPathComponent(directoryName(for: ws))
             let newFolder = newURL.appendingPathComponent(directoryName(for: ws))
+            try locations.validateMetadataFile(oldFolder)
+            try locations.validateMetadataFile(newFolder)
             if FileManager.default.fileExists(atPath: oldFolder.path) {
                 try FileManager.default.moveItem(at: oldFolder, to: newFolder)
             }
@@ -18527,7 +18708,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                     NSLocalizedDescriptionKey: "Could not find the user's Downloads folder."
                 ])
             }
-            let exportFolder = downloads.appendingPathComponent("RepoPrompt-Backup", isDirectory: true)
+            let exportFolder = downloads.appendingPathComponent(WorkspaceStoragePaths.userDataBackupDirectoryName, isDirectory: true)
 
             if !fm.fileExists(atPath: exportFolder.path) {
                 try fm.createDirectory(
@@ -18579,7 +18760,7 @@ class WorkspaceManagerViewModel: ObservableObject {
                 userInfo: [NSLocalizedDescriptionKey: "Could not find the user's Downloads folder."]
             )
         }
-        let exportFolder = downloads.appendingPathComponent("RepoPrompt-Backup", isDirectory: true)
+        let exportFolder = downloads.appendingPathComponent(WorkspaceStoragePaths.userDataBackupDirectoryName, isDirectory: true)
         guard fm.fileExists(atPath: exportFolder.path) else {
             print("No RepoPrompt-Backup folder found in ~/Downloads. Nothing to restore.")
             return
@@ -18598,6 +18779,7 @@ class WorkspaceManagerViewModel: ObservableObject {
         // 2) Attempt to restore workspace index if it exists
         let indexSource = exportFolder.appendingPathComponent("workspacesIndex.json")
         if fm.fileExists(atPath: indexSource.path) {
+            try AppProfileLocations.current.validateMetadataFile(workspaceIndexFileURL)
             if fm.fileExists(atPath: workspaceIndexFileURL.path) {
                 try fm.removeItem(at: workspaceIndexFileURL)
             }
@@ -18646,6 +18828,11 @@ class WorkspaceManagerViewModel: ObservableObject {
                     .appendingPathComponent("Workspace-\(workspace.name)-\(workspace.id)")
             }
 
+            // Imported metadata must not direct debug cleanup into release state.
+            if workspace.customStoragePath != nil {
+                try AppProfileLocations.current.validateCustomWorkspaceDirectory(localWsDir)
+            }
+            try AppProfileLocations.current.validateMetadataFile(localWsDir)
             // If it already exists, remove it to avoid partial merges
             if fm.fileExists(atPath: localWsDir.path) {
                 try fm.removeItem(at: localWsDir)

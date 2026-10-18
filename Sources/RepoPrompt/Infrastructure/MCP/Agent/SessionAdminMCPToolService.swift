@@ -12,6 +12,12 @@ import RepoPromptDomainRuntime
 /// are handled here. `undo` and every other operation go through the administration service (in
 /// production `AgentSessionAdministrationFrontDoor`), which returns `not_implemented` for operations
 /// no handler has registered.
+/// A handler refusal that renders as a structured result (code, detail, next_call) instead of a
+/// bare thrown error name.
+protocol SessionAdminStructuredRefusal: Error {
+    func refusalValue(op: String, targets: [UUID]) -> Value
+}
+
 @MainActor
 struct SessionAdminMCPToolService {
     typealias Endpoint = DomainAgentSessionLinkEndpointIdentity
@@ -33,7 +39,7 @@ struct SessionAdminMCPToolService {
         "session_admin is not available for this session on this exact route. For one target, call become_overseer with session_id and optional message now: one exact-target approval automatically continues preparation, link and dispatch. session_admin scope_status discovers operations and grants when available. If already enabled, retry from the original requesting session; use request_scope for missing authority. A grant never substitutes for a current routed session."
     )
 
-    static let inventoryGuidance = "For cleanup or organizing, request observe together with the needed mutation capabilities, then use inventory to select targets when available. A workspace scope covers only that workspace; history is not a scope inventory."
+    static let inventoryGuidance = "Use covering grants directly. If authority is missing for cleanup or organizing, request observe together with needed mutation capabilities, then use inventory to select targets. A workspace scope covers only that workspace; history is not a scope inventory."
 
     private static let lifecycleKeys: [String: Set<String>] = [
         "request_scope": ["op", "kind", "workspace", "session_id", "capabilities", "guardrails", "reason", "idempotency_key"],
@@ -47,6 +53,7 @@ struct SessionAdminMCPToolService {
     private static let scopeLevelSelectorKeys: [String: Set<String>] = [
         "inventory": ["filter"],
         "tree": ["session_id"],
+        "worktree_inventory": ["session_id"],
         "links": ["session_id"]
     ]
 
@@ -80,7 +87,7 @@ struct SessionAdminMCPToolService {
             try await administer(op: op, args: args, caller: caller, endpoint: endpoint)
         }
         guard case let .object(fields) = value else { return value }
-        return Self.withScopeAvailability(fields, runtime: scopes())
+        return Self.withScopeAvailability(fields, runtime: scopes(), includeContinuity: op == "scope_status")
     }
 
     // MARK: - Caller
@@ -169,10 +176,27 @@ struct SessionAdminMCPToolService {
             let request = runtime.request(id: recorded.id, requesterSessionID: endpoint.sessionID) ?? recorded
             var value = Self.requestValue(request)
             value["result"] = .string(request.state.label)
-            if autoApproved {
-                value["guidance"] = .string(
-                    "Granted immediately by the user's standing approval for this session; no card was shown. The grant is live now."
-                )
+            if case let .granted(scopeID) = request.state, let record = runtime.record(id: scopeID) {
+                // The requested scope may be narrower than the authority that actually settled it.
+                // Keep the proposal separate so it cannot be mistaken for the covering grant.
+                let scope = Self.scopeValue(record, now: now())
+                var requestedScope: [String: Value] = [:]
+                for key in ["kind", "capabilities", "guardrails"] {
+                    requestedScope[key] = value[key]
+                    value[key] = scope.objectValue?[key]
+                }
+                value["requested_scope"] = .object(requestedScope)
+                value["scope_id"] = .string(scopeID.uuidString)
+                value["scope"] = scope
+                if record.grant.unrestricted {
+                    value["guidance"] = .string(
+                        "Granted by Overseer full access; no card was shown. scope is the actual unrestricted covering grant, not the narrower requested_scope. Just call the operation."
+                    )
+                } else if autoApproved {
+                    value["guidance"] = .string(
+                        "Granted immediately by the user's standing consent for this session; no card was shown. scope describes the actual grant."
+                    )
+                }
             }
             if request.state == .pending {
                 value["guidance"] = .string(
@@ -284,10 +308,13 @@ struct SessionAdminMCPToolService {
     }
 
     private static func withScopeAvailability(
-        _ value: [String: Value], runtime: DelegationScopeRuntime
+        _ value: [String: Value], runtime: DelegationScopeRuntime, includeContinuity: Bool = false
     ) -> Value {
         var value = value
         value["authority_available"] = .bool(runtime.canUseAuthority)
+        // Storage history is diagnostic context, not a warning on every successful operation.
+        // Preserve it when authority is unavailable because it then affects this call.
+        guard includeContinuity || !runtime.canUseAuthority else { return .object(value) }
         value["continuity_save_state"] = .string(runtime.continuityState)
         value["continuity_durable"] = .bool(runtime.continuityState == "saved")
         if !runtime.unsettledScopeIDs.isEmpty {
@@ -382,8 +409,14 @@ struct SessionAdminMCPToolService {
             preview: Self.parsePreview(args["preview"]),
             arguments: args
         )
-        return try await render(
-            administration().perform(request),
+        let outcome: AgentSessionAdministrationOutcome
+        do {
+            outcome = try await administration().perform(request)
+        } catch let error as any SessionAdminStructuredRefusal {
+            return error.refusalValue(op: op, targets: request.targetSessionIDs)
+        }
+        return try render(
+            outcome,
             confirmationID: request.confirmationID,
             callerSessionID: endpoint.sessionID,
             requestedScopeID: request.scopeID
@@ -430,7 +463,8 @@ struct SessionAdminMCPToolService {
             }
             return .object([
                 "result": .string("denied"), "code": .string("placement_unresolved"),
-                "detail": .string("Your scope's configured limits require complete session placement evidence. Load or resolve ambiguous session bindings, then retry the same operation. Use session_admin scope_status to inspect limits. A new capability grant alone will not repair missing provenance.")
+                "subreason": .string("usage_evidence_unavailable"), "recovery": .string("manual"),
+                "detail": .string(DelegationSpawnAdmission.placementUnresolvedDetail(subreason: "usage_evidence_unavailable"))
             ])
         case let .denied(denial, sessionID):
             return try Self.deniedValue(denial, sessionID: sessionID)
@@ -466,10 +500,31 @@ struct SessionAdminMCPToolService {
     static func deniedValue(_ denial: DomainDelegationScopeDenial, sessionID: UUID?) throws -> Value {
         guard let code = denial.publicCode else {
             if let sessionID { throw AgentSessionTargetOperationGuard.denialError(sessionID: sessionID) }
-            throw unavailableError
+            // The caller is already resolved, so "not available on this route" would be false.
+            // Name only the cases that disclose nothing about other sessions.
+            let (code, detail, retryable) = switch denial {
+            case .selfTarget:
+                ("self_target", "This operation cannot target your own session.", false)
+            case .generationStale:
+                ("scope_changed", "Your scope changed while this call ran. Call scope_status, then retry.", true)
+            case .operationNotScopeAuthorizable:
+                ("operation_not_scope_authorizable", "No delegation scope can authorize this operation; it stays with the user.", false)
+            default:
+                ("not_authorized", "No current grant of yours covers this operation on its targets. If you hold no scope, call session_admin request_scope with the capabilities the operation needs; otherwise call scope_status for your grants and the operation catalog, and inventory to check the targets are in scope.", false)
+            }
+            return .object([
+                "result": .string("denied"), "code": .string(code), "subreason": .string(code),
+                "detail": .string(detail), "retryable": .bool(retryable),
+                "next_call": .object(["tool": .string("session_admin"), "arguments": .object(["op": .string("scope_status")])])
+            ])
         }
         var value: [String: Value] = ["result": .string("denied"), "code": .string(code)]
         switch denial {
+        case .mutationOwnerUnavailable:
+            value["subreason"] = .string("replicated_binding")
+            value["detail"] = .string("Your scope covers this session, but the app could not prove one current writer for the state this operation changes. Session loading or handoff must finish, or competing writable copies must be resolved, before retrying. Opening the target tab is not required when it already has one current writer.")
+            value["retryable"] = .bool(false)
+            value["recovery"] = .string("manual")
         case let .capabilityMissing(capability):
             value["capability"] = .string(capability.rawValue)
             value["detail"] = .string("This scope lacks \(capability.rawValue). Request a new scope including \(capability.rawValue) by calling session_admin request_scope with all capabilities needed by the operation; wait for the user's approval. Call session_admin scope_status for the operation catalog and your current grants. \(inventoryGuidance)")
@@ -584,8 +639,9 @@ struct SessionAdminMCPToolService {
             "scope_id": .string(record.id.uuidString),
             "state": .string(expired ? DomainDelegationScopeState.expired.rawValue : record.state.rawValue),
             "kind": .string(record.grant.kind.label),
+            "unrestricted": .bool(record.grant.unrestricted),
             "capabilities": capabilitiesValue(record.grant.capabilities),
-            "guardrails": guardrailsValue(record.grant.guardrails)
+            "guardrails": record.grant.unrestricted ? .object([:]) : guardrailsValue(record.grant.guardrails)
         ]
         switch record.grant.kind {
         case let .session(target):

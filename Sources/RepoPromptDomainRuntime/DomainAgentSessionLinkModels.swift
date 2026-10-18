@@ -101,6 +101,19 @@ package struct DomainAgentSessionLinkReference: Hashable, Sendable {
     }
 }
 
+/// Internal final-handoff proof. No transcript data or public cursor is carried or created.
+package struct DomainAgentSessionReadDisclosureRequirement: Hashable, Sendable {
+    package let observer: DomainAgentSessionLinkEndpointIdentity
+    package let target: DomainAgentSessionLinkEndpointIdentity
+    package let reference: DomainAgentSessionLinkReference
+
+    package init(observer: DomainAgentSessionLinkEndpointIdentity, target: DomainAgentSessionLinkEndpointIdentity, reference: DomainAgentSessionLinkReference) {
+        self.observer = observer
+        self.target = target
+        self.reference = reference
+    }
+}
+
 // MARK: - Sanitized observation snapshot
 
 package enum DomainAgentSessionLinkStatus: String, CaseIterable, Hashable, Sendable {

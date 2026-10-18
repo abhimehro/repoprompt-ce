@@ -163,7 +163,7 @@ enum WindowStateCompositionFactory {
         // A nonvisual runtime shares MCP routing, but never owns or projects the visible workspace
         // document. Its one-carrier snapshot is read-only placement, not a second workspace writer.
         let domainWorkspaceClient = sessionRuntimeWorkspace == nil ? domainRuntime.map {
-            DomainWorkspaceAuthorityClient(store: $0.workspaceStore, windowID: windowID)
+            DomainWorkspaceAuthorityClient(store: $0.workspaceStore, windowID: windowID, metadataPathPolicy: $0.configuration.metadataPathPolicy)
         } : nil
         let workspaceManager = WorkspaceManagerViewModel(
             fileManager: workspaceFilesViewModel,
@@ -187,7 +187,8 @@ enum WindowStateCompositionFactory {
             // Weak captures: the Bridge already holds the manager weakly; no retain cycle or new owner.
             workspaceManager.installDomainCatalogRefresh(
                 request: { [weak bridge] isRetry in bridge?.requestCatalogRefresh(isRetry: isRetry) },
-                cancel: { [weak bridge] in bridge?.cancelCatalogRefresh() }
+                cancel: { [weak bridge] in bridge?.cancelCatalogRefresh() },
+                awaitRefresh: { [weak bridge] in await bridge?.refreshForAgentAdmission() ?? false }
             )
         }
         domainWorkspacePresentationBridge?.start()
