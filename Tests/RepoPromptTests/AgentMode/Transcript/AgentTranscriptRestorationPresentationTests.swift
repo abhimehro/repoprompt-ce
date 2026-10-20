@@ -2618,12 +2618,12 @@ extension AgentTranscriptPaneSnapshotPublicationTests {
                 from: AgentChatItem(id: UUID(), timestamp: Date(), kind: .user, text: "Outgoing content")
             )]
             _ = try await AgentSessionDataService.shared.saveAgentSession(saved, for: fixture.workspace)
-            await fixture.gate.open()
             fixture.viewModel.setAgentModeActive(true)
             await fixture.viewModel.handleWorkspaceSwitch(fixture.workspace)
-            if let loadTask = fixture.viewModel.sessions[fixture.tabID]?.persistedLoadTask {
-                await loadTask.value
-            }
+            await fixture.gate.waitUntilEntered()
+            let loadTask = try XCTUnwrap(fixture.viewModel.sessions[fixture.tabID]?.persistedLoadTask)
+            await fixture.gate.open()
+            await loadTask.value
             await fixture.prompt.switchComposeTab(fixture.tabID)
             XCTAssertFalse(fixture.viewModel.ui.transcript.snapshot.presentation.workingRows.isEmpty, "precondition: outgoing rows")
 
