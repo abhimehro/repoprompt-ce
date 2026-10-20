@@ -168,6 +168,26 @@ final class MCPConfigExportServiceTests: XCTestCase {
         second.release()
     }
 
+    func testWriteTempFileSecuresDirectoryAndFilePermissions() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configDirectory = root.appendingPathComponent("MCP", isDirectory: true)
+        let service = MCPConfigExportService(
+            identity: .repoPromptCE(.debug),
+            configDirectoryURL: configDirectory,
+            renderServerConfig: { "{\"mcpServers\":{}}" }
+        )
+
+        let fileURL = try await service.writeTempFile(prefix: "test", contents: "secret payload")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        XCTAssertEqual((fileAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+
+        let dirAttributes = try FileManager.default.attributesOfItem(atPath: fileURL.deletingLastPathComponent().path)
+        XCTAssertEqual((dirAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    }
+
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("MCPConfigExportServiceTests-\(UUID().uuidString)", isDirectory: true)
