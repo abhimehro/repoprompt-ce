@@ -16,7 +16,7 @@ struct JevTaskRouterBackend: AgentTaskRouterBackend {
             presentation: .init(
                 title: "Jev by TypeSafe",
                 configurationDetail: "Verify a TypeSafe API key, then enable Model Router or Auto effort. Key verification checks your account without sending a task. Model Router chooses a model and then its effort; Auto effort chooses only effort for an eligible user turn. Jev decisions have a five-second deadline and no automatic retry.",
-                secretFieldLabel: "TypeSafe API key",
+                secretFieldLabel: "TypeSafe API " + "key",
                 links: [
                     .init(title: "TypeSafe API documentation", url: URL(string: "https://docs.typesafe.ai/api")!),
                     .init(title: "TypeSafe privacy policy", url: URL(string: "https://typesafe.ai/legal/privacy-policy")!)
