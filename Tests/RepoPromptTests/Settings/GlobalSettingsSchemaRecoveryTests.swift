@@ -1,7 +1,6 @@
 import Foundation
 @testable import RepoPromptApp
 import RepoPromptSettingsCore
-import RepoPromptShared
 import XCTest
 
 final class GlobalSettingsSchemaRecoveryTests: XCTestCase {
@@ -10,7 +9,7 @@ final class GlobalSettingsSchemaRecoveryTests: XCTestCase {
         XCTAssertTrue(AppLaunchConfiguration.isUnitTestProcess)
         let url = GlobalSettingsFileStore.defaultFileURL()
         let liveURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("\(MCPFilesystemIdentity.current.applicationStateDirectoryName)/Settings/globalSettings.json")
+            .appendingPathComponent("RepoPrompt CE/Settings/globalSettings.json")
         XCTAssertNotEqual(url.standardizedFileURL, liveURL.standardizedFileURL)
         XCTAssertTrue(url.path.contains("RepoPromptCE-unit-settings-"))
         let store = GlobalSettingsStore()

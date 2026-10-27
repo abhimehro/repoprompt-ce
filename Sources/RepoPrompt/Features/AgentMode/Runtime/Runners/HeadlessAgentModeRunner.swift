@@ -24,13 +24,8 @@ final class HeadlessAgentModeRunner {
         initialMessageForRun: String,
         attachments: [AgentImageAttachment],
         makeLease: (_ runID: UUID) -> MCPBootstrapLease,
-        stopFence: AgentRunStartStopFence? = nil,
-        localComposerCandidate: UUID? = nil
+        stopFence: AgentRunStartStopFence? = nil
     ) async {
-        var candidateTransferred = false
-        defer {
-            if !candidateTransferred { session.settleLocalComposerOrigin(localComposerCandidate, disposition: .retained) }
-        }
         guard stopFence?.permitsStart(of: session) ?? true else { return }
         let attachmentReservationID = hooks.attachments.reserveAttachmentsForTurn(attachments, session)
 
@@ -107,9 +102,7 @@ final class HeadlessAgentModeRunner {
         }
 
         session.agentTask = Task { [weak self, weak session] in
-            guard let session else { return }
-            defer { session.settleLocalComposerOrigin(localComposerCandidate, disposition: .retained) }
-            guard let self else { return }
+            guard let self, let session else { return }
             await withTaskCancellationHandler {
                 let acquired = await lease.acquire()
                 guard acquired else {
@@ -140,12 +133,10 @@ final class HeadlessAgentModeRunner {
                     ownership: ownership,
                     attachments: attachments,
                     attachmentReservationID: attachmentReservationID,
-                    lease: lease,
-                    localComposerCandidate: localComposerCandidate
+                    lease: lease
                 )
             } onCancel: {}
         }
-        candidateTransferred = true
     }
 
     private func handleAcquireFailure(
@@ -183,8 +174,7 @@ final class HeadlessAgentModeRunner {
         ownership: AgentRunOwnership,
         attachments: [AgentImageAttachment],
         attachmentReservationID: UUID?,
-        lease: MCPBootstrapLease,
-        localComposerCandidate: UUID?
+        lease: MCPBootstrapLease
     ) async {
         let isPeriodic = session.oversight.pendingAutoWake?.isPeriodic == true
         var providerInitializationCompleted = false
@@ -210,10 +200,6 @@ final class HeadlessAgentModeRunner {
                 )
                 throw CancellationError()
             }
-            let proof = await hooks.providerInput.proveAgentSessionLinkProviderInput(session, monitoring.claim)
-            if monitoring.claim?.localInput != nil {
-                guard !Task.isCancelled, session.isCurrentRunAttempt(ownership, expectedRunID: runID) else { throw CancellationError() }
-            }
             guard hooks.providerInput.acquireAgentSessionLinkPhysicalDispatch(
                 session,
                 .headlessRun(runID: runID)
@@ -224,13 +210,10 @@ final class HeadlessAgentModeRunner {
                 )
                 throw CancellationError()
             }
-            let released = hooks.providerInput.handoffAgentSessionLinkProviderInput(session, .headlessRun(runID: runID), monitoring.claim, proof)
-            guard !released.mustAbortDispatch else { throw CancellationError() }
-            let stream = try await provider.streamAgentMessage(released.message(initialMessage), runID: runID)
+            let stream = try await provider.streamAgentMessage(monitoring.message, runID: runID)
             // Successful stream creation is the acceptance signal for every headless provider,
             // including Claude headless. A throwing creation leaves the claim pending for the retry.
-            hooks.providerInput.acceptAgentSessionLinkPrompt(session, monitoring.dispatchContext, released.claim)
-            session.settleLocalComposerOrigin(localComposerCandidate, disposition: .retained)
+            hooks.providerInput.acceptAgentSessionLinkPrompt(session, monitoring.dispatchContext, monitoring.claim)
             providerInitializationCompleted = true
             await lease.providerInitializationCompleted(provider: session.selectedAgent.rawValue, outcome: "ready")
             if !isPeriodic { hooks.providerInput.recordPendingHandoffSendOutcome(session, true) }

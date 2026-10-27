@@ -1572,10 +1572,6 @@ actor GitWorkspaceStateAuthority {
         return token
     }
 
-    nonisolated func acceptedMetadataWatermark(for repositoryKey: GitWorkspaceAuthorityRepositoryKey) -> UInt64 {
-        metadataMonitor.acceptedWatermark(for: repositoryKey)
-    }
-
     func metadataObservationIsCurrent(
         _ token: GitWorkspaceMetadataMonitor.RetainToken,
         for layout: GitRepositoryLayout,

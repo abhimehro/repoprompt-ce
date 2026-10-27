@@ -1,5 +1,4 @@
 import Foundation
-import RepoPromptDomainRuntime
 
 // The pure, table-provable admission decision for an attributed cross-session `send`.
 //
@@ -34,7 +33,6 @@ enum AgentSessionLinkDeliveryReadiness {
     struct Snapshot: Equatable {
         // Target identity/lifecycle
         var hasLoadedPersistedState: Bool
-        var restorationReadiness: AgentSessionRestorationReadiness
         var bindingTransitionInProgress: Bool
         var isClosing: Bool
         var endpointMatchesGrant: Bool
@@ -82,7 +80,6 @@ enum AgentSessionLinkDeliveryReadiness {
 
         init(
             hasLoadedPersistedState: Bool,
-            restorationReadiness: AgentSessionRestorationReadiness,
             bindingTransitionInProgress: Bool,
             isClosing: Bool,
             endpointMatchesGrant: Bool,
@@ -110,7 +107,6 @@ enum AgentSessionLinkDeliveryReadiness {
             hasPendingWorktreeMergeReview: Bool
         ) {
             self.hasLoadedPersistedState = hasLoadedPersistedState
-            self.restorationReadiness = restorationReadiness
             self.bindingTransitionInProgress = bindingTransitionInProgress
             self.isClosing = isClosing
             self.endpointMatchesGrant = endpointMatchesGrant
@@ -144,13 +140,6 @@ enum AgentSessionLinkDeliveryReadiness {
         /// assembles from live state.
         static let ready = Snapshot(
             hasLoadedPersistedState: true,
-            restorationReadiness: .authoritative(
-                AgentSessionRestorationBindingToken(
-                    bindingIdentity: AgentPersistentSessionBindingIdentity(tabID: UUID(), sessionID: UUID()),
-                    bindingTransitionGeneration: 0
-                ),
-                .persistedPayloadApplied
-            ),
             bindingTransitionInProgress: false,
             isClosing: false,
             endpointMatchesGrant: true,
@@ -181,10 +170,6 @@ enum AgentSessionLinkDeliveryReadiness {
         case endpointInvalidated = "endpoint_invalidated"
         /// Retryable: the target has not finished hydrating or is rebinding.
         case targetLoading = "target_loading"
-        /// Loading completed without a usable payload. Polling cannot make this binding writable.
-        case targetRestoreUnavailable = "target_restore_unavailable"
-        /// Creation needs its owner to finish configuration and confirm the matching payload save.
-        case targetCreationIncomplete = "target_creation_incomplete"
         /// The target is running, waiting, has a pending interaction, or has queued work.
         case targetNotIdle = "target_not_idle"
 
@@ -194,10 +179,6 @@ enum AgentSessionLinkDeliveryReadiness {
                 "The overseen session is no longer available at the exact endpoint this link was granted for."
             case .targetLoading:
                 "The overseen session is still loading. Poll it and try again."
-            case .targetRestoreUnavailable:
-                "This session could not be restored. Retry loading it or create a new session; its saved data has not been replaced."
-            case .targetCreationIncomplete:
-                "This session is still being created or has not been saved. Open it in the app to finish creation before sending a turn."
             case .targetNotIdle:
                 "The overseen session is not ready to accept a message. Wait for it with "
                     + "until: \"sendable\" and send when a snapshot reports idle_for_send: true; "
@@ -229,29 +210,13 @@ enum AgentSessionLinkDeliveryReadiness {
         if !snapshot.endpointMatchesGrant || snapshot.isClosing {
             return .blocked(.endpointInvalidated)
         }
-        if snapshot.bindingTransitionInProgress {
-            return .blocked(.targetLoading)
-        }
-        if let reason = restorationBlockReason(snapshot.restorationReadiness) {
-            return .blocked(reason)
-        }
-        if !snapshot.hasLoadedPersistedState {
+        if !snapshot.hasLoadedPersistedState || snapshot.bindingTransitionInProgress {
             return .blocked(.targetLoading)
         }
         if isTargetBusy(snapshot) {
             return .blocked(.targetNotIdle)
         }
         return .ready
-    }
-
-    /// Ordinary callers cannot borrow the creation owner's permission to configure or save.
-    static func restorationBlockReason(_ readiness: AgentSessionRestorationReadiness) -> BlockReason? {
-        switch readiness {
-        case .authoritative: nil
-        case .unbound, .pending: .targetLoading
-        case .creating: .targetCreationIncomplete
-        case .terminal: .targetRestoreUnavailable
-        }
     }
 
     static func failure(snapshot: Snapshot) -> AgentSessionLinkSendFailure? {

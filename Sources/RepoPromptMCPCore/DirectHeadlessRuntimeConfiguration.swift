@@ -1,6 +1,5 @@
 import Foundation
 import RepoPromptDomainRuntime
-import RepoPromptShared
 
 struct DirectHeadlessRuntimeLocations: Equatable {
     let profileIdentifier: String
@@ -26,12 +25,11 @@ enum DirectHeadlessRuntimeLocationResolver {
         currentDirectory _: URL,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         temporaryDirectory: URL = FileManager.default.temporaryDirectory,
-        customWorkspaceStoragePath: String? = MCPFilesystemIdentity.current.buildFlavor == .debug
-            ? UserDefaults(suiteName: AppProfileLocations.current.preferencesDomain)?.string(forKey: "GlobalCustomStorageURL")
-            : UserDefaults.standard.string(forKey: "GlobalCustomStorageURL"),
-        identity: MCPFilesystemIdentity = .current
+        customWorkspaceStoragePath: String? = UserDefaults.standard.string(forKey: "GlobalCustomStorageURL")
     ) throws -> DirectHeadlessRuntimeLocations {
-        let profile = sanitizedProfileIdentifier(environment["REPOPROMPT_MCP_HEADLESS_PROFILE"] ?? "default")
+        let profile = sanitizedProfileIdentifier(
+            environment["REPOPROMPT_MCP_HEADLESS_PROFILE"] ?? "default"
+        )
         let explicitProfilePath = environment["REPOPROMPT_MCP_HEADLESS_PROFILE_DIR"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let usesExplicitProfileDirectory = explicitProfilePath?.isEmpty == false
@@ -39,38 +37,40 @@ enum DirectHeadlessRuntimeLocationResolver {
             throw DirectHeadlessRuntimeLocationError.profileDirectoryRequired(profile)
         }
 
-        let locations = AppProfileLocations(identity: identity, homeDirectory: homeDirectory, profileName: profile)
         let storageDirectory: URL
         let workspaceStorageDirectory: URL
         let eventDirectory: URL
         let runtimeTemporaryDirectory: URL
         if let explicitProfilePath, !explicitProfilePath.isEmpty {
-            let root = URL(fileURLWithPath: explicitProfilePath, isDirectory: true).standardizedFileURL
-            let profileRoot = try locations.customWorkspaceRoot(selectedDirectory: root)
-            let resolvedRoot = profileRoot.resolvingSymlinksInPath()
-            storageDirectory = resolvedRoot
-            workspaceStorageDirectory = resolvedRoot.appendingPathComponent("Workspaces", isDirectory: true)
-            eventDirectory = resolvedRoot.appendingPathComponent("Events", isDirectory: true)
-            runtimeTemporaryDirectory = resolvedRoot.appendingPathComponent("Temporary", isDirectory: true)
-        } else {
-            let root = locations.applicationSupportRoot
-            try locations.validateWritableRoot(root)
+            let root = URL(fileURLWithPath: explicitProfilePath, isDirectory: true)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
             storageDirectory = root
-            if let path = customWorkspaceStoragePath, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let selectedRoot = URL(fileURLWithPath: path.trimmingCharacters(in: .whitespacesAndNewlines), isDirectory: true)
-                workspaceStorageDirectory = try locations.customWorkspaceRoot(selectedDirectory: selectedRoot).standardizedFileURL.resolvingSymlinksInPath()
-            } else {
-                workspaceStorageDirectory = locations.workspaceRoot
-            }
+            workspaceStorageDirectory = root.appendingPathComponent("Workspaces", isDirectory: true)
             eventDirectory = root.appendingPathComponent("Events", isDirectory: true)
-            runtimeTemporaryDirectory = temporaryDirectory.appendingPathComponent(identity.applicationSupportDirectoryName, isDirectory: true)
+            runtimeTemporaryDirectory = root.appendingPathComponent("Temporary", isDirectory: true)
+        } else {
+            let root = homeDirectory
+                .appendingPathComponent("Library/Application Support/RepoPrompt CE", isDirectory: true)
+                .standardizedFileURL
+            storageDirectory = root
+            workspaceStorageDirectory = customWorkspaceStoragePath.flatMap { path -> URL? in
+                let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                return URL(fileURLWithPath: trimmed, isDirectory: true)
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+            } ?? root.appendingPathComponent("Workspaces", isDirectory: true)
+            eventDirectory = root.appendingPathComponent("Events", isDirectory: true)
+            runtimeTemporaryDirectory = temporaryDirectory
+                .appendingPathComponent("RepoPrompt CE", isDirectory: true)
         }
 
         let workingDirectories = try resolvedWorkingDirectories(
             environment["REPOPROMPT_MCP_WORKING_DIRS"]
         )
         return DirectHeadlessRuntimeLocations(
-            profileIdentifier: locations.profileIdentifier,
+            profileIdentifier: profile,
             storageDirectory: storageDirectory,
             workspaceStorageDirectory: workspaceStorageDirectory,
             eventDirectory: eventDirectory,

@@ -124,15 +124,7 @@ final class AgentCodexModelRegistry {
                 isPlaceholderDefault: false,
                 isProviderDefault: false,
                 supportedReasoningEfforts: specifier.reasoningEffort == nil ? option.supportedReasoningEfforts : [],
-                supportedReasoningEffortRawValues: specifier.reasoningEffort == nil ? option.supportedReasoningEffortRawValues : [],
-                defaultReasoningEffort: specifier.reasoningEffort == nil ? option.defaultReasoningEffort : nil,
-                defaultReasoningEffortRawValue: specifier.reasoningEffort == nil ? option.defaultReasoningEffortRawValue : nil,
-                effortVariant: specifier.reasoningEffort.flatMap { effort in
-                    CodexServiceTierVariantCatalog.fastVariantID(
-                        baseModelID: baseModel,
-                        reasoningEffort: nil
-                    ).map { AgentModelEffortVariant(baseModelRaw: $0, reasoningEffort: effort) }
-                }
+                defaultReasoningEffort: specifier.reasoningEffort == nil ? option.defaultReasoningEffort : nil
             ))
         }
 
@@ -219,13 +211,7 @@ final class AgentCodexModelRegistry {
                 displayName: model.displayName,
                 description: model.description,
                 isPlaceholderDefault: false,
-                isProviderDefault: model.isDefault,
-                supportedReasoningEffortRawValues: model.supportedReasoningEffortRawValues,
-                defaultReasoningEffort: model.defaultReasoningEffort,
-                defaultReasoningEffortRawValue: model.defaultReasoningEffortRawValue,
-                effortVariant: model.reasoningEffort.map {
-                    AgentModelEffortVariant(baseModelRaw: model.baseID, reasoningEffort: $0)
-                }
+                isProviderDefault: model.isDefault
             )
         }
         options.append(contentsOf: mapped)
@@ -307,8 +293,7 @@ final class AgentCodexModelRegistry {
                         description: $0.description
                     )
                 },
-                defaultReasoningEffort: record.defaultReasoningEffort,
-                serviceTiers: record.serviceTiers
+                defaultReasoningEffort: record.defaultReasoningEffort
             )
         }
     }

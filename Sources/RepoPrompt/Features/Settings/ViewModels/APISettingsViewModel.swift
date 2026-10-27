@@ -311,12 +311,6 @@ public class APISettingsViewModel: ObservableObject {
     @Published private(set) var availableGrokBuildModelOptions: [AgentModelOption] = []
     private var grokBuildLogCollector: CLIProcessLogCollector?
 
-    /// Installed-runtime inputs are refreshed when CLI Providers or Agent Decisions is shown.
-    /// They intentionally remain separate from current-process Router verification.
-    @Published private(set) var isAntigravityRuntimeInstalled = false
-    @Published private(set) var isDevinRuntimeInstalled = false
-    @Published private(set) var directConnectedCLIProviders: Set<AgentProviderKind> = []
-
     /// CLI connection flags are persisted configuration hints, not proof that the provider is
     /// usable in the current process. Context Builder restoration waits for this validation pass
     /// before accepting or replacing a saved provider/model selection.
@@ -404,8 +398,8 @@ public class APISettingsViewModel: ObservableObject {
             openCodeAvailable: isOpenCodeConnected,
             cursorAvailable: isCursorConnected,
             grokBuildAvailable: isGrokBuildConnected,
-            antigravityAvailable: isAntigravityRuntimeInstalled,
-            devinAvailable: isDevinRuntimeInstalled,
+            antigravityAvailable: AntigravityRuntimeManager.installedRuntimeSync() != nil,
+            devinAvailable: DevinRuntimeLocator.isInstalledSync(),
             zaiConfigured: compatibleBackendIsActive(.glmZAI),
             kimiConfigured: compatibleBackendIsActive(.kimi),
             customClaudeCompatibleConfigured: compatibleBackendIsActive(.custom)
@@ -426,34 +420,6 @@ public class APISettingsViewModel: ObservableObject {
         agentAvailability = next
     }
 
-    /// Refreshes the shared predicates used by every direct CLI Provider card. This is UI
-    /// connection state only: routing still validates executable metadata independently.
-    func refreshDirectCLIProviderConnectionState() {
-        let antigravityInstalled = antigravityRuntimeInstalledProvider()
-        let devinInstalled = devinRuntimeInstalledProvider()
-        if isAntigravityRuntimeInstalled != antigravityInstalled {
-            isAntigravityRuntimeInstalled = antigravityInstalled
-        }
-        if isDevinRuntimeInstalled != devinInstalled {
-            isDevinRuntimeInstalled = devinInstalled
-        }
-        refreshDirectConnectedCLIProviders()
-        refreshAgentAvailability()
-    }
-
-    private func refreshDirectConnectedCLIProviders() {
-        var providers: Set<AgentProviderKind> = []
-        if isCodexConnected { providers.insert(.codexExec) }
-        if isClaudeCodeConnected { providers.insert(.claudeCode) }
-        if isOpenCodeConnected { providers.insert(.openCode) }
-        if isCursorConnected { providers.insert(.cursor) }
-        if isGrokBuildConnected { providers.insert(.grokBuild) }
-        if isAntigravityRuntimeInstalled { providers.insert(.antigravity) }
-        if isDevinRuntimeInstalled { providers.insert(.devin) }
-        guard providers != directConnectedCLIProviders else { return }
-        directConnectedCLIProviders = providers
-    }
-
     /// Safety net behind the explicit `refreshAgentAvailability()` calls: recompute
     /// whenever any published input of the availability context changes, so mutation
     /// paths without an explicit refresh still converge. The main-queue hop defers the
@@ -465,15 +431,12 @@ public class APISettingsViewModel: ObservableObject {
             $isOpenCodeConnected.map { _ in () }.eraseToAnyPublisher(),
             $isCursorConnected.map { _ in () }.eraseToAnyPublisher(),
             $isGrokBuildConnected.map { _ in () }.eraseToAnyPublisher(),
-            $isAntigravityRuntimeInstalled.map { _ in () }.eraseToAnyPublisher(),
-            $isDevinRuntimeInstalled.map { _ in () }.eraseToAnyPublisher(),
             $claudeCodeCLIStatus.map { _ in () }.eraseToAnyPublisher(),
             $compatibleBackendConfigs.map { _ in () }.eraseToAnyPublisher(),
             $compatibleBackendSecretPresence.map { _ in () }.eraseToAnyPublisher()
         ])
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in
-            self?.refreshDirectConnectedCLIProviders()
             self?.refreshAgentAvailability()
         }
     }
@@ -489,7 +452,7 @@ public class APISettingsViewModel: ObservableObject {
             openCodeAvailable: isVerifiedContextBuilderProvider(.openCode) && isOpenCodeConnected,
             cursorAvailable: isVerifiedContextBuilderProvider(.cursor) && isCursorConnected,
             grokBuildAvailable: isVerifiedContextBuilderProvider(.grokBuild) && isGrokBuildConnected,
-            devinAvailable: isDevinRuntimeInstalled,
+            devinAvailable: DevinRuntimeLocator.isInstalledSync(),
             zaiConfigured: compatibleBackendIsActive(.glmZAI),
             kimiConfigured: compatibleBackendIsActive(.kimi),
             customClaudeCompatibleConfigured: compatibleBackendIsActive(.custom)
@@ -552,9 +515,9 @@ public class APISettingsViewModel: ObservableObject {
         case .grokBuild:
             isGrokBuildConnected
         case .antigravity:
-            isAntigravityRuntimeInstalled
+            AntigravityRuntimeManager.installedRuntimeSync() != nil
         case .devin:
-            isDevinRuntimeInstalled
+            DevinRuntimeLocator.isInstalledSync()
         case .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             false
         }
@@ -1073,8 +1036,6 @@ public class APISettingsViewModel: ObservableObject {
     private let aiQueriesService: AIQueriesService
     private let keyManager: KeyManager
     private let cursorModelPollingService: CursorACPModelPollingService
-    private let antigravityRuntimeInstalledProvider: @MainActor () -> Bool
-    private let devinRuntimeInstalledProvider: @MainActor () -> Bool
     private let codexModelPollingService: CodexModelPollingService
     private let codexManagedAuthRecovery: any CodexManagedAuthRecovering
     private let codexSessionFence: CodexManagedSessionFence
@@ -1095,18 +1056,10 @@ public class APISettingsViewModel: ObservableObject {
             await CodexProviderHelpers.preflightCodexExecutable(logCollector: collector)
         },
         storedDataLoadBoundary: (@MainActor @Sendable () async -> Void)? = nil,
-        contextBuilderProviderValidationWillBegin: (@MainActor @Sendable () async -> Void)? = nil,
-        antigravityRuntimeInstalledProvider: @escaping @MainActor () -> Bool = {
-            AntigravityRuntimeManager.installedRuntimeSync() != nil
-        },
-        devinRuntimeInstalledProvider: @escaping @MainActor () -> Bool = {
-            DevinRuntimeLocator.isInstalledSync()
-        }
+        contextBuilderProviderValidationWillBegin: (@MainActor @Sendable () async -> Void)? = nil
     ) {
         self.aiQueriesService = aiQueriesService
         self.keyManager = keyManager
-        self.antigravityRuntimeInstalledProvider = antigravityRuntimeInstalledProvider
-        self.devinRuntimeInstalledProvider = devinRuntimeInstalledProvider
         self.codexModelPollingService = codexModelPollingService
         self.cursorModelPollingService = cursorModelPollingService
         self.codexManagedAuthRecovery = codexManagedAuthRecovery
@@ -1115,7 +1068,6 @@ public class APISettingsViewModel: ObservableObject {
         self.storedDataLoadBoundary = storedDataLoadBoundary
         self.contextBuilderProviderValidationWillBegin = contextBuilderProviderValidationWillBegin
         installCLIConnectionObservers()
-        refreshDirectCLIProviderConnectionState()
         installAgentAvailabilityObservers()
         refreshAgentAvailability()
         if loadStoredDataOnInit {
@@ -1132,26 +1084,8 @@ public class APISettingsViewModel: ObservableObject {
         }
     }
 
-    // A non-visual managed runtime leases this same live settings owner. Closing the source
-    // window withdraws only its UI lease; subscriptions stay process-owned until the last
-    // managed runtime settles. No availability snapshot or replacement settings loader is used.
-    private(set) var managedRuntimeLeaseCount = 0
-    private var windowCloseRequested = false
-
-    func retainForManagedRuntime() {
-        precondition(!hasPreparedForWindowClose)
-        managedRuntimeLeaseCount += 1
-    }
-
-    func releaseManagedRuntime() {
-        guard managedRuntimeLeaseCount > 0 else { return }
-        managedRuntimeLeaseCount -= 1
-        if managedRuntimeLeaseCount == 0, windowCloseRequested { prepareForWindowClose() }
-    }
-
     func prepareForWindowClose() {
-        windowCloseRequested = true
-        guard managedRuntimeLeaseCount == 0, !hasPreparedForWindowClose else { return }
+        guard !hasPreparedForWindowClose else { return }
         hasPreparedForWindowClose = true
         initialLoadTask?.cancel()
         initialLoadTask = nil
@@ -1428,14 +1362,7 @@ public class APISettingsViewModel: ObservableObject {
         {
             return true
         }
-        let service = OpenCodeACPModelPollingService.shared
-        let outcome = await service.refreshNow(workspacePath: nil)
-        if outcome == .noModelsAdvertised {
-            // Preserve the prior Boolean contract: empty discovery verified the connection only
-            // when a usable retained registry snapshot existed.
-            return await service.latestSnapshot() != nil
-        }
-        return outcome == .updated || outcome == .unchanged
+        return await OpenCodeACPModelPollingService.shared.refreshNow(workspacePath: nil)
     }
 
     private func probeCachedCursorConnection(ifNeeded: Bool) async -> Bool {
@@ -1455,10 +1382,7 @@ public class APISettingsViewModel: ObservableObject {
         {
             return true
         }
-        let outcome = await GrokBuildACPModelPollingService.shared.refreshNow(workspacePath: nil)
-        // Historically any completed Grok discovery, including readiness-only discovery with
-        // no model catalog, verified the connection for preflight.
-        return outcome == .updated || outcome == .unchanged || outcome == .noModelsAdvertised
+        return await GrokBuildACPModelPollingService.shared.refreshNow(workspacePath: nil)
     }
 
     private func diagnosticReason(for error: Error) -> APIKeychainAccessDiagnostic.Reason {
@@ -1870,8 +1794,6 @@ public class APISettingsViewModel: ObservableObject {
                 devinModelDiscoveryMessage = "Devin ACP advertised no selectable models."
             case let .failed(message):
                 devinModelDiscoveryMessage = "Model discovery failed: \(message)"
-            case .cancelled:
-                devinModelDiscoveryMessage = nil
             }
             refreshAgentAvailability()
             await updateAvailableModels()
@@ -3949,7 +3871,7 @@ public class APISettingsViewModel: ObservableObject {
             collector.append("Connection test threw error: \(error.localizedDescription)")
             isGrokBuildConnected = false
             setContextBuilderProviderVerified(.grokBuild, verified: false)
-            grokBuildError = Self.friendlyGrokBuildMessage(for: error)
+            grokBuildError = friendlyGrokBuildMessage(for: error)
             UserDefaults.standard.set(false, forKey: "GrokBuildCLIConnected")
             stopGrokBuildModelsSubscription(clearModels: true)
             await updateAvailableModels()
@@ -3980,7 +3902,7 @@ public class APISettingsViewModel: ObservableObject {
         )
     }
 
-    static func friendlyGrokBuildMessage(for error: Error) -> String {
+    private func friendlyGrokBuildMessage(for error: Error) -> String {
         if let providerError = error as? AIProviderError {
             switch providerError {
             case let .invalidConfiguration(detail):
@@ -4004,9 +3926,6 @@ public class APISettingsViewModel: ObservableObject {
         }
         if lowered.contains("stdio") {
             return "Installed Grok Build CLI does not advertise the ACP stdio subcommand. Update Grok Build and ensure `grok agent --help` lists `stdio`."
-        }
-        if lowered.contains("authentication required") {
-            return "Grok Build needs authentication. Run `grok login` in Terminal, or save a Grok (xAI) API key under Settings → API Providers, then try Connect again."
         }
         return message
     }

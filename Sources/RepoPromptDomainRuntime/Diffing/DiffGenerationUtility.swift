@@ -914,10 +914,9 @@ package class DiffGenerationUtility {
     }
 
     /// Internal normalisation pipeline – **all** string surgery happens here.
-    /// `wholeLine` (the `isWholeLineMatch` key) stops after step 4: no length cap and
-    /// no trailing-delimiter strip, so a line never equals one that lacks its last token.
+    /// `capLength` bounds fuzzy-match CPU for hash keys; `nil` keeps the full line.
     @inline(__always)
-    private static func normalized(_ raw: String, wholeLine: Bool = false) -> String {
+    private static func normalized(_ raw: String, capLength: Int? = 150) -> String {
         // 1. Decode HTML entities & lowercase.
         var s = raw.decodingHTMLEntities().lowercased()
 
@@ -945,10 +944,8 @@ package class DiffGenerationUtility {
         // 4. Collapse separator runs.
         s = collapseSeparatorRuns(s)
 
-        if wholeLine { return s }
-
         // 5. Cap to 150 chars to bound fuzzy-match CPU.
-        if s.count > 150 { s = String(s.prefix(150)) }
+        if let capLength, s.count > capLength { s = String(s.prefix(capLength)) }
 
         // 6. Strip *one* trailing delimiter token.
         for tok in ["->", "=>", ":=", "=", ":"] where s.hasSuffix(tok) {
@@ -970,9 +967,8 @@ package class DiffGenerationUtility {
 
     /// True when each matched file line equals its search line under the matcher's own
     /// normalisation (indentation, whitespace, case, …) but **without** the 150-char
-    /// key cap or the trailing-delimiter strip. Rejects candidates admitted only by capped
-    /// keys, unverified middle lines, the fuzzy probe, or a missing trailing `=`/`:`/`->`
-    /// token, all of which would replace text the search did not cover.
+    /// key cap. Rejects candidates admitted only by capped keys, unverified middle lines,
+    /// or the fuzzy probe, all of which would replace text the search did not cover.
     package static func isWholeLineMatch(fileLines: [String], searchLines: [String]) -> Bool {
         guard fileLines.count == searchLines.count else { return false }
         return zip(fileLines, searchLines).allSatisfy { fileLine, searchLine in
@@ -982,7 +978,7 @@ package class DiffGenerationUtility {
 
     @inline(__always)
     private static func wholeLineKey(_ raw: String) -> String {
-        String.removeIndentationTag(normalized(raw, wholeLine: true))
+        String.removeIndentationTag(normalized(raw, capLength: nil))
     }
 
     /// Returns the strict & loose hash keys plus the cleaned text for a line.

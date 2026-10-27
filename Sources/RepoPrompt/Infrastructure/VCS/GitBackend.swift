@@ -149,14 +149,12 @@ actor GitBackend: VCSBackend {
     func createWorktreeWithResult(
         request: GitWorktreeCreateRequest,
         at repoURL: URL,
-        initializationContext: GitWorktreeInitializationContext? = nil,
-        beforeCommit: (@Sendable () async throws -> Void)? = nil
+        initializationContext: GitWorktreeInitializationContext? = nil
     ) async throws -> GitWorktreeCreateResult {
         try await gitService.createWorktreeWithResult(
             request: request,
             at: repoURL,
-            initializationContext: initializationContext,
-            beforeCommit: beforeCommit
+            initializationContext: initializationContext
         )
     }
 

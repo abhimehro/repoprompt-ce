@@ -65,7 +65,6 @@ struct ProviderUsageSectionConfiguration {
     /// Optional diagnostics-only toggle rendered inside Details.
     let diagnosticsToggle: ProviderUsageDiagnosticsToggle?
     var prepareSetup: (@MainActor () async throws -> URL)?
-    var setupRequired = false
     var completeSetup: (@MainActor () async throws -> Void)?
 
     static let observeOnlyLine = "Read-only. Never changes which model runs."
@@ -80,43 +79,6 @@ struct ProviderUsageSectionConfiguration {
 struct ProviderUsageDiagnosticsToggle {
     let title: String
     let isOn: Binding<Bool>
-}
-
-/// User-confirmed setup only. Preparing files is not collection and cannot certify readiness.
-@MainActor
-final class ClaudeUsageSetupAction: ObservableObject {
-    @Published var script: URL?
-    @Published var error: String?
-    @Published private(set) var isOpening = false
-
-    var manualCommand: String? {
-        script.map { "/bin/zsh '" + $0.path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    }
-
-    func open(
-        prepare: @MainActor () async throws -> URL,
-        launch: @MainActor (URL) async throws -> Void = { script in
-            guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
-                throw NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError, userInfo: [NSLocalizedDescriptionKey: "Terminal.app could not be found. Open another terminal and run the setup command below."])
-            }
-            _ = try await NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
-        }
-    ) async {
-        guard !isOpening else { return }
-        isOpening = true
-        script = nil
-        error = nil
-        defer { isOpening = false }
-        do {
-            script = try await prepare()
-        } catch {
-            self.error = (error as? ProviderQuotaReadError)?.message ?? "Could not prepare Claude setup: \(error.localizedDescription)"
-            return
-        }
-        guard let script else { return }
-        do { try await launch(script) }
-        catch { self.error = "Terminal could not open Claude setup: \(error.localizedDescription)" }
-    }
 }
 
 // MARK: - Section
@@ -138,7 +100,8 @@ struct ProviderUsageQuotaSection: View {
     @State private var showsConsent = false
     @State private var showsDetails = false
     @State private var showsSetup = false
-    @StateObject private var setup = ClaudeUsageSetupAction()
+    @State private var setupError: String?
+    @State private var setupWasOpened = false
     @ObservedObject private var store: ProviderQuotaUIStore
     @ObservedObject private var settingsStore = GlobalSettingsStore.shared
 
@@ -159,11 +122,6 @@ struct ProviderUsageQuotaSection: View {
     var body: some View {
         let configuration = makeConfiguration()
         VStack(alignment: .leading, spacing: 8) {
-            if setup.isOpening {
-                HStack { ProgressView().controlSize(.small)
-                    Text("Preparing Claude setup…").font(.caption)
-                }
-            }
             if style == .settings {
                 Text("Plan usage")
                     .font(.system(size: 11, weight: .semibold))
@@ -185,10 +143,7 @@ struct ProviderUsageQuotaSection: View {
                     )
                 case .active:
                     readings
-                    if style == .settings, setup.script != nil || configuration.setupRequired, let completeSetup = configuration.completeSetup {
-                        Button("Open Claude setup…") { showsSetup = true }
-                            .buttonStyle(CustomButtonStyle())
-                            .font(.caption)
+                    if style == .settings, setupWasOpened, let completeSetup = configuration.completeSetup {
                         Text("Approve folder trust or sign in in Claude, then quit Claude and check usage here.")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -196,11 +151,8 @@ struct ProviderUsageQuotaSection: View {
                         Button("Check usage after setup") {
                             Task { @MainActor in
                                 do { try await completeSetup()
-                                    setup.script = nil
-                                } catch {
-                                    setup.script = nil
-                                    setup.error = (error as? ProviderQuotaReadError)?.message ?? "Could not check Claude usage: \(error.localizedDescription)"
-                                }
+                                    setupWasOpened = false
+                                } catch { setupError = (error as? ProviderQuotaReadError)?.message ?? "Could not check Claude usage." }
                             }
                         }
                         .buttonStyle(CustomButtonStyle())
@@ -247,26 +199,9 @@ struct ProviderUsageQuotaSection: View {
         } message: {
             Text("This one-time setup opens Claude Code in Terminal so you can approve its helper folder or sign in. Quit Claude when ready, then click Check usage after setup here. RepoPrompt will not accept prompts or send a model message for you.")
         }
-        .sheet(isPresented: Binding(get: { setup.error != nil }, set: { if !$0 { setup.error = nil } })) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Claude usage setup").font(.headline)
-                Text(setup.error ?? "").textSelection(.enabled)
-                if let command = setup.manualCommand {
-                    Text("Open Terminal and run this command:")
-                    Text(command).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    Button("Copy setup command") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(command, forType: .string)
-                    }
-                    Text("Approve the helper folder or sign in yourself. Do not send a model message. Quit Claude with /exit or Ctrl-C twice, then click Check usage after setup here.")
-                } else {
-                    Text("Check that Claude Code is installed and available on PATH (or in ~/.local/bin). If consent or the profile changed, reconnect Claude usage in Settings, then try setup again.")
-                }
-                Button("Done") { setup.error = nil }
-            }
-            .padding(20)
-            .frame(width: 520)
-        }
+        .alert("Claude usage setup", isPresented: Binding(get: { setupError != nil }, set: { if !$0 { setupError = nil } })) {
+            Button("OK") { setupError = nil }
+        } message: { Text(setupError ?? "") }
     }
 
     private var offersSetup: Bool {
@@ -278,8 +213,14 @@ struct ProviderUsageQuotaSection: View {
 
     @MainActor
     private func openSetup(configuration: ProviderUsageSectionConfiguration) {
-        guard let prepare = configuration.prepareSetup else { return }
-        Task { await setup.open(prepare: prepare) }
+        Task { @MainActor in
+            do {
+                guard let prepare = configuration.prepareSetup else { return }
+                let script = try await prepare()
+                guard NSWorkspace.shared.open(script) else { throw ProviderQuotaReadError.cliUnavailable }
+                setupWasOpened = true
+            } catch { setupError = (error as? ProviderQuotaReadError)?.message ?? "Could not open Claude usage setup." }
+        }
     }
 
     // MARK: Configuration (the only provider-specific code)
@@ -310,8 +251,7 @@ struct ProviderUsageQuotaSection: View {
                 lines.append("Profile: \((claudeProfileID as NSString).abbreviatingWithTildeInPath)")
             }
             if let grant = settingsStore.claudeCLIUsageGrant() {
-                lines.append("Consent granted \(grant.grantedAt.formatted(date: .abbreviated, time: .shortened))")
-                if !grant.isReady { lines.append("Setup pending. Collection stays off until you check usage after setup.") }
+                lines.append("Connected \(grant.grantedAt.formatted(date: .abbreviated, time: .shortened))")
             }
             return ProviderUsageSectionConfiguration(
                 displayName: "Claude",
@@ -323,11 +263,7 @@ struct ProviderUsageQuotaSection: View {
                 ),
                 consent: ProviderUsageSectionConfiguration.claudeConsent,
                 activateSource: { WindowStatesManager.shared.providerQuotaRuntime.connectClaudeUsage(startReading: false) },
-                deactivateSource: {
-                    setup.script = nil
-                    setup.error = nil
-                    WindowStatesManager.shared.providerQuotaRuntime.disconnectClaudeUsage()
-                },
+                deactivateSource: { WindowStatesManager.shared.providerQuotaRuntime.disconnectClaudeUsage() },
                 diagnosticsToggle: ProviderUsageDiagnosticsToggle(
                     title: "Record rate-limit events from Claude runs (diagnostics)",
                     isOn: Binding(
@@ -339,7 +275,6 @@ struct ProviderUsageQuotaSection: View {
                     )
                 ),
                 prepareSetup: { try await WindowStatesManager.shared.providerQuotaRuntime.prepareClaudeUsageSetup() },
-                setupRequired: settingsStore.claudeCLIUsageGrant()?.isReady == false,
                 completeSetup: { try await WindowStatesManager.shared.providerQuotaRuntime.completeClaudeUsageSetup() }
             )
         }

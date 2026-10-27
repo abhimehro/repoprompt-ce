@@ -242,13 +242,7 @@ enum ACPDefaultSessionUpdateNormalizer {
         let progressText = ACPRuntimeEventParsing.extractContentText(from: payload["content"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if let status, status == "completed" || status == "failed" {
-            // Some agents (Devin) finish with empty JSON after streaming results in
-            // running updates. Agree with retention's empty-output classification so
-            // the terminal marker finishes the lifecycle without erasing its content.
-            let outputJSON = AgentToolResultPayloadRetention.isThin(outputJSON)
-                ? ACPRuntimeEventParsing.serializeJSON(["status": status])
-                : outputJSON
+        if status == "completed" || status == "failed" {
             return [
                 .stream(
                     AIStreamResult(
