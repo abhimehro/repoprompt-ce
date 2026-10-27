@@ -136,6 +136,16 @@ final class AgentModeRunService {
         )
     }
 
+    func oracleToolSettlementCallbacks(
+        session: AgentTabSession,
+        invocationID: UUID,
+        toolName: String,
+        isOwnerCurrent: @escaping @MainActor @Sendable () -> Bool
+    ) -> OracleToolSettlementCallbacks? {
+        guard session.selectedAgent.acpProviderID != nil else { return nil }
+        return acpRunner.oracleToolSettlementCallbacks(session: session, invocationID: invocationID, toolName: toolName, isOwnerCurrent: isOwnerCurrent)
+    }
+
     /// Whether this session's run pipeline sends `command` as its exact native text.
     ///
     /// Claude Code always does. An ACP session does only while its live controller advertises the
@@ -177,13 +187,22 @@ final class AgentModeRunService {
         providerControlCommand: AgentProviderControlCommand? = nil,
         selfCompactDispatchID: AgentSelfCompactionDispatchID? = nil,
         startOutcome: AgentRunStartOutcomeRecorder? = nil,
-        stopFence: AgentRunStartStopFence? = nil
+        stopFence: AgentRunStartStopFence? = nil,
+        localComposerCandidate: UUID? = nil
     ) async -> CodexAgentModeCoordinator.NativeSendOutcome? {
+        var candidateTransferred = false
+        defer {
+            if !candidateTransferred { session.settleLocalComposerOrigin(localComposerCandidate, disposition: .retained) }
+        }
         guard stopFence?.permitsStart(of: session) ?? true else {
             startOutcome?.recordStartFailure(message: "This scheduled run was cancelled by Stop.")
             return nil
         }
         assert(session.tabID == tabID, "AgentModeRunService.startRun requires the originating tab ID to match the AgentTabSession tab ID")
+        if let message = session.operationAdmissionFailureMessage {
+            startOutcome?.recordStartFailure(message: message)
+            return session.selectedAgent == .codexExec ? .preDispatchRejected(message: message) : nil
+        }
         let selectedAgent = session.selectedAgent
         if let selfCompactDispatchID {
             guard session.selfCompactState.active?.id == selfCompactDispatchID.requestID,
@@ -273,6 +292,7 @@ final class AgentModeRunService {
             )
         }
         if selectedAgent.usesClaudeNativeRuntime {
+            candidateTransferred = true
             await claudeRunner.startRun(
                 tabID: tabID,
                 session: session,
@@ -283,12 +303,14 @@ final class AgentModeRunService {
                 autoEffortSelection: autoEffortSelection,
                 providerControlCommand: providerControlCommand,
                 selfCompactDispatchID: selfCompactDispatchID,
-                stopFence: stopFence
+                stopFence: stopFence,
+                localComposerCandidate: localComposerCandidate
             )
             recordNonCodexStartOutcome(startOutcome, session: session)
             return nil
         }
         if let acpRunRequest {
+            candidateTransferred = true
             await acpRunner.startRun(
                 tabID: tabID,
                 session: session,
@@ -298,11 +320,13 @@ final class AgentModeRunService {
                 runRequest: acpRunRequest,
                 providerControlCommand: providerControlCommand,
                 makeLease: makeLease,
-                stopFence: stopFence
+                stopFence: stopFence,
+                localComposerCandidate: localComposerCandidate
             )
             recordNonCodexStartOutcome(startOutcome, session: session)
             return nil
         }
+        candidateTransferred = true
         await headlessRunner.startRun(
             tabID: tabID,
             session: session,
@@ -310,7 +334,8 @@ final class AgentModeRunService {
             initialMessageForRun: initialMessageForRun,
             attachments: attachments,
             makeLease: makeLease,
-            stopFence: stopFence
+            stopFence: stopFence,
+            localComposerCandidate: localComposerCandidate
         )
         recordNonCodexStartOutcome(startOutcome, session: session)
         return nil
@@ -345,6 +370,7 @@ final class AgentModeRunService {
         targetRunAttemptID: UUID?,
         targetController: ACPAgentSessionController
     ) async -> Bool {
+        guard session.operationAdmissionFailureMessage == nil else { return false }
         let selectedAgent = session.selectedAgent
         let runtimePermission = dependencies.providerRuntimePermissionResolver(selectedAgent, session.permissionProfile)
         guard selectedAgent.acpProviderID != nil,
@@ -781,7 +807,7 @@ final class AgentModeRunService {
         _ managed: AgentTabSession.ACPSteeringManagedContext,
         session: AgentTabSession
     ) -> Bool {
-        let candidate = managed.candidate
+        let candidate = managed.endpoint
         return session.tabID == candidate.tabID
             && session.activeAgentSessionID == candidate.sessionID
             && session.persistentSessionBindingIdentity?.generation == candidate.persistentBindingGeneration

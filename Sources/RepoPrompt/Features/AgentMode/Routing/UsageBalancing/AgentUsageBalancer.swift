@@ -75,7 +75,7 @@ final class AgentUsageBalancer {
     func choose(
         selected: AgentTaskRoutingCandidateBuilder.Candidate,
         candidates: [AgentTaskRoutingCandidateBuilder.Candidate],
-        evidence _: AgentTaskRoutingDecisionEvidence?,
+        evidence _: DecisionEvidence?,
         configuration: AgentTaskRouterConfiguration,
         now: Date = Date()
     ) -> Decision {

@@ -2,6 +2,7 @@
 import RepoPromptDomainRuntime
 import RepoPromptSecureStorage
 import RepoPromptSettingsCore
+import RepoPromptShared
 import XCTest
 
 #if DEBUG
@@ -215,6 +216,7 @@ import XCTest
             originalStoragePath = UserDefaults.standard.string(forKey: "GlobalCustomStorageURL")
             storageRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("AgentAdmissionRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent(MCPFilesystemIdentity.current.applicationStateDirectoryName, isDirectory: true)
             try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
             UserDefaults.standard.set(storageRoot.path, forKey: "GlobalCustomStorageURL")
             await WorkspaceDiskWriterComposition.processWriter.removeAllForTesting()
@@ -292,6 +294,9 @@ import XCTest
             let workspaceID = fixture.workspaceA.id
             let lastSavedBefore = fixture.manager.debugLastSavedVersionForWorkspace(workspaceID)
 
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             await fixture.manager.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             let wedged = try await assertOwnedInterruptedWedge(fixture, workspaceID: workspaceID)
 
@@ -313,6 +318,9 @@ import XCTest
             let workspaceID = fixture.workspaceA.id
             let stateVersion = fixture.manager.debugStateVersionForWorkspace(workspaceID)
 
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             fixture.manager.pollAndSaveState(source: .pollAndSaveState)
             let cancelled = await fixture.manager.debugCancelScheduledSaves(workspaceID: workspaceID)
             XCTAssertEqual(cancelled, 1, "The capture must have scheduled exactly one save to cancel.")
@@ -341,6 +349,9 @@ import XCTest
                 await gate.markStartedAndWaitForRelease()
             }
 
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             fixture.manager.pollAndSaveState(source: .pollAndSaveState)
             await gate.waitUntilStarted()
             let cancelled = await fixture.manager.debugCancelScheduledSaves(workspaceID: workspaceID, join: false)
@@ -366,6 +377,9 @@ import XCTest
         func testOwnedConvergenceConflictReportsOwningCategoryAndNeverClobbers() async throws {
             let fixture = try await establishCleanActiveWorkspaceBaseline()
             let workspaceID = fixture.workspaceA.id
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             await fixture.manager.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             let wedged = try await assertOwnedInterruptedWedge(fixture, workspaceID: workspaceID)
             let foreignClient = DomainWorkspaceAuthorityClient(store: fixture.runtime.workspaceStore, windowID: -886)
@@ -417,6 +431,9 @@ import XCTest
         func testCancelledConvergenceReportsCancelledCategoryAndLaterAdmissionConverges() async throws {
             let fixture = try await establishCleanActiveWorkspaceBaseline()
             let workspaceID = fixture.workspaceA.id
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             await fixture.manager.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             let wedged = try await assertOwnedInterruptedWedge(fixture, workspaceID: workspaceID)
             let store = fixture.client.store
@@ -490,6 +507,9 @@ import XCTest
         func testOwnPublicationSupersededByForeignWriteNeverClobbersOnPollOrAdmission() async throws {
             let fixture = try await establishCleanActiveWorkspaceBaseline()
             let workspaceID = fixture.workspaceA.id
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             await fixture.manager.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             let owned = try await assertOwnedInterruptedWedge(fixture, workspaceID: workspaceID)
             let foreignClient = DomainWorkspaceAuthorityClient(store: fixture.runtime.workspaceStore, windowID: -887)
@@ -532,6 +552,7 @@ import XCTest
             let peerClient = DomainWorkspaceAuthorityClient(store: fixture.runtime.workspaceStore, windowID: -885)
             let (peer, peerPrompt) = makeManager(client: peerClient, windowID: -885)
             await peer.awaitInitialized()
+            try await adoptFullCanonicalCatalog(client: peerClient, manager: peer)
             let peerWorkspace = try XCTUnwrap(peer.workspace(withID: workspaceID))
             peer.activeWorkspace = peerWorkspace
             peerPrompt.loadComposeTabsFromWorkspace(peerWorkspace)
@@ -541,17 +562,16 @@ import XCTest
 
             // The peer publishes first, then this window publishes over it: the peer has its own
             // unsaved publication, but canonical dirty state is exactly this window's.
+            try prepareCaptureOnlyUIChange(manager: peer, prompt: peerPrompt, workspaceID: workspaceID)
             await peer.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             let peerCommitSnapshot = await fixture.client.canonicalWorkspaceSnapshot(workspaceID)
             let peerCommit = try XCTUnwrap(peerCommitSnapshot)
             XCTAssertEqual(peer.debugOwnWorkingCommitRevision(workspaceID), peerCommit.revisions.workingRevision)
-            // Stand in for the presentation bridge's metadata projection of the peer commit.
-            fixture.manager.applyDomainAuthorityBaseline(
-                workspaceID: workspaceID,
-                revisions: peerCommit.revisions,
-                digest: peerCommit.document.contentDigest,
-                health: peerCommit.health,
-                catalogRevision: 0
+            // Install the peer's actual document before publishing a local descendant. Metadata
+            // alone cannot establish ownership of bytes that this window has never adopted.
+            try await adoptFullCanonicalCatalog(client: fixture.client, manager: fixture.manager)
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
             )
             await fixture.manager.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             let wedged = try await assertOwnedInterruptedWedge(fixture, workspaceID: workspaceID)
@@ -589,6 +609,9 @@ import XCTest
         func testCrossRuntimeForeignWriteMakesPinnedConvergenceFailClosed() async throws {
             let fixture = try await establishCleanActiveWorkspaceBaseline()
             let workspaceID = fixture.workspaceA.id
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             await fixture.manager.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             _ = try await assertOwnedInterruptedWedge(fixture, workspaceID: workspaceID)
             let competitor = try await makeCompetingClient(fixture)
@@ -636,6 +659,9 @@ import XCTest
         func testRestartedPresentationCannotClaimReconstructedDirtyState() async throws {
             let fixture = try await establishCleanActiveWorkspaceBaseline()
             let workspaceID = fixture.workspaceA.id
+            try prepareCaptureOnlyUIChange(
+                manager: fixture.manager, prompt: fixture.prompt, workspaceID: workspaceID
+            )
             await fixture.manager.debugCaptureActiveWorkspaceWithoutSave(workspaceID)
             let wedged = try await assertOwnedInterruptedWedge(fixture, workspaceID: workspaceID)
 
@@ -1498,11 +1524,18 @@ import XCTest
             }
             XCTAssertEqual(workingAttemptCount, 1)
             do {
-                _ = try await admissionTask.value
-                XCTFail("Cancellation must not return a provider-facing target")
-            } catch is CancellationError {
+                let result = try await admissionTask.value
+                if case let .recoveryRequired(retainedIdentity, _, _, recovery) = result {
+                    XCTAssertEqual(retainedIdentity, identity)
+                    guard case .retryablePartial = recovery else {
+                        await retryFence.release()
+                        return XCTFail("Cancellation must retain the incomplete recovery evidence")
+                    }
+                } else {
+                    XCTFail("Cancellation must return retained recovery evidence, never a provider-facing target")
+                }
             } catch {
-                XCTFail("Expected CancellationError, got \(error)")
+                XCTFail("Cancellation erased the retained recovery evidence: \(error)")
             }
             XCTAssertTrue(admissionCompleted)
             guard case .retryablePartial = recoveryOutcome else {
@@ -1688,11 +1721,15 @@ import XCTest
             admissionTask.cancel()
             await persistenceFence.release()
             do {
-                _ = try await admissionTask.value
-                XCTFail("Cancellation must not return a provider-facing target")
-            } catch is CancellationError {
+                let result = try await admissionTask.value
+                if case let .recoveryRequired(retainedIdentity, _, _, recovery) = result {
+                    XCTAssertEqual(retainedIdentity, admissionIdentity)
+                    XCTAssertEqual(recovery, .blockedManual(failureCategory))
+                } else {
+                    XCTFail("Cancellation must return retained recovery evidence, never a provider-facing target")
+                }
             } catch {
-                XCTFail("Expected CancellationError, got \(error)")
+                XCTFail("Cancellation erased the retained recovery evidence: \(error)")
             }
             await fulfillment(of: [recoveryCompleted], timeout: 5)
             guard let identity = admissionIdentity else {
@@ -1900,11 +1937,15 @@ import XCTest
             admissionTask.cancel()
             await persistenceFence.release()
             do {
-                _ = try await admissionTask.value
-                XCTFail("Cancellation must not return a provider-facing target")
-            } catch is CancellationError {
+                let result = try await admissionTask.value
+                if case let .recoveryRequired(retainedIdentity, _, _, recovery) = result {
+                    XCTAssertEqual(retainedIdentity, admissionIdentity)
+                    XCTAssertEqual(recovery, .failed(.persistenceFailure))
+                } else {
+                    XCTFail("Cancellation must return retained recovery evidence, never a provider-facing target")
+                }
             } catch {
-                XCTFail("Expected CancellationError, got \(error)")
+                XCTFail("Cancellation erased the retained recovery evidence: \(error)")
             }
             await fulfillment(of: [retainedRecoveryCompleted], timeout: 5)
             guard let identity = admissionIdentity else {
@@ -2693,6 +2734,11 @@ import XCTest
             let viewModel = makeAgentModeViewModel(for: fixture)
             let reconstructedSessionID = UUID()
             let indexedTabID = fixture.leftTab.id
+            // Only the index represents this session in memory; restoration still requires its
+            // existing payload. An index entry alone must never authorize an empty replacement.
+            let artifactURL = try await persistSessionArtifact(
+                sessionID: reconstructedSessionID, tabID: indexedTabID, in: fixture
+            )
             let restoreEntry = upsertIndexEntry(
                 reconstructedSessionID,
                 tabID: indexedTabID,
@@ -2713,6 +2759,8 @@ import XCTest
 
             XCTAssertEqual(target.origin, .createdForSessionResume)
             XCTAssertNotNil(target.recoveryClaim)
+            let restored = try XCTUnwrap(viewModel.session(for: target.tabID, createIfNeeded: false))
+            XCTAssertTrue(restored.qualifiedRestorationReadiness.isAuthoritative)
             XCTAssertNotEqual(target.tabID, indexedTabID)
             XCTAssertNil(fixture.manager.activeAgentSessionID(
                 forTabID: indexedTabID,
@@ -2723,6 +2771,7 @@ import XCTest
             XCTAssertEqual(target.recoveryClaim?.state, .complete)
             XCTAssertEqual(viewModel.test_ownerValidatedSessionIndex[reconstructedSessionID], restoreEntry)
             XCTAssertEqual(artifactDeletionCount, 0)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: artifactURL.path))
             XCTAssertFalse(fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs.contains(where: {
                 $0.id == target.tabID
             }) == true)
@@ -3038,11 +3087,14 @@ import XCTest
                     staleTarget = agentModeVM.test_outstandingProvisionalMCPSessionTarget(
                         sessionID: sessionID
                     )
+                    let creationHandle = try XCTUnwrap(staleTarget?.creationHandle)
+                    XCTAssertTrue(creationHandle.session.qualifiedRestorationReadiness.isCreating)
                     try await agentModeVM.mcpActivateControlContext(
                         forTabID: originalTab.id,
                         sessionID: sessionID,
                         originatingConnectionID: nil,
-                        startPending: true
+                        startPending: true,
+                        creationHandle: creationHandle
                     )
                     try agentModeVM.mcpStageAgentRunOracleReviewSource(
                         .captured(.init(
@@ -3191,6 +3243,8 @@ import XCTest
             )
             let successorSessionID = try XCTUnwrap(successor.sessionID)
             XCTAssertNotEqual(successorSessionID, sessionID)
+            let committedSuccessor = await agentModeVM.commitConfiguredSessionCreation(target: successor)
+            XCTAssertTrue(committedSuccessor, "The accepted successor must acknowledge its own first payload save.")
             agentModeVM.mcpAcceptSessionTarget(successor)
             let staleReplay = await agentModeVM.mcpDiscardSessionTarget(recoveredStaleTarget)
             XCTAssertEqual(staleReplay, .complete)
@@ -3246,6 +3300,9 @@ import XCTest
             let fixture = try await makeFixture()
             fixture.manager.activeWorkspace = fixture.workspaceA
             fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let artifactURL = try await persistSessionArtifact(
+                sessionID: fixture.identity.sessionID, tabID: fixture.identity.tabID, in: fixture
+            )
             let agentModeVM = AgentModeViewModel(
                 testWorkspacePath: storageRoot.path,
                 codexControllerFactory: { _, _, _, _, _, _ in
@@ -3376,6 +3433,7 @@ import XCTest
             let staleDiscardResult = await staleDiscard.value
             XCTAssertEqual(staleDiscardResult, .complete)
             let successor = try await successorResolution.value
+            XCTAssertTrue(FileManager.default.fileExists(atPath: artifactURL.path))
             let successorClaim = try XCTUnwrap(successor.recoveryClaim)
             let successorSession = try XCTUnwrap(agentModeVM.session(
                 for: successor.tabID,
@@ -3494,6 +3552,8 @@ import XCTest
             var publishedSessionID: UUID?
             var resolverReturned = false
             var artifactDeletionCount = 0
+            var partialArtifactURL: URL?
+            var publicationFailure: Error?
             agentModeVM.test_setAfterDurableChildTabCreation {
                 let publishedTab = fixture.manager.workspace(withID: fixture.workspaceA.id)?.composeTabs.first(where: {
                     !baselineTabIDs.contains($0.id)
@@ -3504,6 +3564,18 @@ import XCTest
                 XCTAssertNotNil(publishedSessionID)
                 XCTAssertFalse(resolverReturned)
                 XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 1)
+                do {
+                    // A partial payload can exist after carrier publication. This test's cleanup
+                    // spy intentionally retains it so the later fixed-ID selector has real data
+                    // to restore, while the provisional target must still reject every competitor.
+                    partialArtifactURL = try await self.persistSessionArtifact(
+                        sessionID: XCTUnwrap(publishedSessionID),
+                        tabID: XCTUnwrap(publishedTabID),
+                        in: fixture
+                    )
+                } catch {
+                    publicationFailure = error
+                }
                 await publicationGate.markStartedAndWaitForRelease()
             }
             defer { agentModeVM.test_setAfterDurableChildTabCreation(nil) }
@@ -3526,6 +3598,9 @@ import XCTest
             }
             await publicationGate.waitUntilStarted()
 
+            XCTAssertNil(publicationFailure)
+            let retainedArtifactURL = try XCTUnwrap(partialArtifactURL)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: retainedArtifactURL.path))
             let sessionID = try XCTUnwrap(publishedSessionID)
             let tabID = try XCTUnwrap(publishedTabID)
             XCTAssertFalse(resolverReturned)
@@ -3575,6 +3650,7 @@ import XCTest
             XCTAssertNil(agentModeVM.session(for: tabID, createIfNeeded: false))
             XCTAssertNil(agentModeVM.test_ownerValidatedSessionIndex[sessionID])
             XCTAssertEqual(artifactDeletionCount, 1)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: retainedArtifactURL.path))
             let canonical = try await canonicalModel(fixture)
             let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
                 at: fixture.workspaceAURL,
@@ -3619,7 +3695,36 @@ import XCTest
             XCTAssertNil(postAcceptanceLookup.recoveryClaim)
         }
 
+        func testComposerProjectionDoesNotMaterializeSavedSessionsAndStillPreparesFreshTabs() async throws {
+            CodexGoalSupport.setEnabledForTesting(true)
+            defer { CodexGoalSupport.setEnabledForTesting(nil) }
+            let fixture = try await makeFixture()
+            fixture.manager.activeWorkspace = fixture.workspaceA
+            fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
+            let viewModel = makeAgentModeViewModel(for: fixture)
+
+            let savedProps = viewModel.makeComposerProps(tabID: fixture.identity.tabID)
+            XCTAssertNil(savedProps.submitTarget)
+            _ = viewModel.makeStatusPillsSnapshot()
+            XCTAssertNil(viewModel.sessions[fixture.identity.tabID])
+            XCTAssertEqual(
+                fixture.manager.activeAgentSessionID(forTabID: fixture.identity.tabID),
+                fixture.identity.sessionID
+            )
+
+            let freshProps = viewModel.makeComposerProps(tabID: fixture.leftTab.id)
+            let freshTarget = try XCTUnwrap(freshProps.submitTarget)
+            XCTAssertEqual(freshTarget.route, .createAgentSessionFromSourceTab)
+            XCTAssertNil(freshTarget.expectedSourceAgentSessionID)
+            let freshRuntime = try XCTUnwrap(viewModel.sessions[fixture.leftTab.id])
+            XCTAssertEqual(freshTarget.expectedSourceTabSessionIdentity, ObjectIdentifier(freshRuntime))
+            XCTAssertNil(freshRuntime.activeAgentSessionID)
+            XCTAssertNil(viewModel.sessions[fixture.identity.tabID])
+        }
+
         func testFixedSessionReconstructionPublishesRecoveryBeforeParentInvalidation() async throws {
+            CodexGoalSupport.setEnabledForTesting(true)
+            defer { CodexGoalSupport.setEnabledForTesting(nil) }
             let fixture = try await makeFixture()
             fixture.manager.activeWorkspace = fixture.workspaceA
             fixture.prompt.loadComposeTabsFromWorkspace(fixture.workspaceA)
@@ -3628,6 +3733,9 @@ import XCTest
             let parentSessionID = fixture.identity.sessionID
             let reconstructedSessionID = UUID()
             let restoredTabID = UUID()
+            let artifactURL = try await persistSessionArtifact(
+                sessionID: reconstructedSessionID, tabID: restoredTabID, in: fixture
+            )
             let agentModeVM = AgentModeViewModel(
                 testWorkspacePath: storageRoot.path,
                 codexControllerFactory: { _, _, _, _, _, _ in
@@ -3736,7 +3844,9 @@ import XCTest
             XCTAssertEqual(try XCTUnwrap(recoveredStaleTarget.recoveryClaim).state, .complete)
             XCTAssertEqual(agentModeVM.test_outstandingProvisionalMCPSessionTargetCount, 0)
             XCTAssertEqual(agentModeVM.test_pendingMCPSessionTargetDiscardCount, 0)
-            if let preservedRuntime = agentModeVM.session(for: childTabID, createIfNeeded: false) {
+            let recoveredRuntime = agentModeVM.sessions[childTabID]
+            XCTAssertNil(recoveredRuntime, "Rejected reconstruction has no accepted successor that can retain its runtime.")
+            if let preservedRuntime = recoveredRuntime {
                 XCTAssertEqual(preservedRuntime.activeAgentSessionID, reconstructedSessionID)
                 _ = agentModeVM.test_installPersistentSessionBinding(
                     sessionID: nil,
@@ -3756,6 +3866,7 @@ import XCTest
                 0,
                 "Reconstruction recovery preserves the pre-existing session artifact."
             )
+            XCTAssertTrue(FileManager.default.fileExists(atPath: artifactURL.path))
             let canonical = try await canonicalModel(fixture)
             let disk = try WorkspaceManagerViewModel.loadWorkspaceFromFile(
                 at: fixture.workspaceAURL,
@@ -3876,6 +3987,26 @@ import XCTest
             return viewModel.test_ownerValidatedSessionIndex[sessionID]!
         }
 
+        private func persistSessionArtifact(
+            sessionID: UUID,
+            tabID: UUID,
+            in fixture: Fixture
+        ) async throws -> URL {
+            let session = AgentSession(
+                id: sessionID,
+                workspaceID: fixture.workspaceA.id,
+                composeTabID: tabID,
+                name: "Admission recovery payload",
+                agentKind: AgentProviderKind.codexExec.rawValue,
+                agentModel: "test-model",
+                autoEditEnabled: false
+            )
+            return try await AgentSessionDataService.shared.saveAgentSession(
+                session, for: fixture.workspaceA,
+                preparation: .alreadyCanonicalTranscript, trustedCanonicalItemCount: 0
+            )
+        }
+
         private func makeFixture() async throws -> Fixture {
             let sessionID = UUID()
             let provisional = ComposeTabState(
@@ -3934,6 +4065,17 @@ import XCTest
             let client = DomainWorkspaceAuthorityClient(store: runtime.workspaceStore, windowID: -882)
             let (manager, prompt) = makeManager(client: client)
             await manager.awaitInitialized()
+            // Match production adoption before any recovery or later local mutation: authority
+            // metadata alone does not prove that this manager installed the canonical document.
+            let catalog = await client.snapshot()
+            let decoded = try catalog.workspaces.map { try manager.decodeDomainWorkspaceCatalogRecord($0) }
+            let receipt = try XCTUnwrap(manager.applyDomainWorkspaceCatalog(
+                catalog,
+                projection: .full(decoded),
+                preferredActiveWorkspaceID: nil,
+                rootMapPolicy: .snapshotMetadata
+            ).receipt)
+            XCTAssertEqual(receipt.kind, .full)
             return Fixture(
                 runtime: runtime,
                 client: client,
@@ -3989,6 +4131,43 @@ import XCTest
             return fixture
         }
 
+        /// A real UI configuration edit that is persisted only by capture, without a dirty-version
+        /// debounce. This preserves the interrupted-save case where the local version looks saved.
+        private func prepareCaptureOnlyUIChange(
+            manager: WorkspaceManagerViewModel,
+            prompt: PromptViewModel,
+            workspaceID: UUID,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) throws {
+            let before = try XCTUnwrap(manager.workspace(withID: workspaceID), file: file, line: line)
+            let stateVersion = manager.debugStateVersionForWorkspace(workspaceID)
+            XCTAssertEqual(manager.activeWorkspace?.id, workspaceID, file: file, line: line)
+            XCTAssertEqual(prompt.activeComposeTabID, before.activeComposeTabID, file: file, line: line)
+            prompt.selectedChatPresetID = before.chatPresetId == ChatPreset.BuiltIn.chat.id
+                ? ChatPreset.BuiltIn.manual.id : ChatPreset.BuiltIn.chat.id
+            XCTAssertNotEqual(prompt.selectedChatPresetID, before.chatPresetId, file: file, line: line)
+            XCTAssertEqual(manager.workspace(withID: workspaceID), before, file: file, line: line)
+            XCTAssertEqual(manager.debugStateVersionForWorkspace(workspaceID), stateVersion, file: file, line: line)
+        }
+
+        /// Use the same full-document adoption boundary as the production presentation bridge.
+        /// A metadata-only baseline cannot authorize a whole-document working publication.
+        private func adoptFullCanonicalCatalog(
+            client: DomainWorkspaceAuthorityClient,
+            manager: WorkspaceManagerViewModel
+        ) async throws {
+            let catalog = await client.snapshot()
+            let decoded = try catalog.workspaces.map { try manager.decodeDomainWorkspaceCatalogRecord($0) }
+            let receipt = try XCTUnwrap(manager.applyDomainWorkspaceCatalog(
+                catalog,
+                projection: .full(decoded),
+                preferredActiveWorkspaceID: manager.activeWorkspaceID,
+                rootMapPolicy: .snapshotMetadata
+            ).receipt)
+            XCTAssertEqual(receipt.kind, .full)
+        }
+
         /// #1089 wedge owned by `manager`: canonical is dirty with no live save at exactly the
         /// revision this window committed, while its local state version alone looks saved.
         @discardableResult
@@ -4002,6 +4181,12 @@ import XCTest
             let manager = manager ?? fixture.manager
             let admission = await fixture.client.agentAdmissionSnapshot(workspaceID)
             let wedged = try XCTUnwrap(admission.snapshot, file: file, line: line)
+            let captured = try manager.decodeDomainWorkspaceCatalogRecord(wedged)
+            XCTAssertEqual(
+                captured.chatPresetId, manager.promptViewModel.selectedChatPresetID,
+                "The interrupted publication contains the real capture-only UI edit.",
+                file: file, line: line
+            )
             XCTAssertNotNil(wedged.revisions.dirtyRevision, file: file, line: line)
             XCTAssertEqual(admission.diagnostic.admissionState, .dirtyWithoutLiveSave, file: file, line: line)
             XCTAssertEqual(admission.diagnostic.pendingSaveCount, 0, file: file, line: line)

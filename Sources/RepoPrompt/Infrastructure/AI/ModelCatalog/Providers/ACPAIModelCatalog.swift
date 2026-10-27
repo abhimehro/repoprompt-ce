@@ -200,7 +200,10 @@ enum ACPDynamicModelStore {
         guard !rawValue.isEmpty else { return nil }
         let displayName = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let description = normalizedOptionalString(option.description)
-        let supportedReasoningEfforts = normalizedReasoningEffortRaws(option.supportedReasoningEfforts)
+        let supportedReasoningEfforts = normalizedRawEffortValues(
+            option.supportedReasoningEffortRawValues
+                + normalizedReasoningEffortRaws(option.supportedReasoningEfforts)
+        )
         return ACPDynamicModelRecord(
             rawValue: rawValue,
             displayName: displayName.isEmpty ? rawValue : displayName,
@@ -208,7 +211,7 @@ enum ACPDynamicModelStore {
             isPlaceholderDefault: option.isPlaceholderDefault,
             isProviderDefault: option.isProviderDefault,
             supportedReasoningEfforts: supportedReasoningEfforts,
-            defaultReasoningEffort: option.defaultReasoningEffort?.rawValue,
+            defaultReasoningEffort: option.defaultReasoningEffortRawValue ?? option.defaultReasoningEffort?.rawValue,
             effortVariant: option.effortVariant
         )
     }
@@ -226,7 +229,11 @@ enum ACPDynamicModelStore {
             isPlaceholderDefault: record.isPlaceholderDefault,
             isProviderDefault: record.isProviderDefault,
             supportedReasoningEfforts: supportedReasoningEfforts,
+            supportedReasoningEffortRawValues: normalizedRawEffortValues(
+                record.supportedReasoningEfforts + [record.defaultReasoningEffort].compactMap(\.self)
+            ),
             defaultReasoningEffort: CodexReasoningEffort.parse(record.defaultReasoningEffort),
+            defaultReasoningEffortRawValue: record.defaultReasoningEffort,
             effortVariant: record.effortVariant
         )
     }
@@ -268,9 +275,9 @@ enum ACPDynamicModelStore {
     ) -> ACPDynamicModelRecord {
         let metadataRecord = preferredMetadataRecord(existing, candidate)
         let fallbackRecord = metadataRecord == existing ? candidate : existing
-        let supportedReasoningEfforts = normalizedReasoningEfforts(
+        let supportedReasoningEfforts = normalizedRawEffortValues(
             existing.supportedReasoningEfforts + candidate.supportedReasoningEfforts
-        ).map(\.rawValue)
+        )
         return ACPDynamicModelRecord(
             rawValue: preferredRawValue(existing.rawValue, candidate.rawValue),
             displayName: metadataRecord.displayName,
@@ -339,6 +346,13 @@ enum ACPDynamicModelStore {
             return matched.rawValue
         }
         return trimmed
+    }
+
+    private static func normalizedRawEffortValues(_ efforts: [String]) -> [String] {
+        var seen: Set<String> = []
+        return efforts.filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && seen.insert($0).inserted
+        }
     }
 
     private static func normalizedReasoningEffortRaws(_ efforts: [CodexReasoningEffort]) -> [String] {
