@@ -571,8 +571,7 @@
         }
 
         func note(_ message: String) {
-            // Direct .formatted(.iso8601) avoids expensive ISO8601DateFormatter allocation per call.
-            let timestamp = Date().formatted(.iso8601)
+            let timestamp = ISO8601DateFormatter().string(from: Date())
             recentEvents.append("[\(timestamp)] \(message)")
             if recentEvents.count > configuration.maxVisibleEventLogEntries {
                 recentEvents.removeFirst(recentEvents.count - configuration.maxVisibleEventLogEntries)
