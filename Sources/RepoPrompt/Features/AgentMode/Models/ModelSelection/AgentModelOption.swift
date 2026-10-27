@@ -15,7 +15,10 @@ struct AgentModelOption: Identifiable, Hashable {
     let isPlaceholderDefault: Bool
     let isProviderDefault: Bool
     let supportedReasoningEfforts: [CodexReasoningEffort]
+    /// Exact provider-advertised values, including values this app cannot yet execute.
+    let supportedReasoningEffortRawValues: [String]
     let defaultReasoningEffort: CodexReasoningEffort?
+    let defaultReasoningEffortRawValue: String?
     let effortVariant: AgentModelEffortVariant?
 
     init(
@@ -25,7 +28,9 @@ struct AgentModelOption: Identifiable, Hashable {
         isPlaceholderDefault: Bool,
         isProviderDefault: Bool,
         supportedReasoningEfforts: [CodexReasoningEffort] = [],
+        supportedReasoningEffortRawValues: [String] = [],
         defaultReasoningEffort: CodexReasoningEffort? = nil,
+        defaultReasoningEffortRawValue: String? = nil,
         effortVariant: AgentModelEffortVariant? = nil
     ) {
         self.rawValue = rawValue
@@ -34,7 +39,9 @@ struct AgentModelOption: Identifiable, Hashable {
         self.isPlaceholderDefault = isPlaceholderDefault
         self.isProviderDefault = isProviderDefault
         self.supportedReasoningEfforts = supportedReasoningEfforts
+        self.supportedReasoningEffortRawValues = supportedReasoningEffortRawValues
         self.defaultReasoningEffort = defaultReasoningEffort
+        self.defaultReasoningEffortRawValue = defaultReasoningEffortRawValue
         self.effortVariant = effortVariant
     }
 
@@ -44,7 +51,9 @@ struct AgentModelOption: Identifiable, Hashable {
         description: String?,
         isDefault: Bool,
         supportedReasoningEfforts: [CodexReasoningEffort] = [],
+        supportedReasoningEffortRawValues: [String] = [],
         defaultReasoningEffort: CodexReasoningEffort? = nil,
+        defaultReasoningEffortRawValue: String? = nil,
         effortVariant: AgentModelEffortVariant? = nil
     ) {
         let isPlaceholder =
@@ -55,7 +64,9 @@ struct AgentModelOption: Identifiable, Hashable {
         isPlaceholderDefault = isPlaceholder && isDefault
         isProviderDefault = !isPlaceholder && isDefault
         self.supportedReasoningEfforts = supportedReasoningEfforts
+        self.supportedReasoningEffortRawValues = supportedReasoningEffortRawValues
         self.defaultReasoningEffort = defaultReasoningEffort
+        self.defaultReasoningEffortRawValue = defaultReasoningEffortRawValue
         self.effortVariant = effortVariant
     }
 

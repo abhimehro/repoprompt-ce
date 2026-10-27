@@ -3,6 +3,7 @@ import MCP
 import RepoPromptDomainRuntime
 import RepoPromptSecureStorage
 import RepoPromptSettingsCore
+import RepoPromptShared
 import XCTest
 
 #if DEBUG
@@ -355,6 +356,36 @@ import XCTest
             XCTAssertEqual(Set([firstPair, secondPair]).count, 2)
         }
 
+        func testUnchangedCodemapPublicationDoesNotExhaustAdmissionSavePreparation() async throws {
+            let fixture = try await DurableAgentAdmissionFixture.make()
+            trackCleanup { await fixture.cleanup() }
+            let files = fixture.window.workspaceFilesViewModel
+            XCTAssertTrue(files.autoCodemapFiles.isEmpty)
+            var preparations = 0
+            fixture.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting { @MainActor _, _, _ in
+                preparations += 1
+                // The root/selection reconciler can republish an unchanged empty list
+                // while off-main document preparation is suspended. Exercise the real
+                // Combine subscriber and drain its scheduled dirty-state callback.
+                files.setAutoCodemapFilesForTesting([])
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.main.async { continuation.resume() }
+                }
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.main.async { continuation.resume() }
+                }
+            }
+            defer { fixture.window.workspaceManager.setWorkspaceSavePreparationDidFinishHandlerForTesting(nil) }
+            let recorder = AdmissionProviderRecorder(expectedCount: 1, blockProviders: false)
+            _ = try await makeAgentRunStartService(window: fixture.window, recorder: recorder).execute(args: [
+                "op": .string("start"), "message": .string("unchanged selection must not veto admission"),
+                "detach": .bool(true), "timeout": .int(0)
+            ])
+            let count = await recorder.count()
+            XCTAssertEqual(count, 1)
+            XCTAssertEqual(preparations, 1, "No real workspace mutation occurred; the two-attempt retry budget must remain unused")
+        }
+
         func testCanonicalAdmissionRefreshReResolvesWorkspaceAfterReorder() async throws {
             let fixture = try await DurableAgentAdmissionFixture.make()
             trackCleanup { await fixture.cleanup() }
@@ -582,10 +613,21 @@ import XCTest
             if canonical.activeComposeTabID == moved.id {
                 canonical.activeComposeTabID = canonical.composeTabs.first?.id
             }
-            let stashedSnapshot = try WorkspaceManagerViewModel.replacingWorkspaceProjectionForTesting(
+            // The refreshed identity must come from a committed authority revision. Replacing
+            // only snapshot bytes leaves a fictitious digest that the next durable save rejects.
+            let stashSave = try await DomainWorkspaceAuthorityClient(
+                store: fixture.runtime.workspaceStore,
+                windowID: fixture.window.windowID
+            ).saveFailClosed(
                 canonical,
-                in: canonicalSnapshot
+                fileURL: fixture.workspaceFileURL,
+                expectedWorkspaceRevision: canonicalSnapshot.revisions.workingRevision,
+                expectedContentDigest: canonicalSnapshot.document.contentDigest
             )
+            XCTAssertEqual(stashSave.saved?.disposition, .applied)
+            let stashedValue = await fixture.runtime.workspaceStore
+                .canonicalWorkspaceSnapshot(fixture.workspaceID)
+            let stashedSnapshot = try XCTUnwrap(stashedValue)
             let peerIndex = try XCTUnwrap(peer.workspaceManager.workspaces.firstIndex {
                 $0.id == fixture.workspaceID
             })
@@ -1132,6 +1174,84 @@ import XCTest
                 acceptedPairs: []
             )
             XCTAssertFalse(savedWorkspace.composeTabs.containsIdentity(rejectedPair))
+
+            // A rejected attempt may only detach its own rolled-back runtime. Exercise the
+            // same early boundary with a retained tab, rotated binding, and replacement owner.
+            enum SurvivingOwner: CaseIterable { case stashed, rebound, replacement }
+            let manager = fixture.window.workspaceManager
+            let prompt = fixture.window.promptManager
+            let viewModel = fixture.window.agentModeViewModel
+            for survivingOwner in SurvivingOwner.allCases {
+                var survivor: AgentTabSession?
+                var survivorSessionID: UUID?
+                var attempt: AgentProvisionalAdmissionIdentity?
+                prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting { identity, receipt in
+                    XCTAssertEqual(receipt.outcome.normalizedFailureCategory, .authorityRevisionConflict)
+                    guard let runtime = viewModel.session(for: identity.tabID, createIfNeeded: false),
+                          let workspaceIndex = manager.workspaces.firstIndex(where: { $0.id == workspaceID }),
+                          let tabIndex = manager.workspaces[workspaceIndex].composeTabs.firstIndex(where: {
+                              $0.id == identity.tabID
+                          })
+                    else { return XCTFail("Rejected creation must expose its captured runtime before rollback") }
+                    XCTAssertTrue(runtime.qualifiedRestorationReadiness.isCreating)
+                    attempt = identity
+                    let tab = manager.workspaces[workspaceIndex].composeTabs.remove(at: tabIndex)
+                    switch survivingOwner {
+                    case .stashed:
+                        manager.workspaces[workspaceIndex].stashedTabs.append(StashedTab(tab: tab))
+                        survivor = runtime
+                        survivorSessionID = identity.sessionID
+                    case .rebound:
+                        let successorID = UUID()
+                        _ = viewModel.test_installPersistentSessionBinding(sessionID: successorID, on: runtime)
+                        survivor = runtime
+                        survivorSessionID = successorID
+                    case .replacement:
+                        viewModel.test_removeSession(tabID: identity.tabID)
+                        let replacement = viewModel.session(for: identity.tabID)
+                        _ = viewModel.test_installPersistentSessionBinding(sessionID: identity.sessionID, on: replacement)
+                        survivor = replacement
+                        survivorSessionID = identity.sessionID
+                    }
+                    prompt.loadComposeTabsFromWorkspace(manager.workspaces[workspaceIndex])
+                }
+                defer {
+                    prompt.setAgentAdmissionPersistenceReceiptHandlerForTesting(nil)
+                    if let attempt {
+                        viewModel.test_removeSession(tabID: attempt.tabID)
+                        if let workspaceIndex = manager.workspaces.firstIndex(where: { $0.id == workspaceID }) {
+                            manager.workspaces[workspaceIndex].stashedTabs.removeAll { $0.tab.id == attempt.tabID }
+                            prompt.loadComposeTabsFromWorkspace(manager.workspaces[workspaceIndex])
+                        }
+                    }
+                }
+                do {
+                    _ = try await service.execute(args: [
+                        "op": .string("start"),
+                        "message": .string("reject while preserving \(survivingOwner)"),
+                        "detach": .bool(true),
+                        "timeout": .int(0)
+                    ])
+                    XCTFail("Typed rejection must still refuse provider dispatch for \(survivingOwner)")
+                } catch {
+                    XCTAssertTrue(error.localizedDescription.contains("workspace binding was not durably accepted"))
+                }
+                let retained = try XCTUnwrap(survivor)
+                XCTAssertTrue(viewModel.session(for: retained.tabID, createIfNeeded: false) === retained)
+                XCTAssertEqual(retained.activeAgentSessionID, survivorSessionID)
+                XCTAssertNotNil(retained.operationAdmissionFailureMessage)
+                let attemptedProviderCount = await providerRecorder.count()
+                XCTAssertEqual(attemptedProviderCount, 0)
+                if survivingOwner == .stashed {
+                    XCTAssertTrue(manager.workspace(withID: workspaceID)?.stashedTabs.contains {
+                        $0.tab.id == retained.tabID && $0.tab.activeAgentSessionID == survivorSessionID
+                    } == true)
+                } else {
+                    XCTAssertFalse(manager.workspace(withID: workspaceID)?.composeTabs.contains {
+                        $0.id == retained.tabID
+                    } == true)
+                }
+            }
 
             fixture.window.workspaceManager.removeBeforeSaveListener(beforeSaveToken)
             fixture.window.workspaceManager.setWorkspacePersistenceOutcomeOverrideForTesting(nil)
@@ -1730,6 +1850,18 @@ import XCTest
                     let sessionID = try XCTUnwrap(target.sessionID)
                     let pair = AdmissionIdentityPair(tabID: target.tabID, sessionID: sessionID)
                     try await validateBeforeProviderDispatch?(pair)
+                    // Keep the production configured-first-save boundary even though provider
+                    // execution is recorded here. A peer may restore this accepted session.
+                    try await agentModeVM.mcpConfigureSession(
+                        tabID: target.tabID,
+                        agentRaw: agentRaw,
+                        modelRaw: modelRaw,
+                        reasoningEffortRaw: reasoningEffortRaw,
+                        creationHandle: target.creationHandle
+                    )
+                    let committed = await agentModeVM.commitConfiguredSessionCreation(target: target)
+                    _ = try XCTUnwrap(committed ? target.sessionID : nil, "Configured session must save before provider dispatch")
+                    XCTAssertNil(agentModeVM.session(for: target.tabID).operationAdmissionFailureMessage)
                     try await recorder.recordAndWait(
                         .init(
                             tabID: target.tabID,
@@ -1847,7 +1979,7 @@ import XCTest
             let workspace = WorkspaceModel(
                 name: "Admission",
                 repoPaths: [],
-                customStoragePath: root,
+                customStoragePath: AppProfileLocations.current.customWorkspaceDirectory(selectedDirectory: root),
                 composeTabs: [tab],
                 activeComposeTabID: tab.id
             )
@@ -1925,6 +2057,25 @@ import XCTest
         let authorityRoot: URL
         let workspaceID: UUID
         let workspaceFileURL: URL
+    }
+
+    /// Creation and bridge projection are independent now that canonical decoding suspends.
+    /// Admission tests begin only after the real bridge accepted this durable document; a
+    /// synthetic local append cannot establish the full-document write baseline saves require.
+    @MainActor
+    private func awaitDurableAdmissionCatalog(
+        window: WindowState, runtime: MCPDomainRuntime, workspaceID: UUID
+    ) async throws {
+        let catalog = await runtime.workspaceStore.snapshot()
+        guard let record = catalog.workspaces.first(where: { $0.document.workspaceID == workspaceID }),
+              let bridge = window.domainWorkspacePresentationBridgeForTesting
+        else { throw AdmissionTestError.fixtureSetup("durable admission catalog unavailable") }
+        let checkpoint = await DomainWorkspaceProjectionObserver(bridge: bridge).waitForProjection(
+            afterGeneration: 0, through: catalog.publicationSequence, requireCatalogApplication: true
+        )
+        guard checkpoint != nil,
+              window.workspaceManager.qualifiedDomainWorkspaceDescendant(record) != nil
+        else { throw AdmissionTestError.fixtureSetup("durable admission catalog has no accepted full-document baseline") }
     }
 
     @MainActor
@@ -2086,11 +2237,7 @@ import XCTest
                 throw AdmissionTestError.fixtureSetup("explicit workspace creation did not commit")
             }
             await WorkspaceDiskWriterComposition.processWriter.flush(url: workspaceFileURL)
-            // A sibling window can publish a catalog projection while this synthetic workspace is
-            // being created, so establish the local projection from the workspace just committed.
-            if !window.workspaceManager.workspaces.contains(where: { $0.id == workspace.id }) {
-                window.workspaceManager.workspaces.append(workspace)
-            }
+            try await awaitDurableAdmissionCatalog(window: window, runtime: runtime, workspaceID: workspace.id)
             let storedWorkspace = try XCTUnwrap(
                 window.workspaceManager.workspaces.first { $0.id == workspace.id }
             )
@@ -2180,6 +2327,9 @@ import XCTest
             let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
             GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
             let window = WindowState(domainRuntime: runtime)
+            window.workspaceManager.setWorkspaceSaveConflictHandlerForTesting { fields in
+                print("WORKSPACE_SAVE_CONFLICT \(fields.sorted { $0.key < $1.key })")
+            }
             WindowStatesManager.shared.registerWindowState(window)
             GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
             do {
@@ -2200,11 +2350,7 @@ import XCTest
                     throw AdmissionTestError.fixtureSetup("explicit workspace creation did not commit")
                 }
                 await WorkspaceDiskWriterComposition.processWriter.flush(url: workspaceFileURL)
-                // Catalog projection and fixture creation are independent publications; the test
-                // window must expose the workspace that the authority has already committed.
-                if !window.workspaceManager.workspaces.contains(where: { $0.id == workspace.id }) {
-                    window.workspaceManager.workspaces.append(workspace)
-                }
+                try await awaitDurableAdmissionCatalog(window: window, runtime: runtime, workspaceID: workspace.id)
                 let storedWorkspace = try XCTUnwrap(
                     window.workspaceManager.workspaces.first { $0.id == workspace.id }
                 )
@@ -2262,6 +2408,9 @@ import XCTest
             let previousAutoStart = GlobalSettingsStore.shared.mcpAutoStart()
             GlobalSettingsStore.shared.setMCPAutoStart(false, commit: false)
             let peer = WindowState(domainRuntime: runtime)
+            peer.workspaceManager.setWorkspaceSaveConflictHandlerForTesting { fields in
+                print("WORKSPACE_SAVE_CONFLICT \(fields.sorted { $0.key < $1.key })")
+            }
             WindowStatesManager.shared.registerWindowState(peer)
             GlobalSettingsStore.shared.setMCPAutoStart(previousAutoStart, commit: false)
             peerWindows.append(peer)

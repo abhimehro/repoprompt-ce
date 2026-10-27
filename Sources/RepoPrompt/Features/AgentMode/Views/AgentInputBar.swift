@@ -683,11 +683,19 @@ struct AgentComposerView: View, Equatable {
                     if props.hasAvailableAgentProviders {
                         if props.isGlobalModelRouterControllingFreshTask {
                             automaticRouterTargetChip
+                            if let autoEffortServiceName = props.autoEffortServiceName {
+                                automaticEffortChip(serviceName: autoEffortServiceName)
+                            }
                         } else {
                             agentProviderModelPicker
                             acpModelParameterPickers
                             reasoningEffortPicker
                             claudeEffortPicker
+                            if let autoEffortServiceName = props.autoEffortServiceName,
+                               props.manualEffortControl != nil
+                            {
+                                automaticEffortChip(serviceName: autoEffortServiceName)
+                            }
                             codexToolsButton
                             claudeToolsButton
                         }
@@ -765,22 +773,60 @@ struct AgentComposerView: View, Equatable {
     // MARK: - Agent Pickers
 
     private var automaticRouterTargetChip: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "arrow.triangle.branch")
-                .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
-            Text("Automatic · Jev")
-                .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
+        let serviceName = props.automaticRouterServiceName
+        return Button {
+            openAgentDecisionsSettings(section: .modelRouter)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
+                Text(serviceName.map { "Model Router · \($0)" } ?? "Model Router")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
+            }
+            .foregroundColor(.accentColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.accentColor.opacity(0.10))
+            .cornerRadius(6)
         }
-        .foregroundColor(.accentColor)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.accentColor.opacity(0.10))
-        .cornerRadius(6)
-        .accessibilityElement(children: .combine)
+        .buttonStyle(.plain)
         .accessibilityLabel("Model Router")
-        .accessibilityValue("Automatic with Jev")
-        .hoverTooltip("Jev will choose the provider, model, and reasoning effort after you send. Turn off Router to choose them manually.")
+        .accessibilityValue(serviceName.map { "Using \($0)" } ?? "On")
+        .hoverTooltip("Model Router asks \(serviceName ?? "the selected service") to choose a model and reasoning effort for this new task. Click to open Model Router settings.")
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func automaticEffortChip(serviceName: String) -> some View {
+        Button {
+            openAgentDecisionsSettings(section: .autoEffort)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "gauge.open.with.lines.needle.33percent")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .regular))
+                Text("Auto Effort · \(serviceName)")
+                    .font(fontPreset.swiftUIFont(sizeAtNormal: 11, weight: .medium))
+            }
+            .foregroundColor(.accentColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.accentColor.opacity(0.10))
+            .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Auto Effort")
+        .accessibilityValue("Using \(serviceName)")
+        .hoverTooltip("Auto Effort uses \(serviceName) before eligible turns; otherwise, your current effort applies. Click to open Auto Effort settings.")
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func effortPickerLabel(_ manualDisplayName: String) -> some View {
+        Text(manualDisplayName)
+            .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(pickerChipColor)
+            .cornerRadius(4)
     }
 
     private enum LayoutMetrics {
@@ -817,7 +863,7 @@ struct AgentComposerView: View, Equatable {
         return "\(props.selectedAgent.displayName) · \(truncatedModelName)"
     }
 
-    private var isSelectedCodexFastModel: Bool {
+    private var isSelectedCodexSpeedTier: Bool {
         AgentModelSelectionWarningVisuals.showsWarning(
             agent: props.selectedAgent,
             rawModel: props.selectedModelRaw
@@ -832,8 +878,8 @@ struct AgentComposerView: View, Equatable {
         } else {
             "Choose agent and model"
         }
-        guard isSelectedCodexFastModel else { return baseTooltip }
-        return "\(baseTooltip)\n\(AgentModelSelectionWarningVisuals.warningTooltip)"
+        guard isSelectedCodexSpeedTier else { return baseTooltip }
+        return "\(baseTooltip)\n\(AgentModelSelectionWarningVisuals.tooltip(agent: props.selectedAgent, rawModel: props.selectedModelRaw))"
     }
 
     private var inputBarSelectedModelDisplayName: String {
@@ -863,6 +909,17 @@ struct AgentComposerView: View, Equatable {
         actions.openCLIProvidersSettings()
     }
 
+    private func openAgentDecisionsSettings(section: SettingsWindowCoordinator.AgentDecisionsSection) {
+        NotificationCenter.default.post(
+            name: .showModelRouterSettingsTab,
+            object: nil,
+            userInfo: [
+                "windowID": windowID,
+                "agentDecisionsSection": section
+            ]
+        )
+    }
+
     @ViewBuilder
     private var agentProviderModelPicker: some View {
         let isLocked = props.isProviderPickerLockedForCurrentTab
@@ -875,10 +932,11 @@ struct AgentComposerView: View, Equatable {
             HStack(spacing: 4) {
                 Image(systemName: props.selectedAgent.iconName)
                     .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
-                if isSelectedCodexFastModel {
-                    Image(systemName: AgentModelSelectionWarningVisuals.iconSystemName)
-                        .font(fontPreset.swiftUIFont(sizeAtNormal: 9, weight: .semibold))
-                        .foregroundStyle(AgentModelSelectionWarningVisuals.warningColor)
+                if isSelectedCodexSpeedTier {
+                    AgentModelSpeedIcon(
+                        agent: props.selectedAgent, rawModel: props.selectedModelRaw,
+                        font: fontPreset.swiftUIFont(sizeAtNormal: 9, weight: .semibold)
+                    )
                 }
                 Text(providerChipTitle)
                     .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
@@ -893,7 +951,7 @@ struct AgentComposerView: View, Equatable {
                     .foregroundColor(.secondary)
             }
             .frame(maxWidth: providerChipMaxWidth, alignment: .leading)
-            .foregroundColor(isSelectedCodexFastModel ? .orange : .primary)
+            .foregroundColor(isSelectedCodexSpeedTier ? AgentModelSelectionWarningVisuals.color(agent: props.selectedAgent, rawModel: props.selectedModelRaw) : .primary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
         }
@@ -1059,7 +1117,7 @@ struct AgentComposerView: View, Equatable {
 
     @ViewBuilder
     private var reasoningEffortPicker: some View {
-        if props.selectedAgent == .codexExec {
+        if props.manualEffortControl == .codex {
             let efforts = actions.reasoningEffortOptionsForCurrentSelection()
             Menu {
                 ForEach(efforts, id: \.rawValue) { effort in
@@ -1076,15 +1134,7 @@ struct AgentComposerView: View, Equatable {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
-                    Text(props.selectedReasoningEffortDisplayName)
-                        .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
-                }
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(pickerChipColor)
-                .cornerRadius(4)
+                effortPickerLabel(props.selectedReasoningEffortDisplayName)
             }
             .menuStyle(.borderlessButton)
             .disabled(efforts.isEmpty || modelControlsDisabled)
@@ -1149,7 +1199,7 @@ struct AgentComposerView: View, Equatable {
 
     @ViewBuilder
     private var claudeEffortPicker: some View {
-        if props.selectedAgent.usesClaudeTooling,
+        if props.manualEffortControl == .claude,
            let claudeTools = props.providerControls?.claudeTools
         {
             let efforts = AgentModelCatalog.supportedClaudeEfforts(
@@ -1171,15 +1221,7 @@ struct AgentComposerView: View, Equatable {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
-                    Text(claudeTools.effortLevel.displayName)
-                        .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
-                }
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(pickerChipColor)
-                .cornerRadius(4)
+                effortPickerLabel(claudeTools.effortLevel.displayName)
             }
             .menuStyle(.borderlessButton)
             .disabled(modelControlsDisabled || efforts.isEmpty)
