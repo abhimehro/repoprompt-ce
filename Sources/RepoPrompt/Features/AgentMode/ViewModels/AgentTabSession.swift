@@ -26,136 +26,11 @@ final class AgentTabSession: ObservableObject {
             guard !suppressSourceItemsChanged else { return }
             repairStoredSourceItemsIfNeeded(diagnosticContext: "items.didSet")
             rebuildSourceItemDerivedState()
-            invalidateLocalInputStructure()
             onSourceItemsChanged?(self, .structural)
         }
     }
 
-    var localInputIndex = AgentSessionLinkRetainedLocalInputIndex()
-    var localInputCanonicalCommitPending = false
-    private var localComposerCandidates: [UUID: LocalComposerCandidate] = [:]
-
-    struct LocalComposerCandidate {
-        let itemID: UUID
-        let fence: AgentRunStartStopFence
-        var position: Int?
-    }
-
-    /// Identity-only ingress token. No raw draft or provider-formatted text is retained here.
-    func registerLocalComposerCandidate(itemID: UUID, at position: Int) -> UUID {
-        let token = UUID()
-        assert(items.indices.contains(position) && items[position].id == itemID)
-        localComposerCandidates[token] = LocalComposerCandidate(itemID: itemID, fence: AgentRunStartStopFence(session: self), position: position)
-        return token
-    }
-
-    enum LocalComposerDisposition { case retained, rolledBack }
-
-    @discardableResult
-    func settleLocalComposerOrigin(_ token: UUID?, disposition: LocalComposerDisposition) -> Bool {
-        guard let token, let candidate = localComposerCandidates.removeValue(forKey: token),
-              disposition == .retained,
-              candidate.fence.binding == persistentSessionBindingIdentity else { return false }
-        if let position = candidate.position {
-            guard items.indices.contains(position), items[position].id == candidate.itemID,
-                  items[position].kind == .user, items[position].crossSessionAttribution == nil,
-                  !items[position].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-            // Provenance changes neither activity timestamps nor lifecycle observations.
-            suppressSourceItemsChanged = true
-            items[position].userInputOrigin = .localComposer
-            suppressSourceItemsChanged = false
-            localInputIndex.settle(items[position], at: position)
-            finishIncrementalSourceItemsMutation(.replace(index: position, previousKind: .user, currentKind: .user))
-        } else {
-            // Only a still-owned producer token may settle an exact canonical request that left
-            // the mutable suffix during retention. Typed history copies without a token cannot
-            // allocate an event. Genuine history replacement/binding changes retire these tokens.
-            guard !localInputCanonicalCommitPending,
-                  let turnIndex = transcript.turns.firstIndex(where: { $0.request?.id == candidate.itemID }),
-                  var request = transcript.turns[turnIndex].request,
-                  request.crossSessionAttribution == nil,
-                  !request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-            request.userInputOrigin = .localComposer
-            transcript.turns[turnIndex].request = request
-            localInputIndex.settle(request.toItem(), at: nil)
-            // Entry ruled out other pending work; the index has synchronously projected the
-            // exact provenance mutation that transcript.didSet just marked pending.
-            localInputCanonicalCommitPending = false
-            finishIncrementalSourceItemsMutation(.structural)
-        }
-        isDirty = true
-        return true
-    }
-
-    /// Preserve only exact identities through retention's working-list replacement. Content and
-    /// true canonical absence are reconciled by the existing canonical seed, not this suffix.
-    private func reconcileLocalInputWorkingPositions(_ newItems: [AgentChatItem]) {
-        let tracked = Set(localInputIndex.records.map(\.itemID)).union(localComposerCandidates.values.map(\.itemID))
-        var positions: [UUID: Int] = [:]
-        for (position, item) in newItems.enumerated() where tracked.contains(item.id) {
-            positions[item.id] = position
-        }
-        localInputIndex.reconcileWorkingPositions(positions)
-        for token in Array(localComposerCandidates.keys) {
-            guard var candidate = localComposerCandidates[token] else { continue }
-            candidate.position = positions[candidate.itemID]
-            localComposerCandidates[token] = candidate
-        }
-    }
-
-    /// A committed batch is not a structural rebuild: tracked items the batch removed are
-    /// per-record deletions by identity, still-present tracked items reconcile content and
-    /// position, and a candidate whose row the batch removed is retired so a later settle
-    /// cannot resurrect it through the canonical-only path.
-    private func reconcileLocalInputBatchDiff(from previousItems: [AgentChatItem], to newItems: [AgentChatItem]) {
-        let trackedIDs = Set(localInputIndex.records.map(\.itemID)).union(localComposerCandidates.values.map(\.itemID))
-        guard !trackedIDs.isEmpty else { return }
-        var newItemsByID: [UUID: AgentChatItem] = [:]
-        for item in newItems where trackedIDs.contains(item.id) {
-            newItemsByID[item.id] = item
-        }
-        var removedTrackedIDs: Set<UUID> = []
-        var previousItemsByID: [UUID: AgentChatItem] = [:]
-        for item in previousItems where trackedIDs.contains(item.id) {
-            previousItemsByID[item.id] = item
-            if newItemsByID[item.id] == nil { removedTrackedIDs.insert(item.id) }
-        }
-        if !removedTrackedIDs.isEmpty {
-            localInputIndex.markDeleted(removedTrackedIDs)
-            // A removed row also retires an unsettled candidate for it: the producer's row is
-            // gone, so a late settle must not allocate an ordinal through the canonical path.
-            localComposerCandidates = localComposerCandidates.filter { !removedTrackedIDs.contains($0.value.itemID) }
-        }
-        reconcileLocalInputWorkingPositions(newItems)
-        for record in localInputIndex.records where !record.isDeleted {
-            guard let position = record.sourcePosition, let item = newItemsByID[record.itemID] else { continue }
-            // Unchanged rows skip re-projection: relies on `AgentChatItem.==` covering every
-            // field `Content.project` reads (kind, userInputOrigin, crossSessionAttribution, text).
-            if previousItemsByID[record.itemID] == item { continue }
-            localInputIndex.replace(item, at: position)
-        }
-    }
-
-    func installLocalInputSeed(_ seed: AgentSessionLinkRetainedLocalInputIndex.Seed) {
-        localInputIndex.install(seed)
-        localInputCanonicalCommitPending = false
-    }
-
-    #if DEBUG
-        var test_unsettledLocalComposerCandidateCount: Int {
-            localComposerCandidates.count
-        }
-    #endif
-
-    private func invalidateLocalInputStructure() {
-        localComposerCandidates.removeAll()
-        localInputIndex.invalidateStructure()
-    }
-
-    var transcript: AgentTranscript = .empty {
-        didSet { localInputCanonicalCommitPending = true }
-    }
-
+    var transcript: AgentTranscript = .empty
     var baseTranscriptProjection: AgentTranscriptProjection = .empty
     var fullTranscriptProjection: AgentTranscriptProjection = .empty
     var workingTranscriptProjection: AgentTranscriptProjection = .empty
@@ -177,12 +52,6 @@ final class AgentTabSession: ObservableObject {
     var rawToolResultPayloadRenderRevisionByItemID: [UUID: Int] = [:]
     var onSourceItemsChanged: ((AgentTabSession, AgentModeViewModel.SourceItemsMutation) -> Void)?
     var onRunStateChanged: ((AgentTabSession) -> Void)?
-    /// Activation went set → cleared/replaced. Fired synchronously from `oversight.didSet`; never
-    /// for nil → nil or nil → set.
-    var onOverseerActivationRetired: ((AgentTabSession, AgentSessionOverseerActivation) -> Void)?
-    /// `bindingTransitionInProgress` went true → false (success, failure, or abandoned-then-finished).
-    /// Presentation only.
-    var onBindingTransitionSettled: ((AgentTabSession) -> Void)?
     #if DEBUG
         private(set) var test_incrementalRetentionCompactionCount = 0
         private(set) var test_fullRetentionPayloadMapScannedItemCount = 0
@@ -211,7 +80,7 @@ final class AgentTabSession: ObservableObject {
 
     var activeAgentRunStartedAt: Date?
 
-    /// Last Auto Effort service choice submitted for this tab, plus a transient in-flight indication.
+    /// Last Jev effort choice submitted for this tab, plus a transient in-flight indication.
     /// Neither changes the user's manual model/effort selection or persisted session state.
     var autoEffortFeedback: AutoEffortTurnFeedback?
     var autoEffortJudgmentID: UUID?
@@ -279,13 +148,9 @@ final class AgentTabSession: ObservableObject {
 
     /// These gate delivery readiness and published `idle_for_send`, so wake observers when either
     /// non-published transition changes.
-    private var initialWorktreePreparationInProgress = false
-    var isPreparingInitialWorktree: Bool {
-        get { initialWorktreePreparationInProgress || pendingHandoff.executionLocationFailure != nil }
-        set {
-            let wasPreparing = isPreparingInitialWorktree
-            initialWorktreePreparationInProgress = newValue
-            if wasPreparing != isPreparingInitialWorktree {
+    var isPreparingInitialWorktree: Bool = false {
+        didSet {
+            if oldValue != isPreparingInitialWorktree {
                 noteMonitorObservationInputsChanged()
             }
         }
@@ -298,11 +163,6 @@ final class AgentTabSession: ObservableObject {
             }
         }
     }
-
-    /// Set while Handoff installs inherited worktree bindings on a never-activated destination.
-    /// Debounced autosaves stay disarmed so the first durable record cannot be the provisional,
-    /// unbound state; Handoff performs the destination's first save explicitly afterwards.
-    var isInstallingHandoffWorktreeBindings = false
 
     var worktreeBindingTransitionInProgress: Bool = false
 
@@ -398,9 +258,6 @@ final class AgentTabSession: ObservableObject {
     /// selection surfaces republish through their own authoritative refresh.
     var oversight = AgentSessionOversightState() {
         didSet {
-            if let retired = oldValue.overseerActivation, retired != oversight.overseerActivation {
-                onOverseerActivationRetired?(self, retired)
-            }
             if oldValue.hasPendingAutoWake != oversight.hasPendingAutoWake
                 || oldValue.autoWakeSnoozes != oversight.autoWakeSnoozes
             {
@@ -439,7 +296,6 @@ final class AgentTabSession: ObservableObject {
     /// exact session may act as an oversight observer.
     var mcpControlContext: AgentModeViewModel.AgentMCPControlContext? {
         didSet {
-            if mcpControlContext != nil { oversight.overseerActivation = nil }
             guard oldValue?.taskLabelKind != mcpControlContext?.taskLabelKind
                 || (oldValue == nil) != (mcpControlContext == nil)
             else {
@@ -477,7 +333,6 @@ final class AgentTabSession: ObservableObject {
     /// Whether this session was originally created by an MCP client.
     var isMCPOriginated: Bool = false {
         didSet {
-            if isMCPOriginated { oversight.overseerActivation = nil }
             if oldValue != isMCPOriginated { AgentSessionLinkCandidateReadinessSignal.didChange() }
         }
     }
@@ -565,32 +420,8 @@ final class AgentTabSession: ObservableObject {
     struct ACPSteeringManagedContext {
         let sink: AgentSessionLinkManagedSteerSink
         let attributedItemID: UUID
-        let endpoint: DomainAgentSessionLinkEndpointIdentity
-        let attribution: AgentCrossSessionAttribution?
-
-        init(
-            sink: AgentSessionLinkManagedSteerSink,
-            attributedItemID: UUID,
-            endpoint: DomainAgentSessionLinkEndpointIdentity,
-            attribution: AgentCrossSessionAttribution?
-        ) {
-            self.sink = sink
-            self.attributedItemID = attributedItemID
-            self.endpoint = endpoint
-            self.attribution = attribution
-        }
-
-        init(
-            sink: AgentSessionLinkManagedSteerSink,
-            attributedItemID: UUID,
-            candidate: AgentSessionLinkEndpointCandidate,
-            attribution: AgentCrossSessionAttribution
-        ) {
-            self.init(
-                sink: sink, attributedItemID: attributedItemID,
-                endpoint: candidate.domainEndpoint, attribution: attribution
-            )
-        }
+        let candidate: AgentSessionLinkEndpointCandidate
+        let attribution: AgentCrossSessionAttribution
     }
 
     struct ACPSteeringInstruction: Identifiable {
@@ -620,7 +451,7 @@ final class AgentTabSession: ObservableObject {
     func settlePendingManagedACPSteeringAsNotAccepted() {
         for instruction in pendingACPSteeringInstructions {
             guard let managed = instruction.managed else { continue }
-            let candidate = managed.endpoint
+            let candidate = managed.candidate
             if tabID == candidate.tabID,
                activeAgentSessionID == candidate.sessionID,
                persistentSessionBindingIdentity?.generation == candidate.persistentBindingGeneration,
@@ -1389,7 +1220,7 @@ final class AgentTabSession: ObservableObject {
     }
 
     // In-memory authority for this chat, never written to AgentSession persistence. Runtime
-    // reconnects and ownership transitions may reuse it; session shutdown and explicit off revoke it.
+    // reconnects may reuse it; session shutdown, explicit off and ownership drift revoke it.
     var codexComputerUseArmingRequestID: UUID?
     var pendingCodexComputerUseActivation: AgentModeViewModel.CodexComputerUseActivation?
     var codexControllerFeatureState: CodexControllerFeatureState?
@@ -1442,13 +1273,7 @@ final class AgentTabSession: ObservableObject {
 
     /// Handoff payload (injected into provider-facing text on first user send).
     /// Cleared only after the provider accepts the turn.
-    var pendingHandoff: AgentModeViewModel.PendingHandoffState = .init() {
-        didSet {
-            if oldValue.executionLocationFailure != pendingHandoff.executionLocationFailure {
-                noteMonitorObservationInputsChanged()
-            }
-        }
-    }
+    var pendingHandoff: AgentModeViewModel.PendingHandoffState = .init()
 
     /// Session-owned self-compaction state. No restored attempt is executable.
     var selfCompactState = AgentSelfCompactState() {
@@ -1478,11 +1303,7 @@ final class AgentTabSession: ObservableObject {
     }
 
     /// Runtime-only timer and note worker; persisted state is deliberately inert on restore.
-    var selfCompactNativeCompletion: AgentSelfCompactNativeCompletionCoordinator? {
-        didSet {
-            if oldValue !== selfCompactNativeCompletion { oldValue?.cancelRuntimeWork() }
-        }
-    }
+    var selfCompactNativeCompletion: AgentSelfCompactNativeCompletionCoordinator?
 
     /// Transcript item IDs present when an ACP self-compact command was issued. Rows added after
     /// this set are the command turn. Not persisted.
@@ -1493,8 +1314,6 @@ final class AgentTabSession: ObservableObject {
     }
 
     // Persistence
-    /// Synchronous derived-index maintenance for the window owning this live object.
-    var persistentSessionBindingDidChange: (() -> Void)?
     private(set) var persistentSessionBindingIdentity: AgentPersistentSessionBindingIdentity?
     var activeAgentSessionID: UUID? {
         persistentSessionBindingIdentity?.sessionID
@@ -1506,7 +1325,6 @@ final class AgentTabSession: ObservableObject {
             if oldValue != bindingTransitionInProgress {
                 noteMonitorObservationInputsChanged()
                 AgentSessionLinkCandidateReadinessSignal.didChange()
-                if !bindingTransitionInProgress { onBindingTransitionSettled?(self) }
             }
         }
     }
@@ -1515,21 +1333,11 @@ final class AgentTabSession: ObservableObject {
     var saveRequestGeneration: UInt64 = 0
     var parentSessionID: UUID? {
         didSet {
-            if parentSessionID != nil { oversight.overseerActivation = nil }
             if (oldValue == nil) != (parentSessionID == nil) { AgentSessionLinkCandidateReadinessSignal.didChange() }
         }
     }
 
-    var createdByOverseerSessionID: UUID? {
-        didSet {
-            if createdByOverseerSessionID != nil { oversight.overseerActivation = nil }
-        }
-    }
-
-    /// Mutable organizational placement (see `AgentSession.organizationalParentID`).
-    var organizationalParentID: UUID?
-    var delegationScopeID: UUID?
-
+    var createdByOverseerSessionID: UUID?
     var hasLoadedPersistedState: Bool = false {
         didSet {
             if oldValue != hasLoadedPersistedState {
@@ -1548,18 +1356,7 @@ final class AgentTabSession: ObservableObject {
     private(set) var authoritativeHydratedBinding: AgentPersistentSessionBindingIdentity?
     private(set) var authoritativeHydratedBindingTransitionGeneration: UInt64?
     /// Binding-qualified hydration proof for automatic oversight restoration.
-    private(set) var restorationReadiness: AgentSessionRestorationReadiness = .unbound {
-        willSet {
-            if newValue != restorationReadiness { objectWillChange.send() }
-        }
-        didSet {
-            if oldValue != restorationReadiness {
-                noteMonitorObservationInputsChanged()
-                AgentSessionLinkCandidateReadinessSignal.didChange()
-            }
-        }
-    }
-
+    private(set) var restorationReadiness: AgentSessionRestorationReadiness = .unbound
     var persistedLoadTask: Task<Void, Never>?
     var lastActivityAt: Date = .init()
     var lastUserMessageAt: Date?
@@ -1727,8 +1524,6 @@ final class AgentTabSession: ObservableObject {
 
     @discardableResult
     func beginPersistentBindingTransition() -> UInt64 {
-        invalidateLocalInputStructure()
-        oversight.overseerActivation = nil
         // Clear the outgoing proof before the generation moves so it cannot be observed under the
         // incoming incarnation.
         restorationReadiness = .unbound
@@ -1745,14 +1540,10 @@ final class AgentTabSession: ObservableObject {
 
     func installPersistentSessionBinding(_ binding: AgentPersistentSessionBindingIdentity?) {
         precondition(binding == nil || binding?.tabID == tabID)
-        if persistentSessionBindingIdentity != binding {
-            invalidateLocalInputStructure()
-            oversight.overseerActivation = nil
-        }
         persistentSessionBindingIdentity = binding
-        persistentSessionBindingDidChange?()
         bindingTransitionInProgress = false
         restorationReadiness = currentRestorationBindingToken.map { .pending($0) } ?? .unbound
+        AgentSessionLinkCandidateReadinessSignal.didChange()
     }
 
     var currentRestorationBindingToken: AgentSessionRestorationBindingToken? {
@@ -1769,133 +1560,10 @@ final class AgentTabSession: ObservableObject {
         return restorationReadiness
     }
 
-    /// Only a fully restored or configured-and-saved binding admits ordinary operations and saves.
-    var permitsBoundOperationAndSave: Bool {
-        !bindingTransitionInProgress && qualifiedRestorationReadiness.permitsBoundOperationAndSave
-    }
-
-    var restorationAdmissionFailureMessage: String? {
-        guard !bindingTransitionInProgress else { return "Wait for this session to finish loading." }
-        return qualifiedRestorationReadiness.operationAdmissionFailureMessage
-    }
-
-    /// Persisted handoff recovery remains its own blocker after payload restoration succeeds.
-    var operationAdmissionFailureMessage: String? {
-        restorationAdmissionFailureMessage ?? pendingHandoff.executionLocationFailure
-    }
-
-    var creationState: AgentSessionRestorationReadiness.CreationState? {
-        qualifiedRestorationReadiness.creationState
-    }
-
-    var creationConfigurationStamp: Data? {
-        guard let state = creationState,
-              case let .readyToPersist(configurationStamp) = state.phase else { return nil }
-        return configurationStamp
-    }
-
-    /// Consume actual allocation provenance before exposing a new session to other operations.
-    @discardableResult
-    func acceptFreshCreation(
-        _ claim: AgentSessionCreationClaim,
-        workspaceID: UUID
-    ) -> AgentSessionCreationHandle? {
-        guard let token = claim.consume(for: self, workspaceID: workspaceID) else { return nil }
-        restorationReadiness = .creating(token, .init(
-            workspaceID: workspaceID, ownerID: claim.ownerID, phase: .preparing
-        ))
-        hasLoadedPersistedState = true
-        isDirty = true
-        let handle = AgentSessionCreationHandle(
-            workspaceID: workspaceID, session: self, bindingToken: token,
-            ownerID: claim.ownerID, expectedConfigurationStamp: nil
-        )
-        claim.creationHandle = handle
-        return handle
-    }
-
-    func creationHandleIsCurrent(_ handle: AgentSessionCreationHandle) -> Bool {
-        guard handle.session === self, !bindingTransitionInProgress,
-              currentRestorationBindingToken == handle.bindingToken,
-              let state = creationState,
-              state.workspaceID == handle.workspaceID, state.ownerID == handle.ownerID else { return false }
-        if let expected = handle.expectedConfigurationStamp {
-            return creationConfigurationStamp == expected
-        }
-        return true
-    }
-
-    @discardableResult
-    func markCreationReady(_ handle: AgentSessionCreationHandle, configurationStamp: Data) -> Bool {
-        guard creationHandleIsCurrent(handle), let state = creationState else { return false }
-        switch state.phase {
-        case .preparing:
-            restorationReadiness = .creating(handle.bindingToken, .init(
-                workspaceID: state.workspaceID, ownerID: state.ownerID,
-                phase: .readyToPersist(configurationStamp: configurationStamp)
-            ))
-            return true
-        case let .readyToPersist(existing):
-            return existing == configurationStamp
-        case .failedBeforeConfiguration:
-            return false
-        }
-    }
-
-    /// The saver supplies the stamp of its actual payload after its exact commit fence succeeds.
-    @discardableResult
-    func acknowledgeConfiguredCreationSave(
-        _ handle: AgentSessionCreationHandle,
-        configurationStamp: Data
-    ) -> Bool {
-        guard creationHandleIsCurrent(handle), creationConfigurationStamp == configurationStamp else { return false }
-        restorationReadiness = .authoritative(handle.bindingToken, .freshBindingDurablyCreated)
-        return true
-    }
-
-    func failCreationPreparation(_ handle: AgentSessionCreationHandle, message: String) {
-        guard creationHandleIsCurrent(handle), let state = creationState,
-              case .preparing = state.phase else { return }
-        restorationReadiness = .creating(handle.bindingToken, .init(
-            workspaceID: state.workspaceID, ownerID: state.ownerID,
-            phase: .failedBeforeConfiguration(message)
-        ))
-    }
-
-    /// A retry captures existing ready provenance; it cannot mint or reconstruct preparation.
-    func captureCreationRetryHandle() -> AgentSessionCreationHandle? {
-        guard !bindingTransitionInProgress,
-              let token = currentRestorationBindingToken, let state = creationState,
-              case let .readyToPersist(configurationStamp) = state.phase else { return nil }
-        return AgentSessionCreationHandle(
-            workspaceID: state.workspaceID, session: self, bindingToken: token,
-            ownerID: state.ownerID, expectedConfigurationStamp: configurationStamp
-        )
-    }
-
     func recordRestorationAuthoritative(_ source: AgentSessionRestorationReadiness.Source) {
-        // Fresh authority requires the owner's configured payload stamp, never a generic save.
-        guard source == .persistedPayloadApplied, !qualifiedRestorationReadiness.isCreating,
-              let current = currentRestorationBindingToken else { return }
+        guard let current = currentRestorationBindingToken else { return }
         restorationReadiness = .authoritative(current, source)
-    }
-
-    /// Remap an earned proof only across the single refused transition that invalidated it.
-    /// The view model additionally checks runtime-map ownership and the workspace carrier.
-    func restoreReadinessAfterRefusedTransition(
-        _ previousReadiness: AgentSessionRestorationReadiness,
-        expectedTransition: AgentModeViewModel.PersistentBindingTransitionToken
-    ) {
-        guard !bindingTransitionInProgress,
-              persistentBindingTransitionToken() == expectedTransition,
-              restorationReadiness == .unbound,
-              case let .authoritative(previous, source) = previousReadiness,
-              let current = currentRestorationBindingToken,
-              previous.bindingIdentity == current.bindingIdentity,
-              previous.bindingTransitionGeneration &+ 1 == current.bindingTransitionGeneration
-        else { return }
-        restorationReadiness = .authoritative(current, source)
-        markCurrentBindingHydrated()
+        AgentSessionLinkCandidateReadinessSignal.didChange()
     }
 
     func recordRestorationAuthoritativeIfNeeded(_ source: AgentSessionRestorationReadiness.Source) {
@@ -1904,9 +1572,9 @@ final class AgentTabSession: ObservableObject {
     }
 
     func recordRestorationTerminal(_ failure: AgentSessionRestorationReadiness.Failure) {
-        guard !qualifiedRestorationReadiness.isCreating,
-              let current = currentRestorationBindingToken else { return }
+        guard let current = currentRestorationBindingToken else { return }
         restorationReadiness = .terminal(current, failure)
+        AgentSessionLinkCandidateReadinessSignal.didChange()
     }
 
     func finishPersistentBindingTransition(generation: UInt64) {
@@ -2297,48 +1965,13 @@ final class AgentTabSession: ObservableObject {
         case preserveForRetentionCompaction
     }
 
-    /// How a committed source-items change treats the retained local-input index's identity.
-    private enum LocalInputIdentityDisposition {
-        /// A genuine structural replacement: rotate the epoch; the canonical reseed owns all
-        /// reconciliation and observers re-baseline rather than re-disclose history.
-        case invalidate
-        /// Working-suffix pruning is not canonical deletion: tracked identities survive and only
-        /// their positions reconcile.
-        case positionsOnly
-        /// A bounded working-list batch, diffed against the current `items` (the pre-commit
-        /// array): tracked items the batch removed mark their record deleted and retire any
-        /// unsettled candidate, still-present tracked items reconcile content and position.
-        /// Both reconciling dispositions invalidate instead when source-ID repair rekeys.
-        case batchDiff
-    }
-
     private func commitSourceItems(
         _ newItems: [AgentChatItem],
         dispatch: SourceItemsDispatch,
         payloadUpdate: SourceItemPayloadUpdate = .rebuildFromSource,
-        localInputIdentity: LocalInputIdentityDisposition = .invalidate,
         diagnosticContext: String
     ) {
-        let repair = repairedSourceItems(newItems, diagnosticContext: diagnosticContext)
-        let repairedItems = repair.items
-        switch localInputIdentity {
-        case .invalidate:
-            invalidateLocalInputStructure()
-        case .positionsOnly:
-            if repair.didRepair {
-                // Rekeyed item IDs are a genuine identity change; positions cannot be trusted.
-                invalidateLocalInputStructure()
-            } else {
-                reconcileLocalInputWorkingPositions(repairedItems)
-            }
-        case .batchDiff:
-            if repair.didRepair {
-                // Rekeyed item IDs are a genuine identity change, not an in-place batch edit.
-                invalidateLocalInputStructure()
-            } else {
-                reconcileLocalInputBatchDiff(from: items, to: repairedItems)
-            }
-        }
+        let repairedItems = repairedSourceItems(newItems, diagnosticContext: diagnosticContext)
         suppressSourceItemsChanged = true
         items = repairedItems
         suppressSourceItemsChanged = false
@@ -2353,24 +1986,23 @@ final class AgentTabSession: ObservableObject {
     private func repairedSourceItems(
         _ candidateItems: [AgentChatItem],
         diagnosticContext: String
-    ) -> AgentSourceItemIDRepair.Result {
+    ) -> [AgentChatItem] {
         let repair = AgentSourceItemIDRepair.repairDuplicateIDs(in: candidateItems)
-        assert(repair.didRepair == (repair.items != candidateItems))
         if repair.didRepair {
             AgentSourceItemIDRepair.logDiagnostics(
                 repair.diagnostics,
                 context: "tab_session tab_id=\(tabID.uuidString) \(diagnosticContext)"
             )
         }
-        return repair
+        return repair.items
     }
 
     @discardableResult
     private func repairStoredSourceItemsIfNeeded(diagnosticContext: String) -> Bool {
-        let repair = repairedSourceItems(items, diagnosticContext: diagnosticContext)
-        guard repair.didRepair else { return false }
+        let repairedItems = repairedSourceItems(items, diagnosticContext: diagnosticContext)
+        guard repairedItems != items else { return false }
         suppressSourceItemsChanged = true
-        items = repair.items
+        items = repairedItems
         suppressSourceItemsChanged = false
         return true
     }
@@ -2611,11 +2243,6 @@ final class AgentTabSession: ObservableObject {
     private func finishIncrementalSourceItemsMutation(
         _ mutation: AgentModeViewModel.SourceItemsMutation
     ) {
-        switch mutation {
-        case let .replace(index, _, _), let .mutate(index, _):
-            if items.indices.contains(index) { localInputIndex.replace(items[index], at: index) }
-        default: break
-        }
         sourceItemsRevision &+= 1
         derivedTranscriptSyncState = nil
         onSourceItemsChanged?(self, mutation)
@@ -2665,7 +2292,6 @@ final class AgentTabSession: ObservableObject {
         commitSourceItems(
             updatedItems,
             dispatch: .notify(mutation),
-            localInputIdentity: .batchDiff,
             diagnosticContext: "mutateItemsBatch"
         )
         if touchActivity {
@@ -2714,22 +2340,10 @@ final class AgentTabSession: ObservableObject {
                 ))
             }
         #endif
-        // `pendingToolFinalizationRepair` and `codexCommandStatusReconciliation` commit a mutated
-        // copy of the working list — in-place repairs that must not cost tracked inputs their
-        // epoch. Hydration, activation, clears and test overrides stay structural.
-        let localInputIdentity: LocalInputIdentityDisposition = switch reason {
-        case .retentionCompaction:
-            .positionsOnly
-        case .pendingToolFinalizationRepair, .codexCommandStatusReconciliation:
-            .batchDiff
-        case .persistedSessionHydration, .routeActivation, .clearedChat, .stressHarnessReset, .testOverride:
-            .invalidate
-        }
         commitSourceItems(
             items,
             dispatch: .silent,
             payloadUpdate: payloadUpdate,
-            localInputIdentity: localInputIdentity,
             diagnosticContext: "setItemsSilently reason=\(reason.rawValue)"
         )
         pendingSourceItemsMutationSummary = nil
@@ -2957,15 +2571,6 @@ final class AgentTabSession: ObservableObject {
     func removeItem(at index: Int) -> AgentChatItem? {
         guard items.indices.contains(index) else { return nil }
         let removed = items[index]
-        localInputIndex.remove(at: index, itemID: removed.id)
-        for token in Array(localComposerCandidates.keys) {
-            guard var candidate = localComposerCandidates[token] else { continue }
-            if candidate.itemID == removed.id { localComposerCandidates.removeValue(forKey: token) }
-            else if let position = candidate.position, position > index {
-                candidate.position = position - 1
-                localComposerCandidates[token] = candidate
-            }
-        }
         suppressSourceItemsChanged = true
         items.remove(at: index)
         suppressSourceItemsChanged = false
@@ -3037,65 +2642,6 @@ final class AgentTabSession: ObservableObject {
         bashLiveExecutionByKey.removeAll()
         bashLiveExecutionKeyByTranscriptItemID.removeAll()
         lastActivityAt = Date()
-    }
-}
-
-/// A captured creation owner. Construction stays with allocation consumption or an exact ready retry.
-struct AgentSessionCreationHandle: Equatable {
-    let workspaceID: UUID
-    let session: AgentTabSession
-    let bindingToken: AgentSessionRestorationBindingToken
-    let ownerID: UUID
-    let expectedConfigurationStamp: Data?
-
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.workspaceID == rhs.workspaceID
-            && lhs.session === rhs.session
-            && lhs.bindingToken == rhs.bindingToken
-            && lhs.ownerID == rhs.ownerID
-            && lhs.expectedConfigurationStamp == rhs.expectedConfigurationStamp
-    }
-
-    fileprivate init(
-        workspaceID: UUID,
-        session: AgentTabSession,
-        bindingToken: AgentSessionRestorationBindingToken,
-        ownerID: UUID,
-        expectedConfigurationStamp: Data?
-    ) {
-        self.workspaceID = workspaceID
-        self.session = session
-        self.bindingToken = bindingToken
-        self.ownerID = ownerID
-        self.expectedConfigurationStamp = expectedConfigurationStamp
-    }
-}
-
-/// A single-use proof from the owner that actually allocates the new session and creation owner IDs.
-@MainActor
-final class AgentSessionCreationClaim {
-    let workspaceID: UUID
-    let sessionID = UUID()
-    let ownerID = UUID()
-    fileprivate(set) var creationHandle: AgentSessionCreationHandle?
-    private var wasConsumed = false
-
-    init(workspaceID: UUID) {
-        self.workspaceID = workspaceID
-    }
-
-    fileprivate func consume(
-        for session: AgentTabSession,
-        workspaceID currentWorkspaceID: UUID
-    ) -> AgentSessionRestorationBindingToken? {
-        guard !wasConsumed else { return nil }
-        wasConsumed = true
-        guard workspaceID == currentWorkspaceID, !session.bindingTransitionInProgress,
-              let token = session.currentRestorationBindingToken,
-              token.bindingIdentity.sessionID == sessionID,
-              token.bindingIdentity.tabID == session.tabID,
-              session.qualifiedRestorationReadiness == .pending(token) else { return nil }
-        return token
     }
 }
 

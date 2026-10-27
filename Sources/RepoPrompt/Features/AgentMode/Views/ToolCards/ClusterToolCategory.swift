@@ -39,7 +39,6 @@ enum ClusterToolCategory {
     }
 
     enum SummaryTitleSemantic {
-        case computerUse
         case running
         case exploredAndEdited
         case madeChanges

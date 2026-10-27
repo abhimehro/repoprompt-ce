@@ -708,10 +708,7 @@ import XCTest
 
         func testFinalRootUsesActiveFallbackButUnmatchedRequestDoesNotSwitch() async throws {
             try await WorkspaceAuthorityRootTestFixture.withFixture(configuration: { [$0[0]] }) { fixture in
-                let fallback = try await fixture.createAdditionalWorkspace(
-                    name: "Default", repoPaths: [], isSystemWorkspace: true
-                )
-                XCTAssertTrue(fallback.isSystemWorkspace, "Final-root fallback uses the System Default, not a user namesake")
+                let fallback = try await fixture.createAdditionalWorkspace(name: "Default", repoPaths: [fixture.rootPaths[1]])
                 let before = try await fixture.capturePassive()
                 try await fixture.perform("unmatched final-root removal returned") {
                     await fixture.manager.removeActiveWorkspaceRoot(path: fixture.rootPaths[1])

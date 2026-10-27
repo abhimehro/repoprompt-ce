@@ -181,9 +181,7 @@ struct AgentPermissionCapabilitySummaryBuilder {
                 providerID: providerID,
                 providerName: providerID.displayName,
                 isAvailable: isAvailable,
-                fileMutation: level == .managedDefault
-                    ? "Always-approve launch: off; Grok's rules can still allow requests"
-                    : "Always-approve launch: on",
+                fileMutation: "Always-approve launch: \(level.launchesWithAlwaysApprove ? "on" : "off")",
                 shell: "Handled by Grok Build CLI",
                 externalMCP: "Third-party MCP: managed by Grok Build",
                 search: "Managed by Grok Build CLI",

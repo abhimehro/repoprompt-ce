@@ -1164,7 +1164,6 @@ enum ToolResultDTOs {
         let diffs: [Diff]?
         let errors: [String]?
         let oracleGroupID: String?
-        let oracleReconciliationGuidance: String?
         let status: String?
         let oracleCount: Int?
         let oracleResults: [OracleLaneDTO]?
@@ -1178,7 +1177,6 @@ enum ToolResultDTOs {
             case patches
             case errors
             case oracleGroupID = "oracle_group_id"
-            case oracleReconciliationGuidance = "oracle_reconciliation_guidance"
             case status
             case oracleCount = "oracle_count"
             case oracleResults = "oracle_results"
@@ -1192,7 +1190,6 @@ enum ToolResultDTOs {
             diffs: [Diff]?,
             errors: [String]?,
             oracleGroupID: String? = nil,
-            oracleReconciliationGuidance: String? = nil,
             status: String? = nil,
             oracleCount: Int? = nil,
             oracleResults: [OracleLaneDTO]? = nil,
@@ -1204,7 +1201,6 @@ enum ToolResultDTOs {
             self.diffs = diffs
             self.errors = errors
             self.oracleGroupID = oracleGroupID
-            self.oracleReconciliationGuidance = oracleReconciliationGuidance
             self.status = status
             self.oracleCount = oracleCount
             self.oracleResults = oracleResults
@@ -1223,7 +1219,6 @@ enum ToolResultDTOs {
             }
             errors = try container.decodeIfPresent([String].self, forKey: .errors)
             oracleGroupID = try container.decodeIfPresent(String.self, forKey: .oracleGroupID)
-            oracleReconciliationGuidance = try container.decodeIfPresent(String.self, forKey: .oracleReconciliationGuidance)
             status = try container.decodeIfPresent(String.self, forKey: .status)
             oracleCount = try container.decodeIfPresent(Int.self, forKey: .oracleCount)
             oracleResults = try container.decodeIfPresent([OracleLaneDTO].self, forKey: .oracleResults)
@@ -1238,7 +1233,6 @@ enum ToolResultDTOs {
             try container.encodeIfPresent(diffs, forKey: .diffs)
             try container.encodeIfPresent(errors, forKey: .errors)
             try container.encodeIfPresent(oracleGroupID, forKey: .oracleGroupID)
-            try container.encodeIfPresent(oracleReconciliationGuidance, forKey: .oracleReconciliationGuidance)
             try container.encodeIfPresent(status, forKey: .status)
             try container.encodeIfPresent(oracleCount, forKey: .oracleCount)
             try container.encodeIfPresent(oracleResults, forKey: .oracleResults)
@@ -1630,12 +1624,6 @@ enum ToolResultDTOs {
         let repositories: [RepositoryDTO]?
         let worktree: WorktreeDTO?
         let worktrees: [WorktreeDTO]?
-        /// `list` only: usable (non-prunable) worktrees before paging.
-        let totalCount: Int?
-        /// `list` only: `true` when worktrees after this page remain; omitted otherwise.
-        let truncated: Bool?
-        /// `list` only: offset of the next page when `truncated` is true.
-        let nextOffset: Int?
         let createdWorktree: WorktreeDTO?
         let binding: BindingDTO?
         let bindings: [BindingDTO]?
@@ -1651,9 +1639,6 @@ enum ToolResultDTOs {
             repositories: [RepositoryDTO]? = nil,
             worktree: WorktreeDTO? = nil,
             worktrees: [WorktreeDTO]? = nil,
-            totalCount: Int? = nil,
-            truncated: Bool? = nil,
-            nextOffset: Int? = nil,
             createdWorktree: WorktreeDTO? = nil,
             binding: BindingDTO? = nil,
             bindings: [BindingDTO]? = nil,
@@ -1668,9 +1653,6 @@ enum ToolResultDTOs {
             self.repositories = repositories
             self.worktree = worktree
             self.worktrees = worktrees
-            self.totalCount = totalCount
-            self.truncated = truncated
-            self.nextOffset = nextOffset
             self.createdWorktree = createdWorktree
             self.binding = binding
             self.bindings = bindings
@@ -1682,9 +1664,7 @@ enum ToolResultDTOs {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case op, repository, repositories, worktree, worktrees, truncated, binding, bindings, graph, merge, warning, error
-            case totalCount = "total_count"
-            case nextOffset = "next_offset"
+            case op, repository, repositories, worktree, worktrees, binding, bindings, graph, merge, warning, error
             case createdWorktree = "created_worktree"
             case previousBinding = "previous_binding"
         }

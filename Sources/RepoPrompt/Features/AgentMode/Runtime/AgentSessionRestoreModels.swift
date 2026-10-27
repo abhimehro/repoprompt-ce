@@ -22,9 +22,6 @@ struct AgentSessionIndexEntry: Identifiable, Equatable {
     var periodicIdleWakeIntervalSeconds: Int = AgentSessionLinkPeriodicWakeInterval.defaultSeconds
     var parentSessionID: UUID?
     var createdByOverseerSessionID: UUID?
-    /// Mutable organizational placement; `nil` follows spawn provenance.
-    var organizationalParentID: UUID?
-    var delegationScopeID: UUID?
     var hasUnknownConversationContent: Bool
     var isMCPOriginated: Bool
     var worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary]

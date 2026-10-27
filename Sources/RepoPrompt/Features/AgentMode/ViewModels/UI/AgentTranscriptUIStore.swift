@@ -12,8 +12,6 @@ struct AgentTranscriptUISnapshot: Equatable {
     var runtimeFooterByItemID: [UUID: AgentMessageRuntimeFooter]
     var fallbackFollowArmingState: AgentModeViewModel.AgentTranscriptAutoFollowArmingState
     var archivedBlocks: [AgentTranscriptRenderBlock]
-    var panePresentation: AgentTranscriptPanePresentation
-    var paneTarget: AgentTranscriptPaneTarget
 
     static let empty = AgentTranscriptUISnapshot(
         currentTabID: nil,
@@ -25,9 +23,7 @@ struct AgentTranscriptUISnapshot: Equatable {
         activeBashLiveExecutionByItemID: [:],
         runtimeFooterByItemID: [:],
         fallbackFollowArmingState: .armed,
-        archivedBlocks: [],
-        panePresentation: .restoring,
-        paneTarget: .unresolved
+        archivedBlocks: []
     )
 
     /// Custom equality uses `presentationRevision` as a cheap fingerprint for
@@ -49,8 +45,6 @@ struct AgentTranscriptUISnapshot: Equatable {
             && lhs.activeBashLiveExecutionByItemID == rhs.activeBashLiveExecutionByItemID
             && lhs.runtimeFooterByItemID == rhs.runtimeFooterByItemID
             && lhs.archivedBlocks == rhs.archivedBlocks
-            && lhs.panePresentation == rhs.panePresentation
-            && lhs.paneTarget == rhs.paneTarget
     }
 }
 

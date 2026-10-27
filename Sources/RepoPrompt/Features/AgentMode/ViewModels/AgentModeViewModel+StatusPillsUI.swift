@@ -57,7 +57,7 @@ extension AgentModeViewModel {
                 isEnabled: !busy,
                 isOperationInProgress: busy,
                 requiresActiveRunConfirmation: false,
-                disabledReason: session?.pendingHandoff.executionLocationFailure ?? (busy ? "Preparing the selected worktree…" : nil)
+                disabledReason: busy ? "Preparing the selected worktree…" : nil
             )
         }
 
@@ -129,7 +129,6 @@ extension AgentModeViewModel {
     }
 
     private func executionLocationMutationDisabledReason(for session: TabSession) -> String? {
-        if let failure = session.pendingHandoff.executionLocationFailure { return failure }
         if !session.hasLoadedPersistedState {
             return "Load this thread before changing its execution location."
         }

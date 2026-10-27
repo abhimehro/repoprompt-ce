@@ -552,8 +552,7 @@ enum HistoryMCPToolService {
                 transcript = try await scanner.loadTranscriptForSearch(
                     sessionID: session.record.id,
                     workspaceDir: session.workspaceDir,
-                    requestBudget: requestBudget,
-                    workspaceLocation: session.registeredLocation
+                    requestBudget: requestBudget
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -633,34 +632,19 @@ enum HistoryMCPToolService {
                 // Search summary text fields. conclusionText is the full (non-truncated)
                 // conclusion and is preferred when available (full/condensed tiers).
                 // compactConclusionText is the truncated fallback for summary/archived tiers
-                // where conclusionText is nilled out during compaction. Recovery
-                // diagnostics are included so a demoted turn's recovery notice stays
-                // findable after its `.system` row is trimmed.
+                // where conclusionText is nilled out during compaction.
                 if sourceFilter != "activities", let summary = turn.summary {
                     let conclusionText = summary.conclusionText ?? summary.compactConclusionText
-                    // Only diagnostics whose live `.system` row has been trimmed need the
-                    // summary carrier — a retained row already matches the activity scan,
-                    // so including it here would double-count on full-tier turns.
-                    let retainedActivityIDs = Set(turn.allActivities.map(\.id))
-                    let diagnosticsText = summary.normalizedRecoveryDiagnostics
-                        .filter { !retainedActivityIDs.contains($0.id) }
-                        .map(\.text)
-                        .joined(separator: "\n")
                     let summaryTexts: [(String, String)] = [
                         (conclusionText ?? "", "conclusion"),
                         (summary.middleSummaryText ?? "", "middleSummaryText"),
-                        (summary.requestText ?? "", "requestText"),
-                        (diagnosticsText ?? "", "recoveryDiagnostic")
+                        (summary.requestText ?? "", "requestText")
                     ]
 
                     for (text, field) in summaryTexts where !text.isEmpty {
                         if text.lowercased().contains(queryLower) {
                             let snippet = extractSnippet(text: text, query: queryLower)
-                            let roleString = switch field {
-                            case "requestText": "user"
-                            case "recoveryDiagnostic": "system"
-                            default: "assistant"
-                            }
+                            let roleString = field == "requestText" ? "user" : "assistant"
                             let timestamp = turn.startedAt
                             let match = HistorySearchMatch(
                                 sessionID: session.record.id,
@@ -899,8 +883,7 @@ enum HistoryMCPToolService {
                         for: session.record,
                         sessionID: session.record.id,
                         workspaceDir: session.workspaceDir,
-                        requestBudget: requestBudget,
-                        workspaceLocation: session.registeredLocation
+                        requestBudget: requestBudget
                     )
                 } catch is CancellationError {
                     throw CancellationError()
@@ -934,15 +917,13 @@ enum HistoryMCPToolService {
                 let transcript = try await scanner.loadTranscriptForSearch(
                     sessionID: session.record.id,
                     workspaceDir: session.workspaceDir,
-                    requestBudget: requestBudget,
-                    workspaceLocation: session.registeredLocation
+                    requestBudget: requestBudget
                 )
                 enriched.append(
                     HistoryFilteredSessionRecord(
                         record: session.record.enrichingTranscriptDerivedFields(from: transcript.turns),
                         workspaceName: session.workspaceName,
-                        workspaceDir: session.workspaceDir,
-                        registeredLocation: session.registeredLocation
+                        workspaceDir: session.workspaceDir
                     )
                 )
                 sessionsScanned += 1
@@ -1137,8 +1118,7 @@ enum HistoryMCPToolService {
                 transcript = try await scanner.loadTranscriptForSearch(
                     sessionID: session.record.id,
                     workspaceDir: session.workspaceDir,
-                    requestBudget: requestBudget,
-                    workspaceLocation: session.registeredLocation
+                    requestBudget: requestBudget
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -1597,46 +1577,15 @@ enum HistoryMCPToolService {
             requestText = nil
         }
 
-        // Recovery diagnostics ride the summary projection: they are emitted under the
-        // "summary" role for non-full tiers, independent of `isStructurallyCompacted`, so
-        // a demoted turn that still retains its conclusion exposes the notice too.
-        if turn.retentionTier != .full, roles.contains("summary") {
-            let diagnostics = turn.summary?.normalizedRecoveryDiagnostics ?? []
-            let rendersConclusion = turn.isStructurallyCompacted
-                ? historySummaryText(turn.summary) != nil
-                : roles.contains("assistant") && turn.conclusionActivityID != nil
-            let diagnosticEntryLimit = maxGetSessionEntriesPerTurn - (rendersConclusion ? 1 : 0)
-            for diagnostic in diagnostics where remainingChars > 0 {
-                if entries.count >= diagnosticEntryLimit {
-                    entriesOmitted += 1
-                    turnTruncated = true
-                    continue
-                }
-                appendGetSessionEntry(
-                    role: "summary",
-                    text: diagnostic.text,
-                    perEntryMaxChars: AgentTranscriptRecoveryDiagnostic.maximumTextLength,
-                    entries: &entries,
-                    remainingChars: &remainingChars,
-                    turnTruncated: &turnTruncated
-                )
-            }
-        }
-
         if turn.isStructurallyCompacted, roles.contains("summary"), let summaryText = historySummaryText(turn.summary), remainingChars > 0 {
-            if entries.count >= maxGetSessionEntriesPerTurn {
-                entriesOmitted += 1
-                turnTruncated = true
-            } else {
-                appendGetSessionEntry(
-                    role: "summary",
-                    text: summaryText,
-                    perEntryMaxChars: 2000,
-                    entries: &entries,
-                    remainingChars: &remainingChars,
-                    turnTruncated: &turnTruncated
-                )
-            }
+            appendGetSessionEntry(
+                role: "summary",
+                text: summaryText,
+                perEntryMaxChars: 2000,
+                entries: &entries,
+                remainingChars: &remainingChars,
+                turnTruncated: &turnTruncated
+            )
         }
 
         for (activityIndex, activity) in turn.allActivities.enumerated() {

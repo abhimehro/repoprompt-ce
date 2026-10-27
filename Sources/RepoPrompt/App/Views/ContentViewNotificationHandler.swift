@@ -94,16 +94,7 @@ private struct SettingsNotificationHandler: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: .showModelRouterSettingsTab)) { note in
                 guard noteTargetsCurrentWindow(note) else { return }
-                if let section = note.userInfo?["agentDecisionsSection"]
-                    as? SettingsWindowCoordinator.AgentDecisionsSection
-                {
-                    SettingsWindowCoordinator.shared.openAgentDecisions(
-                        windowState: windowState,
-                        section: section
-                    )
-                } else {
-                    openSettings(tab: .modelRouter)
-                }
+                openSettings(tab: .modelRouter)
             }
             .onReceive(NotificationCenter.default.publisher(for: .showNotificationSettingsTab)) { note in
                 guard noteTargetsCurrentWindow(note) else { return }

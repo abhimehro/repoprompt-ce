@@ -34,13 +34,7 @@ enum AgentSessionLinkStopAdmission: Equatable {
 
     static func classify(_ snapshot: AgentSessionLinkDeliveryReadiness.Snapshot) -> Self {
         if !snapshot.endpointMatchesGrant || snapshot.isClosing { return .blocked(.endpointInvalidated) }
-        if snapshot.bindingTransitionInProgress {
-            return .blocked(.targetLoading)
-        }
-        if let reason = AgentSessionLinkDeliveryReadiness.restorationBlockReason(snapshot.restorationReadiness) {
-            return .blocked(AgentSessionLinkSendFailure(reason))
-        }
-        if !snapshot.hasLoadedPersistedState {
+        if !snapshot.hasLoadedPersistedState || snapshot.bindingTransitionInProgress {
             return .blocked(.targetLoading)
         }
         if snapshot.terminalCommitInProgress || snapshot.isComposerSubmissionInFlight

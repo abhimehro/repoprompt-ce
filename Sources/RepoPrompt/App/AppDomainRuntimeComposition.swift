@@ -1,5 +1,4 @@
 import Foundation
-import RepoPromptShared
 #if DEBUG
     import os
 #endif
@@ -112,10 +111,13 @@ final class AppDomainRuntimeComposition: Sendable {
     }
 
     private init() {
-        let locations = AppProfileLocations.current
-        let root = locations.applicationSupportRoot
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        let root = applicationSupport.appendingPathComponent("RepoPrompt CE", isDirectory: true)
         let defaults = UserDefaults.standard
-        let customStoragePath = WorkspaceStoragePreference.customStoragePath(defaults: defaults)
+        let customStoragePath = defaults.string(forKey: "GlobalCustomStorageURL")
         var legacyRuntimeDefaults = Self.collectLegacyRuntimeDefaults(from: defaults)
         if let customStoragePath,
            let bytes = try? JSONEncoder().encode(customStoragePath)
@@ -123,20 +125,19 @@ final class AppDomainRuntimeComposition: Sendable {
             legacyRuntimeDefaults["GlobalCustomStorageURL"] = bytes
         }
         let workspaceStorageDirectory = customStoragePath.map {
-            locations.customWorkspaceDirectory(selectedDirectory: URL(fileURLWithPath: $0, isDirectory: true))
+            URL(fileURLWithPath: $0, isDirectory: true)
         } ?? root.appendingPathComponent("Workspaces", isDirectory: true)
         let runtime = MCPDomainRuntime(
             configuration: DomainRuntimeConfiguration(
                 mode: .app,
-                profileIdentifier: locations.profileIdentifier,
+                profileIdentifier: "default",
                 storageDirectory: root,
                 workspaceStorageDirectory: workspaceStorageDirectory,
                 eventDirectory: root.appendingPathComponent("Events", isDirectory: true),
-                temporaryDirectory: MCPFilesystemIdentity.current.temporaryRootURL(),
+                temporaryDirectory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("RepoPrompt CE", isDirectory: true),
                 legacyRuntimeDefaults: legacyRuntimeDefaults,
-                metrics: AppDomainRuntimeMetrics.editFlowSink,
-                metadataPathPolicy: locations.identity.buildFlavor == .debug
-                    ? AppMetadataPathPolicy(locations: locations, roots: [root, workspaceStorageDirectory]) : nil
+                metrics: AppDomainRuntimeMetrics.editFlowSink
             )
         )
         defaultRuntime = runtime

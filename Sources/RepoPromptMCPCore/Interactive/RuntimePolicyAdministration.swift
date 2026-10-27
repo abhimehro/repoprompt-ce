@@ -1,7 +1,6 @@
 import Darwin
 import Foundation
 import RepoPromptDomainRuntime
-import RepoPromptShared
 
 package enum RuntimePolicyAdministration {
     enum CommandError: Error, LocalizedError {
@@ -29,7 +28,7 @@ package enum RuntimePolicyAdministration {
             guard let command = arguments.first else {
                 throw CommandError.invalidArguments(usage)
             }
-            let store = try makeRuntime().mutationPolicyStore
+            let store = makeRuntime().mutationPolicyStore
             let administrator = DomainClientPrincipal(
                 principalID: UUID(),
                 stableKey: "tty:\(getuid())",
@@ -161,20 +160,20 @@ package enum RuntimePolicyAdministration {
         }
     }
 
-    private static func makeRuntime() throws -> MCPDomainRuntime {
-        let locations = AppProfileLocations.current
-        let root = locations.applicationSupportRoot
-        let pathPolicy = locations.identity.buildFlavor == .debug
-            ? AppMetadataPathPolicy(locations: locations, roots: [root]) : nil
-        try pathPolicy?.acquireProfileAccess()
+    private static func makeRuntime() -> MCPDomainRuntime {
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        let root = applicationSupport.appendingPathComponent("RepoPrompt CE", isDirectory: true)
         return MCPDomainRuntime(configuration: DomainRuntimeConfiguration(
             mode: .standalone,
-            profileIdentifier: locations.profileIdentifier,
+            profileIdentifier: "default",
             storageDirectory: root,
             eventDirectory: root.appendingPathComponent("Events", isDirectory: true),
-            temporaryDirectory: MCPFilesystemIdentity.current.temporaryRootURL(),
-            externalReloadInterval: nil,
-            metadataPathPolicy: pathPolicy
+            temporaryDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("RepoPrompt CE", isDirectory: true),
+            externalReloadInterval: nil
         ))
     }
 

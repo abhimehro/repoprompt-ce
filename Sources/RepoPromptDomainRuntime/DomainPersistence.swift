@@ -329,25 +329,6 @@ package struct DomainPersistenceCoordinator {
         .default
     }
 
-    private func validateMetadata(_ url: URL) throws {
-        try configuration.metadataPathPolicy?.validate(url)
-    }
-
-    private func withValidatedLock<T>(at url: URL, cancellation: DomainBlockingCancellation?, _ body: () throws -> T) throws -> T {
-        try validateMetadata(url)
-        return try DomainPersistenceLock.withLock(at: url, cancellation: cancellation, body)
-    }
-
-    private func atomicWrite(_ data: Data, to url: URL) throws {
-        try validateMetadata(url)
-        try DomainPersistenceLock.atomicWrite(data, to: url)
-    }
-
-    private func removeMetadata(at url: URL) throws {
-        try validateMetadata(url)
-        try fileManager.removeItem(at: url)
-    }
-
     private var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -363,7 +344,7 @@ package struct DomainPersistenceCoordinator {
     }
 
     private func withLock<T>(at url: URL, _ body: () throws -> T) throws -> T {
-        try withValidatedLock(
+        try DomainPersistenceLock.withLock(
             at: url,
             cancellation: cancellation,
             body
@@ -374,21 +355,17 @@ package struct DomainPersistenceCoordinator {
         configuration.workspaceStorageDirectory
     }
 
-    /// Stable persistence format path, shared with read-only profile snapshotting.
-    package static func runtimeDirectoryName(profileIdentifier: String) -> String {
-        let safe = profileIdentifier
+    private var runtimeRoot: URL {
+        let safe = configuration.profileIdentifier
             .unicodeScalars
             .map { CharacterSet.alphanumerics.contains($0) ? String($0) : "_" }
             .joined()
             .prefix(48)
-        let digest = DomainContentDigest.sha256(Data(profileIdentifier.utf8)).prefix(12)
-        return "DomainRuntime/v1/\(safe)-\(digest)"
-    }
-
-    private var runtimeRoot: URL {
-        configuration.storageDirectory.appendingPathComponent(
-            Self.runtimeDirectoryName(profileIdentifier: configuration.profileIdentifier), isDirectory: true
-        )
+        let digest = DomainContentDigest.sha256(Data(configuration.profileIdentifier.utf8)).prefix(12)
+        return configuration.storageDirectory
+            .appendingPathComponent("DomainRuntime", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+            .appendingPathComponent("\(safe)-\(digest)", isDirectory: true)
     }
 
     package var oracleStorageRoot: URL {
@@ -500,7 +477,7 @@ package struct DomainPersistenceCoordinator {
                 guard currentDigest == expectedDigest else {
                     throw DomainPersistenceError.externalDocumentConflict
                 }
-                try atomicWrite(data, to: worker.protectedMutationPolicyURL)
+                try DomainPersistenceLock.atomicWrite(data, to: worker.protectedMutationPolicyURL)
             }
         }
     }
@@ -530,7 +507,7 @@ package struct DomainPersistenceCoordinator {
                 guard currentDigest == expectedDigest else {
                     throw DomainPersistenceError.externalDocumentConflict
                 }
-                try atomicWrite(data, to: worker.protectedMutationJournalURL)
+                try DomainPersistenceLock.atomicWrite(data, to: worker.protectedMutationJournalURL)
             }
         }
     }
@@ -562,7 +539,7 @@ package struct DomainPersistenceCoordinator {
                 guard currentDigest == expectedDigest else {
                     throw DomainPersistenceError.externalDocumentConflict
                 }
-                try atomicWrite(data, to: worker.directSettingsURL)
+                try DomainPersistenceLock.atomicWrite(data, to: worker.directSettingsURL)
             }
         }
     }
@@ -594,7 +571,7 @@ package struct DomainPersistenceCoordinator {
                 guard currentDigest == expectedDigest else {
                     throw DomainPersistenceError.externalDocumentConflict
                 }
-                try atomicWrite(data, to: worker.agentWorktreeBindingsURL)
+                try DomainPersistenceLock.atomicWrite(data, to: worker.agentWorktreeBindingsURL)
             }
         }
     }
@@ -637,7 +614,7 @@ package struct DomainPersistenceCoordinator {
                 guard currentDigest == expectedDigest else {
                     throw DomainPersistenceError.externalDocumentConflict
                 }
-                try atomicWrite(data, to: worker.agentSessionMetadataURL)
+                try DomainPersistenceLock.atomicWrite(data, to: worker.agentSessionMetadataURL)
             }
         }
     }
@@ -1100,7 +1077,6 @@ package struct DomainPersistenceCoordinator {
         workspaceID: UUID,
         fileURL: URL
     ) -> (workspace: DomainPersistenceBootstrap.Workspace, degradedReason: String?)? {
-        do { try validateMetadata(fileURL) } catch { return nil }
         let observedMetadata = fileMetadata(at: fileURL)
         let savedBytes = try? Data(contentsOf: fileURL)
         let savedBytesDigest = savedBytes.map(DomainContentDigest.sha256)
@@ -1288,11 +1264,11 @@ package struct DomainPersistenceCoordinator {
                     ),
                     updatedAt: now
                 )
-                try atomicWrite(
+                try DomainPersistenceLock.atomicWrite(
                     encoder.encode(pending),
                     to: journalURL(document.workspaceID)
                 )
-                try atomicWrite(document.documentBytes, to: document.fileURL)
+                try DomainPersistenceLock.atomicWrite(document.documentBytes, to: document.fileURL)
                 let committed = DomainWorkingJournal(
                     workspaceID: document.workspaceID,
                     fileURL: document.fileURL,
@@ -1313,11 +1289,11 @@ package struct DomainPersistenceCoordinator {
                     operations: [operation],
                     updatedAt: now
                 )
-                try atomicWrite(
+                try DomainPersistenceLock.atomicWrite(
                     encoder.encode(committed),
                     to: journalURL(document.workspaceID)
                 )
-                try atomicWrite(
+                try DomainPersistenceLock.atomicWrite(
                     encoder.encode(DomainSavedRevisionRecord(
                         workspaceID: document.workspaceID,
                         savedRevision: 1,
@@ -1353,16 +1329,16 @@ package struct DomainPersistenceCoordinator {
                     // catalog publication then fails, the still-authoritative catalog tombstone
                     // continues to suppress the workspace; a stale sidecar can never suppress a
                     // successfully recreated identity on the next launch.
-                    try removeMetadata(at: priorDeletionURL)
+                    try fileManager.removeItem(at: priorDeletionURL)
                 }
-                try atomicWrite(encoder.encode(nextCatalog), to: catalogURL)
+                try DomainPersistenceLock.atomicWrite(encoder.encode(nextCatalog), to: catalogURL)
             } catch {
                 // Catalog publication is the create authority point. Roll back the earlier
                 // intent/document artifacts when publication fails in-process; a process crash
                 // is instead recovered from the create-marked journal on the next mutation.
-                try? removeMetadata(at: journalURL(document.workspaceID))
-                try? removeMetadata(at: revisionURL(document.workspaceID))
-                try? removeMetadata(at: document.fileURL)
+                try? fileManager.removeItem(at: journalURL(document.workspaceID))
+                try? fileManager.removeItem(at: revisionURL(document.workspaceID))
+                try? fileManager.removeItem(at: document.fileURL)
                 throw error
             }
             return DomainPersistenceSavedCommit(
@@ -1400,7 +1376,7 @@ package struct DomainPersistenceCoordinator {
                 pendingSave: durable.pendingSave,
                 updatedAt: now
             )
-            try atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
+            try DomainPersistenceLock.atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
             return DomainPersistenceWorkingCommit(journal: journal, catalogRevision: catalogRevision)
         }
     }
@@ -1446,7 +1422,7 @@ package struct DomainPersistenceCoordinator {
                 operations: Self.trimmedOperations(operations, now: now),
                 updatedAt: now
             )
-            try atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
+            try DomainPersistenceLock.atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
             return DomainPersistenceWorkingCommit(journal: journal, catalogRevision: catalogRevision)
         }
     }
@@ -1528,11 +1504,11 @@ package struct DomainPersistenceCoordinator {
                 ),
                 updatedAt: now
             )
-            try atomicWrite(
+            try DomainPersistenceLock.atomicWrite(
                 encoder.encode(pendingJournal),
                 to: journalURL(document.workspaceID)
             )
-            try atomicWrite(document.documentBytes, to: document.fileURL)
+            try DomainPersistenceLock.atomicWrite(document.documentBytes, to: document.fileURL)
             let revision = DomainSavedRevisionRecord(
                 workspaceID: document.workspaceID,
                 savedRevision: cleanRevisions.savedRevision,
@@ -1564,8 +1540,8 @@ package struct DomainPersistenceCoordinator {
             // the pending journal plus document digest, so a post-document sidecar failure must
             // not report a false failed commit to a retrying caller.
             do {
-                try atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
-                try atomicWrite(encoder.encode(revision), to: revisionURL(document.workspaceID))
+                try DomainPersistenceLock.atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
+                try DomainPersistenceLock.atomicWrite(encoder.encode(revision), to: revisionURL(document.workspaceID))
             } catch {
                 // Leave the durable pending journal in place. resolvedPendingSave(_:) presents
                 // and persists the same clean revision on the next load/mutation.
@@ -1625,8 +1601,8 @@ package struct DomainPersistenceCoordinator {
                 operations: Self.trimmedOperations(operations, now: now),
                 updatedAt: now
             )
-            try atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
-            try atomicWrite(
+            try DomainPersistenceLock.atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
+            try DomainPersistenceLock.atomicWrite(
                 encoder.encode(revisionRecord),
                 to: revisionURL(document.workspaceID)
             )
@@ -1679,7 +1655,7 @@ package struct DomainPersistenceCoordinator {
                 operations: Self.trimmedOperations(operations, now: now),
                 updatedAt: now
             )
-            try atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
+            try DomainPersistenceLock.atomicWrite(encoder.encode(journal), to: journalURL(document.workspaceID))
             return DomainPersistenceWorkingCommit(journal: journal, catalogRevision: catalogRevision)
         }
     }
@@ -1733,12 +1709,12 @@ package struct DomainPersistenceCoordinator {
                 )
                 // Catalog deletion is the crash-safe authority point. The sidecar and artifact
                 // cleanup follow while both identity and workspace locks remain held.
-                try atomicWrite(encoder.encode(next), to: catalogURL)
+                try DomainPersistenceLock.atomicWrite(encoder.encode(next), to: catalogURL)
                 var artifactCleanupWarnings = [String]()
                 // The catalog embeds the full tombstone. Its sidecar is a recoverable
                 // convenience and cannot turn an already-authoritative delete into failure.
                 do {
-                    try atomicWrite(
+                    try DomainPersistenceLock.atomicWrite(
                         encoder.encode(tombstone),
                         to: deletionURL(document.workspaceID)
                     )
@@ -1772,7 +1748,7 @@ package struct DomainPersistenceCoordinator {
                         warnings: artifactCleanupWarnings
                     )
                     do {
-                        try atomicWrite(
+                        try DomainPersistenceLock.atomicWrite(
                             encoder.encode(recordedTombstone),
                             to: deletionURL(document.workspaceID)
                         )
@@ -1847,7 +1823,7 @@ package struct DomainPersistenceCoordinator {
     private func removeDeletedArtifact(at url: URL, label: String) -> String? {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         do {
-            try removeMetadata(at: url)
+            try fileManager.removeItem(at: url)
             return nil
         } catch {
             return "\(label): \(error.localizedDescription)"
@@ -2057,7 +2033,7 @@ package struct DomainPersistenceCoordinator {
                     deletions: catalog.deletions ?? [],
                     updatedAt: now
                 )
-                try atomicWrite(
+                try DomainPersistenceLock.atomicWrite(
                     encoder.encode(repairedCatalog),
                     to: catalogURL
                 )
@@ -2103,7 +2079,7 @@ package struct DomainPersistenceCoordinator {
             var artifacts: [RollbackManifest.Artifact] = []
             if let indexBytes = try? Data(contentsOf: indexURL) {
                 let destination = rollbackDirectory.appendingPathComponent("workspacesIndex.json")
-                try atomicWrite(indexBytes, to: destination)
+                try DomainPersistenceLock.atomicWrite(indexBytes, to: destination)
                 artifacts.append(.init(relativePath: "workspacesIndex.json", digest: DomainContentDigest.sha256(indexBytes)))
             }
             for entry in (try? decoder.decode([LegacyWorkspaceIndexEntry].self, from: Data(contentsOf: indexURL))) ?? [] {
@@ -2116,7 +2092,7 @@ package struct DomainPersistenceCoordinator {
                     .appendingPathComponent("workspace.json")
                 guard let bytes = try? Data(contentsOf: url) else { continue }
                 let relative = "workspaces/\(entry.id.uuidString).json"
-                try atomicWrite(bytes, to: rollbackDirectory.appendingPathComponent(relative))
+                try DomainPersistenceLock.atomicWrite(bytes, to: rollbackDirectory.appendingPathComponent(relative))
                 artifacts.append(.init(relativePath: relative, digest: DomainContentDigest.sha256(bytes)))
             }
             if !fileManager.fileExists(atPath: catalogURL.path) {
@@ -2126,12 +2102,12 @@ package struct DomainPersistenceCoordinator {
                     entries: legacyCatalogEntries(),
                     updatedAt: now
                 )
-                try atomicWrite(encoder.encode(catalog), to: catalogURL)
+                try DomainPersistenceLock.atomicWrite(encoder.encode(catalog), to: catalogURL)
             }
             if !configuration.legacyRuntimeDefaults.isEmpty {
                 let defaultsURL = rollbackDirectory.appendingPathComponent("legacy-runtime-defaults.json")
                 let defaultsBytes = try encoder.encode(configuration.legacyRuntimeDefaults)
-                try atomicWrite(defaultsBytes, to: defaultsURL)
+                try DomainPersistenceLock.atomicWrite(defaultsBytes, to: defaultsURL)
                 artifacts.append(.init(
                     relativePath: "legacy-runtime-defaults.json",
                     digest: DomainContentDigest.sha256(defaultsBytes)
@@ -2146,7 +2122,7 @@ package struct DomainPersistenceCoordinator {
                 artifacts: artifacts,
                 legacyDefaultKeys: configuration.legacyRuntimeDefaults.keys.sorted()
             )
-            try atomicWrite(
+            try DomainPersistenceLock.atomicWrite(
                 encoder.encode(manifest),
                 to: rollbackDirectory.appendingPathComponent("manifest.json")
             )
@@ -2157,7 +2133,7 @@ package struct DomainPersistenceCoordinator {
                 rollbackDirectoryName: rollbackName,
                 migratedAt: now
             )
-            try atomicWrite(encoder.encode(policy), to: policyURL)
+            try DomainPersistenceLock.atomicWrite(encoder.encode(policy), to: policyURL)
         }
     }
 

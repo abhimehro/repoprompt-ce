@@ -10,14 +10,13 @@ actor DevinModelDiscoveryService {
         case discovered(modelCount: Int)
         case noModelsAdvertised
         case failed(message: String)
-        case cancelled
 
         /// Transient failures and "not installed" stay uncached so Settings can retry.
         fileprivate var isReusable: Bool {
             switch self {
             case .discovered, .noModelsAdvertised:
                 true
-            case .notInstalled, .failed, .cancelled:
+            case .notInstalled, .failed:
                 false
             }
         }
@@ -76,7 +75,7 @@ actor DevinModelDiscoveryService {
                     try Task.checkCancellation()
                     return .discovered(modelCount: count)
                 } catch is CancellationError {
-                    return .cancelled
+                    return .failed(message: "cancelled")
                 } catch {
                     return .failed(message: error.localizedDescription)
                 }

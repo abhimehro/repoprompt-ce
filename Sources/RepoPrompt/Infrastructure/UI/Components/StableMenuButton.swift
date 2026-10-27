@@ -63,15 +63,6 @@ struct StableMenuButton<Label: View>: View {
 enum StableMenuItemStyle: Equatable {
     case normal
     case warning
-    case tinted(NSColor)
-
-    var foregroundColor: NSColor? {
-        switch self {
-        case .normal: nil
-        case .warning: .systemOrange
-        case let .tinted(color): color
-        }
-    }
 }
 
 struct StableMenuItem {
@@ -247,8 +238,8 @@ struct StableMenuItem {
         else {
             return
         }
-        if let color = style.foregroundColor,
-           let warningImage = image.withSymbolConfiguration(.init(paletteColors: [color]))
+        if style == .warning,
+           let warningImage = image.withSymbolConfiguration(.init(paletteColors: [.systemOrange]))
         {
             warningImage.isTemplate = false
             item.image = warningImage
@@ -262,8 +253,8 @@ struct StableMenuItem {
         var attributes: [NSAttributedString.Key: Any] = [
             .font: fontPreset.nsFont(sizeAtNormal: CGFloat(NSFont.systemFontSize), rounded: false)
         ]
-        if let color = style.foregroundColor {
-            attributes[.foregroundColor] = color
+        if style == .warning {
+            attributes[.foregroundColor] = NSColor.systemOrange
         }
         item.attributedTitle = NSAttributedString(string: title, attributes: attributes)
     }
