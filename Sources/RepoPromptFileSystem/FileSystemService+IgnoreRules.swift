@@ -66,7 +66,7 @@ extension FileSystemService {
                 cacheIgnoreRules(ignoreRules, for: "")
                 watcherEarlyFilter.install(ignoreRules.snapshot(), generation: earlyFilterGeneration)
             } catch {
-                print("Failed to rebuild root ignore rules: \(error)")
+                fileSystemDebugLog("Failed to rebuild root ignore rules: \(error)")
             }
             return
         }
