@@ -362,7 +362,7 @@ package extension FileSystemService {
             errno = 0 // Reset errno before each readdir call
             guard let direntPtr = readdir(dir) else {
                 if errno != 0 {
-                    print("Error reading directory entry for path \(path): \(String(cString: strerror(errno)))")
+                    Self.fileSystemDebugLog("Error reading directory entry for path \(path): \(String(cString: strerror(errno)))")
                 }
                 break // Exit loop on error or end of directory
             }

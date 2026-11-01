@@ -315,11 +315,15 @@ package actor FileSystemService {
         package static var enableDebugLogging = false
     #endif
 
-    package func fileSystemDebugLog(_ message: @autoclosure () -> String) {
+    package static func fileSystemDebugLog(_ message: @autoclosure () -> String) {
         #if DEBUG
-            guard Self.enableDebugLogging else { return }
+            guard enableDebugLogging else { return }
             print(message())
         #endif
+    }
+
+    package func fileSystemDebugLog(_ message: @autoclosure () -> String) {
+        Self.fileSystemDebugLog(message())
     }
 
     @discardableResult
