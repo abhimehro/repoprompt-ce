@@ -21,69 +21,34 @@ final class WorkspaceRootNamespaceManifestStoreTests: XCTestCase {
         XCTAssertEqual(format.ordering(lhs, rhs), .same)
     }
 
-    func testSpillFormatOrderingAscendingPairs() {
+    func testSpillFormatOrderingAscendingAndDescendingPairs() {
         let format = WorkspaceRootNamespaceSpillFormat()
-        let recordA = WorkspaceRootNamespaceRecord(
-            relativePath: "a",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordB = WorkspaceRootNamespaceRecord(
-            relativePath: "b",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordAA = WorkspaceRootNamespaceRecord(
-            relativePath: "aa",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordPrefix = WorkspaceRootNamespaceRecord(
-            relativePath: "dir/file.txt",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordNext = WorkspaceRootNamespaceRecord(
-            relativePath: "dir/file2.txt",
-            kind: .file,
-            isSymbolicLink: false
-        )
+        func makeRecord(_ path: String) -> WorkspaceRootNamespaceRecord {
+            WorkspaceRootNamespaceRecord(relativePath: path, kind: .file, isSymbolicLink: false)
+        }
 
-        XCTAssertEqual(format.ordering(recordA, recordB), .ascending)
-        XCTAssertEqual(format.ordering(recordA, recordAA), .ascending)
-        XCTAssertEqual(format.ordering(recordPrefix, recordNext), .ascending)
-    }
+        let testCases: [(earlier: String, later: String)] = [
+            ("a", "b"),
+            ("a", "aa"),
+            ("dir/file.txt", "dir/file2.txt"),
+            ("alpha", "beta"),
+            ("folder/sub/a", "folder/sub/z"),
+        ]
 
-    func testSpillFormatOrderingDescendingPairs() {
-        let format = WorkspaceRootNamespaceSpillFormat()
-        let recordA = WorkspaceRootNamespaceRecord(
-            relativePath: "a",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordB = WorkspaceRootNamespaceRecord(
-            relativePath: "b",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordAA = WorkspaceRootNamespaceRecord(
-            relativePath: "aa",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordPrefix = WorkspaceRootNamespaceRecord(
-            relativePath: "dir/file.txt",
-            kind: .file,
-            isSymbolicLink: false
-        )
-        let recordNext = WorkspaceRootNamespaceRecord(
-            relativePath: "dir/file2.txt",
-            kind: .file,
-            isSymbolicLink: false
-        )
+        for (earlierPath, laterPath) in testCases {
+            let earlier = makeRecord(earlierPath)
+            let later = makeRecord(laterPath)
 
-        XCTAssertEqual(format.ordering(recordB, recordA), .descending)
-        XCTAssertEqual(format.ordering(recordAA, recordA), .descending)
-        XCTAssertEqual(format.ordering(recordNext, recordPrefix), .descending)
+            XCTAssertEqual(
+                format.ordering(earlier, later),
+                .ascending,
+                "Expected '\(earlierPath)' < '\(laterPath)' to be ascending"
+            )
+            XCTAssertEqual(
+                format.ordering(later, earlier),
+                .descending,
+                "Expected '\(laterPath)' > '\(earlierPath)' to be descending"
+            )
+        }
     }
 }
