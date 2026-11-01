@@ -2202,13 +2202,18 @@ actor GitService {
     func inspectMergeState(at repoURL: URL) async throws -> GitWorktreeMergeState {
         let layout = try requireLayout(for: repoURL)
         let mergeHeadURL = layout.gitDir.appendingPathComponent("MERGE_HEAD")
-        let mergeHead: String? = if FileManager.default.fileExists(atPath: mergeHeadURL.path) {
-            try String(contentsOf: mergeHeadURL, encoding: .utf8)
+        // Offload synchronous file I/O to avoid blocking the cooperative thread pool,
+        // running concurrently with unmerged conflict file detection.
+        let mergeHeadTask = Task.detached(priority: .userInitiated) { () -> String? in
+            guard FileManager.default.fileExists(atPath: mergeHeadURL.path) else {
+                return nil
+            }
+            return try String(contentsOf: mergeHeadURL, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            nil
         }
-        let conflicts = try await getUnmergedConflictFiles(at: repoURL)
+        async let conflictsTask = getUnmergedConflictFiles(at: repoURL)
+        let mergeHead = try await mergeHeadTask.value
+        let conflicts = try await conflictsTask
         return GitWorktreeMergeState(
             inProgress: mergeHead?.isEmpty == false,
             mergeHead: mergeHead?.isEmpty == false ? mergeHead : nil,
