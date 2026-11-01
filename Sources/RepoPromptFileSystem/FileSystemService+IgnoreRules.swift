@@ -45,7 +45,7 @@ extension FileSystemService {
                 cacheIgnoreRules(ignoreRules, for: "")
                 watcherEarlyFilter.install(ignoreRules.snapshot(), generation: earlyFilterGeneration)
             } catch {
-                print("Failed to rebuild ignore rules: \(error)")
+                fileSystemDebugLog("Failed to rebuild ignore rules: \(error)")
             }
             return
         }
@@ -66,7 +66,7 @@ extension FileSystemService {
                 cacheIgnoreRules(ignoreRules, for: "")
                 watcherEarlyFilter.install(ignoreRules.snapshot(), generation: earlyFilterGeneration)
             } catch {
-                print("Failed to rebuild root ignore rules: \(error)")
+                fileSystemDebugLog("Failed to rebuild root ignore rules: \(error)")
             }
             return
         }
@@ -448,7 +448,7 @@ extension FileSystemService {
                 if ignoreRulePolicy.enforcesGitIgnoreFloor {
                     throw error
                 }
-                print("Failed to compile .gitignore at \(gitignoreURL.path): \(error)")
+                fileSystemDebugLog("Failed to compile .gitignore at \(gitignoreURL.path): \(error)")
             }
         }
 
@@ -474,7 +474,7 @@ extension FileSystemService {
                 )
                 effectiveRules.addCompiledLayer(compiled, authority: .secondary)
             } catch {
-                print("Failed to compile .repo_ignore at \(repoIgnoreURL.path): \(error)")
+                fileSystemDebugLog("Failed to compile .repo_ignore at \(repoIgnoreURL.path): \(error)")
             }
         }
 
@@ -500,7 +500,7 @@ extension FileSystemService {
                 )
                 effectiveRules.addCompiledLayer(compiled, authority: .secondary)
             } catch {
-                print("Failed to compile .cursorignore at \(cursorignoreURL.path): \(error)")
+                fileSystemDebugLog("Failed to compile .cursorignore at \(cursorignoreURL.path): \(error)")
             }
         }
 
