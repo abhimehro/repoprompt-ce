@@ -410,7 +410,17 @@ package actor IgnoreRulesManager {
                 return str
             }
         #endif
-        return try String(contentsOfFile: path, encoding: .utf8)
+        // Dispatch blocking file I/O to a background queue to avoid blocking the Swift concurrency cooperative pool.
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    let content = try String(contentsOfFile: path, encoding: .utf8)
+                    continuation.resume(returning: content)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private func fetchGlobalDefaults() -> String {
