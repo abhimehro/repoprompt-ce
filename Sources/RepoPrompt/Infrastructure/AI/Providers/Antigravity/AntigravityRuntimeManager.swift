@@ -76,7 +76,43 @@ actor AntigravityRuntimeManager {
         return (directory.appendingPathComponent(release.executable).path, directory.appendingPathComponent(release.harness).path)
     }
 
+    static func validateArchiveEntries(at archive: URL, targetDirectory: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-Z", "-1", archive.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw AntigravityRuntimeError.invalidArchive }
+        guard let listing = String(data: data, encoding: .utf8) else { throw AntigravityRuntimeError.invalidArchive }
+
+        let destinationPath = targetDirectory.standardizedFileURL.path
+        let destinationPrefix = destinationPath.hasSuffix("/") ? destinationPath : destinationPath + "/"
+        let lines = listing.components(separatedBy: .newlines)
+        for line in lines {
+            let entry = line.trimmingCharacters(in: .whitespaces)
+            if entry.isEmpty { continue }
+            if entry.hasPrefix("/") || entry.hasPrefix("~") {
+                throw AntigravityRuntimeError.invalidArchive
+            }
+            let components = entry.split(separator: "/")
+            for component in components {
+                if component == ".." {
+                    throw AntigravityRuntimeError.invalidArchive
+                }
+            }
+            let resolvedPath = targetDirectory.appendingPathComponent(entry).standardizedFileURL.path
+            if !resolvedPath.hasPrefix(destinationPrefix), resolvedPath != destinationPath {
+                throw AntigravityRuntimeError.invalidArchive
+            }
+        }
+    }
+
     private static func unzip(_ archive: URL, into directory: URL) throws {
+        try validateArchiveEntries(at: archive, targetDirectory: directory)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
         process.arguments = ["-q", "-o", archive.path, "-d", directory.path]
