@@ -446,6 +446,45 @@ final class PresetJSONOnlyPersistenceTests: XCTestCase {
         XCTAssertEqual(store.modelLoadWarning, nil)
     }
 
+    @MainActor
+    func testChatPresetManagerValidateModelReference() throws {
+        let temp = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let store = PresetFileStore(
+            workflowFileURL: temp.appendingPathComponent("Presets/workflowPresets.json"),
+            modelFileURL: temp.appendingPathComponent("Presets/modelPresets.json")
+        )
+
+        let modelManager = ModelPresetsManager(presetFileStore: store)
+        let chatManager = ChatPresetManager(presetFileStore: store, modelPresetsManager: modelManager)
+
+        // 1. Nil modelPresetName -> true (default model)
+        let nilModelPreset = ChatPreset(name: "Nil Model", mode: .chat, modelPresetName: nil)
+        XCTAssertTrue(chatManager.validateModelReference(for: nilModelPreset))
+
+        // 2. Empty string modelPresetName -> false
+        let emptyModelPreset = ChatPreset(name: "Empty Model", mode: .chat, modelPresetName: "")
+        XCTAssertFalse(chatManager.validateModelReference(for: emptyModelPreset))
+
+        // 3. Known AIModel rawValue/identifier -> true
+        let knownAIModelPreset = ChatPreset(name: "AIModel Preset", mode: .chat, modelPresetName: "claude-3-5-sonnet")
+        XCTAssertTrue(chatManager.validateModelReference(for: knownAIModelPreset))
+
+        // 4. Unknown model preset name -> false
+        let unknownModelPreset = ChatPreset(name: "Unknown Model", mode: .chat, modelPresetName: "nonexistent-model-preset-xyz")
+        XCTAssertFalse(chatManager.validateModelReference(for: unknownModelPreset))
+
+        // 5. Existing custom ModelPreset added to ModelPresetsManager -> true
+        let customModelPreset = ModelPreset(
+            name: "My Custom Model",
+            modelStrings: ["claude-3-5-sonnet"]
+        )
+        modelManager.addPreset(customModelPreset)
+
+        let customChatPreset = ChatPreset(name: "Chat With Custom", mode: .chat, modelPresetName: "My Custom Model")
+        XCTAssertTrue(chatManager.validateModelReference(for: customChatPreset))
+    }
+
     private func legacyModelDocument(
         presetID: UUID,
         modelString: String,
