@@ -75,6 +75,7 @@ struct AgentWorkflowPill: View {
                 .buttonStyle(.plain)
                 .padding(.trailing, closeButtonTrailing)
                 .hoverTooltip("Clear workflow", .top)
+                .accessibilityLabel("Clear workflow")
             }
         }
         .background(.ultraThinMaterial)
@@ -89,6 +90,7 @@ struct AgentWorkflowPill: View {
                 )
         )
         .hoverTooltip("Wrap your message with a workflow template", .top)
+        .accessibilityLabel("Wrap your message with a workflow template")
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             AgentWorkflowsPopoverView(
                 statusPillsUI: statusPillsUI,
