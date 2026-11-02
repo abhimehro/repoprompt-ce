@@ -143,7 +143,7 @@ jobs:
       # Pin bc0d8b91: fixes spurious skill:github-pr-comment prepend in earlier tags.
       - id: refactor-attempt-1
         continue-on-error: true
-        uses: codescene-oss/pr-refactoring-agent@abd82295d700c9e3b51f2692ac73710e00cdb601 # v1.1.2
+        uses: codescene-oss/pr-refactoring-agent@449879a10a469bf80a9bf202e64ffc860679d2b4 # v1.1.9
         env:
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
@@ -172,7 +172,7 @@ jobs:
       - id: refactor-attempt-2
         if: steps.refactor-attempt-1.outcome == 'failure'
         continue-on-error: true
-        uses: codescene-oss/pr-refactoring-agent@abd82295d700c9e3b51f2692ac73710e00cdb601 # v1.1.2
+        uses: codescene-oss/pr-refactoring-agent@449879a10a469bf80a9bf202e64ffc860679d2b4 # v1.1.9
         env:
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ steps.providers.outputs.enable_google == 'true' && secrets.GOOGLE_API_KEY || '' }}
