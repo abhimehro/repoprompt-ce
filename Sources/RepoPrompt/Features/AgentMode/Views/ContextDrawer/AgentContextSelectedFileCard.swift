@@ -280,11 +280,13 @@ struct AgentContextSelectedFileCard: View {
                 .fontWeight(.medium)
                 .foregroundColor(.primary)
                 .hoverTooltip(AgentContextSelectedFileCardMetricRowPresentation.tokenTooltip(for: metrics))
+                .accessibilityLabel(AgentContextSelectedFileCardMetricRowPresentation.tokenTooltip(for: metrics))
 
             metricsSeparator
 
             Text(percentText)
                 .hoverTooltip("\(percentText) of selected context")
+                .accessibilityLabel("\(percentText) of selected context")
 
             if row.kind != .codemap {
                 if let lineCount = metrics.lineCount {
@@ -292,6 +294,7 @@ struct AgentContextSelectedFileCard: View {
 
                     Text("\(lineCount)")
                         .hoverTooltip("\(lineCount) \(lineCount == 1 ? "line" : "lines")")
+                        .accessibilityLabel("\(lineCount) \(lineCount == 1 ? "line" : "lines")")
                 }
 
                 if let parentPathDisplay {
@@ -302,6 +305,7 @@ struct AgentContextSelectedFileCard: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .hoverTooltip(pathTooltip)
+                        .accessibilityLabel(pathTooltip)
                 }
             }
         }
