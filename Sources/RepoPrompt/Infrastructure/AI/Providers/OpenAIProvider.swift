@@ -546,7 +546,8 @@ class OpenAIProvider: AIProvider {
             let response = try await callAppropriateCompletion(for: model, message: testMessage, nil)
             if response.lowercased().contains("hello") { return true }
         } catch {
-            print("Initial model \(model.displayName) failed in testAPIKey: \(error)")
+            // SECURITY: Sanitize error output to prevent leaking credentials or request internals
+            print("Initial model \(model.displayName) failed in testAPIKey: \(error.asFriendlyString())")
         }
 
         // Fallback chain: gpt41 -> gpt5Low
@@ -557,7 +558,8 @@ class OpenAIProvider: AIProvider {
                 let response = try await callAppropriateCompletion(for: fallback, message: testMessage, nil)
                 if response.lowercased().contains("hello") { return true }
             } catch {
-                print("Fallback model \(fallback.displayName) failed in testAPIKey: \(error)")
+                // SECURITY: Sanitize error output to prevent leaking credentials or request internals
+                print("Fallback model \(fallback.displayName) failed in testAPIKey: \(error.asFriendlyString())")
             }
         }
 
