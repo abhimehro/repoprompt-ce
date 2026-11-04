@@ -168,7 +168,7 @@ if newest.get("enclosureSha256") != digest(enclosure):
 PYTHON
 }
 
-file_size() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1"; }
+file_size() { wc -c < "$1" | tr -d ' '; }
 verify_expected_bytes() {
     local downloaded="$1" name="$2" expected_size="$3" expected_sha="${4:-}"
     [[ -f "$downloaded" && ! -L "$downloaded" ]] ||
