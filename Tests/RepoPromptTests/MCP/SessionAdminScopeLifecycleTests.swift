@@ -8597,6 +8597,9 @@ final class SessionAdminInventoryReadTests: XCTestCase {
                         && manager.preparedOversightWindows[targetID] == nil
                         && manager.retiringPreparedOversightWindows[targetID] == nil
                 }
+                try await AsyncTestWait.waitUntil("controller shutdown finishes", timeout: 5) {
+                    await controller.shutdownCount > 0
+                }
                 let stops = await controller.shutdownCount
                 XCTAssertGreaterThan(stops, 0)
                 XCTAssertFalse(decisions.contains { $0.contains("target_idle_with_new_activity") })
