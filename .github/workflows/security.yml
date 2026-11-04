@@ -39,7 +39,7 @@ jobs:
           # not committed). `swift build` compiles the package's products, which
           # is what CodeQL needs to extract.
           - language: swift
-            runs-on: macos-26
+            runs-on: macos-latest
             build-mode: manual
           # Python tooling: conductor daemon and Scripts/ automation.
           - language: python
