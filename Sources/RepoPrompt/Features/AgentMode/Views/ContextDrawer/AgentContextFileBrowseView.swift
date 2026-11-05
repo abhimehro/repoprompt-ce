@@ -76,6 +76,7 @@ struct AgentContextFileBrowseView: View {
             }
             .buttonStyle(CustomButtonStyle(verticalPadding: 4, horizontalPadding: 9))
             .hoverTooltip("Return to selection review")
+            .accessibilityLabel("Return to selection review")
         }
     }
 
@@ -108,6 +109,7 @@ struct AgentContextFileBrowseView: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Clear search")
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10)
@@ -385,6 +387,7 @@ struct AgentContextFileBrowseView: View {
             return .handled
         }
         .hoverTooltip(tooltip)
+        .accessibilityLabel(tooltip)
         .onAppear {
             model.rowBecameVisible(nodeID)
         }
@@ -528,6 +531,7 @@ struct AgentContextFileBrowseView: View {
             return .handled
         }
         .hoverTooltip(file.projectedDisplayPath)
+        .accessibilityLabel(file.projectedDisplayPath)
         .onAppear {
             model.rowBecameVisible(nodeID)
         }
@@ -615,6 +619,11 @@ struct AgentContextFileBrowseView: View {
             .opacity(isCodemapMode ? 0.5 : 1)
             .fixedSize()
             .hoverTooltip(
+                isCodemapMode
+                    ? "Estimated full-file cost; codemap cost is available after selection"
+                    : "Approximate full-file token cost"
+            )
+            .accessibilityLabel(
                 isCodemapMode
                     ? "Estimated full-file cost; codemap cost is available after selection"
                     : "Approximate full-file token cost"
