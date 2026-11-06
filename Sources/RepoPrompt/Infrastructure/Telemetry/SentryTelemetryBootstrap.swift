@@ -566,7 +566,16 @@ enum SentryTelemetryBootstrap {
         "authorization",
         "password",
         "secret",
-        "token"
+        "token",
+        "credential",
+        "private_key",
+        "privatekey",
+        "access_token",
+        "accesstoken",
+        "refresh_token",
+        "refreshtoken",
+        "session_token",
+        "sessiontoken"
     ]
 
     private static func normalizedTelemetryKey(_ key: String) -> String {
@@ -591,12 +600,22 @@ enum SentryTelemetryBootstrap {
             options: .regularExpression
         )
         redacted = redacted.replacingOccurrences(
-            of: #"(?i)(api[_-]?key|token|secret|password|authorization)[=: ]+(?:(?:bearer|basic|token|dsn)\s+)?[^\s,;]+"#,
+            of: #"(?i)(api[_-]?key|token|secret|password|authorization|credential|private[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token)[=: ]+(?:(?:bearer|basic|token|dsn)\s+)?[^\s,;]+"#,
             with: "$1=[redacted]",
             options: .regularExpression
         )
         redacted = redacted.replacingOccurrences(
             of: #"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"#,
+            with: "[redacted]",
+            options: .regularExpression
+        )
+        redacted = redacted.replacingOccurrences(
+            of: #"\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b"#,
+            with: "[redacted]",
+            options: .regularExpression
+        )
+        redacted = redacted.replacingOccurrences(
+            of: #"\bsk-[a-zA-Z0-9_-]{16,}\b"#,
             with: "[redacted]",
             options: .regularExpression
         )
