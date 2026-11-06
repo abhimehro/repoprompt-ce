@@ -108,6 +108,7 @@ struct AgentContextFileBrowseView: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Clear search")
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10)

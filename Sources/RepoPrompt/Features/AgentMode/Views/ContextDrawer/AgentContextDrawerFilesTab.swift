@@ -346,6 +346,7 @@ struct AgentContextDrawerFilesTab: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Clear filter")
+                .accessibilityLabel("Clear filter")
             }
         }
         .padding(.horizontal, 10)
