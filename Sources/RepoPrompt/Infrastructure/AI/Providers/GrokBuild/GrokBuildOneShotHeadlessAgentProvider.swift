@@ -78,9 +78,9 @@ final class GrokBuildOneShotHeadlessAgentProvider: HeadlessAgentProvider {
     }
 
     private func runOneShot(_ message: AgentMessage) async throws -> GrokBuildOneShotCompletion {
-        let selection = try await Self.resolveModelSelection(
+        let selection = try Self.resolveModelSelection(
             modelString: config.modelString,
-            snapshot: AgentACPModelRegistry.shared.resolvedSnapshotAfterWarmingStandardStore(for: .grokBuild)
+            snapshot: AgentACPModelRegistry.shared.resolvedSnapshot(for: .grokBuild)
         )
         try Task.checkCancellation()
 

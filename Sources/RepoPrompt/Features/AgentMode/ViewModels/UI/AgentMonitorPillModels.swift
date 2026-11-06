@@ -956,8 +956,6 @@ enum AgentMonitorAccessibilityLocationPhrase {
 /// Workspace/worktree labels here are **UI only**; they are never placed in agent-facing snapshots,
 /// inventories, or prompts.
 struct AgentMonitorPillProps: Equatable {
-    /// Explicit, revocable, process-local user policy; independent of management grants.
-    var readOnlyAutoApprovalEnabled = false
     struct Outbound: Equatable, Identifiable {
         let linkID: UUID
         let generation: UInt64
@@ -1325,8 +1323,8 @@ struct AgentMonitorPillProps: Equatable {
     /// The observing session this projection belongs to, or `nil` while the tab has no durable
     /// top-level binding.
     let sessionID: UUID?
-    /// The exact current incarnation, including eligibility-only props for a session with no links.
-    /// `nil` means no current incarnation could be resolved. An endpoint is an address, not authority.
+    /// The exact incarnation this projection was published to, or `nil` for a locally synthesized
+    /// placeholder that carries no authority state.
     ///
     /// Notices are recorded per incarnation, so dismissing them needs the identity rather than the
     /// session UUID: a duplicate live incarnation of the same UUID must not clear another's notices.
@@ -1372,8 +1370,6 @@ struct AgentMonitorPillProps: Equatable {
     /// transitions that move no link, so baking it into stored props would repaint the sidebar and
     /// window title for presentation-only churn.
     var pendingUpdates: AgentMonitorPendingUpdates?
-    /// UI-only exact-incarnation consent state, overlaid by the current tab. Not link authority.
-    var overseerBootstrapState: AgentSessionOverseerBootstrapState?
     /// Process-wide durable-oversight state, overlaid by the owning window rather than published by
     /// the bridge's per-endpoint projection.
     ///
@@ -1397,7 +1393,6 @@ struct AgentMonitorPillProps: Equatable {
         periodicIdleWakeEnabled: Bool = false,
         periodicIdleWakeIntervalSeconds: Int = AgentSessionLinkPeriodicWakeInterval.defaultSeconds,
         pendingUpdates: AgentMonitorPendingUpdates? = nil,
-        overseerBootstrapState: AgentSessionOverseerBootstrapState? = nil,
         persistence: AgentSessionOversightPersistencePresentation = AgentSessionOversightPersistencePresentation.noDurableLayer
     ) {
         self.sessionID = sessionID
@@ -1414,7 +1409,6 @@ struct AgentMonitorPillProps: Equatable {
         self.periodicIdleWakeEnabled = periodicIdleWakeEnabled
         self.periodicIdleWakeIntervalSeconds = periodicIdleWakeIntervalSeconds
         self.pendingUpdates = pendingUpdates
-        self.overseerBootstrapState = overseerBootstrapState
         self.persistence = persistence
     }
 
@@ -1448,7 +1442,6 @@ struct AgentMonitorPillProps: Equatable {
             periodicIdleWakeEnabled: periodicIdleWakeEnabled,
             periodicIdleWakeIntervalSeconds: periodicIdleWakeIntervalSeconds,
             pendingUpdates: pendingUpdates,
-            overseerBootstrapState: overseerBootstrapState,
             persistence: persistence
         )
     }
@@ -1479,7 +1472,6 @@ struct AgentMonitorPillProps: Equatable {
             periodicIdleWakeEnabled: periodicIdleWakeEnabled,
             periodicIdleWakeIntervalSeconds: periodicIdleWakeIntervalSeconds,
             pendingUpdates: pendingUpdates,
-            overseerBootstrapState: overseerBootstrapState,
             persistence: presentation
         )
     }
@@ -1582,52 +1574,6 @@ enum AgentMonitorNoticeFormatter {
     }
 }
 
-// MARK: - Overseer opt-in presentation
-
-/// Popover-local feedback, never activation authority. Every completion belongs to one request on
-/// one endpoint; a rebind retires it even if the async operation itself has already committed.
-struct AgentMonitorOverseerEnableState: Equatable {
-    struct Request: Equatable {
-        let endpoint: DomainAgentSessionLinkEndpointIdentity
-        let token: UUID
-    }
-
-    private(set) var endpoint: DomainAgentSessionLinkEndpointIdentity?
-    private(set) var request: Request?
-    private(set) var failureMessage: String?
-
-    func isBusy(for endpoint: DomainAgentSessionLinkEndpointIdentity?) -> Bool {
-        self.endpoint == endpoint && request != nil
-    }
-
-    func failure(for endpoint: DomainAgentSessionLinkEndpointIdentity?) -> String? {
-        self.endpoint == endpoint ? failureMessage : nil
-    }
-
-    mutating func rebind(to endpoint: DomainAgentSessionLinkEndpointIdentity?) {
-        guard self.endpoint != endpoint else { return }
-        self.endpoint = endpoint
-        request = nil
-        failureMessage = nil
-    }
-
-    mutating func begin(for endpoint: DomainAgentSessionLinkEndpointIdentity) -> Request? {
-        rebind(to: endpoint)
-        guard request == nil else { return nil }
-        let request = Request(endpoint: endpoint, token: UUID())
-        self.request = request
-        failureMessage = nil
-        return request
-    }
-
-    mutating func complete(_ request: Request, enabled: Bool) {
-        // Qualify all completion writes, including clearing busy state, against the live owner.
-        guard endpoint == request.endpoint, self.request == request else { return }
-        self.request = nil
-        failureMessage = enabled ? nil : "Could not enable overseer mode. The session changed or agent_session_link is disabled; reopen this dashboard and try again."
-    }
-}
-
 // MARK: - Resolved preview
 
 /// Presentation only: readiness and explicit retry re-resolve unchanged input; Add still authorizes.
@@ -1723,13 +1669,13 @@ enum AgentSessionOversightPersistenceCopy {
     static let loading = "Saved oversight links are still loading."
     static let suppressedLaunch = "Saved oversight links are unavailable in this launch mode."
     static let autoRestoreDisabled = "Saved oversight links will remain dormant while window restoration is turned off."
-    static let futureSchema = "Saved continuity uses a newer format and was preserved. Current approved links still work; use a compatible version to recover those saved records."
-    static let unreadable = "Saved link continuity could not open. Existing data is preserved and current approved links still work. Check local storage permissions and disk space, then retry saving."
-    static let quarantined = "Legacy link data could not be decoded and remains preserved for recovery; no unknown authority was activated."
+    static let futureSchema = "Saved oversight links were created by a newer RepoPrompt version. The file was preserved, so oversight can’t be changed in this version."
+    static let unreadable = "RepoPrompt couldn’t read or back up saved oversight links. The file was preserved, so oversight can’t be changed."
+    static let quarantined = "RepoPrompt couldn’t read saved oversight links. It backed up the file and started with no saved links."
     static let terminalRestorationSummary = "Some saved oversight links couldn’t be restored and were removed."
-    static let addWriteFailed = "Live oversight and continuity saving have separate results. This change is not saved; check disk space and storage permissions, then retry saving."
+    static let addWriteFailed = "Oversight couldn’t be saved, so it wasn’t started. Check disk space and Application Support permissions, then try again."
     static let addCompensationFailed = "Oversight didn’t start, and RepoPrompt couldn’t clear its saved request. It won’t retry again this launch; check disk space and permissions before relaunching."
-    static let stopWriteFailed = "Saved link removal is pending or failed. The live unlink result is separate; check disk space and storage permissions, then retry saving."
+    static let stopWriteFailed = "Oversight couldn’t be removed from saved state, so the link is still active. Check disk space and Application Support permissions, then try again."
     static let automaticCleanupFailed = "Oversight ended, but RepoPrompt couldn’t update saved oversight links. It may be restored after relaunch."
     static let shutdownBeforeInsert = "RepoPrompt is shutting down, so oversight wasn’t changed."
     static let shutdownAfterInsert = "RepoPrompt is shutting down. Oversight wasn’t started, but its saved request can be reconsidered next launch."
@@ -1774,9 +1720,7 @@ struct AgentSessionOversightPersistencePresentation: Equatable {
         case dormant
         /// Deterministic or persistence-suppressed launch: no production file I/O at all.
         case suppressed
-        /// Live changes are usable while their continuity transactions are queued.
-        case saving
-        /// Continuity failed; live user decisions remain usable.
+        /// The file was preserved and mutation is refused. Carries the exact user-facing reason.
         case blocked(String)
     }
 
@@ -1809,21 +1753,25 @@ struct AgentSessionOversightPersistencePresentation: Equatable {
 
     /// Why Add must stay disabled for persistence reasons, or `nil`.
     ///
-    /// Continuity diagnostics never override actual caller/endpoint eligibility.
+    /// Composed ahead of live endpoint eligibility: a session that is perfectly eligible still cannot
+    /// be granted oversight while the durable record cannot be written.
     var addBlockerMessage: String? {
-        nil // Continuity cannot veto an explicit current-session user decision.
+        switch availability {
+        case .loading:
+            AgentSessionOversightPersistenceCopy.loading
+        case .ready, .dormant:
+            nil
+        case .suppressed:
+            AgentSessionOversightPersistenceCopy.suppressedLaunch
+        case let .blocked(message):
+            message
+        }
     }
 
     /// Informational line rendered even when Add is permitted.
     var noticeMessage: String? {
-        switch availability {
-        case .loading: "Saved link continuity is opening; new explicit live links remain usable."
-        case .ready: nil
-        case .dormant: AgentSessionOversightPersistenceCopy.autoRestoreDisabled
-        case .suppressed: "Continuity saving is disabled for this launch; live links are process-local."
-        case .saving: "Live changes apply now; continuity saving is pending."
-        case let .blocked(message): message + " New explicit live links remain usable; saving will retry."
-        }
+        guard case .dormant = availability else { return nil }
+        return AgentSessionOversightPersistenceCopy.autoRestoreDisabled
     }
 
     /// Appends a warning under the cap, collapsing an existing entry with the same identity.

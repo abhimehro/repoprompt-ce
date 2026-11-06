@@ -154,7 +154,5 @@ package struct WorkspaceRootValidatedCatalogProjection {
 package enum WorkspaceGitignorePolicyIdentity: String, Hashable {
     case gitIgnoreFloorV3 = "mandatory-gitignore-floor-reachable-controls-v3"
 
-    case gitIgnoreFloorV4 = "mandatory-gitignore-floor-repository-excludes-v4"
-
-    package static let current = WorkspaceGitignorePolicyIdentity.gitIgnoreFloorV4
+    package static let current = WorkspaceGitignorePolicyIdentity.gitIgnoreFloorV3
 }

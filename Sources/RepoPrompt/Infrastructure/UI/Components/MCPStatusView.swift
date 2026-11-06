@@ -394,22 +394,18 @@ struct MCPStatusView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            Text("Saved client names no longer skip approval. Names are self-reported, not verified identities.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            // Preserved legacy records; these do not grant admission.
+            // Always-allowed clients list
             let allowedClients = server.dashboard?.alwaysAllowedClients ?? []
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Legacy Client Names (Inactive)")
+                Text("Trusted Clients")
                     .font(.subheadline.weight(.medium))
 
                 if allowedClients.isEmpty {
                     HStack {
                         Image(systemName: "person.crop.circle.badge.questionmark")
                             .foregroundColor(.secondary)
-                        Text("No saved client names")
+                        Text("No clients in the persistent allow-list")
                             .foregroundColor(.secondary)
                     }
                     .font(.caption)
@@ -429,20 +425,31 @@ struct MCPStatusView: View {
 
     private func allowedClientRow(_ client: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle")
-                .foregroundColor(.secondary)
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundColor(.green)
 
             Text(client)
                 .font(.subheadline)
 
             Spacer()
 
-            Button(action: { server.setAlwaysAllowed(clientID: client, allowed: false) }) {
-                Text("Remove")
+            if server.isBuiltInAlwaysAllowedClient(client) {
+                Text("Built-in")
                     .font(.caption.weight(.medium))
-                    .foregroundColor(.red)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                    .hoverTooltip("Built-in clients are always trusted and can't be removed")
+                    .accessibilityHint("Always trusted and cannot be removed")
+            } else {
+                Button(action: { server.setAlwaysAllowed(clientID: client, allowed: false) }) {
+                    Text("Remove")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(10)
         .background(

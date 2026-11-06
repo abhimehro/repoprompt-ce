@@ -47,30 +47,11 @@ enum ClaudeCompatibleModelCatalogAdapter {
         availability: AgentModelCatalog.AvailabilityContext = .current,
         includeClaudeEffortVariants: Bool = true
     ) -> [AgentModelOption]? {
-        guard let snapshot = catalogSnapshot(
+        catalogSnapshot(
             for: agentKind,
             availability: availability,
             includeClaudeEffortVariants: includeClaudeEffortVariants
-        ) else { return nil }
-        let baseOptions = includeClaudeEffortVariants
-            ? catalogSnapshot(for: agentKind, availability: availability, includeClaudeEffortVariants: false)?.options ?? []
-            : []
-        return snapshot.options.map { option in
-            let parsed = ClaudeModelSpecifier(raw: option.rawValue)
-            let base = baseOptions.first { candidate in
-                candidate.rawValue == parsed.baseModel
-                    && candidate.supportedEffortLevels.contains(parsed.effortLevel?.rawValue ?? "")
-            }
-            let effort = parsed.effortLevel.flatMap { CodexReasoningEffort.parse($0.rawValue) }
-            return modelOption(
-                from: option,
-                for: agentKind,
-                effortVariant: base.flatMap { base in
-                    effort.map { AgentModelEffortVariant(baseModelRaw: base.rawValue, reasoningEffort: $0) }
-                },
-                supportedEffortRawValues: base?.supportedEffortLevels ?? option.supportedEffortLevels
-            )
-        }
+        ).map { modelOptions(from: $0.options, for: agentKind) }
     }
 
     static func modelOptions(
@@ -262,20 +243,13 @@ enum ClaudeCompatibleModelCatalogAdapter {
         )
     }
 
-    private static func modelOption(
-        from option: ClaudeCompatiblePluginModelOption,
-        for agentKind: AgentProviderKind,
-        effortVariant: AgentModelEffortVariant? = nil,
-        supportedEffortRawValues: [String]? = nil
-    ) -> AgentModelOption {
+    private static func modelOption(from option: ClaudeCompatiblePluginModelOption, for agentKind: AgentProviderKind) -> AgentModelOption {
         AgentModelOption(
             rawValue: canonicalModelRaw(option.rawValue, for: agentKind),
             displayName: option.displayName,
             description: option.description,
             isPlaceholderDefault: option.isPlaceholderDefault,
-            isProviderDefault: option.isProviderDefault,
-            supportedReasoningEffortRawValues: supportedEffortRawValues ?? option.supportedEffortLevels,
-            effortVariant: effortVariant
+            isProviderDefault: option.isProviderDefault
         )
     }
 

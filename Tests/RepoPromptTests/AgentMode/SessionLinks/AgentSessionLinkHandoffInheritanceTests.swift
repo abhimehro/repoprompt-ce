@@ -58,16 +58,14 @@ final class AgentSessionLinkHandoffInheritanceTests: XCTestCase {
         }
     }
 
-    func testHandoffSaveFailureRetainsBlockedDestinationUntilExplicitRetry() async throws {
+    func testHandoffSaveFailureSkipsInheritanceSchedulesRetryAndStillActivates() async throws {
         enum ExpectedSaveFailure: Error { case failed }
 
         try await withFixture { fixture in
             let cutoffItemID = try XCTUnwrap(fixture.sourceSession.items.last?.id)
             var inheritanceWasCalled = false
-            var failedSaveSessionIDs: [UUID] = []
 
-            fixture.viewModel.test_setAgentSessionSaver { session, _, _ in
-                failedSaveSessionIDs.append(session.id)
+            fixture.viewModel.test_setAgentSessionSaver { _, _, _ in
                 throw ExpectedSaveFailure.failed
             }
             fixture.viewModel.test_setAgentSessionLinkInheritanceHandler { _, _ in
@@ -75,66 +73,20 @@ final class AgentSessionLinkHandoffInheritanceTests: XCTestCase {
                 return .empty
             }
 
-            var partialFailure: SessionAdminPartialForkError?
-            do {
-                _ = try await fixture.viewModel.prepareHandoffToNewTab(
-                    upToItemID: cutoffItemID,
-                    destinationAgent: fixture.sourceSession.selectedAgent,
-                    destinationModelRaw: fixture.sourceSession.selectedModelRaw,
-                    destinationReasoningEffortRaw: fixture.sourceSession.selectedReasoningEffortRaw
-                )
-                XCTFail("An unacknowledged first save must not report a completed Handoff.")
-            } catch let failure as SessionAdminPartialForkError {
-                partialFailure = failure
-            }
-            let failure = try XCTUnwrap(partialFailure)
-            XCTAssertEqual(failure.code, "persist_failed")
-            let destination = try XCTUnwrap(fixture.viewModel.sessions.values.first {
-                $0.activeAgentSessionID == failure.sessionID
-            })
-            XCTAssertNotEqual(destination.tabID, fixture.sourceTabID)
-            XCTAssertEqual(failedSaveSessionIDs.filter { $0 == failure.sessionID }, [failure.sessionID])
-            XCTAssertEqual(
-                fixture.window.workspaceManager.activeAgentSessionID(forTabID: destination.tabID),
-                failure.sessionID
+            let destinationTabID = try await fixture.viewModel.prepareHandoffToNewTab(
+                upToItemID: cutoffItemID,
+                destinationAgent: fixture.sourceSession.selectedAgent,
+                destinationModelRaw: fixture.sourceSession.selectedModelRaw,
+                destinationReasoningEffortRaw: fixture.sourceSession.selectedReasoningEffortRaw
             )
-            XCTAssertFalse(inheritanceWasCalled)
-            XCTAssertEqual(fixture.window.promptManager.activeComposeTabID, fixture.sourceTabID)
-            XCTAssertTrue(destination.qualifiedRestorationReadiness.isCreating)
-            XCTAssertFalse(destination.permitsBoundOperationAndSave)
-            XCTAssertNotNil(destination.operationAdmissionFailureMessage)
-            XCTAssertNil(destination.saveDebounceTask, "Generic autosave cannot complete a failed configured creation.")
-            let retry = try XCTUnwrap(fixture.viewModel.captureSessionCreationRetry(for: destination))
-            XCTAssertTrue(retry.session === destination)
-            XCTAssertEqual(retry.bindingToken.bindingIdentity.sessionID, failure.sessionID)
-            XCTAssertEqual(retry.bindingToken, destination.currentRestorationBindingToken)
-            XCTAssertNotNil(retry.expectedConfigurationStamp)
 
-            let workspaceID = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspaceID)
-            let genericSave = await fixture.viewModel.flushSaveRequired(for: destination.tabID, workspaceID: workspaceID)
-            guard case .failure = genericSave else {
-                return XCTFail("Only the captured creation owner may retry its configured first save.")
-            }
-            XCTAssertEqual(failedSaveSessionIDs.filter { $0 == failure.sessionID }, [failure.sessionID])
-            let retryFile = fixture.rootURL.appendingPathComponent("handoff-retry.json")
-            fixture.viewModel.test_setAgentSessionSaver { session, _, _ in
-                guard session.id != fixture.sourceSession.activeAgentSessionID else {
-                    return fixture.rootURL.appendingPathComponent("source-session.json")
-                }
-                XCTAssertEqual(session.id, failure.sessionID)
-                try JSONEncoder().encode(session).write(to: retryFile, options: .atomic)
-                return retryFile
-            }
-            let retried = await fixture.viewModel.retrySessionInitialSave(retry)
-            XCTAssertTrue(retried)
-            let saved = try JSONDecoder().decode(AgentSession.self, from: Data(contentsOf: retryFile))
-            XCTAssertEqual(saved.id, failure.sessionID)
-            XCTAssertEqual(saved.composeTabID, destination.tabID)
-            XCTAssertEqual(saved.toLiveItems().map(\.text), destination.items.map(\.text))
-            XCTAssertEqual(destination.qualifiedRestorationReadiness, .authoritative(retry.bindingToken, .freshBindingDurablyCreated))
-            XCTAssertNil(fixture.viewModel.captureSessionCreationRetry(for: destination))
-            XCTAssertFalse(inheritanceWasCalled, "Retrying persistence cannot manufacture oversight grants.")
-            XCTAssertEqual(fixture.window.promptManager.activeComposeTabID, fixture.sourceTabID)
+            let destinationSession = try XCTUnwrap(fixture.viewModel.sessions[destinationTabID])
+            XCTAssertFalse(inheritanceWasCalled)
+            XCTAssertNotNil(
+                destinationSession.saveDebounceTask,
+                "the failed immediate save must schedule the existing deferred retry"
+            )
+            XCTAssertEqual(fixture.window.promptManager.activeComposeTabID, destinationTabID)
         }
     }
 
@@ -184,21 +136,6 @@ final class AgentSessionLinkHandoffInheritanceTests: XCTestCase {
             let workspaceIndex = try XCTUnwrap(
                 window.workspaceManager.workspaces.firstIndex(where: { $0.id == activeWorkspace.id })
             )
-            window.workspaceManager.workspaces[workspaceIndex].customStoragePath = rootURL.appendingPathComponent("sessions", isDirectory: true)
-            let persistedSource = AgentSession(
-                id: sourceSessionID,
-                workspaceID: activeWorkspace.id,
-                composeTabID: sourceTabID,
-                name: "Source",
-                items: [
-                    AgentChatItemPersist(from: .user("Source user", sequenceIndex: 0)),
-                    AgentChatItemPersist(from: .assistant("Source assistant", sequenceIndex: 1))
-                ],
-                autoEditEnabled: false
-            )
-            _ = try await AgentSessionDataService.shared.saveAgentSession(
-                persistedSource, for: window.workspaceManager.workspaces[workspaceIndex]
-            )
             window.workspaceManager.workspaces[workspaceIndex].composeTabs = [sourceTab]
             window.workspaceManager.workspaces[workspaceIndex].activeComposeTabID = sourceTabID
             window.promptManager.loadComposeTabsFromWorkspace(
@@ -207,18 +144,21 @@ final class AgentSessionLinkHandoffInheritanceTests: XCTestCase {
             )
 
             let viewModel = window.agentModeViewModel
-            let sourceSession = await viewModel.ensureSessionReady(tabID: sourceTabID)
+            let sourceSession = viewModel.session(for: sourceTabID)
             XCTAssertEqual(sourceSession.activeAgentSessionID, sourceSessionID)
             XCTAssertEqual(
                 window.workspaceManager.activeAgentSessionID(forTabID: sourceTabID),
                 sourceSessionID
             )
-            let sourceToken = try XCTUnwrap(
-                sourceSession.permitsBoundOperationAndSave ? sourceSession.currentRestorationBindingToken : nil,
-                "Handoff requires a restored source payload."
+            sourceSession.hasLoadedPersistedState = true
+            sourceSession.setItemsSilently(
+                [
+                    .user("Source user", sequenceIndex: 0),
+                    .assistant("Source assistant", sequenceIndex: 1)
+                ],
+                reason: .testOverride
             )
-            XCTAssertEqual(sourceSession.qualifiedRestorationReadiness, .authoritative(sourceToken, .persistedPayloadApplied))
-            XCTAssertEqual(sourceSession.items.count, 2)
+            viewModel.refreshDerivedTranscriptState(for: sourceSession)
             viewModel.setAgentModeActive(true)
 
             return Fixture(

@@ -1707,14 +1707,7 @@ enum AgentModelCatalog {
             displayName: displayName,
             description: description,
             isPlaceholderDefault: model == .defaultModel,
-            isProviderDefault: false,
-            effortVariant: agentKind == .codexExec
-                ? CodexModelSpecifier(raw: model.rawValue).reasoningEffort.flatMap { effort in
-                    CodexModelSpecifier(raw: model.rawValue).baseModel.map {
-                        AgentModelEffortVariant(baseModelRaw: $0, reasoningEffort: effort)
-                    }
-                }
-                : nil
+            isProviderDefault: false
         )
     }
 

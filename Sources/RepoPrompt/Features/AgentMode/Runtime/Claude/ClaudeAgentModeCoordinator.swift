@@ -98,8 +98,6 @@ final class ClaudeAgentModeCoordinator {
             _ session: AgentTabSession,
             _ dispatchID: AgentSessionLinkPromptDispatchID
         ) -> Void
-        let proveLocalInput: @MainActor (AgentTabSession, AgentSessionLinkOutboundPromptClaim?) async -> AgentSessionLinkProviderInputRelease.Proof
-        let handoffLocalInput: @MainActor (AgentTabSession, AgentSessionLinkPromptDispatchID, AgentSessionLinkOutboundPromptClaim?, AgentSessionLinkProviderInputRelease.Proof) -> AgentSessionLinkProviderInputRelease.ReleasedDispatchContext
         let acceptAgentSessionLinkPromptClaim: @MainActor (AgentTabSession, AgentSessionLinkDispatchContext?, AgentSessionLinkOutboundPromptClaim?) -> Void
 
         init(
@@ -132,8 +130,6 @@ final class ClaudeAgentModeCoordinator {
                 _ session: AgentTabSession,
                 _ dispatchID: AgentSessionLinkPromptDispatchID
             ) -> Void,
-            proveLocalInput: @escaping @MainActor (AgentTabSession, AgentSessionLinkOutboundPromptClaim?) async -> AgentSessionLinkProviderInputRelease.Proof = { _, claim in await AgentSessionLinkProviderInputRelease.prove(claim) { _ in false } },
-            handoffLocalInput: @escaping @MainActor (AgentTabSession, AgentSessionLinkPromptDispatchID, AgentSessionLinkOutboundPromptClaim?, AgentSessionLinkProviderInputRelease.Proof) -> AgentSessionLinkProviderInputRelease.ReleasedDispatchContext = { _, _, claim, proof in AgentSessionLinkProviderInputRelease.handoff(original: claim, proof: proof, current: { claim.map { .claimed($0) } ?? .nothingOwed }, isPending: { _ in false }, consume: { _ in false }) },
             acceptAgentSessionLinkPromptClaim: @escaping @MainActor (AgentTabSession, AgentSessionLinkDispatchContext?, AgentSessionLinkOutboundPromptClaim?) -> Void
         ) {
             self.isSessionCurrent = isSessionCurrent
@@ -143,8 +139,6 @@ final class ClaudeAgentModeCoordinator {
             self.prependPendingHandoff = prependPendingHandoff
             self.qualifyAgentSessionLinkProviderInputRoute = qualifyAgentSessionLinkProviderInputRoute
             self.hasCurrentAgentSessionLinkProviderInputRoute = hasCurrentAgentSessionLinkProviderInputRoute
-            self.proveLocalInput = proveLocalInput
-            self.handoffLocalInput = handoffLocalInput
             self.decorateAgentSessionLinkPrompt = decorateAgentSessionLinkPrompt
             self.acquireAgentSessionLinkPhysicalDispatch = acquireAgentSessionLinkPhysicalDispatch
             self.recordAgentSessionLinkPhysicalDispatchNotAttempted = recordAgentSessionLinkPhysicalDispatchNotAttempted
@@ -212,7 +206,7 @@ final class ClaudeAgentModeCoordinator {
     private let hasActiveMCPTools: MCPActiveToolQuery
     private let hasActiveChildAgentRunWaits: ActiveAgentRunWaitQuery
     private let steeringInterruptSafePointTimeoutSeconds: TimeInterval
-    private let autoEffortConfigurationProvider: @MainActor () -> AutoEffortConfiguration
+    private let autoEffortEnabledProvider: @MainActor () -> Bool
 
     /// Per-tab tool tracking handler for Claude sessions.
     /// Each tab gets its own handler instance to isolate correlation state across concurrent sessions.
@@ -242,7 +236,7 @@ final class ClaudeAgentModeCoordinator {
         hasActiveMCPTools: @escaping MCPActiveToolQuery = { _ in false },
         hasActiveChildAgentRunWaits: @escaping ActiveAgentRunWaitQuery = { _ in false },
         steeringInterruptSafePointTimeoutSeconds: TimeInterval = 2.0,
-        autoEffortConfigurationProvider: @escaping @MainActor () -> AutoEffortConfiguration = { GlobalSettingsStore.shared.autoEffortConfiguration() }
+        autoEffortEnabledProvider: @escaping @MainActor () -> Bool = { GlobalSettingsStore.shared.autoEffortEnabled() }
     ) {
         self.windowID = windowID
         self.workspacePathProvider = workspacePathProvider
@@ -252,7 +246,7 @@ final class ClaudeAgentModeCoordinator {
         self.hasActiveMCPTools = hasActiveMCPTools
         self.hasActiveChildAgentRunWaits = hasActiveChildAgentRunWaits
         self.steeringInterruptSafePointTimeoutSeconds = steeringInterruptSafePointTimeoutSeconds
-        self.autoEffortConfigurationProvider = autoEffortConfigurationProvider
+        self.autoEffortEnabledProvider = autoEffortEnabledProvider
     }
 
     private static func makeDefaultController(
@@ -413,9 +407,7 @@ final class ClaudeAgentModeCoordinator {
         _ intent: NativeSessionIntent,
         for session: AgentTabSession
     ) -> Bool {
-        hostCapabilities.isSessionCurrent(session)
-            && session.operationAdmissionFailureMessage == nil
-            && intent.isCurrent(for: session)
+        hostCapabilities.isSessionCurrent(session) && intent.isCurrent(for: session)
     }
 
     func runAttemptIsCurrent(
@@ -433,9 +425,6 @@ final class ClaudeAgentModeCoordinator {
         session: AgentTabSession,
         intent: NativeSessionIntent
     ) async -> EnsureSessionOutcome {
-        if let message = session.operationAdmissionFailureMessage {
-            return intent.allowsFreshStartRecovery ? .superseded : .failed(message: message)
-        }
         guard session.selectedAgent.usesClaudeNativeRuntime,
               intentIsCurrent(intent, for: session)
         else {
@@ -1323,7 +1312,7 @@ final class ClaudeAgentModeCoordinator {
                           provider: session.selectedAgent,
                           selectedModelRaw: session.selectedModelRaw,
                           manualEffortRaw: manualEffort.rawValue,
-                          configuration: autoEffortConfigurationProvider()
+                          enabled: autoEffortEnabledProvider()
                       ),
                       AutoEffortModelPolicy.claudeEfforts(
                           modelRaw: session.selectedModelRaw,
@@ -1403,7 +1392,7 @@ final class ClaudeAgentModeCoordinator {
                     provider: session.selectedAgent,
                     selectedModelRaw: session.selectedModelRaw,
                     manualEffortRaw: manualEffort.rawValue,
-                    configuration: autoEffortConfigurationProvider()
+                    enabled: autoEffortEnabledProvider()
                 ) == true
                 else {
                     return recordSendFailure(
@@ -1584,12 +1573,6 @@ final class ClaudeAgentModeCoordinator {
                     hostCapabilities.recordAgentSessionLinkPhysicalDispatchNotAttempted(session, promptDispatchID)
                     return .superseded
                 }
-                let inputProof = await hostCapabilities.proveLocalInput(session, monitoring.claim)
-                if monitoring.claim?.localInput != nil {
-                    guard !Task.isCancelled, intentIsCurrent(intent, for: session),
-                          sessionOwnsClaudeController(controller, for: session)
-                    else { return .superseded }
-                }
                 guard hostCapabilities.acquireAgentSessionLinkPhysicalDispatch(
                     session,
                     promptDispatchID
@@ -1598,6 +1581,10 @@ final class ClaudeAgentModeCoordinator {
                     return .superseded
                 }
                 let instructions = agentModeInstructionInjection(for: session)
+                let providerBoundText = providerBoundUserMessage(
+                    monitoring.text,
+                    instructions: instructions
+                )
                 guard let configurationProof,
                       configurationIsCurrent(),
                       !hasEffectiveClaudeControllerLaunchSettingsMismatch(for: session),
@@ -1613,9 +1600,6 @@ final class ClaudeAgentModeCoordinator {
                     session.selfCompactState = state
                     hostCapabilities.scheduleSave(session)
                 }
-                let released = hostCapabilities.handoffLocalInput(session, promptDispatchID, monitoring.claim, inputProof)
-                guard !released.mustAbortDispatch else { return .superseded }
-                let providerBoundText = providerBoundUserMessage(released.text(textWithNote), instructions: instructions)
                 let turnID = try await controller.sendUserMessage(providerBoundText, configuration: configurationProof)
                 recordOrdinaryDispatchAttempt()
                 if let parked {
@@ -1642,7 +1626,7 @@ final class ClaudeAgentModeCoordinator {
                 }
                 // The returned provider turn ID is the acceptance signal. Acknowledge before the
                 // currency guard: even a locally superseded turn delivered this supplement.
-                hostCapabilities.acceptAgentSessionLinkPromptClaim(session, monitoring.dispatchContext, released.claim)
+                hostCapabilities.acceptAgentSessionLinkPromptClaim(session, monitoring.dispatchContext, monitoring.claim)
                 guard intentIsCurrent(intent, for: session),
                       sessionOwnsClaudeController(controller, for: session)
                 else {
@@ -2231,7 +2215,7 @@ final class ClaudeAgentModeCoordinator {
 
     private func retainClaudeEffort(_ effort: ClaudeCodeEffortLevel, for session: AgentTabSession) {
         // A cold persisted session is only an index projection, not a saveable payload.
-        guard session.operationAdmissionFailureMessage == nil else { return }
+        guard session.activeAgentSessionID == nil || session.hasLoadedPersistedState else { return }
         guard session.selectedClaudeEffortRaw != effort.rawValue else { return }
         session.selectedClaudeEffortRaw = effort.rawValue
         session.isDirty = true

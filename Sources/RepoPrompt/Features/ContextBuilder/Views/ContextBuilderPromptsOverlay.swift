@@ -1,5 +1,4 @@
 import AppKit
-import RepoPromptShared
 import SwiftUI
 
 /// A simple prompt model for context builder custom instructions.
@@ -68,7 +67,18 @@ class ContextBuilderPromptStorage: ObservableObject {
     }
 
     private var fileURL: URL {
-        AppProfileLocations.current.savedPromptsRoot.appendingPathComponent(filename)
+        let supportDir = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+
+        let appSupportFolder = supportDir.appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: appSupportFolder,
+            withIntermediateDirectories: true
+        )
+
+        return appSupportFolder.appendingPathComponent(filename)
     }
 
     private init() {
@@ -109,8 +119,6 @@ class ContextBuilderPromptStorage: ObservableObject {
 
         Self.queue.async {
             do {
-                try AppProfileLocations.current.validateMetadataFile(self.fileURL)
-                try FileManager.default.createDirectory(at: self.fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let data = try JSONEncoder().encode(newPrompts)
                 try data.write(to: self.fileURL, options: .atomicWrite)
             } catch {

@@ -7,29 +7,22 @@ package struct MCPDomainClientPolicySnapshot: Equatable, Sendable {
     package let allowsAgentExternalControlTools: Bool
     /// Whether server-owned routing resolved this connection to an exact endpoint that currently has
     /// an Agent-session link in either direction. This is intentionally narrower than an additional
-    /// tool grant: a policy-supplied grant cannot manufacture the exact-link override.
-    /// The separate session-incarnation opt-in below is also server-owned, never a link.
+    /// tool grant: only this live authority fact may override profile/role hiding for
+    /// `agent_session_link`, so a policy-supplied grant cannot manufacture the override.
     package let hasExactAgentSessionLinkGrant: Bool
-    /// Server-proved session-local reachability only; neither fact manufactures a link grant.
-    package let canBecomeOverseer: Bool
-    package let hasActivatedOverseer: Bool
 
     package init(
         restrictedToolNames: Set<String>,
         additionalToolNames: Set<String>,
         role: MCPClientTaskRole,
         allowsAgentExternalControlTools: Bool,
-        hasExactAgentSessionLinkGrant: Bool = false,
-        canBecomeOverseer: Bool = false,
-        hasActivatedOverseer: Bool = false
+        hasExactAgentSessionLinkGrant: Bool = false
     ) {
         self.restrictedToolNames = restrictedToolNames
         self.additionalToolNames = additionalToolNames
         self.role = role
         self.allowsAgentExternalControlTools = allowsAgentExternalControlTools
         self.hasExactAgentSessionLinkGrant = hasExactAgentSessionLinkGrant
-        self.canBecomeOverseer = canBecomeOverseer
-        self.hasActivatedOverseer = hasActivatedOverseer
     }
 }
 
@@ -37,15 +30,12 @@ package struct MCPDomainCatalogAdvertisementRequest: Sendable {
     package let isGloballyEnabled: Bool
     package let disabledToolNames: Set<String>
     package let policy: MCPDomainClientPolicySnapshot
-    package let agentSessionLinkSurface: AgentSessionLinkToolSurface
 
     package init(
         isGloballyEnabled: Bool,
         disabledToolNames: Set<String>,
-        policy: MCPDomainClientPolicySnapshot,
-        agentSessionLinkSurface: AgentSessionLinkToolSurface = .full
+        policy: MCPDomainClientPolicySnapshot
     ) {
-        self.agentSessionLinkSurface = agentSessionLinkSurface
         self.isGloballyEnabled = isGloballyEnabled
         self.disabledToolNames = disabledToolNames
         self.policy = policy
@@ -88,22 +78,19 @@ package struct MCPDomainPreAdmissionDecision: Equatable, Sendable {
     }
 }
 
-package extension MCPDomainHost {
-    /// Profile-policy exceptions backed by exact live link authority or eligible incarnation opt-in.
+extension MCPDomainHost {
+    /// The one profile-policy exception backed by live, exact domain authority.
     ///
     /// Being the target of an oversight link grants no outbound observer authority, but it does make
     /// `agent_session_link` reachable for self-scoped and inverse operations. The operation service
     /// still authorizes those directions independently. No other tool, static additional grant, or
     /// profile restriction inherits this exception.
-    private static func oversightReachabilityOverridesProfilePolicy(
+    private static func exactLinkGrantOverridesProfilePolicy(
         toolName: String,
         policy: MCPDomainClientPolicySnapshot
     ) -> Bool {
-        (
-            toolName == MCPWindowToolName.agentSessionLink
-                && (policy.hasExactAgentSessionLinkGrant || policy.hasActivatedOverseer)
-        )
-            || (toolName == MCPWindowToolName.becomeOverseer && policy.canBecomeOverseer)
+        toolName == MCPWindowToolName.agentSessionLink
+            && policy.hasExactAgentSessionLinkGrant
     }
 
     /// Capabilities whose role advertisement policy is also enforced at `tools/call` admission.
@@ -111,7 +98,6 @@ package extension MCPDomainHost {
         .agentExploreControl,
         .agentExternalControl,
         .agentSessionLinkControl,
-        .agentSessionAdmin,
     ]
 
     package func advertisedCatalog(
@@ -131,32 +117,26 @@ package extension MCPDomainHost {
 
         for definition in catalog.definitions {
             let toolName = definition.name
-            if toolName == MCPWindowToolName.becomeOverseer, !request.policy.canBecomeOverseer {
-                hidden[toolName] = .missingAdditionalToolGrant
-                continue
-            }
-            if request.disabledToolNames.contains(toolName)
-                || (toolName == MCPWindowToolName.becomeOverseer && request.disabledToolNames.contains(MCPWindowToolName.agentSessionLink))
-            {
+            if request.disabledToolNames.contains(toolName) {
                 hidden[toolName] = .disabled
                 continue
             }
-            let reachabilityOverride = Self.oversightReachabilityOverridesProfilePolicy(
+            let exactLinkOverride = Self.exactLinkGrantOverridesProfilePolicy(
                 toolName: toolName,
                 policy: request.policy
             )
-            if request.policy.restrictedToolNames.contains(toolName), !reachabilityOverride {
+            if request.policy.restrictedToolNames.contains(toolName), !exactLinkOverride {
                 hidden[toolName] = .restricted
                 continue
             }
             if MCPClientToolPolicyCatalog.policyGatedToolNames.contains(toolName),
                !request.policy.additionalToolNames.contains(toolName),
-               !reachabilityOverride
+               !exactLinkOverride
             {
                 hidden[toolName] = .missingAdditionalToolGrant
                 continue
             }
-            if !reachabilityOverride,
+            if !exactLinkOverride,
                !MCPClientToolPolicyCatalog.shouldAdvertise(
                    toolName: toolName,
                    role: request.policy.role,
@@ -166,8 +146,7 @@ package extension MCPDomainHost {
                 hidden[toolName] = .roleAdvertisementPolicy
                 continue
             }
-            let surface: AgentSessionLinkToolSurface = request.policy.hasActivatedOverseer ? .full : request.agentSessionLinkSurface
-            visible.append(surface.project(definition))
+            visible.append(definition)
         }
 
         return MCPDomainCatalogAdvertisementResult(
@@ -176,20 +155,13 @@ package extension MCPDomainHost {
         )
     }
 
-    private static func requireBootstrapAdmission(toolName: String, policy: MCPDomainClientPolicySnapshot) throws {
-        if toolName == MCPWindowToolName.becomeOverseer, !policy.canBecomeOverseer {
-            throw MCPDomainCallPolicyDenial.missingAdditionalGrant(toolName: toolName)
-        }
-    }
-
-    func evaluateEarlyCallPolicy(
+    package func evaluateEarlyCallPolicy(
         toolName: String,
         policy: MCPDomainClientPolicySnapshot
     ) throws {
-        try Self.requireBootstrapAdmission(toolName: toolName, policy: policy)
         if MCPClientToolPolicyCatalog.policyGatedToolNames.contains(toolName),
            !policy.additionalToolNames.contains(toolName),
-           !Self.oversightReachabilityOverridesProfilePolicy(toolName: toolName, policy: policy)
+           !Self.exactLinkGrantOverridesProfilePolicy(toolName: toolName, policy: policy)
         {
             throw MCPDomainCallPolicyDenial.missingAdditionalGrant(toolName: toolName)
         }
@@ -199,24 +171,23 @@ package extension MCPDomainHost {
         toolName: String,
         policy: MCPDomainClientPolicySnapshot
     ) throws -> MCPDomainPreAdmissionDecision {
-        try Self.requireBootstrapAdmission(toolName: toolName, policy: policy)
         guard MCPDomainToolCatalog.entry(named: toolName) != nil else {
             throw MCPDomainCallPolicyDenial.unknownTool(toolName: toolName)
         }
-        let reachabilityOverride = Self.oversightReachabilityOverridesProfilePolicy(
+        let exactLinkOverride = Self.exactLinkGrantOverridesProfilePolicy(
             toolName: toolName,
             policy: policy
         )
-        if policy.restrictedToolNames.contains(toolName), !reachabilityOverride {
+        if policy.restrictedToolNames.contains(toolName), !exactLinkOverride {
             throw MCPDomainCallPolicyDenial.restricted(toolName: toolName)
         }
         // Advertisement is never authority: a hidden tool stays callable by name unless execution
         // mirrors the role filter. Both agent-control capability families are gated here so a
         // non-orchestrator agent cannot reach `agent_run` / `agent_manage` simply by naming them.
-        // Exact-link and incarnation opt-in exceptions affect only the oversight family; its service
+        // The exact-link exception above affects only agent_session_link reachability; its service
         // continues to enforce outbound versus inverse operation authority on every call.
         let capabilities = MCPDomainToolCatalog.capabilities(for: toolName)
-        if !reachabilityOverride,
+        if !exactLinkOverride,
            !capabilities.isDisjoint(with: Self.executionRoleGatedCapabilities),
            !MCPClientToolPolicyCatalog.shouldAdvertise(
                toolName: toolName,

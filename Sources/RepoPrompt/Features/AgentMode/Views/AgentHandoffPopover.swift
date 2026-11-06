@@ -71,7 +71,7 @@ struct AgentHandoffPopover: View {
         return "\(selectedAgent.displayName) \u{00B7} \(selectedModelDisplayName)"
     }
 
-    private var isSelectedCodexSpeedTier: Bool {
+    private var isSelectedCodexFastModel: Bool {
         AgentModelSelectionWarningVisuals.showsWarning(agent: selectedAgent, rawModel: selectedModelRaw)
     }
 
@@ -109,11 +109,10 @@ struct AgentHandoffPopover: View {
                         HStack(spacing: 4) {
                             Image(systemName: selectedAgent.iconName)
                                 .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
-                            if isSelectedCodexSpeedTier {
-                                AgentModelSpeedIcon(
-                                    agent: selectedAgent, rawModel: selectedModelRaw,
-                                    font: fontPreset.swiftUIFont(sizeAtNormal: 9, weight: .semibold)
-                                )
+                            if isSelectedCodexFastModel {
+                                Image(systemName: AgentModelSelectionWarningVisuals.iconSystemName)
+                                    .font(fontPreset.swiftUIFont(sizeAtNormal: 9, weight: .semibold))
+                                    .foregroundStyle(AgentModelSelectionWarningVisuals.warningColor)
                             }
                             Text(providerChipTitle)
                                 .font(fontPreset.swiftUIFont(sizeAtNormal: 11))
@@ -123,7 +122,7 @@ struct AgentHandoffPopover: View {
                                 .font(fontPreset.swiftUIFont(sizeAtNormal: 8, weight: .semibold))
                                 .foregroundColor(.secondary)
                         }
-                        .foregroundColor(isSelectedCodexSpeedTier ? AgentModelSelectionWarningVisuals.color(agent: selectedAgent, rawModel: selectedModelRaw) : .secondary)
+                        .foregroundColor(isSelectedCodexFastModel ? .orange : .secondary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(chipColor)

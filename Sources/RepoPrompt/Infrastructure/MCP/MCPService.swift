@@ -30,7 +30,6 @@ actor MCPService: Sendable {
     struct Snapshot: Equatable {
         var isRunning: Bool
         var pendingClientID: String?
-        var pendingApprovalGeneration: UInt64?
         var diagnostics: MCPDiagnostics
     }
 
@@ -101,7 +100,7 @@ actor MCPService: Sendable {
     // MARK: - Private implementation objects
 
     /// ──────────────────────────────────────────────
-    private let controller: ServerController
+    private let controller = ServerController.shared
     private let hostBootstrapOperation: @Sendable () async -> Void
     private let controllerStartOperation: @Sendable () async throws -> Void
     private let controllerFullShutdownOperation: @Sendable () async -> Void
@@ -134,7 +133,6 @@ actor MCPService: Sendable {
 
     /// ──────────────────────────────────────────────
     init(
-        controller: ServerController = .shared,
         hostBootstrapOperation: @escaping @Sendable () async -> Void = {
             // One-time Codex migration: no-op when the RepoPrompt entry or config file is missing.
             _ = MCPIntegrationHelper.ensureCodexToolTimeout()
@@ -146,15 +144,14 @@ actor MCPService: Sendable {
             await ServerController.shared.fullShutdown()
         }
     ) {
-        self.controller = controller
         self.hostBootstrapOperation = hostBootstrapOperation
         self.controllerStartOperation = controllerStartOperation
         self.controllerFullShutdownOperation = controllerFullShutdownOperation
         // Set up the approval request callback
         Task {
             await controller.setMCPService(self)
-            await controller.setApprovalCallback { [weak self] clientID, generation in
-                await self?.setPendingApproval(clientID, generation: generation)
+            await controller.setApprovalCallback { [weak self] clientID in
+                await self?.setPendingApproval(clientID)
             }
             await ServerNetworkManager.shared.setDashboardDidChangeHook { [weak self] in
                 Task { await self?.notifyDashboardUpdate() }
@@ -313,9 +310,8 @@ actor MCPService: Sendable {
         /// Sets the pending-approval client and broadcasts the snapshot without
         /// going through the controller callback, so tests can exercise the
         /// per-subscriber state fan-out directly.
-        func setPendingApprovalForTesting(_ clientID: String?, generation: UInt64? = nil) {
+        func setPendingApprovalForTesting(_ clientID: String?) {
             state.pendingClientID = clientID
-            state.pendingApprovalGeneration = generation
             yieldState()
         }
     #endif
@@ -353,21 +349,20 @@ actor MCPService: Sendable {
     /// ──────────────────────────────────────────────
     /// Called by the MainActor after the alert sheet closes
     /// Runs on the actor executor – no extra Task hop required.
-    func continuePendingApproval(allow: Bool, generation: UInt64) async {
-        guard state.pendingApprovalGeneration == generation else { return }
-        // Clear before the controller activates the next queued request; clearing
-        // afterward would erase that next prompt, including a same-name peer.
+    func continuePendingApproval(allow: Bool, alwaysAllow: Bool = false) async {
+        await controller.resolvePendingApproval(
+            allow: allow,
+            alwaysAllow: alwaysAllow
+        )
+        // Clear the pending client ID and notify observers.
         state.pendingClientID = nil
-        state.pendingApprovalGeneration = nil
         yieldState()
-        await controller.resolvePendingApproval(allow: allow, generation: generation)
     }
 
     /// Controller → Service callback - called when a new client requests approval
-    private func setPendingApproval(_ clientID: String?, generation: UInt64) {
+    private func setPendingApproval(_ clientID: String?) {
         mcpServiceLog("Setting pending approval for client: \(clientID ?? "nil")")
         state.pendingClientID = clientID
-        state.pendingApprovalGeneration = generation
         yieldState()
     }
 

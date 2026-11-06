@@ -2,7 +2,7 @@ import Foundation
 
 /// Request-correlated native completion and one-shot continuation. The injectable clock makes
 /// the 300-second native deadline and the 90-second ACP settle testable without wall-clock waits.
-/// Expiry parks the note without sending it; a later same-request confirmation may resume it.
+/// Either expiring parks the note as unverified; neither sends it.
 ///
 /// ACP completion is best-effort. A completed command turn, however long it took, is not verified
 /// compaction. Only a vouched context drop is, and a settle timeout parks the note instead of
@@ -25,7 +25,6 @@ final class AgentSelfCompactNativeCompletionCoordinator {
     private var holdTask: Task<Void, Never>?
     private var noteTask: Task<Void, Never>?
     private var compactBoundAt: [UUID: ContinuousClock.Instant] = [:]
-    private var runtimeCancelled = false
     private var acpTeardownSettled: (@MainActor () -> Bool)?
 
     init(
@@ -52,7 +51,6 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         runID: UUID?,
         runAttemptID: UUID?
     ) -> Bool {
-        guard !runtimeCancelled else { return false }
         var state = load()
         guard state.bindCompactRun(dispatchID, runID: runID, attemptID: runAttemptID) else { return false }
         store(state)
@@ -71,9 +69,9 @@ final class AgentSelfCompactNativeCompletionCoordinator {
             if let owner = current.active?.owner, !isCurrentOwner(owner) {
                 current.settle(.cancelled, noteDelivery: .notSent, completionVerified: false)
             } else {
-                // Release the hold without revoking this live request's correlated completion.
-                // A late confirmation can still send its undelivered note; ordinary input may
-                // consume it first instead.
+                // A slow native compaction may still finish. Like an unverified ACP turn, keep the
+                // continuation parked for the next ordinary send rather than dropping it into
+                // recovery; a late command terminal no longer matches and never sends it.
                 current.active?.acpCompletionUnverified = true
                 current.active?.phase = .parked
             }
@@ -90,7 +88,7 @@ final class AgentSelfCompactNativeCompletionCoordinator {
     ) -> Bool {
         guard let attempt = load().active,
               attempt.admittedSupport == .acpAdvertisedCommand,
-              acceptsCompactConfirmation(attempt),
+              attempt.phase == .dispatchingCompact || attempt.phase == .awaitingCompactTurn,
               attempt.compactRunID == revision.expectedRunID,
               attempt.compactRunAttemptID == revision.ownership.attemptID,
               case .accepted(successorEpoch: nil) = publication
@@ -107,25 +105,14 @@ final class AgentSelfCompactNativeCompletionCoordinator {
     ) {
         var state = load()
         guard let attempt = state.active,
-              acceptsCompactConfirmation(attempt),
+              attempt.phase == .dispatchingCompact || attempt.phase == .awaitingCompactTurn,
               let owner = attempt.owner,
               attempt.compactRunID == revision.expectedRunID,
               attempt.compactRunAttemptID == revision.ownership.attemptID
         else { return }
-        // Late admission must not turn a retained carry into recovery on a non-confirmation.
-        // Lost ownership is different: the old incarnation must never carry or resume the note.
-        if attempt.phase == .parked, !isCurrentOwner(owner) {
-            state.settle(.cancelled, noteDelivery: .notSent, completionVerified: false)
-            store(state)
-            return
-        }
         guard case .accepted(successorEpoch: nil) = publication else {
             if case .rejected = publication { return }
             deadlineTask?.cancel()
-            if attempt.phase == .parked {
-                revokeLateConfirmation(requestID: attempt.id)
-                return
-            }
             state.settle(.completionUnverified, noteDelivery: .notSent, completionVerified: false)
             store(state)
             return
@@ -137,7 +124,6 @@ final class AgentSelfCompactNativeCompletionCoordinator {
             return
         }
         guard revision.successorKind == nil else {
-            revokeLateConfirmation(requestID: attempt.id)
             state.active?.phase = .parked
             store(state)
             return
@@ -156,15 +142,10 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         let succeeded = revision.terminalState == .completed
             && (attempt.admittedSupport == .claudeCode || attempt.compactTurnSucceeded == true)
         guard succeeded else {
-            if attempt.phase == .parked {
-                revokeLateConfirmation(requestID: attempt.id)
-                return
-            }
             state.settle(.failed, noteDelivery: .notSent, completionVerified: false)
             store(state)
             return
         }
-        state.active?.acpCompletionUnverified = nil
         state.active?.compactTurnSucceeded = true
         state.active?.phase = .awaitingNoteBoundary
         store(state)
@@ -193,8 +174,6 @@ final class AgentSelfCompactNativeCompletionCoordinator {
     }
 
     func cancelRuntimeWork() {
-        runtimeCancelled = true
-        compactBoundAt.removeAll()
         deadlineTask?.cancel()
         deadlineTask = nil
         holdTask?.cancel()
@@ -204,22 +183,20 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         acpTeardownSettled = nil
     }
 
-    /// A usage report naturally reaching this live ACP request may verify its undelivered note
-    /// during or after the settle hold. Equal, higher, and unknown counts cannot verify completion.
+    /// A usage report during the ACP settle. Anything other than a strictly lower vouch is ignored,
+    /// including a report that arrives after the deadline has already parked the note.
     func noteVouchedContextCount(_ tokens: Int?) {
         let state = load()
-        guard !runtimeCancelled,
-              let attempt = state.active,
-              attempt.admittedSupport == .acpAdvertisedCommand,
-              attempt.phase == .acpSettling || acceptsCompactConfirmation(attempt),
-              let owner = attempt.owner,
+        guard state.active?.phase == .acpSettling,
+              let requestID = state.active?.id,
+              let owner = state.active?.owner,
               let teardown = acpTeardownSettled,
               AgentSelfCompactInstantReturn.isVouchedDrop(
                   before: state.active?.usedTokensBeforeCompact,
                   current: tokens
               )
         else { return }
-        beginVerifiedACPNote(requestID: attempt.id, owner: owner, teardownSettled: teardown)
+        beginVerifiedACPNote(requestID: requestID, owner: owner, teardownSettled: teardown)
     }
 
     /// An ordinary accepted input may win after native dispatch. It carries the parked note on
@@ -229,7 +206,6 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         holdTask = nil
         acpTeardownSettled = nil
         var state = load()
-        if let requestID = state.active?.id { compactBoundAt.removeValue(forKey: requestID) }
         guard let attempt = state.active,
               attempt.phase != .scheduled,
               attempt.phase != .compactDispatchPending,
@@ -256,15 +232,10 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         guard terminalCompleted else {
             var state = load()
             guard state.active?.id == requestID else { return }
-            if state.active?.phase == .parked {
-                revokeLateConfirmation(requestID: requestID)
-                return
-            }
             state.settle(.failed, noteDelivery: .notSent, completionVerified: false)
             store(state)
             return
         }
-        acpTeardownSettled = teardownSettled
         let before = load().active?.usedTokensBeforeCompact
         if AgentSelfCompactInstantReturn.isVouchedDrop(before: before, current: vouchedTokenCount) {
             beginVerifiedACPNote(requestID: requestID, owner: owner, teardownSettled: teardownSettled)
@@ -284,6 +255,7 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         else { return }
         state.active?.phase = .acpSettling
         store(state)
+        acpTeardownSettled = teardownSettled
         holdTask?.cancel()
         holdTask = Task { @MainActor [self] in
             await sleep(AgentSelfCompactInstantReturn.settleDuration)
@@ -301,12 +273,11 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         holdTask = nil
         acpTeardownSettled = nil
         var state = load()
-        guard !runtimeCancelled, let attempt = state.active, attempt.id == requestID,
-              attempt.phase == .acpSettling || acceptsCompactConfirmation(attempt)
-        else { return }
-        guard isCurrentOwner(owner) else {
-            state.settle(.cancelled, noteDelivery: .notSent, completionVerified: false)
-            store(state)
+        guard state.active?.id == requestID else { return }
+        switch state.active?.phase {
+        case .dispatchingCompact, .awaitingCompactTurn, .acpSettling:
+            break
+        default:
             return
         }
         state.active?.acpCompletionUnverified = nil
@@ -330,18 +301,8 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         }
         state.active?.acpCompletionUnverified = true
         state.active?.phase = .parked
-        store(state)
-    }
-
-    /// Keep the parked one-shot carry, but stop both terminal and natural ACP-vouch resumption.
-    private func revokeLateConfirmation(requestID: UUID) {
-        compactBoundAt.removeValue(forKey: requestID)
         acpTeardownSettled = nil
-    }
-
-    private func acceptsCompactConfirmation(_ attempt: AgentSelfCompactAttempt) -> Bool {
-        !runtimeCancelled && attempt.canAcceptCompactConfirmation
-            && (attempt.phase != .parked || compactBoundAt[attempt.id] != nil)
+        store(state)
     }
 
     private func elapsedSinceCompactBind(_ requestID: UUID) -> Duration? {
@@ -355,7 +316,7 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         teardownSettled: @escaping @MainActor () -> Bool
     ) async {
         for _ in 0 ..< 600 {
-            guard !runtimeCancelled, load().active?.id == requestID,
+            guard load().active?.id == requestID,
                   load().active?.phase == .awaitingNoteBoundary
             else { return }
             guard isCurrentOwner(owner) else {
@@ -370,7 +331,7 @@ final class AgentSelfCompactNativeCompletionCoordinator {
             await Task.yield()
         }
         var state = load()
-        guard !runtimeCancelled, state.active?.id == requestID,
+        guard state.active?.id == requestID,
               state.active?.phase == .awaitingNoteBoundary
         else { return }
         guard isCurrentOwner(owner) else {
@@ -387,13 +348,13 @@ final class AgentSelfCompactNativeCompletionCoordinator {
         store(state)
         let didStart = await dispatchNote(requestID) { [self] in
             let current = load().active
-            return !runtimeCancelled && current?.id == requestID
+            return current?.id == requestID
                 && (current?.phase == .noteDispatchPending || current?.phase == .dispatchingNote)
                 && current?.noteDispatchStarted == false
                 && isCurrentOwner(owner)
         }
         state = load()
-        guard !runtimeCancelled, state.active?.id == requestID else { return }
+        guard state.active?.id == requestID else { return }
         if !didStart, state.active?.noteDispatchStarted == false {
             if !isCurrentOwner(owner) {
                 state.settle(.cancelled, noteDelivery: .notSent, completionVerified: false)

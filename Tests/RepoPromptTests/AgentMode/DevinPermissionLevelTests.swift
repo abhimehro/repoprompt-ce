@@ -574,8 +574,7 @@ final class DevinPermissionLevelTests: XCTestCase {
         let first = Task { await service.discoverIfNeeded() }
         try await Task.sleep(for: .milliseconds(80))
         first.cancel()
-        let firstOutcome = await first.value
-        XCTAssertEqual(firstOutcome, .cancelled)
+        _ = await first.value
 
         let second = Task { await service.discoverIfNeeded() }
         try await Task.sleep(for: .milliseconds(80))

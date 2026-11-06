@@ -915,8 +915,7 @@ actor PromptContextAccountingService {
                        case .loadContent = contentPolicy,
                        content == nil
                     {
-                        // Folder descendants are derived context, so unreadable descendants stay
-                        // best-effort instead of being reported as missing explicit selections.
+                        missingPaths.append(file.standardizedRelativePath)
                         continue
                     }
                     let entry = ResolvedPromptFileEntry(

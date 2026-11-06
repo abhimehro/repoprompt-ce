@@ -16,7 +16,6 @@
 #include "repo_gitignore.h"
 #include "repo_process_security.h"
 #include "search_scoring.h"
-#include "session_catalog_sqlite.h"
 #include "string_extensions_wrapper.h"
 #include "wildmatch.h"
 

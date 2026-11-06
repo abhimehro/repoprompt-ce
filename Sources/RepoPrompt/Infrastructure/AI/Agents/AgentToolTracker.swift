@@ -477,14 +477,9 @@ final class AgentToolTrackingController {
         registrationTask = nil
     }
 
-    /// Flush the already-enqueued call observation before capturing its stable transcript row.
-    func waitForPendingEventDeliveries() async {
-        await eventDeliveryMailbox.waitUntilIdle()
-    }
-
     #if DEBUG
         func waitForPendingEventDeliveriesForTesting() async {
-            await waitForPendingEventDeliveries()
+            await eventDeliveryMailbox.waitUntilIdle()
         }
     #endif
 

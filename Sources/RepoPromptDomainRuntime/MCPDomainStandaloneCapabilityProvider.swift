@@ -4,7 +4,7 @@ import MCP
 /// Protocol-neutral argument carrier used by physical capability backends.
 /// Backends decode only the request type for the capability they implement; MCP `Value`
 /// never appears in a backend protocol signature.
-package struct DomainPhysicalToolRequest {
+package struct DomainPhysicalToolRequest: Sendable {
     package let argumentsJSON: Data
     package let securityContext: DomainToolInvocationSecurityContext?
 
@@ -22,7 +22,7 @@ package struct DomainPhysicalToolRequest {
     }
 }
 
-package struct DomainPhysicalReadRequest {
+package struct DomainPhysicalReadRequest: Sendable {
     package let request: DomainPhysicalToolRequest
     package let context: DomainReadInvocationContext
     package let sideEffects: MCPDomainReadSideEffectEmitter
@@ -38,14 +38,14 @@ package struct DomainPhysicalReadRequest {
     }
 }
 
-package struct DomainPhysicalToolResult {
+package struct DomainPhysicalToolResult: Sendable {
     package let json: Data
 
     package init(json: Data) {
         self.json = json
     }
 
-    package init(_ value: some Encodable) throws {
+    package init<T: Encodable>(_ value: T) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         json = try encoder.encode(value)
@@ -111,7 +111,7 @@ package protocol DomainHistoryCapabilityBackend: Sendable {
     func inspectHistory(_ request: DomainPhysicalReadRequest) async throws -> DomainPhysicalToolResult
 }
 
-package struct MCPDomainStandaloneCapabilityBackends {
+package struct MCPDomainStandaloneCapabilityBackends: Sendable {
     package let global: any DomainGlobalControlBackend
     package let workspace: any DomainWorkspaceCapabilityBackend
     package let filesystem: any DomainFilesystemMutationBackend
@@ -139,7 +139,7 @@ package struct MCPDomainStandaloneCapabilityBackends {
     }
 }
 
-package struct MCPDomainStandaloneToolInstallation {
+package struct MCPDomainStandaloneToolInstallation: Sendable {
     package let globalRegistration: MCPDomainToolRegistrationHandle
     package let standaloneRegistration: MCPDomainToolRegistrationHandle
     package let scopeID: DomainStandaloneScopeID
@@ -320,12 +320,6 @@ package enum MCPDomainStandaloneToolInstaller {
             binding(MCPWindowToolName.agentRun, backends.agent.run),
             binding(MCPWindowToolName.agentManage, backends.agent.manage),
             binding(MCPWindowToolName.agentSessionLink, backends.agent.monitorSessionLink),
-            binding(MCPWindowToolName.sessionAdmin) { _ in
-                throw MCPError.invalidParams("session_admin is not available for this session.")
-            },
-            binding(MCPWindowToolName.becomeOverseer) { _ in
-                throw MCPError.invalidParams("become_overseer is not available for this session.")
-            },
             // Direct-headless has no app-owned Agent Mode run or registration-time self origin.
             // Keep the canonical catalog complete while failing closed even if a caller names it.
             binding(MCPWindowToolName.agentSelf) { _ in
@@ -333,7 +327,7 @@ package enum MCPDomainStandaloneToolInstaller {
             },
             binding(MCPWindowToolName.shareThoughts, backends.agent.shareThoughts),
             binding(MCPWindowToolName.setStatus, backends.agent.publishStatus),
-            binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction)
+            binding(MCPWindowToolName.waitForNextInstruction, backends.agent.waitForInstruction),
         ]
     }
 

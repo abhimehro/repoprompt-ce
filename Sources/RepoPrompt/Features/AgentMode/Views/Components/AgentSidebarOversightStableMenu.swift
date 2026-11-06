@@ -165,7 +165,7 @@ extension AgentSessionRow {
         if hasLinkedSections {
             var unlinkItems: [StableMenuItem] = []
             if !menu.linkedObservers.isEmpty {
-                unlinkItems.append(.header(AgentOversightUICopy.unlinkOverseerSectionLabel))
+                unlinkItems.append(.header(AgentOversightUICopy.overseenBySectionLabel))
                 unlinkItems += menu.linkedObservers.compactMap { option in
                     guard case let .linked(reference, _) = option.relationship else { return nil }
                     let busy = busyKeys.contains(.unlink(
@@ -186,7 +186,7 @@ extension AgentSessionRow {
                 }
             }
             if !menu.linkedTargets.isEmpty {
-                unlinkItems.append(.header(AgentOversightUICopy.unlinkOverseenSectionLabel))
+                unlinkItems.append(.header(AgentOversightUICopy.overseeingSectionLabel))
                 unlinkItems += menu.linkedTargets.compactMap { option in
                     guard case let .linked(reference, _) = option.relationship else { return nil }
                     let busy = busyKeys.contains(.unlink(

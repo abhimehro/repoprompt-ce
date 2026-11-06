@@ -374,10 +374,6 @@ final class AgentSessionLinkACPCompactRunnerTests: XCTestCase {
         let session = harness.makeSession(agent: agent)
         let binding = AgentPersistentSessionBindingIdentity(tabID: session.tabID, sessionID: UUID())
         session.installPersistentSessionBinding(binding)
-        XCTAssertNotNil(session.operationAdmissionFailureMessage, "Installing a binding alone does not restore it")
-        // This runner fixture begins after payload restoration; creation and loading are separate contracts.
-        session.recordRestorationAuthoritative(.persistedPayloadApplied)
-        XCTAssertNil(session.operationAdmissionFailureMessage)
         return Fixture(harness: harness, provider: provider, session: session, promptLog: promptLog, binding: binding)
     }
 
@@ -763,14 +759,7 @@ final class AgentSessionLinkACPCompactTransactionTests: XCTestCase {
         let session = viewModel.session(for: tabID)
         session.selectedAgent = agent
         session.hasLoadedPersistedState = true
-        // Compaction owns an existing session, not the configuration and first save of a new one.
-        let sessionID = UUID()
-        _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(
-            sessionID: sessionID, on: session, updateWorkspaceMetadata: true
-        ))
-        XCTAssertNotNil(session.operationAdmissionFailureMessage)
-        session.recordRestorationAuthoritative(.persistedPayloadApplied)
-        XCTAssertNil(session.operationAdmissionFailureMessage)
+        let sessionID = try XCTUnwrap(viewModel.test_ensureSessionBoundToTab(session))
         return Fixture(
             viewModel: viewModel,
             manager: manager,
@@ -1086,12 +1075,6 @@ final class AgentSessionLinkACPBackgroundCompactionSettleTests: XCTestCase {
     private func idleSession() -> AgentModeViewModel.TabSession {
         let session = AgentModeViewModel.TabSession(tabID: UUID())
         session.hasLoadedPersistedState = true
-        XCTAssertEqual(admission(session), .blocked(.targetLoading), "The load latch alone proves no binding")
-        session.installPersistentSessionBinding(
-            AgentPersistentSessionBindingIdentity(tabID: session.tabID, sessionID: UUID())
-        )
-        session.recordRestorationAuthoritative(.persistedPayloadApplied)
-        XCTAssertEqual(admission(session), .ready, "The settle tests require an otherwise sendable restored session")
         return session
     }
 

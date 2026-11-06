@@ -42,66 +42,6 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
         )
     }
 
-    func testRoleModelSelectionUsesRealTransactionAndCannotChangeProviderOrReviveLease() async throws {
-        for crossProvider in [false, true] {
-            for revoked in [false, true] {
-                let fixture = try makeFixture()
-                defer { fixture.session.saveDebounceTask?.cancel() }
-                let agent: AgentProviderKind = crossProvider ? .codexExec : .claudeCode
-                _ = advertiseModel("test-native:high", agent: agent)
-                defer { AgentAdvertisedModelCatalog.shared.invalidate(agent) }
-                let before = fixture.session.selectedModelRaw
-                let generation = fixture.session.saveRequestGeneration
-                let result = await fixture.viewModel.agentSessionLinkPerformSetModel(
-                    to: fixture.candidate, modelID: "explore",
-                    liveness: { .init(observerEndpointIsLive: true, targetEndpointIsLive: true, targetWindowIsClosing: false) },
-                    availability: { .init() },
-                    roleSelectionProvider: { _, _ in .init(agent: agent, modelRaw: "test-native:high") },
-                    reauthorize: { revoked ? .managementRevoked : .committed }
-                )
-                if crossProvider {
-                    guard case let .refused(_, message, _) = result else { return XCTFail("Cross-provider role must refuse") }
-                    XCTAssertTrue(message.contains("same-agent"))
-                } else if revoked {
-                    guard case .blocked(.managementRevoked) = result else { return XCTFail("Original revoked lease must refuse") }
-                } else {
-                    guard case let .accepted(receipt) = result else { return XCTFail("Role must use real model commit") }
-                    XCTAssertEqual(receipt.modelID, "claudeCode:test-native:high")
-                    continue
-                }
-                XCTAssertEqual(fixture.session.selectedModelRaw, before)
-                XCTAssertEqual(fixture.session.saveRequestGeneration, generation)
-                XCTAssertFalse(fixture.events.contains(.providerControllerCreated))
-            }
-        }
-    }
-
-    func testModelRefusalOffersOnlyBoundedAdvertisedSameAgentAlternatives() async throws {
-        let fixture = try makeFixture()
-        let catalog = AgentAdvertisedModelCatalog.shared
-        defer { catalog.invalidate(.claudeCode) }
-        let options = (0 ..< 20).map { index in
-            AgentModelOption(
-                rawValue: "alternative-\(index)",
-                displayName: "Alternative",
-                description: nil,
-                isPlaceholderDefault: false,
-                isProviderDefault: false
-            )
-        }
-        catalog.record(options, for: .claudeCode, generation: catalog.productionGeneration(for: .claudeCode))
-        let before = fixture.session.selectedModelRaw
-        let outcome = await setModel(fixture, modelID: "claudeCode:not-advertised")
-        guard case let .refused(code, _, alternatives) = outcome else { return XCTFail("Expected catalog refusal") }
-        XCTAssertEqual(code, "model_not_advertised")
-        XCTAssertEqual(alternatives.count, 8)
-        for id in alternatives {
-            XCTAssertTrue(id.hasPrefix("claudeCode:"))
-            XCTAssertNoThrow(try catalog.selection(id, availability: .init()))
-        }
-        XCTAssertEqual(fixture.session.selectedModelRaw, before)
-    }
-
     func testSetModelChangesOnlyNextTurnConfigurationAndPreservesStagedHandoff() async throws {
         let fixture = try makeFixture()
         defer { fixture.session.saveDebounceTask?.cancel()
@@ -205,10 +145,8 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
                 return .committed
             }
         )
-        guard case let .refused(_, message, _) = result else { return XCTFail("Expected same-agent refusal") }
-        XCTAssertTrue(message.contains("set_model cannot change agent kind (current: codexExec)"))
-        XCTAssertTrue(message.contains("Usable same-agent model_ids:"))
-        XCTAssertTrue(message.contains("roles_only: false"))
+        guard case let .invalid(message) = result else { return XCTFail("Expected same-agent refusal") }
+        XCTAssertEqual(message, "set_model cannot change agent kind (current: codexExec). Use agent_manage.list_agents for a same-agent model_id.")
         XCTAssertEqual(fenceCount, 0)
         XCTAssertEqual(fixture.session.selectedModelRaw, originalModel)
         XCTAssertEqual(fixture.session.selectedReasoningEffortRaw, originalEffort)
@@ -277,7 +215,7 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
                 return .committed
             }
             if removeCatalogue {
-                guard case .refused = result else { return XCTFail("Missing catalogue must fail closed") }
+                guard case .invalid = result else { return XCTFail("Missing catalogue must fail closed") }
             } else {
                 guard case .blocked(.endpointInvalidated) = result else { return XCTFail("Stale endpoint must fail closed") }
             }
@@ -428,16 +366,9 @@ final class AgentSessionLinkSendTransactionLiveTests: XCTestCase {
         let session = viewModel.session(for: tabID)
         session.selectedAgent = .claudeCode
         session.hasLoadedPersistedState = true
-        // This transaction starts from an existing restored session, not an unfinished allocation.
-        let sessionID = UUID()
-        _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(
-            sessionID: sessionID, on: session, updateWorkspaceMetadata: true
-        ))
-        XCTAssertNotNil(session.operationAdmissionFailureMessage)
-        session.recordRestorationAuthoritative(.persistedPayloadApplied)
-        _ = try XCTUnwrap(
-            session.operationAdmissionFailureMessage == nil ? session : nil,
-            "The restored fixture must admit operations before exercising transaction gates"
+        let sessionID = try XCTUnwrap(
+            viewModel.test_ensureSessionBoundToTab(session),
+            "expected a durable persistent binding"
         )
         let candidate = try XCTUnwrap(
             viewModel.agentSessionLinkCandidate(

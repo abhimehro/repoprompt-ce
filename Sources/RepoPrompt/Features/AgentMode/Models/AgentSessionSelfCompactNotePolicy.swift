@@ -3,7 +3,7 @@ import Foundation
 
 /// The caller's continuation note is opaque provider input. Validation never normalizes its body.
 enum AgentSessionSelfCompactNotePolicy {
-    static let fallbackMaximumUTF8Bytes = 65536
+    static let maximumUTF8Bytes = 8192
     static let maximumIdempotencyKeyUTF8Bytes = 200
     private static let digestDomain = "agent_self.compact/v1\n"
 
@@ -14,27 +14,10 @@ enum AgentSessionSelfCompactNotePolicy {
         case invalidScalar
     }
 
-    /// Ten percent of the model window at four bytes/token, without overflowing Int.
-    static func noteLimit(windowTokens: Int?) -> (maximumUTF8Bytes: Int, basis: String) {
-        guard let windowTokens, windowTokens > 0 else {
-            return (fallbackMaximumUTF8Bytes, "unknown context window fallback")
-        }
-        return (
-            (windowTokens / 5) * 2 + (windowTokens % 5) * 2 / 5,
-            "10% of context window at 4 UTF-8 bytes/token"
-        )
-    }
-
-    static func maximumNoteUTF8Bytes(windowTokens: Int?) -> Int {
-        noteLimit(windowTokens: windowTokens).maximumUTF8Bytes
-    }
-
-    /// Byte limits govern admission only. Persisted notes use nil to retain content integrity
-    /// checks without rejecting notes admitted under a larger or no-longer-known model window.
-    static func validation(of note: String, maximum: Int?) -> Validation {
+    static func validation(of note: String) -> Validation {
         let byteCount = note.utf8.count
-        if let maximum, byteCount > maximum {
-            return .tooLong(byteCount: byteCount, maximum: maximum)
+        guard byteCount <= maximumUTF8Bytes else {
+            return .tooLong(byteCount: byteCount, maximum: maximumUTF8Bytes)
         }
         guard !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .empty

@@ -639,8 +639,7 @@ public extension VCSService {
     internal func createGitWorktreeWithResult(
         request: GitWorktreeCreateRequest,
         at repoURL: URL,
-        initializationContext: GitWorktreeInitializationContext? = nil,
-        beforeCommit: (@Sendable () async throws -> Void)? = nil
+        initializationContext: GitWorktreeInitializationContext? = nil
     ) async throws -> GitWorktreeCreateResult {
         let resolved = await resolveRepo(from: repoURL)
         guard let resolved else {
@@ -655,8 +654,7 @@ public extension VCSService {
             result = try await gitBackend().createWorktreeWithResult(
                 request: request,
                 at: resolved.rootURL,
-                initializationContext: initializationContext,
-                beforeCommit: beforeCommit
+                initializationContext: initializationContext
             )
         } catch {
             // `git worktree add` may have succeeded before a later step threw.

@@ -44,22 +44,10 @@ struct DevinModelCatalog {
     private let entriesByNormalizedRaw: [String: Entry]
 
     static var current: DevinModelCatalog {
-        AgentACPModelRegistry.shared.currentDevinCatalog()
+        DevinModelCatalog(snapshot: AgentACPModelRegistry.shared.resolvedSnapshot(for: .devin))
     }
 
-    #if DEBUG
-        private static let expansionCountLock = NSLock()
-        private static var expansionCount = 0
-
-        static var test_expansionCount: Int {
-            expansionCountLock.withLock { expansionCount }
-        }
-    #endif
-
     init(snapshot: ACPDiscoveredSessionModels?) {
-        #if DEBUG
-            Self.expansionCountLock.withLock { Self.expansionCount += 1 }
-        #endif
         let options = snapshot?.options ?? []
         let parameterSets = snapshot?.modelParameterSets ?? []
         let advertisedRaws = Set(options.map { Self.normalized($0.rawValue) })

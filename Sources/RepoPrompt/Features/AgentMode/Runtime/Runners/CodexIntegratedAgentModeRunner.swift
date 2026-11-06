@@ -26,15 +26,6 @@ final class CodexIntegratedAgentModeRunner {
         selfCompactDispatchID: AgentSelfCompactionDispatchID? = nil,
         stopFence: AgentRunStartStopFence? = nil
     ) async -> CodexAgentModeCoordinator.NativeSendOutcome {
-        let dedicatedNoteID = selfCompactDispatchID.flatMap { $0.stage == .note ? $0 : nil }
-        var handedToRunTask = false
-        defer {
-            if let dedicatedNoteID, !handedToRunTask {
-                AgentSelfCompactParkedPrefix.reparkUnattemptedDedicatedNote(dedicatedNoteID, session: session) {
-                    hooks.persistence.scheduleSave(session)
-                }
-            }
-        }
         guard stopFence?.permitsStart(of: session) ?? true else { return .cancelled }
         let ownership: AgentRunOwnership
         let createdOwnership: Bool
@@ -49,17 +40,11 @@ final class CodexIntegratedAgentModeRunner {
         }
         let attachmentReservationID = hooks.attachments.reserveAttachmentsForTurn(attachments, session)
 
-        let sendTask = Task<CodexAgentModeCoordinator.NativeSendOutcome, Never> { [weak self, weak session, hooks] in
-            guard let session else { return .cancelled }
-            defer {
-                if let dedicatedNoteID {
-                    AgentSelfCompactParkedPrefix.reparkUnattemptedDedicatedNote(dedicatedNoteID, session: session) {
-                        hooks.persistence.scheduleSave(session)
-                    }
-                }
-                session.agentTask = nil
+        let sendTask = Task<CodexAgentModeCoordinator.NativeSendOutcome, Never> { [weak self, weak session] in
+            guard let self, let session else {
+                return .cancelled
             }
-            guard let self else { return .cancelled }
+            defer { session.agentTask = nil }
             #if DEBUG || EDIT_FLOW_PERF
                 let codexTurnMCPServerEnableState = EditFlowPerf.begin(EditFlowPerf.Stage.MCPWindowToolCatalog.codexTurnMCPServerEnable)
             #endif
@@ -104,7 +89,6 @@ final class CodexIntegratedAgentModeRunner {
             }
             return outcome
         }
-        handedToRunTask = true
         session.agentTask = Task {
             await withTaskCancellationHandler {
                 _ = await sendTask.value

@@ -810,19 +810,6 @@ final class MCPServerViewModel: ObservableObject {
             }
         )
         toolService.perfRecorder = perfRecorder
-        toolService.forwardOversightSteer = { [self] args, metadata in
-            // AgentRunMCPToolService applies the exact argument allowlist before entering this forwarder.
-            guard ToolAvailabilityStore.shared.isEnabled(MCPWindowToolName.agentSessionLink) else {
-                throw MCPError.invalidParams("Oversight steering is disabled. Enable agent_session_link in tool settings, then use its steer operation under a Manage link.")
-            }
-            var forwarded: [String: Value] = [
-                "op": .string("steer"),
-                "idempotency_key": args["idempotency_key"] ?? .string(UUID().uuidString)
-            ]
-            forwarded["session_id"] = args["session_id"]
-            forwarded["message"] = args["message"]
-            return try await makeAgentSessionLinkToolService(metadata: metadata).execute(args: forwarded)
-        }
         return toolService
     }
 
@@ -1115,43 +1102,10 @@ final class MCPServerViewModel: ObservableObject {
         )
     }
 
-    private var becomeOverseerToolService: BecomeOverseerMCPToolService {
-        BecomeOverseerMCPToolService(
-            captureRequestMetadata: { [self] in await captureRequestMetadata() },
-            resolveObserverEndpoint: { [self] metadata in
-                guard let invocation = try? service.captureInvocationContext(
-                    toolName: MCPWindowToolName.becomeOverseer, expectedWindowID: windowID
-                ), let connectionID = metadata.connectionID,
-                let endpoint = await resolveAgentSessionLinkModelObserverEndpoint(
-                    metadata: metadata,
-                    modelRouteToken: invocation.dispatchAuthorization?.windowIdentity?.modelRouteToken
-                ), await ServerNetworkManager.shared.isBecomeOverseerAvailable(connectionID: connectionID, endpoint: endpoint)
-                else { return nil }
-                return endpoint
-            },
-            resolveRoutedEndpointForRefusal: { [self] metadata in
-                guard let invocation = try? service.captureInvocationContext(
-                    toolName: MCPWindowToolName.becomeOverseer, expectedWindowID: windowID
-                ) else { return nil }
-                return await resolveAgentSessionLinkModelObserverEndpoint(
-                    metadata: metadata,
-                    modelRouteToken: invocation.dispatchAuthorization?.windowIdentity?.modelRouteToken
-                )
-            }
-        )
-    }
-
     private var agentSessionLinkToolService: AgentSessionLinkMCPToolService {
-        makeAgentSessionLinkToolService()
-    }
-
-    private func makeAgentSessionLinkToolService(metadata: RequestMetadata? = nil) -> AgentSessionLinkMCPToolService {
         AgentSessionLinkMCPToolService(
             toolName: MCPWindowToolName.agentSessionLink,
-            captureRequestMetadata: { [self] in
-                if let metadata { return metadata }
-                return await captureRequestMetadata()
-            },
+            captureRequestMetadata: { [self] in await captureRequestMetadata() },
             requireTargetWindow: { [self] in try requireTargetWindow() },
             // Exact run-installed/handover/pending-run routing only: the observing endpoint can never
             // be supplied, hinted, or explicitly bound by the caller.
@@ -1184,7 +1138,6 @@ final class MCPServerViewModel: ObservableObject {
 
     @Published private(set) var isRunning = false // overall status
     @Published private(set) var pendingClientID: String? // approval state
-    @Published private(set) var pendingApprovalGeneration: UInt64?
     @Published private(set) var diagnostics: MCPDiagnostics = .init(
         issue: .none,
         lastEventAt: nil,
@@ -1436,23 +1389,11 @@ final class MCPServerViewModel: ObservableObject {
             }
             return try await agentSessionLinkToolService.execute(args: args)
         },
-        executeBecomeOverseer: { [weak self] args in
-            guard let self else { throw MCPError.internalError("Window deallocated while executing become_overseer") }
-            return try await becomeOverseerToolService.execute(args: args)
-        },
         executeAgentSelf: { [weak self] args in
             guard let self else {
                 throw MCPError.internalError("Window deallocated while executing self_compact")
             }
             return try await agentSelfToolService.execute(args: args)
-        },
-        executeSessionAdmin: { [weak self] args in
-            guard let self else { throw MCPError.internalError("Window deallocated while executing session_admin") }
-            return try await sessionAdminToolService(requireTargetWindow: { [weak self] in
-                guard let self else { throw MCPError.internalError("Window deallocated while resolving target window") }
-                return try requireTargetWindow()
-            })
-            .execute(args: args)
         },
         requireTargetWindow: { [weak self] in
             guard let self else { throw MCPError.internalError("Window deallocated while resolving target window") }
@@ -2064,9 +2005,7 @@ final class MCPServerViewModel: ObservableObject {
         selection: windowToolSelectionCapabilities
     )
     @MainActor
-    private lazy var historyToolProvider = MCPHistoryToolProvider(
-        runtime: windowToolRuntime, workspaceStore: domainWorkspaceAuthorityClient?.store
-    )
+    private lazy var historyToolProvider = MCPHistoryToolProvider(runtime: windowToolRuntime)
     @MainActor
     private lazy var domainReadToolProvider = MCPDomainReadToolProvider(
         resolveContext: { [weak self] toolName, requirement in
@@ -2195,16 +2134,7 @@ final class MCPServerViewModel: ObservableObject {
                 runtime: windowToolRuntime,
                 execution: windowToolExecutionCapabilities,
                 context: windowToolContextCapabilities,
-                selection: windowToolSelectionCapabilities,
-                resolveSpawnParentSessionID: { [weak self] metadata, targetWindow in
-                    await self?.resolveSpawnParentSessionID(metadata: metadata, targetWindow: targetWindow)
-                },
-                resolveObserverEndpoint: { [weak self] metadata, targetWindow in
-                    await self?.resolveAgentSessionLinkObserverEndpoint(
-                        metadata: metadata,
-                        targetWindow: targetWindow
-                    )
-                }
+                selection: windowToolSelectionCapabilities
             ),
             MCPContextBuilderToolProvider(
                 runtime: windowToolRuntime,
@@ -2214,7 +2144,6 @@ final class MCPServerViewModel: ObservableObject {
             ),
             MCPAskUserToolProvider(runtime: windowToolRuntime, execution: windowToolExecutionCapabilities),
             MCPAgentControlToolProvider(runtime: windowToolRuntime, execution: windowToolExecutionCapabilities),
-            MCPSessionAdminToolProvider(runtime: windowToolRuntime, execution: windowToolExecutionCapabilities),
             MCPAgentSessionControlToolProvider(
                 runtime: windowToolRuntime,
                 execution: windowToolExecutionCapabilities
@@ -3223,7 +3152,6 @@ final class MCPServerViewModel: ObservableObject {
 
         isRunning = snap.isRunning
         pendingClientID = snap.pendingClientID
-        pendingApprovalGeneration = snap.pendingApprovalGeneration
         diagnostics = snap.diagnostics
         lastErrorMessage = humanReadableError(from: snap.diagnostics.issue)
 
@@ -3508,8 +3436,11 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     /// Called by UI after the alert sheet closes
-    func resolveApproval(allow: Bool, generation: UInt64) async {
-        await service.continuePendingApproval(allow: allow, generation: generation)
+    func resolveApproval(allow: Bool, alwaysAllow: Bool = false) async {
+        await service.continuePendingApproval(
+            allow: allow,
+            alwaysAllow: alwaysAllow
+        )
     }
 
     // MARK: - Dashboard Methods
@@ -4594,20 +4525,30 @@ final class MCPServerViewModel: ObservableObject {
             return try await operation()
         }
 
-        return try await MCPToolHeartbeat.run(interval: interval) {
-            await MCPInvocationContextBridge.withInvocation(invocationContext) {
-                await ServerNetworkManager.shared.sendProgress(
-                    for: connectionID,
-                    tool: tool,
-                    kind: .heartbeat,
-                    stage: stage,
-                    message: message
-                )
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await MCPInvocationContextBridge.withInvocation(invocationContext) {
+                    try await operation()
+                }
             }
-        } operation: {
-            try await MCPInvocationContextBridge.withInvocation(invocationContext) {
-                try await operation()
+            group.addTask {
+                try await MCPInvocationContextBridge.withInvocation(invocationContext) {
+                    while !Task.isCancelled {
+                        try await Task.sleep(for: interval)
+                        await ServerNetworkManager.shared.sendProgress(
+                            for: connectionID,
+                            tool: tool,
+                            kind: .heartbeat,
+                            stage: stage,
+                            message: message
+                        )
+                    }
+                    throw CancellationError()
+                }
             }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
     }
 
@@ -7135,10 +7076,7 @@ final class MCPServerViewModel: ObservableObject {
         )
         return OracleExportFile(
             path: resolvedPath,
-            instruction: AgentOracleExport.instruction(
-                path: resolvedPath,
-                oracleLaneCount: request.groupResult?.oracleResults.count
-            )
+            instruction: AgentOracleExport.instruction(path: resolvedPath)
         )
     }
 

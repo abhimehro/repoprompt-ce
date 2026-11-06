@@ -1,5 +1,4 @@
 import RepoPromptFileSystem
-import RepoPromptShared
 
 //
 //  PromptStorage.swift
@@ -69,7 +68,27 @@ class PromptStorage {
 
     /// Compute the file URL in Application Support under com.pvncher.repoprompt.
     private var fileURL: URL {
-        configuredFileURL ?? AppProfileLocations.current.savedPromptsRoot.appendingPathComponent(filename)
+        if let configuredFileURL {
+            try? FileManager.default.createDirectory(
+                at: configuredFileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            return configuredFileURL
+        }
+
+        let supportDir = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+
+        // Create a subfolder "com.pvncher.repoprompt" if it doesn't exist
+        let appSupportFolder = supportDir.appendingPathComponent("com.pvncher.repoprompt", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: appSupportFolder,
+            withIntermediateDirectories: true
+        )
+
+        return appSupportFolder.appendingPathComponent(filename)
     }
 
     /// <summary>
@@ -147,8 +166,6 @@ class PromptStorage {
     }
 
     private func writePrompts(_ prompts: [StoredPromptRecord]) throws {
-        try AppProfileLocations.current.validateMetadataFile(fileURL)
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(prompts)
         try data.write(to: fileURL, options: .atomicWrite)
     }

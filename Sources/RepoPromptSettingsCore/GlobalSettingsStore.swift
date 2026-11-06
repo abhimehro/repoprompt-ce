@@ -47,8 +47,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
     @Published package private(set) var codeMapsGloballyDisabled: Bool = false
     @Published package private(set) var nonGitCodeMapsEnabled: Bool = false
     @Published package private(set) var modelRouterSettingsRevision: UInt64 = 0
-    @Published package private(set) var autoEffortSettingsRevision: UInt64 = 0
-    private var routerDemandObservers: [UUID: AsyncStream<RoutingSettingsSnapshot>.Continuation] = [:]
     /// Non-nil when the on-disk settings file is blocked (unreadable or a newer schema).
     /// UI surfaces this when the store cannot safely repair the document automatically.
     @Published package private(set) var persistenceBlockReason: GlobalSettingsPersistenceBlockReason? {
@@ -229,7 +227,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
         AgentModelsSettingsProfile(
             planningModelRaw: scalarPreferences.modelSelection?.planningModel,
             additionalOracleModelRaws: scalarPreferences.modelSelection?.additionalOracleModels ?? [],
-            oracleReconciliationGuidance: scalarPreferences.modelSelection?.oracleReconciliationGuidance,
             preferredComposeModelRaw: scalarPreferences.modelSelection?.preferredComposeModel,
             syncChatModelWithOracle: resolvedSyncChatModelWithOracleFromCurrentPreferences(),
             contextBuilderAgentRaw: globalDefaults.discoverAgentRaw,
@@ -252,7 +249,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
         modelSelection.additionalOracleModels = normalized.additionalOracleModelRaws.isEmpty
             ? nil
             : normalized.additionalOracleModelRaws
-        modelSelection.oracleReconciliationGuidance = normalized.oracleReconciliationGuidance
         modelSelection.preferredComposeModel = normalized.preferredComposeModelRaw
         modelSelection.syncChatModelWithOracle = normalized.syncChatModelWithOracle
         scalarPreferences.modelSelection = modelSelection
@@ -1040,56 +1036,15 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
     }
 
     /// Independent of Model Router. Missing settings retain the manual-effort path.
-    package func routingSettingsSnapshot() -> RoutingSettingsSnapshot {
-        .init(
-            routerEnabled: scalarPreferences.modelRouter?.enabled == true,
-            selectedBackendRawValue: scalarPreferences.modelRouter?.selectedBackendRawValue,
-            autoEffortEnabled: autoEffortEnabled(),
-            routerRevision: modelRouterSettingsRevision,
-            autoEffortBackendRawValue: scalarPreferences.agentMode?.autoEffortBackendRawValue,
-            autoEffortRevision: autoEffortSettingsRevision
-        )
-    }
-
-    package func routingSettingsUpdates() -> AsyncStream<RoutingSettingsSnapshot> {
-        let id = UUID()
-        return AsyncStream { continuation in
-            routerDemandObservers[id] = continuation
-            continuation.yield(routingSettingsSnapshot())
-            continuation.onTermination = { [weak self] _ in
-                Task { @MainActor in self?.routerDemandObservers.removeValue(forKey: id) }
-            }
-        }
-    }
-
-    private func publishRouterDemand() {
-        let snapshot = routingSettingsSnapshot()
-        for continuation in routerDemandObservers.values {
-            continuation.yield(snapshot)
-        }
-    }
-
-    package func setAutoEffortBackendRaw(_ raw: String, commit: Bool = true) {
-        guard scalarPreferences.agentMode?.autoEffortBackendRawValue != raw else { return }
-        updateAgentModeScalar(commit: false) { $0.autoEffortBackendRawValue = raw }
-        autoEffortSettingsRevision &+= 1
-        publishRouterDemand()
-        if commit { save() }
-    }
-
     package func autoEffortEnabled() -> Bool {
         scalarPreferences.agentMode?.autoEffortEnabled == true
     }
 
     package func setAutoEffortEnabled(_ enabled: Bool, commit: Bool = true) {
-        guard autoEffortEnabled() != enabled else { return }
-        updateAgentModeScalar(commit: false) { settings in
+        updateAgentModeScalar(commit: commit) { settings in
             // Clearing returns to the baseline scalar shape for older CE builds.
             settings.autoEffortEnabled = enabled ? true : nil
         }
-        autoEffortSettingsRevision &+= 1
-        publishRouterDemand()
-        if commit { save() }
     }
 
     package func setCodexMemoriesEnabled(_ enabled: Bool, commit: Bool = true) {
@@ -1163,25 +1118,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
 
     package func setClaudeCLIUsageGrant(_ grant: ClaudeCLIUsageGrant?, commit: Bool = true) {
         updateAgentModeScalar(commit: commit) { $0.claudeCLIUsageGrant = grant }
-    }
-
-    /// The Claude usage display the user already set up: usage display on, and a ready CLI
-    /// usage grant for this credential profile. This is the consent that lets passive run
-    /// telemetry refresh the *displayed* Claude usage.
-    package func claudeUsageDisplayConsented(profileID: String) -> Bool {
-        guard usageLimitsDisplayEnabled(), let grant = claudeCLIUsageGrant() else { return false }
-        return grant.isReady && grant.applies(toProfileID: profileID)
-    }
-
-    /// Whether first-party Claude runs record their own SDK `rate_limit_event` stream output.
-    ///
-    /// Either the diagnostics toggle (`claudeUsageQuotaEnabled`, unchanged meaning) or the
-    /// connected Claude usage display is sufficient. The events are part of the run's own
-    /// output: recording them starts no read, process, or request and touches no credential,
-    /// so the display connection the user already granted covers showing them. They remain
-    /// display-only; routing and balancing never consume SDK telemetry.
-    package func claudeRunTelemetryRecordingEnabled(profileID: String) -> Bool {
-        claudeUsageQuotaEnabled() || claudeUsageDisplayConsented(profileID: profileID)
     }
 
     /// UI-only, separately disclosed background acquisition consent. Not routing policy.
@@ -1499,7 +1435,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
         }
         if before != scalarPreferences.modelRouter {
             modelRouterSettingsRevision &+= 1
-            publishRouterDemand()
         }
         if commit {
             save()
@@ -1914,7 +1849,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
         var normalized = AgentModelsSettingsProfile(
             planningModelRaw: profile.planningModelRaw,
             additionalOracleModelRaws: profile.additionalOracleModelRaws,
-            oracleReconciliationGuidance: profile.oracleReconciliationGuidance,
             preferredComposeModelRaw: profile.preferredComposeModelRaw,
             syncChatModelWithOracle: profile.syncChatModelWithOracle,
             contextBuilderAgentRaw: profile.contextBuilderAgentRaw,
@@ -1999,17 +1933,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
     // MARK: - Persistence
 
     private func load(notifyAgentModelsChanges: Bool = false) {
-        let oldRouterSettings = scalarPreferences.modelRouter
-        let oldEnabled = autoEffortEnabled()
-        let oldBackend = scalarPreferences.agentMode?.autoEffortBackendRawValue
-        defer {
-            if oldRouterSettings != scalarPreferences.modelRouter { modelRouterSettingsRevision &+= 1 }
-            if oldEnabled != autoEffortEnabled() || oldBackend != scalarPreferences.agentMode?.autoEffortBackendRawValue {
-                autoEffortSettingsRevision &+= 1
-            }
-            publishRouterDemand()
-        }
-
         let oldGlobalProfile = globalAgentModelsProfile()
         let oldWorkspaceSettings = agentModelsSettingsByWorkspaceID
         let fileExists = FileManager.default.fileExists(atPath: fileStore.fileURL.path)
@@ -2126,17 +2049,6 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
 
     @discardableResult
     package func reloadFromDisk() -> Bool {
-        let oldRouterSettings = scalarPreferences.modelRouter
-        let oldEnabled = autoEffortEnabled()
-        let oldBackend = scalarPreferences.agentMode?.autoEffortBackendRawValue
-        defer {
-            if oldRouterSettings != scalarPreferences.modelRouter { modelRouterSettingsRevision &+= 1 }
-            if oldEnabled != autoEffortEnabled() || oldBackend != scalarPreferences.agentMode?.autoEffortBackendRawValue {
-                autoEffortSettingsRevision &+= 1
-            }
-            publishRouterDemand()
-        }
-
         do {
             let oldGlobalProfile = globalAgentModelsProfile()
             let oldWorkspaceSettings = agentModelsSettingsByWorkspaceID

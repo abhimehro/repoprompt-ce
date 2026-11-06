@@ -2,7 +2,6 @@ import AppKit
 import ImageIO
 @testable import RepoPromptApp
 import RepoPromptDomainRuntime
-import RepoPromptShared
 import XCTest
 
 final class ChatHistoryJSONOnlyTests: XCTestCase {
@@ -19,7 +18,7 @@ final class ChatHistoryJSONOnlyTests: XCTestCase {
         let fileURL = try await service.saveChatSession(session, for: workspace)
         defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent().deletingLastPathComponent()) }
 
-        XCTAssertTrue(fileURL.path.contains("/Application Support/\(MCPFilesystemIdentity.current.applicationStateDirectoryName)/Workspaces/"), fileURL.path)
+        XCTAssertTrue(fileURL.path.contains("/Application Support/RepoPrompt CE/Workspaces/"), fileURL.path)
         XCTAssertFalse(fileURL.path.contains("/Application Support/RepoPrompt/Workspaces/"), fileURL.path)
 
         let loaded = try await service.loadChatSession(from: fileURL)

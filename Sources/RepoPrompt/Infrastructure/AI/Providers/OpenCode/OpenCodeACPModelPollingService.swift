@@ -239,15 +239,6 @@ actor OpenCodeACPModelPollingService {
         client: OpenCodeACPControllerModelDiscoveryClient()
     )
 
-    enum RefreshOutcome: Equatable {
-        case updated
-        case unchanged
-        case noModelsAdvertised
-        case skipped
-        case failed
-        case cancelled
-    }
-
     struct Snapshot: Equatable {
         let models: ACPDiscoveredSessionModels
         let fetchedAt: Date
@@ -308,7 +299,7 @@ actor OpenCodeACPModelPollingService {
         guard !isShutdown else { return nil }
         let workspace = OpenCodeACPModelParameterKey.normalizedWorkspacePath(workspacePath)
         preferredWorkspacePath = workspace
-        return try await awaitCatalogJob(workspace: workspace).snapshot
+        return try await awaitCatalogJob(workspace: workspace)
     }
 
     func subscribe(workspacePath: String?) async -> AsyncStream<Snapshot> {
@@ -348,29 +339,23 @@ actor OpenCodeACPModelPollingService {
         return stream
     }
 
-    func refreshNow(workspacePath: String?) async -> RefreshOutcome {
-        guard !isShutdown else { return .skipped }
+    @discardableResult
+    func refreshNow(workspacePath: String?) async -> Bool {
+        guard !isShutdown else { return false }
         let workspace = OpenCodeACPModelParameterKey.normalizedWorkspacePath(workspacePath)
         preferredWorkspacePath = workspace
-        let previous = AgentACPModelRegistry.shared.resolvedSnapshot(for: .openCode)
         do {
-            let result = try await awaitCatalogJob(workspace: workspace)
-            guard result.didObtainCatalog else {
-                return Task.isCancelled ? .cancelled : .failed
+            // Both the Boolean and the dependent parameter re-probe require a non-nil published
+            // snapshot: when the client returned nil nothing was obtained or published, so this
+            // must report failure rather than falsely refreshing downstream parameter state.
+            guard let snapshot = try await awaitCatalogJob(workspace: workspace) else {
+                return false
             }
-            guard result.didAdvertiseModels else {
-                return .noModelsAdvertised
-            }
-            guard let snapshot = result.snapshot else {
-                return Task.isCancelled ? .cancelled : .failed
-            }
-            guard !Task.isCancelled else { return .cancelled }
+            _ = snapshot
             refreshParameterObservations(for: workspace)
-            return previous == snapshot.models ? .unchanged : .updated
-        } catch is CancellationError {
-            return .cancelled
+            return true
         } catch {
-            return Task.isCancelled ? .cancelled : .failed
+            return false
         }
     }
 
@@ -698,15 +683,9 @@ actor OpenCodeACPModelPollingService {
         }
     }
 
-    private struct CatalogRefreshResult {
-        let snapshot: Snapshot?
-        let didObtainCatalog: Bool
-        let didAdvertiseModels: Bool
-    }
-
     private struct CatalogWaiter {
         let id: UUID
-        let continuation: CheckedContinuation<CatalogRefreshResult, Error>
+        let continuation: CheckedContinuation<OpenCodeACPModelPollingService.Snapshot?, Error>
     }
 
     /// One coalesced job per key. Catalog joiners register a waiter and receive this job's own
@@ -771,18 +750,10 @@ actor OpenCodeACPModelPollingService {
             // Publication must own the snapshot foreground callers receive: `publishCatalog`
             // builds the single normalized/timestamped snapshot, and catalog waiters all resume
             // with that same value rather than `awaitCatalogJob` reconstructing a second one.
-            let catalogResult = if let catalog = value?.catalog {
-                CatalogRefreshResult(
-                    snapshot: publishCatalog(catalog),
-                    didObtainCatalog: true,
-                    didAdvertiseModels: !catalog.options.isEmpty
-                )
+            let published: Snapshot? = if let catalog = value?.catalog {
+                publishCatalog(catalog)
             } else {
-                CatalogRefreshResult(
-                    snapshot: nil,
-                    didObtainCatalog: false,
-                    didAdvertiseModels: false
-                )
+                nil
             }
             if case let .parameter(parameterKey) = key {
                 let state = value?.parameterState
@@ -790,7 +761,7 @@ actor OpenCodeACPModelPollingService {
                 deliverParameterOutcome(parameterKey, state: state)
             }
             for waiter in entry?.catalogWaiters ?? [] {
-                waiter.continuation.resume(returning: catalogResult)
+                waiter.continuation.resume(returning: published)
             }
         case let .failure(error):
             if case let .parameter(parameterKey) = key {
@@ -819,13 +790,13 @@ actor OpenCodeACPModelPollingService {
     /// Join (or start) the catalog job for a workspace. Foreground callers receive this job's
     /// real result/error. Cancellation withdraws only this caller's waiter; the shared job keeps
     /// running for other owners.
-    private func awaitCatalogJob(workspace: String?) async throws -> CatalogRefreshResult {
+    private func awaitCatalogJob(workspace: String?) async throws -> Snapshot? {
         try Task.checkCancellation()
         guard !isShutdown else { throw CancellationError() }
         let key = JobKey.catalog(workspacePath: workspace)
         let waiterID = UUID()
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CatalogRefreshResult, Error>) in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Snapshot?, Error>) in
                 // Register the waiter synchronously inside the continuation closure so ordering
                 // against the cancellation handler cannot strand a cancelled caller.
                 if isShutdown {

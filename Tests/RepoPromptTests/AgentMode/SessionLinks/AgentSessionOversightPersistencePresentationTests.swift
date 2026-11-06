@@ -29,7 +29,7 @@ final class AgentSessionOversightPersistencePresentationTests: XCTestCase {
 
     // MARK: - Add blocker composition
 
-    func testAContinuityFailureWarnsWithoutDisablingAnEligibleLiveSession() {
+    func testAPersistenceBlockerDisablesAddOnAnOtherwiseEligibleSession() {
         let props = AgentModeViewModel.monitorPillProps(
             sessionID: UUID(),
             published: nil,
@@ -40,14 +40,13 @@ final class AgentSessionOversightPersistencePresentationTests: XCTestCase {
             )
         )
 
-        XCTAssertTrue(props.canAdd)
-        XCTAssertNil(props.canAddReason)
-        XCTAssertNotNil(props.persistence.noticeMessage)
+        XCTAssertFalse(props.canAdd)
+        XCTAssertEqual(props.canAddReason, AgentSessionOversightPersistenceCopy.futureSchema)
     }
 
     /// Persistence wins over eligibility: telling a user to load a thread when the real problem is a
     /// preserved manifest sends them to fix the wrong thing.
-    func testLiveEligibilityStillAppliesWhenContinuityIsSuppressed() {
+    func testThePersistenceBlockerTakesPrecedenceOverTheLiveEligibilityReason() {
         let props = AgentModeViewModel.monitorPillProps(
             sessionID: UUID(),
             published: nil,
@@ -56,7 +55,7 @@ final class AgentSessionOversightPersistencePresentationTests: XCTestCase {
             persistence: AgentSessionOversightPersistencePresentation(availability: .suppressed)
         )
 
-        XCTAssertEqual(props.canAddReason, "Load this thread before adding sessions to oversee.")
+        XCTAssertEqual(props.canAddReason, AgentSessionOversightPersistenceCopy.suppressedLaunch)
     }
 
     func testEligibilityStillDisablesAddWhenPersistenceIsReady() {
@@ -100,7 +99,7 @@ final class AgentSessionOversightPersistencePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(props.persistence.availability, .loading)
-        XCTAssertEqual(props.canAddReason, AgentMonitorPillProps.empty.canAddReason)
+        XCTAssertEqual(props.canAddReason, AgentSessionOversightPersistenceCopy.loading)
     }
 
     // MARK: - Warnings
