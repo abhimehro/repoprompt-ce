@@ -151,6 +151,20 @@ public struct MCPTerminalRecord: Codable, Equatable, Sendable {
         return max(0, value)
     }
 
+    // PERFORMANCE: Pre-compiled regex patterns to eliminate expensive recompilation on every terminal event sanitization call.
+    // NSRegularExpression is immutable and thread-safe for matching across concurrent threads.
+    private nonisolated(unsafe) static let credentialURLRegex = try? NSRegularExpression(
+        pattern: #"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"#
+    )
+    private nonisolated(unsafe) static let sensitiveKeyRegex = try? NSRegularExpression(
+        pattern: #"(?i)([\"']?[a-z0-9_.-]*(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|token|secret|password|credential|private[_-]?key|cookie|set-cookie|environment|request[_-]?payload|payload|prompt)[a-z0-9_.-]*[\"']?\s*[:=]\s*)(?:bearer\s+[^\s,;&]+|basic\s+[^\s,;&]+|\"[^\"]*\"|'[^']*'|[^\s,;&]+)"#
+    )
+    private nonisolated(unsafe) static let standaloneSecretRegexes: [NSRegularExpression] = [
+        #"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+"#,
+        #"\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b"#,
+        #"\bsk-[a-zA-Z0-9_-]{16,}\b"#
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+
     private static func privacySafeText(
         _ value: String?,
         maximumLength: Int,
@@ -167,8 +181,7 @@ public struct MCPTerminalRecord: Codable, Equatable, Sendable {
             )
         }
 
-        let credentialURLPattern = #"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"#
-        if let regex = try? NSRegularExpression(pattern: credentialURLPattern) {
+        if let regex = credentialURLRegex {
             let range = NSRange(sanitized.startIndex..., in: sanitized)
             sanitized = regex.stringByReplacingMatches(
                 in: sanitized,
@@ -177,8 +190,7 @@ public struct MCPTerminalRecord: Codable, Equatable, Sendable {
             )
         }
 
-        let sensitiveKeyPattern = #"(?i)([\"']?[a-z0-9_.-]*(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|token|secret|password|credential|private[_-]?key|cookie|set-cookie|environment|request[_-]?payload|payload|prompt)[a-z0-9_.-]*[\"']?\s*[:=]\s*)(?:bearer\s+[^\s,;&]+|basic\s+[^\s,;&]+|\"[^\"]*\"|'[^']*'|[^\s,;&]+)"#
-        if let regex = try? NSRegularExpression(pattern: sensitiveKeyPattern) {
+        if let regex = sensitiveKeyRegex {
             let range = NSRange(sanitized.startIndex..., in: sanitized)
             sanitized = regex.stringByReplacingMatches(
                 in: sanitized,
@@ -187,13 +199,7 @@ public struct MCPTerminalRecord: Codable, Equatable, Sendable {
             )
         }
 
-        let standaloneSecretPatterns = [
-            #"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+"#,
-            #"\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b"#,
-            #"\bsk-[a-zA-Z0-9_-]{16,}\b"#
-        ]
-        for pattern in standaloneSecretPatterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        for regex in standaloneSecretRegexes {
             let range = NSRange(sanitized.startIndex..., in: sanitized)
             sanitized = regex.stringByReplacingMatches(
                 in: sanitized,
