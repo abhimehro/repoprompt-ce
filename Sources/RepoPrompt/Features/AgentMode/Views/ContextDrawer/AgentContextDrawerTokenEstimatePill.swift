@@ -81,6 +81,18 @@ struct AgentContextDrawerTokenEstimatePill: View {
                     )
                 )
         )
+        .accessibilityLabel(
+            isWaiting
+                ? "Updating token estimate for the current selection."
+                : tokenWarningHelp(
+                    snapshot,
+                    contextWindowTokens: contextWindowTokenBudget,
+                    usedPercent: contextUsedPercent(
+                        usedTokens: snapshot.breakdown.total,
+                        contextWindowTokens: contextWindowTokenBudget
+                    )
+                )
+        )
     }
 
     private var loadingCapsule: some View {
