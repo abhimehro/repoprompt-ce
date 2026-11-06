@@ -128,8 +128,7 @@ package enum AgentOversightUICopy {
         "Overseeing \(overseeingCount); \(availableCount) available"
     }
 
-    /// VoiceOver value of the Oversee-by menu — mirrors the approved Oversee value.
-    /// TODO(copy-approval): derived phrasing, pending sign-off.
+    /// VoiceOver value of the Oversee-by menu (approved: "Overseen by {N}; {M} available").
     package static func overseeByMenuAccessibilityValue(
         overseenByCount: Int,
         availableCount: Int
