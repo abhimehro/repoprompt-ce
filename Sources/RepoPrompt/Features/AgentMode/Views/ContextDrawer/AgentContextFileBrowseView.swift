@@ -76,6 +76,7 @@ struct AgentContextFileBrowseView: View {
             }
             .buttonStyle(CustomButtonStyle(verticalPadding: 4, horizontalPadding: 9))
             .hoverTooltip("Return to selection review")
+            .accessibilityLabel("Return to selection review")
         }
     }
 
@@ -108,6 +109,7 @@ struct AgentContextFileBrowseView: View {
                 }
                 .buttonStyle(.plain)
                 .hoverTooltip("Clear search")
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10)
