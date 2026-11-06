@@ -13,6 +13,7 @@ struct TrashButton: View {
     @State private var isHovered: Bool = false
     @State private var showingConfirmation: Bool = false
 
+    /// Shows a labeled clear-chat button that requests confirmation before invoking its action.
     var body: some View {
         Button(action: {
             showingConfirmation = true
@@ -36,6 +37,7 @@ struct TrashButton: View {
                 isHovered = hovering
             }
         }
+        .hoverTooltip("Clear Chat")
         .accessibilityLabel("Clear Chat")
         .popover(isPresented: $showingConfirmation, arrowEdge: .leading) {
             VStack(spacing: 8) {
@@ -97,6 +99,7 @@ struct SendOrResendButton: View {
 
     @State private var isHovered = false
 
+    /// Sends input or resends the last message, with matching tooltip and accessibility text.
     var body: some View {
         Button(action: {
             if inputText.isEmpty && hasMessages {
@@ -125,6 +128,7 @@ struct SendOrResendButton: View {
             }
         }
         .hoverTooltip(inputText.isEmpty && hasMessages ? "Resend Last Message" : sendTooltip)
+        .accessibilityLabel(inputText.isEmpty && hasMessages ? "Resend Last Message" : sendTooltip)
     }
 
     private var isEnabled: Bool {
@@ -152,6 +156,7 @@ struct CancelButton: View {
         self.action = action
     }
 
+    /// Shows a labeled stop control for cancelling the active AI response.
     var body: some View {
         Button(action: action) {
             ZStack {
@@ -173,6 +178,7 @@ struct CancelButton: View {
             }
         }
         .hoverTooltip("Cancel AI Response")
+        .accessibilityLabel("Cancel AI Response")
     }
 
     private func recordAppear() {
