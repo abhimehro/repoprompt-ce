@@ -38,7 +38,8 @@ final class GeminiProvider: OpenAIProvider {
             }
             return response.lowercased().contains("hello")
         } catch {
-            print("Gemini API Key Test Failed: \(error)")
+            // SECURITY: Sanitize error output to prevent leaking credentials or request internals
+            print("Gemini API Key Test Failed: \(error.asFriendlyString())")
             return false
         }
     }

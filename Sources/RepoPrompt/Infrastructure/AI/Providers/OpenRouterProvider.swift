@@ -188,7 +188,8 @@ class OpenRouterProvider: AIProvider {
 
             return response.lowercased().contains("hello")
         } catch {
-            print("OpenRouter API Key Test Failed: \(error)")
+            // SECURITY: Sanitize error output to prevent leaking credentials or request internals
+            print("OpenRouter API Key Test Failed: \(error.asFriendlyString())")
             return false
         }
     }
