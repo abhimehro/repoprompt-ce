@@ -357,6 +357,8 @@ struct APISettingsView: View {
         }
     }
 
+    /// Builds a provider settings section with key or URL input, validation controls,
+    /// optional model settings, and an accessible documentation link.
     private func apiKeySection(
         title: String,
         key: Binding<String>,
@@ -384,6 +386,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .accessibilityLabel("Learn more about \(title)")
+                .hoverTooltip("Learn more about \(title)")
             }
             if let caption {
                 Text(caption)
@@ -628,6 +632,8 @@ struct APISettingsView: View {
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .accessibilityLabel("Learn more about Azure OpenAI")
+                .hoverTooltip("Learn more about Azure OpenAI")
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -705,6 +711,8 @@ struct APISettingsView: View {
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .accessibilityLabel("Learn more about Local Model Settings")
+                    .hoverTooltip("Learn more about Local Model Settings")
                 }
                 Text("Ollama uses port 11434 | LM Studio uses port 1234")
                     .font(.caption)
