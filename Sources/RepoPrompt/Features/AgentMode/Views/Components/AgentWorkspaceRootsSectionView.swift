@@ -304,6 +304,7 @@ struct AgentWorkspaceRootsSectionView: View {
             }
             .buttonStyle(CustomButtonStyle(verticalPadding: 0, horizontalPadding: 8, height: 26))
             .hoverTooltip("Exit Workspace", .top)
+            .accessibilityLabel("Exit Workspace")
             .disabled(rootsStore.isExitDisabled)
             .opacity(rootsStore.isExitDisabled ? 0.5 : 1)
         }
@@ -527,6 +528,7 @@ struct AgentWorkspaceRootsSectionView: View {
         }
         .buttonStyle(CustomButtonStyle(verticalPadding: 0, horizontalPadding: 8, height: 26))
         .hoverTooltip("Switch workspace", .top)
+        .accessibilityLabel("Switch workspace")
     }
 
     // MARK: - Folders Card
@@ -638,6 +640,7 @@ struct AgentWorkspaceRootsSectionView: View {
             hoveredRootID = hovered ? row.id : nil
         }
         .hoverTooltip(row.fullPath, .top)
+        .accessibilityLabel(row.fullPath)
     }
 
     private func rootIdentityLine(_ row: AgentWorkspaceRootRow) -> some View {
@@ -985,6 +988,7 @@ struct AgentWorkspaceRootsSectionView: View {
             }
             .buttonStyle(CustomButtonStyle(verticalPadding: 0, horizontalPadding: 8, height: 24))
             .hoverTooltip("Oracle, Context Builder, and sub-agent role models", .top)
+            .accessibilityLabel("Oracle, Context Builder, and sub-agent role models")
             .popover(isPresented: $showModelsPopover, arrowEdge: .trailing) {
                 AgentModelsPopoverView(
                     promptViewModel: promptManager,
@@ -1004,6 +1008,7 @@ struct AgentWorkspaceRootsSectionView: View {
             }
             .buttonStyle(CustomButtonStyle(verticalPadding: 0, horizontalPadding: 8, height: 24))
             .hoverTooltip("Sub-agent sandbox policy and Agent Permissions", .top)
+            .accessibilityLabel("Sub-agent sandbox policy and Agent Permissions")
             .popover(isPresented: $showPermissionsPopover, arrowEdge: .trailing) {
                 AgentPermissionsPopoverView(
                     windowID: rootsStore.windowID
@@ -1025,6 +1030,7 @@ struct AgentWorkspaceRootsSectionView: View {
             }
             .buttonStyle(CustomButtonStyle(verticalPadding: 0, horizontalPadding: 6, height: 24))
             .hoverTooltip("Agent Mode Settings", .top)
+            .accessibilityLabel("Agent Mode Settings")
         }
     }
 }

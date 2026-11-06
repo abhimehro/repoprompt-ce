@@ -359,6 +359,7 @@ struct MCPServerPopoverContent: View {
                     }
                     .buttonStyle(.plain)
                     .hoverTooltip("View error details")
+                    .accessibilityLabel("View error details")
                     .popover(isPresented: $showErrorPopover) {
                         errorDetailsPopover
                             .frame(width: 350)
@@ -376,6 +377,7 @@ struct MCPServerPopoverContent: View {
                     .buttonStyle(.borderless)
                     .disabled(didCancelTool)
                     .hoverTooltip("Abort the current tool call")
+                    .accessibilityLabel("Abort the current tool call")
                 }
 
                 if isProcessing {
@@ -469,6 +471,7 @@ struct MCPServerPopoverContent: View {
      }
      .buttonStyle(.plain)
      .hoverTooltip("Learn about planning models")
+     .accessibilityLabel("Learn about planning models")
 
      Spacer()
      }
@@ -768,6 +771,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minHeight: buttonMinHeight)
                 .hoverTooltip("Install the RepoPrompt MCP server or CLI")
+                .accessibilityLabel("Install the RepoPrompt MCP server or CLI")
 
                 // Skills menu
                 Menu {
@@ -890,6 +894,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minHeight: buttonMinHeight)
                 .hoverTooltip("Install /rp-investigate and /rp-build slash skills")
+                .accessibilityLabel("Install /rp-investigate and /rp-build slash skills")
 
                 // Copy JSON (minimal)
                 Button(action: {
@@ -901,6 +906,7 @@ struct MCPServerPopoverContent: View {
                 .buttonStyle(CustomButtonStyle())
                 .frame(minWidth: buttonMinHeight, minHeight: buttonMinHeight)
                 .hoverTooltip("Copy MCP JSON configuration")
+                .accessibilityLabel("Copy MCP JSON configuration")
             }
 
             Text("If the integration doesn't show up right away, restart the client app after installing the server.")
