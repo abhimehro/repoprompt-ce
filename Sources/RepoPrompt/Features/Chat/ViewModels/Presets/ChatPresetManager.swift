@@ -28,14 +28,19 @@ class ChatPresetManager: ObservableObject {
     // MARK: - Storage
 
     private let presetFileStore: PresetFileStore
+    private let modelPresetsManager: ModelPresetsManager
 
     /// All presets (built-in + user), with overrides applied to built-ins
     @Published private(set) var allPresets: [ChatPreset] = []
 
     // MARK: - Initialization
 
-    init(presetFileStore: PresetFileStore = .shared) {
+    init(
+        presetFileStore: PresetFileStore = .shared,
+        modelPresetsManager: ModelPresetsManager = .shared
+    ) {
         self.presetFileStore = presetFileStore
+        self.modelPresetsManager = modelPresetsManager
         load()
         rebuildAllPresetsCache()
     }
@@ -235,11 +240,19 @@ class ChatPresetManager: ObservableObject {
     // MARK: - Model Preset Integration
 
     /// Validate that a chat preset's model reference is valid
-    /// This will need to be connected to ModelPresetsManager when available
+    /// Returns true if no model is specified, or if the specified model is a valid AIModel or ModelPreset
     func validateModelReference(for preset: ChatPreset) -> Bool {
-        // TODO: Check against ModelPresetsManager
-        // For now, return true if no model specified (use default)
-        preset.modelPresetName == nil || !preset.modelPresetName!.isEmpty
+        guard let modelName = preset.modelPresetName else {
+            // No model specified (uses default model)
+            return true
+        }
+
+        guard !modelName.isEmpty else {
+            return false
+        }
+
+        // Check if modelName is a known AIModel rawValue/identifier or an existing ModelPreset
+        return AIModel.fromModelName(modelName) != nil || modelPresetsManager.preset(named: modelName) != nil
     }
 
     // MARK: - Copy Preset Integration
