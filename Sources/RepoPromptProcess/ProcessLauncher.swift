@@ -319,9 +319,10 @@ package enum ProcessLauncher {
             }
         }
 
+        let sanitizedEnvironment = ProcessEnvironmentSanitizer.sanitizedForChildLaunch(environment)
         var envp: [UnsafeMutablePointer<CChar>?] = []
-        envp.reserveCapacity(environment.count + 1)
-        for (key, value) in environment {
+        envp.reserveCapacity(sanitizedEnvironment.count + 1)
+        for (key, value) in sanitizedEnvironment {
             envp.append(strdup("\(key)=\(value)"))
         }
         envp.append(nil)
