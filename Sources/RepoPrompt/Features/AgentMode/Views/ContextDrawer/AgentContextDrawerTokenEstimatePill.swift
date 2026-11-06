@@ -69,6 +69,11 @@ struct AgentContextDrawerTokenEstimatePill: View {
             Capsule()
                 .stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
         )
+        .accessibilityLabel(
+            isWaiting
+                ? "Updating token estimate for the current selection."
+                : estimate.tooltip(for: tokenConfig.limit)
+        )
         .hoverTooltip(
             isWaiting
                 ? "Updating token estimate for the current selection."
