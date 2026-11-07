@@ -163,6 +163,7 @@ struct WorkspaceLandingView: View {
         }
         .buttonStyle(CustomButtonStyle())
         .hoverTooltip("Open a folder or reopen a matching workspace", .top)
+        .accessibilityLabel("Open a folder or reopen a matching workspace")
     }
 
     @ViewBuilder

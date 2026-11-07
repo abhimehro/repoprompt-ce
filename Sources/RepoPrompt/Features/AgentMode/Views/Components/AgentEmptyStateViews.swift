@@ -460,6 +460,7 @@ struct AgentApplyEditsReviewCard: View {
                     .buttonStyle(.plain)
                     .padding(.trailing, 6)
                     .hoverTooltip("Clear")
+                    .accessibilityLabel("Clear")
                 }
             }
 

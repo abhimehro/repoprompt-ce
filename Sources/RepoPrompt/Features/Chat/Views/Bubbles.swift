@@ -672,6 +672,7 @@ private struct DeleteButtonOverlay: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .hoverTooltip("Confirm delete")
+                .accessibilityLabel("Confirm delete")
 
                 // Cancel button
                 Button(action: {
@@ -683,6 +684,7 @@ private struct DeleteButtonOverlay: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .hoverTooltip("Cancel")
+                .accessibilityLabel("Cancel")
 
             } else {
                 // Initial delete button
