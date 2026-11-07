@@ -643,6 +643,7 @@ struct EnhancedCodeBlock: View {
                 isCopyHovering = hovering
             }
         }
+        .accessibilityLabel("Copy code block")
     }
 
     var body: some View {
