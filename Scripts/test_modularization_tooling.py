@@ -334,6 +334,19 @@ class CatalogTests(unittest.TestCase):
             (root / 'Tests/Imports.swift').write_text('/* unterminated')
             self.assertTrue(swift_imports.sources_import_module(root / 'Tests', 'Testing'))
 
+    def test_forbidden_ui_imports_skips_clean_files_and_detects_violations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'Clean.swift').write_text("""import Foundation
+let x = 1
+""")
+            (root / 'Violation.swift').write_text("""import SwiftUI
+let y = 2
+""")
+            violations = swift_imports.forbidden_ui_imports([root])
+            self.assertEqual(len(violations), 1)
+            self.assertIn('Violation.swift:1: import SwiftUI', violations[0])
+
     def test_import_scanner_sees_imports_after_utf8_bom(self) -> None:
         self.assertEqual(swift_imports.imported_modules('\ufeffimport AppKit\n'), ['AppKit'])
         self.assertEqual(swift_imports.imported_modules('\ufeff@testable import Testing\n'), ['Testing'])
