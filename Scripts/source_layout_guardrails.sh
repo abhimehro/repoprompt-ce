@@ -867,6 +867,7 @@ allowed_tracked_docs=(
   "docs/plans/agent-mode-reprompter-2026-10-20.md"
   "docs/plans/openai-decisions-contract-2026-10-07.md"
   "docs/privacy/telemetry.md"
+  "docs/qa-review.md"
   "docs/releasing.md"
   "docs/reviews/model-router-auto-effort-openai-decisions-verification.md"
   "docs/testing.md"
