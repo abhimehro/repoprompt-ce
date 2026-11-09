@@ -94,6 +94,39 @@ final class MCPControlMessagesTests: XCTestCase {
         }
     }
 
+    /// Exercises progress construction and wire encoding concurrently, approximating the
+    /// contention seen when several MCP operations emit progress updates at once. Run with
+    /// `swift test --filter MCPControlMessagesTests/testProgressNotificationThroughputUnderContention`.
+    func testProgressNotificationThroughputUnderContention() {
+        let updatesPerWorker = 1_000
+        let workers = 8
+        let queue = DispatchQueue(label: "mcp-progress-benchmark", attributes: .concurrent)
+
+        measure {
+            let group = DispatchGroup()
+            for worker in 0..<workers {
+                group.enter()
+                queue.async {
+                    for update in 0..<updatesPerWorker {
+                        let params = RepoPromptProgressParams(
+                            tool: "context_builder",
+                            kind: .heartbeat,
+                            stage: "planning",
+                            message: "progress \\(worker)-\\(update)"
+                        )
+                        let notification = RepoPromptControlNotification(
+                            method: RepoPromptControlMethod.progress,
+                            params: params
+                        )
+                        _ = notification.encodedJSONLine()
+                    }
+                    group.leave()
+                }
+            }
+            group.wait()
+        }
+    }
+
     func testKillSignalPayloadPathAndJSONRoundTrip() throws {
         let directory = URL(fileURLWithPath: "/tmp/MCPKillSignals-CE-D-7", isDirectory: true)
         let url = MCPKillSignal.signalFileURL(forSessionToken: "session-token", directory: directory)
