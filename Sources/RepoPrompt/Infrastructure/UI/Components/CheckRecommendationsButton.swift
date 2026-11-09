@@ -27,6 +27,8 @@ struct CheckRecommendationsButton: View {
             }
         }
         .buttonStyle(CustomButtonStyle())
+        .hoverTooltip("Open the Setup Wizard to optimize your provider settings")
+        .accessibilityLabel(label)
     }
 }
 
