@@ -151,6 +151,18 @@ public struct MCPTerminalRecord: Codable, Equatable, Sendable {
         return max(0, value)
     }
 
+    private static let credentialURLRegex = try! NSRegularExpression(
+        pattern: #"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"#
+    )
+    private static let sensitiveKeyRegex = try! NSRegularExpression(
+        pattern: #"(?i)([\"']?[a-z0-9_.-]*(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|token|secret|password|credential|private[_-]?key|cookie|set-cookie|environment|request[_-]?payload|payload|prompt)[a-z0-9_.-]*[\"']?\s*[:=]\s*)(?:bearer\s+[^\s,;&]+|basic\s+[^\s,;&]+|\"[^\"]*\"|'[^']*'|[^\s,;&]+)"#
+    )
+    private static let standaloneSecretRegexes: [NSRegularExpression] = [
+        #"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+"#,
+        #"\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b"#,
+        #"\bsk-[a-zA-Z0-9_-]{16,}\b"#
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+
     private static func privacySafeText(
         _ value: String?,
         maximumLength: Int,
@@ -167,33 +179,21 @@ public struct MCPTerminalRecord: Codable, Equatable, Sendable {
             )
         }
 
-        let credentialURLPattern = #"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"#
-        if let regex = try? NSRegularExpression(pattern: credentialURLPattern) {
-            let range = NSRange(sanitized.startIndex..., in: sanitized)
-            sanitized = regex.stringByReplacingMatches(
-                in: sanitized,
-                range: range,
-                withTemplate: "$1<redacted>@"
-            )
-        }
+        let credentialRange = NSRange(sanitized.startIndex..., in: sanitized)
+        sanitized = Self.credentialURLRegex.stringByReplacingMatches(
+            in: sanitized,
+            range: credentialRange,
+            withTemplate: "$1<redacted>@"
+        )
 
-        let sensitiveKeyPattern = #"(?i)([\"']?[a-z0-9_.-]*(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|token|secret|password|credential|private[_-]?key|cookie|set-cookie|environment|request[_-]?payload|payload|prompt)[a-z0-9_.-]*[\"']?\s*[:=]\s*)(?:bearer\s+[^\s,;&]+|basic\s+[^\s,;&]+|\"[^\"]*\"|'[^']*'|[^\s,;&]+)"#
-        if let regex = try? NSRegularExpression(pattern: sensitiveKeyPattern) {
-            let range = NSRange(sanitized.startIndex..., in: sanitized)
-            sanitized = regex.stringByReplacingMatches(
-                in: sanitized,
-                range: range,
-                withTemplate: "$1<redacted>"
-            )
-        }
+        let sensitiveKeyRange = NSRange(sanitized.startIndex..., in: sanitized)
+        sanitized = Self.sensitiveKeyRegex.stringByReplacingMatches(
+            in: sanitized,
+            range: sensitiveKeyRange,
+            withTemplate: "$1<redacted>"
+        )
 
-        let standaloneSecretPatterns = [
-            #"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]+"#,
-            #"\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b"#,
-            #"\bsk-[a-zA-Z0-9_-]{16,}\b"#
-        ]
-        for pattern in standaloneSecretPatterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        for regex in Self.standaloneSecretRegexes {
             let range = NSRange(sanitized.startIndex..., in: sanitized)
             sanitized = regex.stringByReplacingMatches(
                 in: sanitized,
