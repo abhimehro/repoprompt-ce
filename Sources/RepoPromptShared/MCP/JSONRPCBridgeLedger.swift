@@ -1363,12 +1363,13 @@ public actor JSONRPCBridgeLedger {
                 throw JSONRPCBridgeLedgerError.malformedBackendFrame
             }
 
-            let hasID = dictionary.keys.contains("id")
+            // BOLT OPTIMIZATION: Use O(1) index(forKey:) lookup instead of O(K) linear keys.contains(_:)
+            let hasID = dictionary.index(forKey: "id") != nil
             let id = hasID ? parseID(dictionary["id"]) : nil
-            let hasMethod = dictionary.keys.contains("method")
+            let hasMethod = dictionary.index(forKey: "method") != nil
             let method = dictionary["method"] as? String
-            let hasResult = dictionary.keys.contains("result")
-            let hasError = dictionary.keys.contains("error")
+            let hasResult = dictionary.index(forKey: "result") != nil
+            let hasError = dictionary.index(forKey: "error") != nil
 
             if direction == .serverToClient {
                 try validateBackendEnvelope(
@@ -1554,7 +1555,8 @@ public enum JSONRPCBridgeFrameInspector {
         let objects = (root as? [Any]) ?? [root]
         return objects.compactMap { object in
             guard let dictionary = object as? [String: Any] else { return nil }
-            let hasID = dictionary.keys.contains("id")
+            // BOLT OPTIMIZATION: Use O(1) index(forKey:) lookup instead of O(K) linear keys.contains(_:)
+            let hasID = dictionary.index(forKey: "id") != nil
             let id = hasID ? parseID(dictionary["id"]) : nil
             let method = dictionary["method"] as? String
             let tool: String? = if method == "tools/call",
@@ -1564,7 +1566,7 @@ public enum JSONRPCBridgeFrameInspector {
             } else {
                 nil
             }
-            let kind: JSONRPCBridgeMessageMetadata.Kind = if dictionary.keys.contains("result") || dictionary.keys.contains("error") {
+            let kind: JSONRPCBridgeMessageMetadata.Kind = if dictionary.index(forKey: "result") != nil || dictionary.index(forKey: "error") != nil {
                 .response
             } else if method != nil, hasID {
                 .request
