@@ -243,7 +243,7 @@ final class AgentTabSession: ObservableObject {
     private var toolCorrelationIndexes = ToolCorrelationIndexes()
     private var nextEphemeralToolResultPayloadRevision: Int = 1
     var rawToolResultPayloadRenderRevisionByItemID: [UUID: Int] = [:]
-    var onSourceItemsChanged: ((AgentTabSession, AgentModeViewModel.SourceItemsMutation) -> Void)?
+    var onSourceItemsChanged: ((AgentTabSession, AgentSourceItemsMutation) -> Void)?
     var onRunStateChanged: ((AgentTabSession) -> Void)?
     /// Activation went set → cleared/replaced. Fired synchronously from `oversight.didSet`; never
     /// for nil → nil or nil → set.
@@ -269,6 +269,65 @@ final class AgentTabSession: ObservableObject {
     }
 
     @Published var runningStatusText: String? = nil
+
+    /// Mutates the shared status value; each provider retains its own publication policy.
+    /// Shared prompt/approval observations, in their original subscription order.
+    func interactionStatePublishers(includeHookGate: Bool) -> [AnyPublisher<Void, Never>] {
+        var publishers: [AnyPublisher<Void, Never>] = [
+            $waitingPrompt.map { _ in () }.eraseToAnyPublisher(),
+            $pendingAskUser.map { _ in () }.eraseToAnyPublisher(),
+            $pendingUserInputRequest.map { _ in () }.eraseToAnyPublisher(),
+            $pendingApproval.map { _ in () }.eraseToAnyPublisher()
+        ]
+        if includeHookGate {
+            publishers += [
+                $pendingCodexHookReview.map { _ in () }.eraseToAnyPublisher(),
+                $codexHookGateAudit.map { _ in () }.eraseToAnyPublisher()
+            ]
+        }
+        return publishers + [
+            $pendingPermissionsRequest.map { _ in () }.eraseToAnyPublisher(),
+            $pendingMCPElicitationRequest.map { _ in () }.eraseToAnyPublisher(),
+            $pendingApplyEditsReview.map { _ in () }.eraseToAnyPublisher(),
+            $pendingWorktreeMergeReview.map { _ in () }.eraseToAnyPublisher()
+        ]
+    }
+
+    /// Empty input destination; workflows are deliberately checked by the caller.
+    var isEmptyFirstSendDestination: Bool {
+        !runState.isActive
+            && !hasSentFirstMessage
+            && runID == nil
+            && activeRunAttemptID == nil
+            && items.isEmpty
+            && transcript.turns.isEmpty
+            && pendingFileAttachments.isEmpty
+            && pendingTaggedFileAttachments.isEmpty
+    }
+
+    /// Unstarted execution state, independent of host, handoff and preparation eligibility.
+    var hasEmptyIdleExecutionLocation: Bool {
+        !hasSentFirstMessage
+            && runState == .idle
+            && runID == nil
+            && activeRunAttemptID == nil
+            && providerSessionID == nil
+            && codexConversationID == nil
+            && worktreeBindings.isEmpty
+            && items.isEmpty
+            && transcript.turns.isEmpty
+    }
+
+    func updateRunningStatus(_ text: String?, source: RunningStatusSource?) -> Bool {
+        let normalized = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (normalized?.isEmpty == false) ? normalized : nil
+        let normalizedSource = value == nil ? nil : source
+        guard runningStatusText != value || runningStatusSource != normalizedSource else { return false }
+        runningStatusText = value
+        runningStatusSource = normalizedSource
+        return true
+    }
+
     /// Ephemeral cancellation generation and managed-stop gate; never persisted.
     var stopState = AgentRunStopState() {
         didSet {
@@ -359,6 +418,8 @@ final class AgentTabSession: ObservableObject {
     /// and intentionally never persisted as session state.
     var pendingInitialStartLocation: AgentModeViewModel.InitialStartLocation = .local
     var composerSubmissionToken = UUID()
+    /// Exact pending-start capability; runtime-only and never persisted.
+    var composerStartCancellation: AgentComposerStartCancellation?
     var activeComposerSubmitAttempt: AgentComposerSubmitAttempt? {
         didSet {
             // Only the in-flight transition matters to an observer; attempt-internal churn does
@@ -370,7 +431,7 @@ final class AgentTabSession: ObservableObject {
     }
 
     var isComposerSubmissionInFlight: Bool {
-        activeComposerSubmitAttempt != nil
+        activeComposerSubmitAttempt != nil || composerStartCancellation != nil
     }
 
     /// These gate delivery readiness and published `idle_for_send`, so wake observers when either
@@ -387,8 +448,11 @@ final class AgentTabSession: ObservableObject {
         }
     }
 
+    /// A direct setter takes over the gate; an old runtime lease may only clear its own token.
+    var executionLocationChangeOwner: UUID?
     var isChangingExecutionLocation: Bool = false {
         didSet {
+            executionLocationChangeOwner = nil
             if oldValue != isChangingExecutionLocation {
                 noteMonitorObservationInputsChanged()
             }
@@ -400,7 +464,10 @@ final class AgentTabSession: ObservableObject {
     /// unbound state; Handoff performs the destination's first save explicitly afterwards.
     var isInstallingHandoffWorktreeBindings = false
 
-    var worktreeBindingTransitionInProgress: Bool = false
+    var worktreeBindingTransitionOwner: UUID?
+    var worktreeBindingTransitionInProgress: Bool = false {
+        didSet { worktreeBindingTransitionOwner = nil }
+    }
 
     /// Runtime-only: an execution-worktree change this session requested for itself from its own
     /// live turn, applied at that turn's completed terminal boundary and then continued
@@ -523,7 +590,7 @@ final class AgentTabSession: ObservableObject {
 
     func invalidatePeriodicIdleSpanIfLocallyBlocked() {
         guard oversight.periodicIdleSince != nil,
-              !AgentModeViewModel.agentSessionLinkPeriodicWakeSessionIsIdle(self) else { return }
+              !AgentSessionLinkExecutionRuntime.agentSessionLinkPeriodicWakeSessionIsIdle(self) else { return }
         oversight.invalidatePeriodicIdleSpan()
     }
 
@@ -540,11 +607,10 @@ final class AgentTabSession: ObservableObject {
 
     var applyEditsApprovalSubscriptionID: UUID?
     var applyEditsApprovalSubscriptionTask: Task<Void, Never>?
-    var worktreeMergeReviewContinuation: CheckedContinuation<WorktreeMergeReviewDecision, Never>?
-    var worktreeMergeReviewTimeoutTask: Task<Void, Never>?
+    var worktreeMergeReviewWait: AgentWorktreeMergeReviewWait?
     /// External MCP control attachment. Its presence and effective task label determine whether this
     /// exact session may act as an oversight observer.
-    var mcpControlContext: AgentModeViewModel.AgentMCPControlContext? {
+    var mcpControlContext: AgentMCPControlContext? {
         didSet {
             if mcpControlContext != nil { oversight.overseerActivation = nil }
             guard oldValue?.taskLabelKind != mcpControlContext?.taskLabelKind
@@ -571,8 +637,11 @@ final class AgentTabSession: ObservableObject {
     }
 
     var mcpFollowUpRunPendingUpdatedAt: Date?
+    /// The self-relocation lease only. Any direct setter transfers ownership away from old cleanup.
+    var selfWorktreeRelocationFollowUpOwner: UUID?
     var mcpFollowUpRunPending: Bool = false {
         didSet {
+            selfWorktreeRelocationFollowUpOwner = nil
             if oldValue != mcpFollowUpRunPending {
                 mcpFollowUpRunPendingUpdatedAt = Date()
                 noteMonitorObservationInputsChanged()
@@ -654,6 +723,10 @@ final class AgentTabSession: ObservableObject {
         /// Claude turn completions protected by this accepted steering instruction.
         var supersedingProtectedTurnIDs: Set<UUID> = []
         var skipsSlashExpansion = false
+        /// Provider-only list after read-only composer preparation; original chips remain recoverable.
+        var providerTaggedFileAttachments: [AgentTaggedFileAttachment]?
+        /// Managed input keeps the exact admitted writer/resource generation until its write.
+        var runtimeInputAdmission: AgentSessionProviderInputRuntime.Admission?
     }
 
     var pendingClaudeSteeringInstructions: [ClaudeSteeringInstruction] = [] {
@@ -666,8 +739,19 @@ final class AgentTabSession: ObservableObject {
 
     /// Claude turn IDs whose terminal events should be treated as superseded by accepted steering.
     var claudeSupersedingProtectedTurnIDs: Set<UUID> = []
+    /// One installed queue drain. Its identity survives cancellation so an old continuation
+    /// cannot clear or recover work belonging to a replacement flush.
+    struct ClaudeSteeringFlushTask {
+        let id: UUID
+        let task: Task<Void, Never>
+
+        func cancel() {
+            task.cancel()
+        }
+    }
+
     /// Task that drains `pendingClaudeSteeringInstructions` one-by-one, waiting for MCP tool idle between each.
-    var claudeSteeringFlushTask: Task<Void, Never>?
+    var claudeSteeringFlushTask: ClaudeSteeringFlushTask?
 
     /// ACP steering queue — carries text accepted for serialized live steering.
     struct ACPSteeringManagedContext {
@@ -722,6 +806,10 @@ final class AgentTabSession: ObservableObject {
         let createdAt: Date
         var managed: ACPSteeringManagedContext?
         var skipsSlashExpansion = false
+        /// Provider-only list after read-only composer preparation; original chips remain recoverable.
+        var providerTaggedFileAttachments: [AgentTaggedFileAttachment]?
+        /// Managed input keeps the exact admitted writer/resource generation until its write.
+        var runtimeInputAdmission: AgentSessionProviderInputRuntime.Admission?
     }
 
     /// Lifecycle disposal withdraws only rows from the exact binding that accepted the steer.
@@ -848,12 +936,22 @@ final class AgentTabSession: ObservableObject {
     }
 
     /// Instruction steering coordination state
-    var instructionContinuation: CheckedContinuation<UserInstructionResponse, Error>? {
+    var instructionWait: AgentInstructionWait? {
         didSet { noteMonitorObservationInputsChanged() }
     }
 
-    var instructionTimeoutTask: Task<Void, Never>?
-    var instructionWaitID: UUID?
+    /// Read-only projections; installation, consumption and cleanup own the exact wait record.
+    var instructionContinuation: CheckedContinuation<UserInstructionResponse, Error>? {
+        instructionWait?.continuation
+    }
+
+    var instructionTimeoutTask: Task<Void, Never>? {
+        instructionWait?.timeoutTask
+    }
+
+    var instructionWaitID: UUID? {
+        instructionWait?.id
+    }
 
     /// Agent run — transient run-attempt lifecycle/settlement state is owned by
     /// the extracted `AgentRunAttemptLifecycle` facade. Run identity is
@@ -977,6 +1075,17 @@ final class AgentTabSession: ObservableObject {
         selectedAgent.usesClaudeTooling ? selectedClaudeEffortRaw : selectedReasoningEffortRaw
     }
 
+    /// Capture provider request values at dispatch, without exporting this mutable host object.
+    var acpRunInput: AgentACPRunInput {
+        AgentACPRunInput(
+            agent: selectedAgent,
+            selectedModelRaw: selectedModelRaw,
+            providerSessionID: providerSessionID,
+            taskLabelKind: mcpControlContext?.taskLabelKind,
+            modelParameterSelections: acpModelParameterSelections
+        )
+    }
+
     private var acpModelParameterSelectionRevisionByIdentity: [ACPModelParameterIdentity: UInt64] = [:]
     private var nextACPModelParameterSelectionRevision: UInt64 = 0
     var acpModelParameterSelections: [ACPModelParameterSelection] = [] {
@@ -1044,7 +1153,10 @@ final class AgentTabSession: ObservableObject {
     var attachmentTurnState: AgentModeViewModel.AttachmentTurnState = .idle
     /// `AgentSessions/attachments` of the workspace this turn was sent from, captured when its
     /// images are reserved so a mid-turn workspace switch cannot retain them elsewhere.
-    var attachmentRetentionRoot: URL?
+    var attachmentRetentionPlacement: AgentSessionAttachmentPlacement?
+    var attachmentRetentionRoot: URL? {
+        attachmentRetentionPlacement?.location.retainedRoot
+    }
 
     /// Provider session ID for resumption (e.g., Claude CLI session_id)
     var providerSessionID: String?
@@ -1174,7 +1286,10 @@ final class AgentTabSession: ObservableObject {
     var contextCompactedAt: Date? {
         didSet {
             // A compaction invalidates the count; the window is unchanged.
-            if contextCompactedAt != oldValue { vouchedContextCount = nil }
+            if contextCompactedAt != oldValue {
+                vouchedContextCount = nil
+                oracleBackgroundAwareness.resetContext()
+            }
         }
     }
 
@@ -1434,6 +1549,20 @@ final class AgentTabSession: ObservableObject {
     ///
     /// Never persisted: it describes a live process-local controller generation.
     var codexSessionLinkCatalogRepairCycle: AgentSessionLinkCodexCatalogRepair.Cycle?
+    /// Retained across controller replacements, but not persisted across cold restoration.
+    var codexContextWindowSelection: CodexContextWindowPreferences.Selection?
+
+    func clearCodexConversationIdentity() {
+        codexConversationID = nil
+        codexContextWindowSelection = nil
+    }
+
+    func codexContextWindowForBinding(current: CodexContextWindowPreferences.Selection) -> CodexContextWindowPreferences.Selection {
+        if let selection = codexContextWindowSelection { return selection }
+        codexContextWindowSelection = current
+        return current
+    }
+
     /// The permission profile the current Codex controller was created with.
     /// Used to detect when MCP control changes require controller recycling.
     var codexControllerPermissionProfile: AgentModeViewModel.AgentPermissionProfile?
@@ -1463,6 +1592,8 @@ final class AgentTabSession: ObservableObject {
 
     var claudeController: (any NativeAgentRuntimeControlling)?
     var acpController: ACPAgentSessionController?
+    /// Retained input, not liveness: use only with its exact ownership and restoration binding.
+    var acpWorkspaceAdmission: AgentACPWorkspaceAdmission?
 
     var codexEventTask: Task<Void, Never>?
     var codexEventTaskRunID: UUID?
@@ -1506,8 +1637,10 @@ final class AgentTabSession: ObservableObject {
 
     /// Handoff payload (injected into provider-facing text on first user send).
     /// Cleared only after the provider accepts the turn.
-    var pendingHandoff: AgentModeViewModel.PendingHandoffState = .init() {
+    private(set) var pendingHandoffRevision: UInt64 = 0
+    var pendingHandoff: AgentPendingHandoffState = .init() {
         didSet {
+            if oldValue != pendingHandoff { pendingHandoffRevision &+= 1 }
             if oldValue.executionLocationFailure != pendingHandoff.executionLocationFailure
                 || oldValue.providerSwitchDelivery != pendingHandoff.providerSwitchDelivery
                 || oldValue.providerSwitchDispatch != pendingHandoff.providerSwitchDispatch
@@ -1524,10 +1657,21 @@ final class AgentTabSession: ObservableObject {
     var selfCompactState = AgentSelfCompactState() {
         didSet {
             if oldValue != selfCompactState { isDirty = true }
+            // Only correlated native/ACP completion enters the verified note boundary.
+            if let active = selfCompactState.active, active.phase == .awaitingNoteBoundary,
+               active.compactTurnSucceeded == true, active.acpCompletionUnverified != true
+            {
+                selfCompactVerifiedWakeRequestID = active.id
+            }
+            if selfCompactState.active?.id != selfCompactVerifiedWakeRequestID {
+                selfCompactVerifiedWakeRequestID = nil
+            }
             noteMonitorObservationInputsChanged()
         }
     }
 
+    /// Runtime evidence from the correlated completion coordinator, never restored as authority.
+    var selfCompactVerifiedWakeRequestID: UUID?
     var selfCompactPersistenceWarning = false
 
     /// Runtime-only fence: a same-key MCP retry cannot claim a scheduled receipt until the
@@ -1537,10 +1681,12 @@ final class AgentTabSession: ObservableObject {
     /// Runtime-only owner/exclusivity fence, rechecked at provider-bound send seams after startup awaits.
     /// A restored attempt has no executable fence and cannot resume dispatch.
     var selfCompactDispatchIsCurrent: (@MainActor () -> Bool)?
+    /// Notes need the same ownership proof, but not the expired compact-start deadline.
+    var selfCompactNoteOwnerIsCurrent: (@MainActor () -> Bool)?
 
     @MainActor
     func selfCompactNoteDispatchIsCurrent(_ dispatchID: AgentSelfCompactionDispatchID) -> Bool {
-        guard selfCompactDispatchIsCurrent?() != false else {
+        guard (selfCompactNoteOwnerIsCurrent ?? selfCompactDispatchIsCurrent)?() != false else {
             selfCompactNativeCompletion?.cancelUnattemptedNoteIfOwnerLost(dispatchID)
             return false
         }
@@ -1562,9 +1708,13 @@ final class AgentTabSession: ObservableObject {
         hasSentFirstMessage && !pendingHandoff.defersProviderLockUntilSend
     }
 
-    // Persistence
-    /// Synchronous derived-index maintenance for the window owning this live object.
+    /// Persistence
+    /// Synchronous derived-index maintenance for the runtime store owning this live object.
     var persistentSessionBindingDidChange: (() -> Void)?
+    /// Process-local Oracle lifetime is independent of run attempts and parent provider teardown.
+    var oracleBackgroundOwner: OracleBackgroundInvocationRegistry.Owner?
+    var oracleBackgroundDrain: Task<Void, Never>?
+    var oracleBackgroundAwareness = OracleBackgroundAwareness()
     private(set) var persistentSessionBindingIdentity: AgentPersistentSessionBindingIdentity?
     var activeAgentSessionID: UUID? {
         persistentSessionBindingIdentity?.sessionID
@@ -1636,6 +1786,8 @@ final class AgentTabSession: ObservableObject {
     var lastUserMessageAt: Date?
     var lastCommandOutputSaveAt: Date?
     var saveDebounceTask: Task<Void, Never>?
+    /// Identifies a pending timer independently of the payload/save revision.
+    var saveDebounceRequestID: UUID?
     var isDirty: Bool = false {
         didSet {
             if isDirty {
@@ -1645,11 +1797,11 @@ final class AgentTabSession: ObservableObject {
     }
 
     var sourceItemsRevision: Int = 0
-    var pendingSourceItemsMutationSummary: AgentModeViewModel.PendingSourceItemsMutationSummary?
-    var pendingDerivedTranscriptRefreshReason: AgentModeViewModel.DerivedTranscriptRefreshReason?
+    var pendingSourceItemsMutationSummary: AgentPendingSourceItemsMutationSummary?
+    var pendingDerivedTranscriptRefreshReason: AgentDerivedTranscriptRefreshReason?
     var derivedTranscriptRefreshTask: Task<Void, Never>?
     var derivedTranscriptRefreshGeneration: UInt64 = 0
-    var derivedTranscriptSyncState: AgentModeViewModel.DerivedTranscriptSyncState?
+    var derivedTranscriptSyncState: AgentDerivedTranscriptSyncState?
     var pendingCommandRunningByKey: [String: CodexNativeSessionController.CommandExecutionRunningUpdate] = [:]
     var pendingCommandRunningFlushTask: Task<Void, Never>?
     var pendingCommandRunningFlushUsesLiveOutputDelay: Bool = false
@@ -1762,6 +1914,7 @@ final class AgentTabSession: ObservableObject {
         guard codexHookGateDispatchOwnerToken == token else { return }
         codexHookGateDispatchOwnerToken = nil
         codexHookGateActiveBinding = nil
+        codexHookGateOrigin = nil
         let continuations = Array(codexHookGateCoalescedContinuations.values)
         codexHookGateCoalescedContinuations.removeAll()
         for continuation in continuations {
@@ -1795,10 +1948,19 @@ final class AgentTabSession: ObservableObject {
         return true
     }
 
+    struct CodexHookGateOrigin: Equatable {
+        let writer: AgentSessionRuntimeStore.WriterIdentity
+        let runID: UUID?
+        let runAttemptID: UUID?
+    }
+
+    var codexHookGateOrigin: CodexHookGateOrigin?
+
     func resetCodexHookGateBinding() {
         _ = cancelCodexHookReview()
         codexHookGateInventoryFingerprint = nil
         codexHookGateActiveBinding = nil
+        codexHookGateOrigin = nil
         codexHookGateBindingMemo = nil
         codexHookGateAudit = nil
     }
@@ -1852,19 +2014,31 @@ final class AgentTabSession: ObservableObject {
         return restorationReadiness
     }
 
+    /// A negative lifecycle fact read from the holding runtime scopes, not another writer or a
+    /// replacement for the earned restoration proof. Installation/removal follows scope membership.
+    var workspaceAdoptionPending: @MainActor () -> Bool = { false }
+
+    var isAwaitingWorkspaceAdoption: Bool {
+        workspaceAdoptionPending()
+    }
+
+    static let loadingAdmissionFailureMessage = "Wait for this session to finish loading."
+
     /// Only a fully restored or configured-and-saved binding admits ordinary operations and saves.
     var permitsBoundOperationAndSave: Bool {
-        !bindingTransitionInProgress && qualifiedRestorationReadiness.permitsBoundOperationAndSave
+        !bindingTransitionInProgress && !isAwaitingWorkspaceAdoption
+            && qualifiedRestorationReadiness.permitsBoundOperationAndSave
     }
 
     var restorationAdmissionFailureMessage: String? {
-        guard !bindingTransitionInProgress else { return "Wait for this session to finish loading." }
+        guard !bindingTransitionInProgress else { return Self.loadingAdmissionFailureMessage }
         return qualifiedRestorationReadiness.operationAdmissionFailureMessage
     }
 
     /// Persisted handoff recovery remains its own blocker after payload restoration succeeds.
     var operationAdmissionFailureMessage: String? {
-        restorationAdmissionFailureMessage ?? pendingHandoff.executionLocationFailure
+        if isAwaitingWorkspaceAdoption { return Self.loadingAdmissionFailureMessage }
+        return restorationAdmissionFailureMessage ?? pendingHandoff.executionLocationFailure
     }
 
     var creationState: AgentSessionRestorationReadiness.CreationState? {
@@ -1883,7 +2057,8 @@ final class AgentTabSession: ObservableObject {
         _ claim: AgentSessionCreationClaim,
         workspaceID: UUID
     ) -> AgentSessionCreationHandle? {
-        guard let token = claim.consume(for: self, workspaceID: workspaceID) else { return nil }
+        guard !isAwaitingWorkspaceAdoption,
+              let token = claim.consume(for: self, workspaceID: workspaceID) else { return nil }
         restorationReadiness = .creating(token, .init(
             workspaceID: workspaceID, ownerID: claim.ownerID, phase: .preparing
         ))
@@ -1967,7 +2142,7 @@ final class AgentTabSession: ObservableObject {
     /// The view model additionally checks runtime-map ownership and the workspace carrier.
     func restoreReadinessAfterRefusedTransition(
         _ previousReadiness: AgentSessionRestorationReadiness,
-        expectedTransition: AgentModeViewModel.PersistentBindingTransitionToken
+        expectedTransition: AgentPersistentBindingTransitionToken
     ) {
         guard !bindingTransitionInProgress,
               persistentBindingTransitionToken() == expectedTransition,
@@ -2023,8 +2198,8 @@ final class AgentTabSession: ObservableObject {
             || !queuedMCPElicitationRequests.isEmpty
     }
 
-    func persistentBindingTransitionToken() -> AgentModeViewModel.PersistentBindingTransitionToken {
-        AgentModeViewModel.PersistentBindingTransitionToken(
+    func persistentBindingTransitionToken() -> AgentPersistentBindingTransitionToken {
+        AgentPersistentBindingTransitionToken(
             tabID: tabID,
             sessionIdentity: ObjectIdentifier(self),
             binding: persistentSessionBindingIdentity,
@@ -2068,7 +2243,7 @@ final class AgentTabSession: ObservableObject {
     }
 
     @discardableResult
-    func beginRunAttempt(source: String, attemptID: UUID = UUID()) -> AgentRunOwnership {
+    func beginRunAttempt(source: String, attemptID: UUID = UUID(), beginsProviderRun: Bool = true) -> AgentRunOwnership {
         claudeProviderOutputBoundary = nil
         claudeLiveSuccessorTurnIDs.removeAll()
         claudeAcceptedHostTurnIDs.removeAll()
@@ -2100,12 +2275,15 @@ final class AgentTabSession: ObservableObject {
             ),
             attemptID: attemptID
         )
+        // Cancellation/startup-failure bookkeeping can manufacture a terminal-only attempt.
+        // That is not the pending input's provider prologue and must not retire its capability.
+        if beginsProviderRun { composerStartCancellation?.runAttemptBegan(on: self) }
         if pendingHandoff.providerSwitchDelivery == .sending,
            let proof = pendingHandoff.providerSwitchDispatch
         {
             if pendingHandoff.isStagedForSend, proof.binding == currentRestorationBindingToken,
                proof.stopFence.permitsStart(of: self),
-               !AgentModeViewModel.providerSwitchNeedsReview(self, excluding: proof.acceptedInputID),
+               !AgentSessionLinkExecutionRuntime.providerSwitchNeedsReview(self, excluding: proof.acceptedInputID),
                let associated = proof.associatingRun(ownership)
             {
                 // Association borrows existing value identities; it owns no runtime lifetime.
@@ -2243,7 +2421,7 @@ final class AgentTabSession: ObservableObject {
     }
 
     var hasOwnPendingQuietInteraction: Bool {
-        let snapshot = AgentModeViewModel.agentSessionLinkDeliveryReadinessSnapshot(
+        let snapshot = AgentSessionLinkExecutionRuntime.agentSessionLinkDeliveryReadinessSnapshot(
             session: self, endpointMatchesGrant: true, isClosing: false
         )
         return snapshot.hasWaitingPrompt || snapshot.hasPendingAskUser || snapshot.hasPendingUserInputRequest
@@ -2603,7 +2781,7 @@ final class AgentTabSession: ObservableObject {
 
     private enum SourceItemsDispatch {
         case silent
-        case notify(AgentModeViewModel.SourceItemsMutation)
+        case notify(AgentSourceItemsMutation)
     }
 
     private enum SourceItemPayloadUpdate {
@@ -2995,7 +3173,7 @@ final class AgentTabSession: ObservableObject {
     }
 
     private func finishIncrementalSourceItemsMutation(
-        _ mutation: AgentModeViewModel.SourceItemsMutation
+        _ mutation: AgentSourceItemsMutation
     ) {
         switch mutation {
         case let .replace(index, _, _), let .mutate(index, _):
@@ -3119,7 +3297,7 @@ final class AgentTabSession: ObservableObject {
 
     @discardableResult
     func mutateItemsBatch(
-        mutation: AgentModeViewModel.SourceItemsMutation = .structural,
+        mutation: AgentSourceItemsMutation = .structural,
         touchActivity: Bool = true,
         preservesQuietRange: Bool = false,
         _ body: (inout [AgentChatItem]) -> Void
@@ -3422,11 +3600,27 @@ final class AgentTabSession: ObservableObject {
     func replaceItem(at index: Int, with updatedItem: AgentChatItem) {
         guard items.indices.contains(index) else { return }
         let previousItem = items[index]
-        let updatedItem = invalidatingQuietCertificate(in: updatedItem, previous: previousItem)
+        commitUpdatedItem(
+            at: index,
+            previous: previousItem,
+            updated: updatedItem,
+            mutation: .replace(index: index, previousKind: previousItem.kind, currentKind: updatedItem.kind),
+            diagnosticContext: "replaceItem"
+        )
+    }
+
+    private func commitUpdatedItem(
+        at index: Int,
+        previous previousItem: AgentChatItem,
+        updated proposedItem: AgentChatItem,
+        mutation: AgentSourceItemsMutation,
+        diagnosticContext: String
+    ) {
+        let updatedItem = invalidatingQuietCertificate(in: proposedItem, previous: previousItem)
         guard updatedItem != previousItem else { return }
         var candidateItems = items
         candidateItems[index] = updatedItem
-        if commitRepairedSourceItemsIfNeeded(candidateItems, diagnosticContext: "replaceItem") {
+        if commitRepairedSourceItemsIfNeeded(candidateItems, diagnosticContext: diagnosticContext) {
             lastActivityAt = Date()
             isDirty = true
             return
@@ -3444,10 +3638,7 @@ final class AgentTabSession: ObservableObject {
         nextSequenceIndex = max(nextSequenceIndex, updatedItem.sequenceIndex + 1)
         reconcileIncrementalEphemeralPayload(previousItem: previousItem, updatedItem: updatedItem)
         updateToolCorrelationIndexes(previousItem: previousItem, updatedItem: updatedItem, at: index)
-        finishIncrementalSourceItemsMutation(
-            previousItem.id == updatedItem.id
-                ? .replace(index: index, previousKind: previousItem.kind, currentKind: updatedItem.kind) : .structural
-        )
+        finishIncrementalSourceItemsMutation(previousItem.id == updatedItem.id ? mutation : .structural)
         lastActivityAt = Date()
         isDirty = true
     }
@@ -3457,34 +3648,13 @@ final class AgentTabSession: ObservableObject {
         let previousItem = items[index]
         var updatedItem = previousItem
         mutate(&updatedItem)
-        updatedItem = invalidatingQuietCertificate(in: updatedItem, previous: previousItem)
-        guard updatedItem != previousItem else { return }
-        var candidateItems = items
-        candidateItems[index] = updatedItem
-        if commitRepairedSourceItemsIfNeeded(candidateItems, diagnosticContext: "mutateItem") {
-            lastActivityAt = Date()
-            isDirty = true
-            return
-        }
-        if let owner = activeRunOwnership, let start = quietLedger.startKey(owner: owner),
-           previousItem.sequenceIndex >= start || updatedItem.sequenceIndex >= start,
-           previousItem.id != updatedItem.id || previousItem.sequenceIndex != updatedItem.sequenceIndex
-           || (previousItem.kind != updatedItem.kind && !(previousItem.kind == .toolCall && updatedItem.kind == .toolResult))
-        {
-            quietLedger.invalidateRange(owner: owner)
-        }
-        suppressSourceItemsChanged = true
-        items[index] = updatedItem
-        suppressSourceItemsChanged = false
-        nextSequenceIndex = max(nextSequenceIndex, updatedItem.sequenceIndex + 1)
-        reconcileIncrementalEphemeralPayload(previousItem: previousItem, updatedItem: updatedItem)
-        updateToolCorrelationIndexes(previousItem: previousItem, updatedItem: updatedItem, at: index)
-        finishIncrementalSourceItemsMutation(
-            previousItem.id == updatedItem.id
-                ? .mutate(index: index, itemKind: updatedItem.kind) : .structural
+        commitUpdatedItem(
+            at: index,
+            previous: previousItem,
+            updated: updatedItem,
+            mutation: .mutate(index: index, itemKind: updatedItem.kind),
+            diagnosticContext: "mutateItem"
         )
-        lastActivityAt = Date()
-        isDirty = true
     }
 
     @discardableResult
@@ -3524,34 +3694,13 @@ final class AgentTabSession: ObservableObject {
         let previousItem = items[index]
         var updatedItem = previousItem
         mutate(&updatedItem)
-        updatedItem = invalidatingQuietCertificate(in: updatedItem, previous: previousItem)
-        guard updatedItem != previousItem else { return }
-        var candidateItems = items
-        candidateItems[index] = updatedItem
-        if commitRepairedSourceItemsIfNeeded(candidateItems, diagnosticContext: "updateLastItem") {
-            lastActivityAt = Date()
-            isDirty = true
-            return
-        }
-        if let owner = activeRunOwnership, let start = quietLedger.startKey(owner: owner),
-           previousItem.sequenceIndex >= start || updatedItem.sequenceIndex >= start,
-           previousItem.id != updatedItem.id || previousItem.sequenceIndex != updatedItem.sequenceIndex
-           || (previousItem.kind != updatedItem.kind && !(previousItem.kind == .toolCall && updatedItem.kind == .toolResult))
-        {
-            quietLedger.invalidateRange(owner: owner)
-        }
-        suppressSourceItemsChanged = true
-        items[index] = updatedItem
-        suppressSourceItemsChanged = false
-        nextSequenceIndex = max(nextSequenceIndex, updatedItem.sequenceIndex + 1)
-        reconcileIncrementalEphemeralPayload(previousItem: previousItem, updatedItem: updatedItem)
-        updateToolCorrelationIndexes(previousItem: previousItem, updatedItem: updatedItem, at: index)
-        finishIncrementalSourceItemsMutation(
-            previousItem.id == updatedItem.id
-                ? .replace(index: index, previousKind: previousItem.kind, currentKind: updatedItem.kind) : .structural
+        commitUpdatedItem(
+            at: index,
+            previous: previousItem,
+            updated: updatedItem,
+            mutation: .replace(index: index, previousKind: previousItem.kind, currentKind: updatedItem.kind),
+            diagnosticContext: "updateLastItem"
         )
-        lastActivityAt = Date()
-        isDirty = true
     }
 
     func bashLiveExecution(for transcriptItemID: UUID) -> AgentModeViewModel.BashLiveExecutionState? {
