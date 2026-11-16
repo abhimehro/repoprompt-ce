@@ -572,13 +572,23 @@ PY
     fail "M3 read path reintroduced repeated MainActor authority capture"
   fi
   m3_read_resolver="$(sed -n '/func resolveDomainReadContext/,/Runs before the server is stopped/p' "$m3_app_read_routing")"
-  if grep -q -E 'registerWindow|publishDomainRoutingBinding' <<<"$m3_read_resolver"; then
+  if grep -q -E 'registerWindow|publishDomainRoutingBinding|publishBinding' <<<"$m3_read_resolver"; then
     fail "M3 read resolution mutates shared presentation routing"
   fi
+  m3_host_routes="Sources/RepoPrompt/Infrastructure/MCP/AppShared/MCPHostRouteResources.swift"
   if ! grep -q 'domainReadAppExecutionContexts\[invocation.invocationID\]' "$m3_app_read_routing" \
     || ! grep -q 'releaseDomainReadAppExecutionContext' "$m3_app_read_routing" \
     || ! grep -q 'registerFallbackDomainReadContext' "$m3_app_read_routing" \
-    || ! grep -q 'domainRoutingConnectionIDs' "$m3_app_read_routing"; then
+    || ! grep -Fq 'routeResources.retainConnection(registration)' "$m3_app_read_routing" \
+    || ! grep -Fq 'self.releaseDisconnectedConnection(connectionID)' "$m3_host_routes" \
+    || ! grep -Fq 'await self.routingPublicationTail?.value' "$m3_host_routes" \
+    || ! grep -Fq 'routeResources.closeDomainRoute()' "$m3_app_read_routing" \
+      || ! grep -Fq '[UUID: RetainedConnection]' "$m3_host_routes" \
+      || ! grep -Fq 'let registration: DomainConnectionRegistration' "$m3_host_routes" \
+      || ! grep -Fq 'retained.policyID == ownership.policyID' "$m3_host_routes" \
+    || ! grep -Fq 'connections.removeValue(forKey: connectionID)' "$m3_host_routes" \
+    || ! grep -Fq 'coordinator.unregisterConnection(registration' "$m3_host_routes" \
+    || ! grep -Fq 'domainRuntime.domainHost.releaseConnection(' "$m3_host_routes"; then
     fail "M3 invocation snapshot, fallback authority, or connection-lifecycle seam missing"
   fi
   if ! grep -q 'context.handle == nil' "$m3_domain_provider"; then
@@ -841,6 +851,7 @@ allowed_tracked_docs=(
   "docs/architecture/codex-user-mcp-import.md"
   "docs/architecture/context-composer.md"
   "docs/architecture/headless-mcp-runtime.md"
+  "docs/architecture/host-resource-admission.md"
   "docs/architecture/keyboard-shortcuts.md"
   "docs/architecture/mcp-lifecycle-diagnostics.md"
   "docs/architecture/model-routing.md"

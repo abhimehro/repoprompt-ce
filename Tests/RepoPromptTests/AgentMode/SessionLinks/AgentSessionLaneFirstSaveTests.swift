@@ -118,14 +118,17 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
     /// refuses to capture an app-owned linked overseer. These races test proof revocation and
     /// rollback, not capture admission; the production didSet and release path still run.
     private func installDeniedRoleControlFixture(on session: AgentTabSession, sessionID: UUID) async {
+        guard let identity = try? controlWriterIdentity(for: session) else {
+            return XCTFail("The denied-role fixture requires its real persistent writer")
+        }
         let registration = await AgentRunSessionStore.register(sessionID: sessionID)
         session.mcpControlContext = AgentModeViewModel.AgentMCPControlContext(
-            sessionID: sessionID, activationID: UUID(), registration: registration,
+            sessionID: sessionID, activationID: UUID(), writerIdentity: identity, registration: registration,
             currentEpoch: nil, preparedEpoch: nil, pendingEpochTransition: nil,
             originatingConnectionID: nil,
             interactionTransport: .mcp(sessionID: sessionID, originatingConnectionID: nil),
             suppressUserNotifications: true, forceAutoEditEnabled: false,
-            autoEditEnabledBeforeOverride: session.autoEditEnabled, taskLabelKind: .explore
+            autoEditEnabledBeforeOverride: session.autoEditEnabled, taskLabelKind: .explore, autoEditOverride: nil
         )
     }
 
@@ -753,7 +756,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             session.createdByOverseerSessionID = nil
             viewModel.test_setCurrentTabIDOverride(tabID)
             defer { viewModel.test_setCurrentTabIDOverride(nil) }
-            let endpoint = try XCTUnwrap(viewModel.agentSessionLinkObserverEndpoint(tabID: tabID))
+            let endpoint = try XCTUnwrap(viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: tabID))
             let authority = DomainAgentSessionLinkAuthority(identity: DomainRuntimeIdentity(
                 runtimeID: UUID(), lifecycleGeneration: 1, processID: 1, mode: .app, createdAt: Date()
             ))
@@ -770,7 +773,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
                 XCTAssertNotNil(viewModel.ui.statusPills.snapshot.monitor.overseerBootstrapState?.activation)
                 invalidated.sessionIDs.removeAll()
             } else {
-                viewModel.syncStatusPillsUIState()
+                viewModel.ui.statusPills.update(viewModel.makeStatusPillsSnapshot())
                 XCTAssertEqual(viewModel.ui.statusPills.snapshot.monitor.endpoint, endpoint)
             }
             // Counted for this session only: the fresh authority holds no links, so no revocation or
@@ -784,12 +787,12 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             XCTAssertTrue(session.permitsBoundOperationAndSave, "The failed route must leave the original saved session usable.")
             XCTAssertNil(session.operationAdmissionFailureMessage)
             XCTAssertNil(session.oversight.overseerActivation)
-            let saveResult = await viewModel.flushSaveRequired(for: tabID, workspaceID: fixture.workspaceID)
+            let saveResult = await viewModel.persistenceRuntime.flushSaveRequired(for: tabID, workspaceID: fixture.workspaceID)
             guard case .success = saveResult else { return XCTFail("The unchanged session must remain saveable: \(saveResult)") }
             if activated {
                 try await AsyncTestWait.waitUntil("retired advertisement", timeout: 10) { retirements() == 1 }
             }
-            let currentEndpoint = try XCTUnwrap(viewModel.agentSessionLinkObserverEndpoint(tabID: tabID))
+            let currentEndpoint = try XCTUnwrap(viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: tabID))
             XCTAssertNotEqual(currentEndpoint, endpoint)
             let settledBootstrapState = AgentSessionOverseerBootstrapState(
                 sessionIdentity: ObjectIdentifier(session), provider: session.selectedAgent, activation: nil
@@ -1813,7 +1816,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
                     XCTAssertNil(viewModel.captureSessionCreationRetry(for: lane), "Preparation has no configured payload to retry.")
                     XCTAssertTrue(lane.items.isEmpty)
 
-                    let requiredSave = await viewModel.flushSaveRequired(
+                    let requiredSave = await viewModel.persistenceRuntime.flushSaveRequired(
                         for: tabID, workspaceID: fixture.workspaceID
                     )
                     guard case let .failure(failure) = requiredSave else {
@@ -1821,7 +1824,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
                     }
                     XCTAssertEqual(failure.operation, .save)
                     XCTAssertEqual(failure.tabID, tabID)
-                    await viewModel.flushSave(for: tabID)
+                    await viewModel.persistenceRuntime.flushSave(for: tabID)
                     let blocker = try XCTUnwrap(lane.operationAdmissionFailureMessage)
                     let submission = viewModel.submitUserTurn(text: "Do not dispatch while preparing", tabID: tabID)
                     guard case let .blocked(message) = submission else {
@@ -2044,6 +2047,69 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
         }
     }
 
+    func testRetireBindingCensusVisitsTabsOnceForManyDescendants() async throws {
+        try await withFixture { fixture in
+            try await withSecondRegisteredWindow { second in
+                try await withSecondRegisteredWindow { third in
+                    let host = WindowStatesManager.shared
+                    let viewModel = fixture.window.agentModeViewModel
+                    let parent = try await viewModel.mcpCreateOversightLane(
+                        creatorSessionID: UUID(), sessionName: "Census parent",
+                        selection: fixture.selection, expectedWorkspaceID: fixture.workspaceID
+                    )
+                    guard case let .created(parentID, parentTabID, _) = parent else {
+                        return XCTFail("parent binding was not created")
+                    }
+                    let endpoint = try XCTUnwrap(viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: parentTabID))
+                    var sessions: Set<UUID> = []
+                    for index in 0 ..< 20 {
+                        let target = try await viewModel.mcpResolveOrCreateSessionTarget(
+                            tabID: nil, sessionID: nil, createIfNeeded: true,
+                            sessionName: "Census child \(index)", parentSessionID: parentID,
+                            expectedWorkspaceID: fixture.workspaceID
+                        )
+                        let committed = await viewModel.commitConfiguredSessionCreation(target: target)
+                        XCTAssertTrue(committed)
+                        let child = try XCTUnwrap(viewModel.sessions[target.tabID])
+                        child.runState = .completed
+                        try sessions.insert(XCTUnwrap(child.activeAgentSessionID))
+                    }
+                    for window in [fixture.window, second, third] {
+                        let activeID = try XCTUnwrap(window.workspaceManager.activeWorkspaceID)
+                        let index = try XCTUnwrap(window.workspaceManager.workspaces.firstIndex { $0.id == activeID })
+                        let tabs = (0 ..< 100).map { _ in
+                            ComposeTabState(id: UUID(), name: "Census tab", activeAgentSessionID: UUID())
+                        }
+                        window.workspaceManager.workspaces[index].composeTabs.append(contentsOf: tabs)
+                    }
+                    let expectedVisits = host.allWindows.filter { !$0.isClosing }.reduce(0) { count, window in
+                        count + window.workspaceManager.workspaces.reduce(0) { $0 + $1.composeTabs.count }
+                    }
+                    var observations: [(Set<UUID>, Int)] = []
+                    var validationCount = 0
+                    host.test_setBindingCensusObserver { observations.append(($0, $1)) }
+                    defer { host.test_setBindingCensusObserver(nil) }
+                    let start = Date()
+                    let retired = await host.agentSessionLinkRetireLane(
+                        endpoint: endpoint, commit: false, isStillRetirable: {
+                            validationCount += 1
+                            return true
+                        }
+                    )
+                    let elapsed = Date().timeIntervalSince(start)
+                    XCTAssertTrue(retired)
+                    XCTAssertGreaterThan(validationCount, 0)
+                    XCTAssertEqual(observations.count, validationCount, "one census per synchronous validation")
+                    for (requested, visits) in observations {
+                        XCTAssertEqual(requested, sessions, "each validation must batch the complete descendant set")
+                        XCTAssertEqual(visits, expectedVisits, "one physical tab walk per validation")
+                    }
+                    print("Retirement census per validation: before=\(expectedVisits * sessions.count), after=\(expectedVisits), seconds=\(elapsed)")
+                }
+            }
+        }
+    }
+
     func testRetireBindingCountIgnoresInactiveWindowCopyButKeepsActivePeer() async throws {
         try await withFixture(ephemeral: false) { fixture in
             let outcome = try await fixture.window.agentModeViewModel.mcpCreateOversightLane(
@@ -2054,7 +2120,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
                 return XCTFail("fresh lane did not establish its binding")
             }
             let viewModel = fixture.window.agentModeViewModel
-            let endpoint = try XCTUnwrap(viewModel.agentSessionLinkObserverEndpoint(tabID: tabID))
+            let endpoint = try XCTUnwrap(viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: tabID))
             let uniquelyBound = { WindowStatesManager.shared.agentSessionLinkBindingCount(sessionID: sessionID) == 1 }
             XCTAssertTrue(uniquelyBound())
             try await withSecondRegisteredWindow { second in
@@ -2113,7 +2179,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             guard case let .created(_, tabID, _) = outcome else {
                 return XCTFail("fresh lane did not establish its binding")
             }
-            let endpoint = try XCTUnwrap(fixture.window.agentModeViewModel.agentSessionLinkObserverEndpoint(tabID: tabID))
+            let endpoint = try XCTUnwrap(fixture.window.agentModeViewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: tabID))
             try await withSecondRegisteredWindow { second in
                 let originalWorkspace = try XCTUnwrap(second.workspaceManager.activeWorkspace)
                 let copy = try XCTUnwrap(second.workspaceManager.workspace(withID: fixture.workspaceID))
@@ -2239,7 +2305,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             XCTAssertTrue(committedChildTarget, "The descendant fixture must finish its real first payload save.")
             let child = try XCTUnwrap(viewModel.sessions[childTarget.tabID])
             let childID = try XCTUnwrap(child.activeAgentSessionID)
-            let endpoint = try XCTUnwrap(viewModel.agentSessionLinkObserverEndpoint(tabID: parentTabID))
+            let endpoint = try XCTUnwrap(viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: parentTabID))
             let childrenSettled = {
                 !WindowStatesManager.shared.agentSessionLinkHasActiveChildSessions(parentSessionID: parentID)
             }
@@ -2256,7 +2322,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
 
             child.runState = .completed
             child.isDirty = true
-            await viewModel.flushSave(for: child.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: child.tabID)
             let grandchildTarget = try await viewModel.mcpResolveOrCreateSessionTarget(
                 tabID: nil, sessionID: nil, createIfNeeded: true, sessionName: "Grandchild",
                 parentSessionID: childID, expectedWorkspaceID: fixture.workspaceID
@@ -2268,7 +2334,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             XCTAssertFalse(childrenSettled(), "an active grandchild must also block the stash cascade")
             grandchild.runState = .completed
             grandchild.isDirty = true
-            await viewModel.flushSave(for: grandchild.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: grandchild.tabID)
             XCTAssertTrue(childrenSettled(), "finished children must not block retirement")
             let persistedBlocker = await WindowStatesManager.shared.agentSessionLinkHasPersistedActiveChildSessions(
                 parentSessionID: parentID
@@ -2314,9 +2380,9 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             let grandchild = try XCTUnwrap(viewModel.sessions[target.tabID])
             grandchild.runState = .completed
             grandchild.isDirty = true
-            await viewModel.flushSave(for: target.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: target.tabID)
             XCTAssertNil(viewModel.test_ownerValidatedSessionIndex[diskOnlyChild.id])
-            let endpoint = try XCTUnwrap(viewModel.agentSessionLinkObserverEndpoint(tabID: parentTabID))
+            let endpoint = try XCTUnwrap(viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: parentTabID))
             grandchild.runState = .running // Disk still says completed.
             let blocked = await WindowStatesManager.shared.agentSessionLinkHasPersistedActiveChildSessions(
                 parentSessionID: parentID
@@ -2354,11 +2420,11 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             let child = try XCTUnwrap(viewModel.sessions[target.tabID])
             child.runState = .completed
             child.isDirty = true
-            await viewModel.flushSave(for: target.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: target.tabID)
             _ = await fixture.window.workspaceManager.pollAndSaveStateWithOutcomeAsync(
                 workspaceID: fixture.workspaceID, source: WorkspaceSaveSource("retireChildTest")
             )
-            let endpoint = try XCTUnwrap(viewModel.agentSessionLinkObserverEndpoint(tabID: parentTabID))
+            let endpoint = try XCTUnwrap(viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: parentTabID))
             try await withSecondRegisteredWindow { peer in
                 let copy = try XCTUnwrap(peer.workspaceManager.workspace(withID: fixture.workspaceID))
                 _ = await peer.workspaceManager.switchWorkspace(to: copy, saveState: false, reason: "retireChildTest")
@@ -2407,37 +2473,58 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
     }
 
     func testUnreadablePersistedChildAncestorCannotProveRetirementSafe() async throws {
-        try await withFixture { fixture in
-            let dataService = AgentSessionDataService.shared
-            let protectedRoot = fixture.root.appendingPathComponent("protected", isDirectory: true)
-            try FileManager.default.createDirectory(at: protectedRoot, withIntermediateDirectories: true)
-            await dataService.test_setWorkspaceRootOverride(protectedRoot)
-            do {
-                let parentID = UUID()
-                var child = AgentSession(id: UUID(), name: "Unindexed child", savedAt: Date())
-                child.parentSessionID = parentID
-                child.lastRunState = AgentSessionRunState.running.rawValue
-                let workspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
-                _ = try await dataService.saveAgentSession(child, for: workspace)
-                try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: protectedRoot.path)
-                defer {
-                    try? FileManager.default.setAttributes(
-                        [.posixPermissions: 0o700], ofItemAtPath: protectedRoot.path
-                    )
-                }
+        for ephemeral in [true, false] {
+            try await withFixture(ephemeral: ephemeral) { fixture in
+                let dataService = AgentSessionDataService.shared
+                let protectedRoot = fixture.root.appendingPathComponent("protected", isDirectory: true)
+                try FileManager.default.createDirectory(at: protectedRoot, withIntermediateDirectories: true)
+                await dataService.test_setWorkspaceRootOverride(protectedRoot)
                 do {
-                    _ = try await dataService.persistedChildRetirementRecords(workspace: workspace)
-                    XCTFail("inaccessible inventory was treated as child-free")
-                } catch {}
-                let retirementBlocked = await WindowStatesManager.shared.agentSessionLinkHasPersistedActiveChildSessions(
-                    parentSessionID: parentID
-                )
-                XCTAssertTrue(retirementBlocked)
-            } catch {
+                    let parentID = UUID()
+                    var child = AgentSession(id: UUID(), name: "Unindexed child", savedAt: Date())
+                    child.parentSessionID = parentID
+                    child.lastRunState = AgentSessionRunState.running.rawValue
+                    let workspace = try XCTUnwrap(fixture.window.workspaceManager.activeWorkspace)
+                    let saved = try await dataService.saveAgentSession(child, for: workspace)
+                    let sessions = WorkspaceSessionSidecarMigration.workspaceDirectory(for: workspace, root: protectedRoot)
+                        .appendingPathComponent("AgentSessions", isDirectory: true)
+                    XCTAssertEqual(
+                        saved.deletingLastPathComponent().resolvingSymlinksInPath(),
+                        sessions.resolvingSymlinksInPath()
+                    )
+                    XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
+                    let insideFixtureRoot = sessions.resolvingSymlinksInPath().pathComponents.starts(
+                        with: fixture.root.resolvingSymlinksInPath().pathComponents
+                    )
+                    XCTAssertEqual(insideFixtureRoot, !ephemeral, "Exercise both temporary and durable placement")
+                    let readable = try await dataService.persistedChildRetirementRecords(workspace: workspace)
+                    XCTAssertTrue(readable.contains {
+                        $0.sessionID == child.id && $0.parentSessionID == parentID && $0.blocksRetirement
+                    })
+                    // Ephemeral sidecars deliberately ignore the profile/custom-root override.
+                    // Protect the actual inventory ancestor, never the shared process scratch root.
+                    let ancestor = sessions.deletingLastPathComponent()
+                    defer {
+                        try? FileManager.default.setAttributes(
+                            [.posixPermissions: 0o700], ofItemAtPath: ancestor.path
+                        )
+                    }
+                    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: ancestor.path)
+                    XCTAssertThrowsError(try FileManager.default.contentsOfDirectory(at: sessions, includingPropertiesForKeys: nil))
+                    do {
+                        _ = try await dataService.persistedChildRetirementRecords(workspace: workspace)
+                        XCTFail("inaccessible inventory was treated as child-free")
+                    } catch {}
+                    let retirementBlocked = await WindowStatesManager.shared.agentSessionLinkHasPersistedActiveChildSessions(
+                        parentSessionID: parentID
+                    )
+                    XCTAssertTrue(retirementBlocked)
+                } catch {
+                    await dataService.test_setWorkspaceRootOverride(nil)
+                    throw error
+                }
                 await dataService.test_setWorkspaceRootOverride(nil)
-                throw error
             }
-            await dataService.test_setWorkspaceRootOverride(nil)
         }
     }
 
@@ -2660,7 +2747,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
                 try children.append((XCTUnwrap(child.activeAgentSessionID), target.tabID))
                 child.runState = .running
                 child.isDirty = true
-                await viewModel.flushSave(for: target.tabID)
+                await viewModel.persistenceRuntime.flushSave(for: target.tabID)
                 child.runState = .completed
                 child.isDirty = true
             }
@@ -2796,7 +2883,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             let child = try XCTUnwrap(viewModel.sessions[target.tabID])
             child.runState = .idle
             child.isDirty = true
-            await viewModel.flushSave(for: target.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: target.tabID)
             // Arm the refusal inside the stop admission hook: the preflight probe has already
             // passed, so the rejection can only land on the post-unlink workspace save — which no
             // longer gates the outcome once the stash has committed.
@@ -2880,7 +2967,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
         let childSessionID = try XCTUnwrap(child.activeAgentSessionID)
         child.runState = .idle
         child.isDirty = true
-        await viewModel.flushSave(for: target.tabID)
+        await viewModel.persistenceRuntime.flushSave(for: target.tabID)
         child.hasLoadedPersistedState = false
         var persisted = AgentSession(id: childSessionID, name: "Mid-hydration child", savedAt: Date())
         persisted.parentSessionID = laneSessionID
@@ -3126,7 +3213,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             let childSessionID = try XCTUnwrap(child.activeAgentSessionID)
             child.runState = .idle
             child.isDirty = true
-            await viewModel.flushSave(for: target.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: target.tabID)
             // The disk row disagrees with live lineage: it claims the lane as parent and is active.
             var persisted = AgentSession(id: childSessionID, name: "Cross-tier child", savedAt: Date())
             persisted.parentSessionID = lane.sessionID
@@ -3179,7 +3266,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             let childSessionID = try XCTUnwrap(child.activeAgentSessionID)
             child.runState = .idle
             child.isDirty = true
-            await viewModel.flushSave(for: target.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: target.tabID)
             // The disk row disagrees completely: it claims no parent edge and still says running.
             var persisted = AgentSession(id: childSessionID, name: "Disk-orphaned child", savedAt: Date())
             persisted.parentSessionID = nil
@@ -3231,7 +3318,7 @@ final class AgentSessionLaneFirstSaveTests: XCTestCase {
             let child = try XCTUnwrap(viewModel.sessions[target.tabID])
             child.runState = .idle
             child.isDirty = true
-            await viewModel.flushSave(for: target.tabID)
+            await viewModel.persistenceRuntime.flushSave(for: target.tabID)
             // The loaded session now reports itself top-level while disk still claims the edge.
             child.parentSessionID = nil
             let blocked = await host.agentSessionLinkHasPersistedActiveChildSessions(
