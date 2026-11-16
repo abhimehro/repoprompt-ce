@@ -1172,6 +1172,10 @@ public class APISettingsViewModel: ObservableObject {
     private(set) var managedRuntimeLeaseCount = 0
     private var windowCloseRequested = false
 
+    var canAcquireManagedRuntimeLease: Bool {
+        !hasPreparedForWindowClose
+    }
+
     func retainForManagedRuntime() {
         precondition(!hasPreparedForWindowClose)
         managedRuntimeLeaseCount += 1
@@ -1509,7 +1513,7 @@ public class APISettingsViewModel: ObservableObject {
             return .userInteractionCancelled
         case .itemNotFound:
             return .keychainError
-        case .duplicateItem, .invalidData, .unexpectedStatus:
+        case .duplicateItem, .invalidData, .invalidOwnerEdit, .deletionNotConfirmed, .unexpectedStatus:
             return .keychainError
         }
     }

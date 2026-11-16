@@ -13,6 +13,19 @@ import RepoPromptShared
 package typealias CodexJSONValue = RepoPromptProviderQuota.CodexJSONValue
 
 package actor CodexAppServerClient {
+    package nonisolated let instanceID = UUID()
+
+    package enum ServerRequestRefusal: String, Error {
+        case foreignClient
+        case transportUnavailable
+        case generationMismatch
+    }
+
+    private enum WriteFence {
+        case standalone
+        case answering(CodexServerRequestReceipt)
+    }
+
     package struct FaultInjection {
         package let transportTerminationCleanup: @Sendable () async -> Void
         package let requestTimeoutDelivery: @Sendable (_ method: String, _ generation: UInt64) async -> Void
@@ -85,13 +98,13 @@ package actor CodexAppServerClient {
     }
 
     package struct ServerRequest {
-        package init(id: CodexAppServerRequestID, method: String, params: [String: CodexJSONValue]) {
-            self.id = id
+        package init(receipt: CodexServerRequestReceipt, method: String, params: [String: CodexJSONValue]) {
+            self.receipt = receipt
             self.method = method
             self.params = params
         }
 
-        package let id: CodexAppServerRequestID
+        package let receipt: CodexServerRequestReceipt
         package let method: String
         package let params: [String: CodexJSONValue]
     }
@@ -178,6 +191,7 @@ package actor CodexAppServerClient {
 
     package enum ClientError: Error, LocalizedError {
         case processNotRunning
+        case staleServerRequest(ServerRequestRefusal)
         case processExited(ProcessExitEvidence)
         case invalidResponse
         case jsonDecodeFailed
@@ -191,6 +205,8 @@ package actor CodexAppServerClient {
             switch self {
             case .processNotRunning:
                 "Codex app-server process is not running."
+            case let .staleServerRequest(reason):
+                "Codex server request no longer belongs to the active transport (\(reason.rawValue))."
             case let .processExited(evidence):
                 Self.processExitDescription(evidence)
             case .invalidResponse:
@@ -247,16 +263,24 @@ package actor CodexAppServerClient {
     }
 
     package struct ExpectedAgentPIDRegistration: Equatable {
-        package init(clientName: String, runID: UUID) {
+        package init(clientName: String, runID: UUID, registrar: ExpectedAgentPIDRegistrar? = nil) {
             self.clientName = clientName
             self.runID = runID
+            self.registrar = registrar
         }
 
         package let clientName: String
         package let runID: UUID
+        package let registrar: ExpectedAgentPIDRegistrar?
     }
 
-    package struct ExpectedAgentPIDRegistrar {
+    /// Immutable callbacks retained by each installed PID, including deferred transport cleanup.
+    /// Identity distinguishes a successor registration that reuses the same process/run identifiers.
+    package final class ExpectedAgentPIDRegistrar: Sendable, Equatable {
+        package static func == (lhs: ExpectedAgentPIDRegistrar, rhs: ExpectedAgentPIDRegistrar) -> Bool {
+            lhs === rhs
+        }
+
         package init(register: @escaping @Sendable (_ pid: pid_t, _ clientName: String, _ runID: UUID) async -> Void, clear: @escaping @Sendable (_ pid: pid_t, _ clientName: String, _ runID: UUID) async -> Void) {
             self.register = register
             self.clear = clear
@@ -270,6 +294,7 @@ package actor CodexAppServerClient {
         let pid: pid_t
         let clientName: String
         let runID: UUID
+        let registrar: ExpectedAgentPIDRegistrar
     }
 
     private struct PendingRequestMetadata {
@@ -588,25 +613,26 @@ package actor CodexAppServerClient {
         let target = RegisteredExpectedAgentPID(
             pid: pid,
             clientName: registration.clientName,
-            runID: registration.runID
+            runID: registration.runID,
+            registrar: registration.registrar ?? expectedAgentPIDRegistrar
         )
         guard registeredExpectedAgentPID != target else { return }
         await clearRegisteredExpectedAgentPIDIfNeeded()
         guard expectedAgentPIDRegistration == registration, activeTransport?.process.pid == pid else { return }
         registeredExpectedAgentPID = target
-        await expectedAgentPIDRegistrar.register(target.pid, target.clientName, target.runID)
+        await target.registrar.register(target.pid, target.clientName, target.runID)
         guard expectedAgentPIDRegistration == registration, activeTransport?.process.pid == pid else {
             if registeredExpectedAgentPID == target {
                 registeredExpectedAgentPID = nil
             }
-            await expectedAgentPIDRegistrar.clear(target.pid, target.clientName, target.runID)
+            await target.registrar.clear(target.pid, target.clientName, target.runID)
             return
         }
     }
 
     private func clearRegisteredExpectedAgentPIDIfNeeded() async {
         guard let registered = takeRegisteredExpectedAgentPIDForDeferredClear() else { return }
-        await expectedAgentPIDRegistrar.clear(registered.pid, registered.clientName, registered.runID)
+        await registered.registrar.clear(registered.pid, registered.clientName, registered.runID)
     }
 
     private func takeRegisteredExpectedAgentPIDForDeferredClear() -> RegisteredExpectedAgentPID? {
@@ -890,6 +916,7 @@ package actor CodexAppServerClient {
         defer { retireTransportTermination(generation: generation) }
         await finishTransportTermination(
             invalidateClaimedTransport(
+                generation: generation,
                 flushStdout: flushStdout,
                 requestFailure: requestFailure
             )
@@ -897,6 +924,7 @@ package actor CodexAppServerClient {
     }
 
     private func invalidateClaimedTransport(
+        generation: UInt64,
         flushStdout: Bool,
         requestFailure: ClientError,
         processFamilyCleanupWasCompleted: Bool = false
@@ -907,7 +935,7 @@ package actor CodexAppServerClient {
                 remainingLines.append(lineData)
             }
             for lineData in remainingLines {
-                handleJSONLine(lineData)
+                handleJSONLine(lineData, generation: generation)
             }
         }
 
@@ -1048,7 +1076,7 @@ package actor CodexAppServerClient {
     ) async {
         defer { retireTransportTermination(generation: generation) }
         if let expectedAgentPIDToClear {
-            await expectedAgentPIDRegistrar.clear(
+            await expectedAgentPIDToClear.registrar.clear(
                 expectedAgentPIDToClear.pid,
                 expectedAgentPIDToClear.clientName,
                 expectedAgentPIDToClear.runID
@@ -1094,6 +1122,7 @@ package actor CodexAppServerClient {
         lastTransportFailure = .processExited(evidence)
         await finishTransportTermination(
             invalidateClaimedTransport(
+                generation: generation,
                 flushStdout: true,
                 requestFailure: .processExited(evidence),
                 processFamilyCleanupWasCompleted: true
@@ -1139,7 +1168,7 @@ package actor CodexAppServerClient {
         let expectedAgentPIDToClear = registeredExpectedAgentPID
         registeredExpectedAgentPID = nil
         if let expectedAgentPIDToClear {
-            let registrar = expectedAgentPIDRegistrar
+            let registrar = expectedAgentPIDToClear.registrar
             Task.detached {
                 await registrar.clear(
                     expectedAgentPIDToClear.pid,
@@ -1174,7 +1203,7 @@ package actor CodexAppServerClient {
         guard let terminatingTransport else { return }
         await faultInjection.transportTerminationCleanup()
         if let expectedAgentPIDToClear = terminatingTransport.expectedAgentPIDToClear {
-            await expectedAgentPIDRegistrar.clear(
+            await expectedAgentPIDToClear.registrar.clear(
                 expectedAgentPIDToClear.pid,
                 expectedAgentPIDToClear.clientName,
                 expectedAgentPIDToClear.runID
@@ -1322,6 +1351,36 @@ package actor CodexAppServerClient {
         useDefaultTimeout: Bool,
         onMutationUnsettled: (@Sendable (_ generation: UInt64) -> Void)? = nil
     ) async throws -> [String: Any] {
+        try await request(
+            method: method,
+            params: params,
+            timeout: timeout,
+            useDefaultTimeout: useDefaultTimeout,
+            onMutationUnsettled: onMutationUnsettled,
+            fence: .standalone
+        )
+    }
+
+    /// Follow-up to an originating server request, not a new standalone command.
+    package func request(method: String, params: [String: Any]?, timeout: TimeInterval? = nil, answering receipt: CodexServerRequestReceipt) async throws -> [String: Any] {
+        try await request(
+            method: method,
+            params: params,
+            timeout: timeout,
+            useDefaultTimeout: true,
+            onMutationUnsettled: nil,
+            fence: .answering(receipt)
+        )
+    }
+
+    private func request(
+        method: String,
+        params: [String: Any]?,
+        timeout: TimeInterval?,
+        useDefaultTimeout: Bool,
+        onMutationUnsettled: (@Sendable (_ generation: UInt64) -> Void)?,
+        fence: WriteFence
+    ) async throws -> [String: Any] {
         try Task.checkCancellation()
         guard let activeTransport, !didTerminateTransport else {
             throw lastTransportFailure ?? ClientError.processNotRunning
@@ -1338,6 +1397,14 @@ package actor CodexAppServerClient {
         }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                // Validate at the actor-owned write, before installing request bookkeeping.
+                // A refused follow-up has not sent anything and has no unsettled mutation.
+                if case let .answering(receipt) = fence {
+                    do { try validateServerRequestOrigin(receipt) }
+                    catch { continuation.resume(throwing: error)
+                        return
+                    }
+                }
                 pendingRequests[requestID] = continuation
                 pendingRequestMetadata[requestID] = PendingRequestMetadata(
                     method: method,
@@ -1362,26 +1429,23 @@ package actor CodexAppServerClient {
         }
     }
 
-    package func respondToServerRequest(id: CodexAppServerRequestID, result: [String: Any]) throws {
-        guard activeTransport != nil, !didTerminateTransport else {
-            throw lastTransportFailure ?? ClientError.processNotRunning
-        }
+    /// A normal return acknowledges a write to the originating transport, not provider action.
+    package func respondToServerRequest(receipt: CodexServerRequestReceipt, result: [String: Any]) throws {
+        try validateServerRequestOrigin(receipt)
         let payload: [String: Any] = [
-            "id": id.jsonValue,
+            "id": receipt.requestID.jsonValue,
             "result": result
         ]
         try sendJSONLine(payload, method: nil)
     }
 
     package func respondToServerRequestError(
-        id: CodexAppServerRequestID,
+        receipt: CodexServerRequestReceipt,
         code: Int = -32601,
         message: String,
         data: [String: Any]? = nil
     ) throws {
-        guard activeTransport != nil, !didTerminateTransport else {
-            throw lastTransportFailure ?? ClientError.processNotRunning
-        }
+        try validateServerRequestOrigin(receipt)
         var errorObject: [String: Any] = [
             "code": code,
             "message": message
@@ -1390,10 +1454,22 @@ package actor CodexAppServerClient {
             errorObject["data"] = data
         }
         let payload: [String: Any] = [
-            "id": id.jsonValue,
+            "id": receipt.requestID.jsonValue,
             "error": errorObject
         ]
         try sendJSONLine(payload, method: nil)
+    }
+
+    private func validateServerRequestOrigin(_ receipt: CodexServerRequestReceipt) throws {
+        guard receipt.clientInstanceID == instanceID else {
+            throw ClientError.staleServerRequest(.foreignClient)
+        }
+        guard let activeTransport, !didTerminateTransport else {
+            throw ClientError.staleServerRequest(.transportUnavailable)
+        }
+        guard activeTransport.generation == receipt.transportGeneration else {
+            throw ClientError.staleServerRequest(.generationMismatch)
+        }
     }
 
     package func notify(method: String, params: [String: Any]?) throws {
@@ -1744,7 +1820,7 @@ package actor CodexAppServerClient {
         let overflow = stdoutFramer.feed(data, onDiagnostic: { [self] diagnostic in
             handleStdoutFramerDiagnostic(diagnostic)
         }, onLine: { [self] lineData in
-            handleJSONLine(lineData)
+            handleJSONLine(lineData, generation: generation)
         })
         if let overflow {
             await terminateTransport(
@@ -1792,7 +1868,7 @@ package actor CodexAppServerClient {
     /// - ClaudeNativeProcessSessionController.handleLine (reference decode + recovery)
     /// - ClaudeNativeProcessSessionController.recoverConcatenatedInboundMessagesIfNeeded
     /// - ClaudeNativeProcessSessionController.recoverEmbeddedInboundTailIfNeeded
-    private func handleJSONLine(_ lineData: Data) {
+    private func handleJSONLine(_ lineData: Data, generation: UInt64) {
         guard let trimmed = trimmedASCIIWhitespace(lineData) else { return }
         guard let json = try? JSONSerialization.jsonObject(with: trimmed) as? [String: Any] else {
             // Primary decode failed — attempt recovery heuristics.
@@ -1810,13 +1886,13 @@ package actor CodexAppServerClient {
                 }
                 return
             }
-            if recoverConcatenatedJSONLines(from: trimmed) {
+            if recoverConcatenatedJSONLines(from: trimmed, generation: generation) {
                 return
             }
-            if recoverEmbeddedJSONTail(from: trimmed) {
+            if recoverEmbeddedJSONTail(from: trimmed, generation: generation) {
                 return
             }
-            if recoverInvalidJSONStringControlChars(from: trimmed) {
+            if recoverInvalidJSONStringControlChars(from: trimmed, generation: generation) {
                 return
             }
             if config.enableDebugLogging {
@@ -1826,7 +1902,7 @@ package actor CodexAppServerClient {
             return
         }
         decodeRecoveryAttemptsByGeneration[transportGeneration] = 0
-        routeDecodedJSON(json)
+        routeDecodedJSON(json, generation: generation)
     }
 
     private func shouldAttemptDecodeRecovery() -> Bool {
@@ -1845,7 +1921,7 @@ package actor CodexAppServerClient {
 
     /// Routes a successfully decoded JSON-RPC object to the appropriate handler
     /// (response, error, server request, or notification broadcast).
-    private func routeDecodedJSON(_ json: [String: Any]) {
+    private func routeDecodedJSON(_ json: [String: Any], generation: UInt64) {
         if let idValue = json["id"] {
             let idString = String(describing: idValue)
             if let result = json["result"] as? [String: Any] {
@@ -1884,7 +1960,7 @@ package actor CodexAppServerClient {
                 if config.enableDebugLogging {
                     print("[CodexAppServer] Server request: \(method) -> broadcasting to \(serverRequestContinuations.count) listeners")
                 }
-                broadcastServerRequest(id: requestID, method: method, params: params)
+                broadcastServerRequest(id: requestID, method: method, params: params, generation: generation)
                 return
             }
             if let continuation = pendingRequests.removeValue(forKey: idString) {
@@ -1913,7 +1989,7 @@ package actor CodexAppServerClient {
     ///
     /// Related:
     /// - ClaudeNativeProcessSessionController.recoverConcatenatedInboundMessagesIfNeeded
-    private func recoverConcatenatedJSONLines(from lineData: Data) -> Bool {
+    private func recoverConcatenatedJSONLines(from lineData: Data, generation: UInt64) -> Bool {
         guard lineData.count <= Self.maxConcatenatedRecoveryBytes else { return false }
         let segments = Self.splitConcatenatedJSONObjects(lineData)
         guard !segments.isEmpty else { return false }
@@ -1928,7 +2004,7 @@ package actor CodexAppServerClient {
                 continue
             }
             recoveredCount += 1
-            routeDecodedJSON(json)
+            routeDecodedJSON(json, generation: generation)
         }
 
         if recoveredCount > 0 {
@@ -1956,7 +2032,7 @@ package actor CodexAppServerClient {
     ///
     /// Related:
     /// - ClaudeNativeProcessSessionController.recoverEmbeddedInboundTailIfNeeded
-    private func recoverEmbeddedJSONTail(from lineData: Data) -> Bool {
+    private func recoverEmbeddedJSONTail(from lineData: Data, generation: UInt64) -> Bool {
         guard !lineData.isEmpty else { return false }
 
         let scanWindow: Data
@@ -1992,13 +2068,13 @@ package actor CodexAppServerClient {
                 print("[CodexAppServer] Recovered embedded JSON tail at offset \(absoluteOffset): \(preview)")
             }
             decodeRecoveryAttemptsByGeneration[transportGeneration] = 0
-            routeDecodedJSON(json)
+            routeDecodedJSON(json, generation: generation)
             return true
         }
         return false
     }
 
-    private func recoverInvalidJSONStringControlChars(from lineData: Data) -> Bool {
+    private func recoverInvalidJSONStringControlChars(from lineData: Data, generation: UInt64) -> Bool {
         guard let repaired = repairJSONStringControlCharacters(lineData) else { return false }
         guard let json = try? JSONSerialization.jsonObject(with: repaired) as? [String: Any] else {
             return false
@@ -2007,7 +2083,7 @@ package actor CodexAppServerClient {
             print("[CodexAppServer] Recovered JSON by escaping control characters inside JSON strings")
         }
         decodeRecoveryAttemptsByGeneration[transportGeneration] = 0
-        routeDecodedJSON(json)
+        routeDecodedJSON(json, generation: generation)
         return true
     }
 
@@ -2097,8 +2173,9 @@ package actor CodexAppServerClient {
         }
     }
 
-    private func broadcastServerRequest(id: CodexAppServerRequestID, method: String, params: [String: CodexJSONValue]) {
-        let request = ServerRequest(id: id, method: method, params: params)
+    private func broadcastServerRequest(id: CodexAppServerRequestID, method: String, params: [String: CodexJSONValue], generation: UInt64) {
+        let receipt = CodexServerRequestReceipt(clientInstanceID: instanceID, transportGeneration: generation, requestID: id)
+        let request = ServerRequest(receipt: receipt, method: method, params: params)
         for continuation in serverRequestContinuations.values {
             continuation.yield(request)
         }
@@ -2336,7 +2413,7 @@ package actor CodexAppServerClient {
         }
 
         package func debugIngestRawStdoutLine(_ line: Data) {
-            handleJSONLine(line)
+            handleJSONLine(line, generation: transportGeneration)
         }
 
         package static func debugMaxDecodeRecoveryAttemptsPerGeneration() -> Int {

@@ -28,6 +28,14 @@ enum AgentSessionLinkEndpointTestSupport {
         name: String,
         tabName: String = "T1"
     ) -> WorkspaceManagerViewModel {
+        let manager = makeWorkspace(tabID: tabID, name: name, tabName: tabName)
+        viewModel.workspaceManager = manager
+        viewModel.test_setCurrentTabIDOverride(tabID)
+        return manager
+    }
+
+    /// Constructs the real owner before eager runtime composition when that is the tested boundary.
+    static func makeWorkspace(tabID: UUID, name: String, tabName: String = "T1") -> WorkspaceManagerViewModel {
         let workspaceFiles = WorkspaceFilesViewModel()
         let keyManager = KeyManager(
             secureService: SecureKeysService(secureStorage: TestSecureStorageBackend())
@@ -57,8 +65,6 @@ enum AgentSessionLinkEndpointTestSupport {
         )
         manager.workspaces = [workspace]
         manager.activeWorkspace = workspace
-        viewModel.workspaceManager = manager
-        viewModel.test_setCurrentTabIDOverride(tabID)
         return manager
     }
 
@@ -70,7 +76,7 @@ enum AgentSessionLinkEndpointTestSupport {
         line: UInt = #line
     ) throws -> DomainAgentSessionLinkEndpointIdentity {
         try XCTUnwrap(
-            viewModel.agentSessionLinkObserverEndpoint(tabID: tabID),
+            viewModel.linkExecutionRuntime.agentSessionLinkObserverEndpoint(tabID: tabID),
             "expected a resolvable oversight endpoint",
             file: file,
             line: line

@@ -159,7 +159,7 @@ final class AgentQuietCheckInLifecycleTests: XCTestCase {
             row.isStreaming = true
             s.appendItem(row)
             switch variant {
-            case 0: h.host.finalizeStreamingItems(in: s)
+            case 0: h.host.streamRuntime.finalizeStreamingItems(in: s)
             case 1: s.setItemsSilentlyForRetentionCompaction(s.items)
             case 2: s.replaceItem(at: 0, with: .assistant("[ack]", sequenceIndex: 0))
             case 3: s.setItemsSilently(s.items, reason: .persistedSessionHydration)
@@ -439,8 +439,7 @@ final class AgentQuietCheckInLifecycleTests: XCTestCase {
                     return await runner.testConsumeQuietEvents(results.map(NativeAgentRuntimeEvent.stream) + [.turnCompleted(turnID: turnID, status: .completed)], session: s, runID: runID, owner: owner)
                 }
                 let runner = ACPIntegratedAgentModeRunner(
-                    hooks: hooks, terminalCommitBarrier: AgentRunTerminalCommitBarrier(), toolTrackingHooks: .noOp,
-                    providerFactory: { _, _ in nil }, controllerFactory: { provider, request in try ACPAgentSessionController(provider: provider, runRequest: request) }
+                    hooks: hooks, terminalCommitBarrier: AgentRunTerminalCommitBarrier(), toolTrackingHooks: .noOp
                 )
                 await runner.testConsumeQuietEvents(results.map(NormalizedAgentRuntimeEvent.stream) + [.terminal(state: .completed, errorText: nil)], session: s, runID: runID, owner: owner)
                 return false // ACP's existing test seam intentionally discards its outcome.
@@ -626,9 +625,7 @@ extension AgentQuietCheckInLifecycleTests {
         let runner = ACPIntegratedAgentModeRunner(
             hooks: h.hooks,
             terminalCommitBarrier: AgentRunTerminalCommitBarrier(),
-            toolTrackingHooks: .noOp,
-            providerFactory: { _, _ in nil },
-            controllerFactory: { provider, request in try ACPAgentSessionController(provider: provider, runRequest: request) }
+            toolTrackingHooks: .noOp
         )
         let approval = AgentApprovalRequest(
             requestID: .acp("approval"),
@@ -681,9 +678,7 @@ extension AgentQuietCheckInLifecycleTests {
                     let runner = ACPIntegratedAgentModeRunner(
                         hooks: h.hooks,
                         terminalCommitBarrier: AgentRunTerminalCommitBarrier(),
-                        toolTrackingHooks: .noOp,
-                        providerFactory: { _, _ in nil },
-                        controllerFactory: { provider, request in try ACPAgentSessionController(provider: provider, runRequest: request) }
+                        toolTrackingHooks: .noOp
                     )
                     let sequenceBefore = s.runLifecycle.liveness?.lastAcceptedSequence ?? 0
                     await runner.testConsumeQuietEvents(events, session: s, runID: runID, owner: owner)

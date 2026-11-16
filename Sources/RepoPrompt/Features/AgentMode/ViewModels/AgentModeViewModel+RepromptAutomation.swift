@@ -16,7 +16,7 @@ extension AgentModeViewModel {
         let workflow: AgentWorkflowDefinition?
         let workflowGeneration: UInt64
         var routingTask: Task<StagedTaskRoutingResult, Never>?
-        var effortTask: Task<(selection: AutoEffortTurnSelection?, audit: AgentAutomationTurnAudit.Feature), Never>?
+        var effortTask: Task<(selection: AutoEffortTurnSelection?, audit: AgentAutomationTurnAudit.Feature)?, Never>?
         var reuse: Reuse = .none
         var balanceIsCurrent: (() -> Bool)?
 
@@ -53,10 +53,12 @@ extension AgentModeViewModel {
     }
 
     func startRepromptSpeculation(session: TabSession, operationID: UUID, text: String, originalText: String) {
-        cancelRepromptSpeculation(claimID: operationID)
+        repromptSpeculations.removeValue(forKey: operationID)?.cancel(runtime: modelRouterRuntime)
         guard let runtime = modelRouterRuntime, sessions[session.tabID] === session else { return }
         let configuration = modelRouterSettingsStore.modelRouterConfiguration()
-        let allowed = providers(for: .primarySession, configuration: configuration)
+        let allowed = AgentTaskRoutingCandidateBuilder.providers(
+            for: .primarySession, configuration: configuration, availability: modelRouterAvailabilityContext, surface: .general
+        )
         let routesFresh = configuration.enabled && configuration.validity == .valid
             && configuration.selectedBackendID.map { runtime.isBackendReady($0) } == true
             && freshTaskRoutingEligibility(session: session, text: text)
@@ -86,12 +88,21 @@ extension AgentModeViewModel {
         } else if speculation.effortConfiguration.enabled, !session.runState.isActive,
                   let effortBackend = speculation.effortConfiguration.selectedBackendID, runtime.isBackendReady(effortBackend)
         {
+            guard let membership = runtimeSessionStore.membership(of: session) else { return }
             speculation.effortTask = Task {
-                await chooseAutoEffortForUserTurn(
+                var admitted = true
+                let choice = await chooseAutoEffortForUserTurn(
                     text: Self.automationJudgingText(original: originalText, reprompted: text),
                     session: session, workflow: session.selectedWorkflow,
-                    requestID: speculation.requestID, isSpeculative: true, isRepromptReplacement: true
+                    requestID: speculation.requestID, isSpeculative: true, isRepromptReplacement: true,
+                    isCurrent: {
+                        admitted = admitted && membership.permitsBindingPreparation && sessions[session.tabID] === session
+                        return admitted
+                    }
                 )
+                // A refused speculation is not an ordinary policy fallback. Recompute through
+                // the accepting composer's own claim rather than reusing this stale result.
+                return admitted ? choice : nil
             }
         } else {
             return
@@ -110,7 +121,9 @@ extension AgentModeViewModel {
             return nil
         }
         let liveMetadata = AgentTaskRoutingCandidateBuilder().capture(
-            allowedProviders: providers(for: .primarySession, configuration: configuration), availability: modelRouterAvailabilityContext
+            allowedProviders: AgentTaskRoutingCandidateBuilder.providers(
+                for: .primarySession, configuration: configuration, availability: modelRouterAvailabilityContext, surface: .general
+            ), availability: modelRouterAvailabilityContext
         )
         guard runtime.isBackendReady(backendID),
               configuration.revision == speculation.routerConfiguration.revision,
@@ -159,9 +172,5 @@ extension AgentModeViewModel {
         audit.automationJudgedText = judgedText
         audit.routerSpeculation = repromptSpeculations[claim.attempt.id]?.reuse ?? .none
         return audit
-    }
-
-    func cancelRepromptSpeculation(claimID: UUID) {
-        repromptSpeculations.removeValue(forKey: claimID)?.cancel(runtime: modelRouterRuntime)
     }
 }

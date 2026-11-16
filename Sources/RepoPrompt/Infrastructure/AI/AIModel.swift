@@ -6,6 +6,9 @@ import RepoPromptClaudeProvider
 import RepoPromptHTTPProviders
 import SwiftAnthropic
 import SwiftOpenAI
+#if DEBUG
+    import RepoPromptShared
+#endif
 
 extension AIModel {
     private enum ProviderIndex {
@@ -57,8 +60,11 @@ extension AIModel {
     static func openAICustomResponsesVariants(for customModelName: String) -> [AIModel] {
         let baseName = customModelName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !baseName.isEmpty else { return [] }
-        return [.openaiCustomResponses(name: baseName)]
-            + openAICustomReasoningEfforts.map { .openaiCustomReasoning(name: baseName, effort: $0) }
+        var variants: [AIModel] = [.openaiCustomResponses(name: baseName)]
+        for effort in openAICustomReasoningEfforts {
+            variants.append(.openaiCustomReasoning(name: baseName, effort: effort))
+        }
+        return variants
     }
 
     private static let baseModelDefinitions: [ModelInfo] = [
@@ -191,6 +197,7 @@ extension AIModel {
         ModelInfo(model: .claudeSonnet5, rawValue: "claude-sonnet-5", actualName: nil, displayName: "Claude Sonnet 5", provider: ProviderIndex.anthropic),
         ModelInfo(model: .claudeOpus55, rawValue: "claude-opus-5-5", actualName: nil, displayName: "Claude Opus 5.5", provider: ProviderIndex.anthropic),
         ModelInfo(model: .claudeOpus5, rawValue: "claude-opus-5", actualName: nil, displayName: "Claude Opus 5", provider: ProviderIndex.anthropic),
+        ModelInfo(model: .claudeFable52, rawValue: "claude-fable-5-2", actualName: nil, displayName: "Claude Fable 5.2", provider: ProviderIndex.anthropic),
         ModelInfo(model: .claudeFable51, rawValue: "claude-fable-5-1", actualName: nil, displayName: "Claude Fable 5.1", provider: ProviderIndex.anthropic),
         // Restricted-access tier: listed for entitled accounts, never used as a default.
         ModelInfo(model: .claudeMythos51, rawValue: "claude-mythos-5-1", actualName: nil, displayName: "Claude Mythos 5.1 (Restricted)", provider: ProviderIndex.anthropic),
@@ -226,6 +233,7 @@ extension AIModel {
         ModelInfo(model: .openrouterGpt6Luna, rawValue: "openai/gpt-6-luna", actualName: nil, displayName: "oRouter/GPT-6 Luna", provider: ProviderIndex.openRouter),
         ModelInfo(model: .openrouterClaudeSonnet55, rawValue: "anthropic/claude-sonnet-5.5", actualName: nil, displayName: "oRouter/Claude Sonnet 5.5", provider: ProviderIndex.openRouter),
         ModelInfo(model: .openrouterClaudeOpus55, rawValue: "anthropic/claude-opus-5.5", actualName: nil, displayName: "oRouter/Claude Opus 5.5", provider: ProviderIndex.openRouter),
+        ModelInfo(model: .openrouterClaudeFable52, rawValue: "anthropic/claude-fable-5.2", actualName: nil, displayName: "oRouter/Claude Fable 5.2", provider: ProviderIndex.openRouter),
         ModelInfo(model: .openrouterClaudeFable51, rawValue: "anthropic/claude-fable-5.1", actualName: nil, displayName: "oRouter/Claude Fable 5.1", provider: ProviderIndex.openRouter),
 
         // **New DeepSeek Models**
@@ -284,6 +292,38 @@ extension AIModel {
             }
         return baseModelDefinitions + azureVariants
     }()
+
+    private static let modelAvailability = availabilityIndex(modelDefinitions.map { ($0.model, $0.availableFrom) })
+
+    private static func availabilityIndex(_ definitions: [(AIModel, Date?)]) -> [AIModel: Date?] {
+        Dictionary(definitions, uniquingKeysWith: { first, _ in first })
+    }
+
+    #if DEBUG
+        private static let test_availabilityOverrideTaskLocal = BoxedTaskLocal<[AIModel: Date?]?>(nil)
+        private static let test_availabilityClockTaskLocal = BoxedTaskLocal<(@Sendable () -> Date)?>(nil)
+        private static var test_availabilityOverride: [AIModel: Date?]? {
+            test_availabilityOverrideTaskLocal.get()
+        }
+
+        private static var test_availabilityClock: (@Sendable () -> Date)? {
+            test_availabilityClockTaskLocal.get()
+        }
+
+        static var test_availabilityDefinitions: [(AIModel, Date?)] {
+            modelDefinitions.map { ($0.model, $0.availableFrom) }
+        }
+
+        static func test_withAvailabilityDefinitions<T>(
+            _ definitions: [(AIModel, Date?)],
+            now: (@Sendable () -> Date)? = nil,
+            operation: () throws -> T
+        ) rethrows -> T {
+            try test_availabilityOverrideTaskLocal.withValue(availabilityIndex(definitions)) {
+                try test_availabilityClockTaskLocal.withValue(now, operation: operation)
+            }
+        }
+    #endif
 
     private static let modelData: [AIModel: (rawValue: String, displayName: String)] = {
         let pairs = modelDefinitions.map { info in
@@ -982,15 +1022,20 @@ extension AIModel {
 
     /// Check if a model is currently available based on its release date
     var isAvailable: Bool {
-        guard let modelInfo = Self.modelDefinitions.first(where: { $0.model == self }) else {
-            return true // Unknown models default to available
+        #if DEBUG
+            let index = Self.test_availabilityOverride ?? Self.modelAvailability
+        #else
+            let index = Self.modelAvailability
+        #endif
+        guard let releaseDate = index[self] ?? nil else {
+            return true // Unknown models and definitions without a release date default to available
         }
-
-        if let releaseDate = modelInfo.availableFrom {
-            return Date() >= releaseDate
-        }
-
-        return true // No release date means always available
+        #if DEBUG
+            if let now = Self.test_availabilityClock {
+                return now() >= releaseDate
+            }
+        #endif
+        return Date() >= releaseDate
     }
 
     var isModelCapableOfDiff: Bool {
