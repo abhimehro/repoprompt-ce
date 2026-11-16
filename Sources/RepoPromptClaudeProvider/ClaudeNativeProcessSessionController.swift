@@ -50,7 +50,31 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
     private var hasWrittenRawEventLogHeader = false
 
     private var process: SpawnedProcess?
-    private var registeredExpectedAgentPID: pid_t?
+    /// Captured for one process launch; cleanup never asks for a run's latest registrar.
+    package struct ExpectedAgentPIDRegistrar {
+        package let register: @Sendable (pid_t, String, UUID) async -> Void
+        package let clear: @Sendable (pid_t, String, UUID) async -> Void
+
+        package init(
+            register: @escaping @Sendable (pid_t, String, UUID) async -> Void,
+            clear: @escaping @Sendable (pid_t, String, UUID) async -> Void
+        ) {
+            self.register = register
+            self.clear = clear
+        }
+    }
+
+    private struct ExpectedAgentPIDRegistration {
+        let id = UUID()
+        let pid: pid_t
+        let clientName: String
+        let registrar: ExpectedAgentPIDRegistrar
+        let registration: Task<Void, Never>
+        var cleanup: Task<Void, Never>?
+    }
+
+    private var registeredExpectedAgentPID: ExpectedAgentPIDRegistration?
+    private var shutdownTask: Task<Void, Never>?
     private var stdoutFramer = LineFramer()
     private var stderrTail = Data()
     private var stdoutChunkChannel: FileHandleChunkChannel?
@@ -79,6 +103,7 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
         private var configurationTestInputClosed = false
         private var configurationTestBeforeApplicationErrorReturn: (@Sendable () async -> Void)?
         private var configurationTestBeforeProofSend: (@Sendable () async -> Void)?
+        private var configurationTestBeforeShutdownCompletion: (@Sendable () async -> Void)?
     #endif
     private var activeLaunchEnvironmentSignature: LaunchEnvironmentSignature?
     private var launchAutoCompactWindowTokens: Int?
@@ -89,7 +114,9 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
     private var nextControlRequestID = 1
     private var pendingControlRequests: [String: CheckedContinuation<[String: Any], Error>] = [:]
     private var pendingControlRequestTimeoutTasks: [String: Task<Void, Never>] = [:]
+    // App response receipts are incarnation-specific; native request IDs may be reused.
     private var pendingPermissionRequests: [String: PendingPermissionRequest] = [:]
+    private var permissionReceiptByNativeID: [String: String] = [:]
     private var translator: ClaudeSDKNDJSONTranslator
     private var sessionID: String?
     private var turnInFlight: Bool {
@@ -228,17 +255,15 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
 
     /// Clears MCP expected-agent PID registration when async `shutdown()` did not run.
     private func scheduleExpectedAgentPIDDeinitClearIfNeeded() {
-        guard config.toolContext == .agentRun,
-              let registeredExpectedAgentPID,
-              let clientName = host.expectedAgentClientName(for: config.runtimeVariant)
-        else {
-            return
-        }
-        let pid = registeredExpectedAgentPID
+        guard let origin = registeredExpectedAgentPID else { return }
         let runID = runID
-        let host = host
         Task {
-            await host.clearExpectedAgentPID(pid, clientName: clientName, runID: runID)
+            if let cleanup = origin.cleanup {
+                await cleanup.value
+            } else {
+                await origin.registration.value
+                await origin.registrar.clear(origin.pid, origin.clientName, runID)
+            }
         }
     }
 
@@ -321,6 +346,24 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
         effortLevel: ClaudeCodeEffortLevel? = nil,
         systemPromptOverride: String? = nil
     ) async throws -> SessionRef {
+        try await startOrResume(
+            existingSessionID: existingSessionID, model: model, effortLevel: effortLevel,
+            systemPromptOverride: systemPromptOverride, expectedAgentPIDRegistrar: nil
+        )
+    }
+
+    package func startOrResume(
+        existingSessionID: String?,
+        model: String?,
+        effortLevel: ClaudeCodeEffortLevel?,
+        systemPromptOverride: String?,
+        expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar?
+    ) async throws -> SessionRef {
+        if let shutdownTask {
+            await shutdownTask.value
+            try Task.checkCancellation()
+            self.shutdownTask = nil
+        }
         if hasActiveSession, isInitialized {
             return SessionRef(sessionID: sessionID)
         }
@@ -355,7 +398,9 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
         )
         do {
             try await prepareRuntimeIfNeeded()
-            try await startProcessIfNeeded(existingSessionID: existingSessionID, model: model, effortLevel: effortLevel)
+            guard !isShuttingDown else { throw ControllerError.processNotRunning }
+            try await startProcessIfNeeded(existingSessionID: existingSessionID, model: model, effortLevel: effortLevel, expectedAgentPIDRegistrar: expectedAgentPIDRegistrar)
+            guard !isShuttingDown else { throw ControllerError.processNotRunning }
             try await initializeIfNeeded(systemPromptOverride: systemPromptOverride)
             return SessionRef(sessionID: sessionID)
         } catch {
@@ -598,18 +643,33 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
 
     private func sendPermissionResponse(id: String, decision: AgentApprovalDecision) throws {
         guard let pending = pendingPermissionRequests.removeValue(forKey: id) else { return }
+        if permissionReceiptByNativeID[pending.requestID] == id {
+            permissionReceiptByNativeID.removeValue(forKey: pending.requestID)
+        }
         let response = permissionResponsePayload(decision: decision, pendingRequest: pending.request)
         writeRawEventLogRecord(kind: "approval.response.sent", payload: [
-            "requestID": id,
+            "requestID": pending.requestID,
+            "responseReceipt": id,
             "decision": String(describing: decision),
             "response": response
         ] as [String: Any])
-        let encoded = try ClaudeSDKProtocolCodec.encodeControlResponseSuccess(requestID: id, response: response)
+        let encoded = try ClaudeSDKProtocolCodec.encodeControlResponseSuccess(requestID: pending.requestID, response: response)
         try sendLine(encoded, shutdownOnFailure: false)
     }
 
+    /// A process-local proof, not a provider-session ID or a configured future launch PID.
+    package func activeExpectedAgentPIDRegistration() -> (runID: UUID, pid: pid_t)? {
+        guard shutdownTask == nil, !isShuttingDown, hasActiveSession, isInitialized,
+              let origin = registeredExpectedAgentPID, origin.cleanup == nil,
+              process?.pid == origin.pid else { return nil }
+        return (runID, origin.pid)
+    }
+
     package func shutdown() async {
-        guard !isShuttingDown else { return }
+        if let shutdownTask {
+            await shutdownTask.value
+            return
+        }
         isShuttingDown = true
         configurationLifetime = UUID()
         appliedConfigurationProof = nil
@@ -628,6 +688,13 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
 
         closeOutputChannelsAndInput()
 
+        let process = process
+        let task = Task { await self.finishShutdown(process: process) }
+        shutdownTask = task
+        await task.value
+    }
+
+    private func finishShutdown(process: SpawnedProcess?) async {
         if let process {
             let pid = process.pid
             _ = await ProcessTermination.terminateAndReap(
@@ -636,9 +703,13 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
                 logger: config.enableDebugLogging ? { print("[ClaudeNativeSession] \($0)") } : { _ in }
             )
         }
+        #if DEBUG
+            await configurationTestBeforeShutdownCompletion?()
+        #endif
         await clearExpectedAgentPIDIfNeeded()
         pendingPermissionRequests.removeAll()
-        process = nil
+        permissionReceiptByNativeID.removeAll()
+        self.process = nil
         activeLaunchEnvironmentSignature = nil
         isInitialized = false
         hasCompletedInitialFlagSettings = false
@@ -659,29 +730,40 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
             return
         }
 
+        let origin = configurationLifetime
         let isRunning = await host.isMCPServerRunning()
+        guard !isShuttingDown, configurationLifetime == origin, !Task.isCancelled else { throw CancellationError() }
         guard isRunning else {
             throw AIProviderError.invalidConfiguration(detail: "Could not start MCP server. Check MCP settings and try again.")
         }
-        configLease = try await host.prepareMCPLaunchConfig()
+        let lease = try await host.prepareMCPLaunchConfig()
+        guard !isShuttingDown, configurationLifetime == origin, !Task.isCancelled else {
+            lease.release()
+            throw CancellationError()
+        }
+        configLease = lease
     }
 
     private func startProcessIfNeeded(
         existingSessionID: String?,
         model: String?,
-        effortLevel: ClaudeCodeEffortLevel?
+        effortLevel: ClaudeCodeEffortLevel?,
+        expectedAgentPIDRegistrar: ExpectedAgentPIDRegistrar?
     ) async throws {
         guard process == nil else { return }
         try ProviderProcessLaunchPolicy.check()
 
         pendingPermissionRequests.removeAll()
+        permissionReceiptByNativeID.removeAll()
         configurationLifetime = UUID()
         appliedConfigurationProof = nil
         latestFlagSettingsIntentGeneration = 0
         flagSettingsRequestGeneration = 0
         hasCompletedInitialFlagSettings = false
 
+        let origin = configurationLifetime
         let resolvedFlags = try await resolveLaunchFlagSettings(model: model, effortLevel: effortLevel)
+        guard !isShuttingDown, configurationLifetime == origin, !Task.isCancelled else { throw CancellationError() }
         let launchEnvironment = resolvedFlags.launchEnvironment
         let environment = await resolvedLaunchEnvironment(
             resolverOverrides: launchEnvironment.environmentOverrides,
@@ -712,6 +794,8 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
             )
         #endif
 
+        try Task.checkCancellation()
+        guard !isShuttingDown, configurationLifetime == origin else { throw ControllerError.processNotRunning }
         let workingDirectory = resolvedWorkingDirectory()
         let spawned = try ProcessLauncher.spawn(
             command: resolvedCommand,
@@ -757,7 +841,7 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
             )
             throw ControllerError.initializationFailed("Failed to start Claude process readers: \(error.localizedDescription)")
         }
-        await registerExpectedAgentPIDIfNeeded(spawned.pid)
+        await registerExpectedAgentPIDIfNeeded(spawned.pid, registrar: expectedAgentPIDRegistrar)
     }
 
     private func initializeIfNeeded(systemPromptOverride: String?) async throws {
@@ -1955,7 +2039,11 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
             initialized: Bool = true,
             controlRequest: (@Sendable ([String: Any]) async throws -> [String: Any])? = { _ in [:] },
             write: @escaping @Sendable (Data) throws -> Void
-        ) {
+        ) async {
+            if let shutdownTask {
+                await shutdownTask.value
+                self.shutdownTask = nil
+            }
             precondition(process == nil)
             configurationLifetime = UUID()
             latestFlagSettingsIntentGeneration = 0
@@ -1966,12 +2054,18 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
             isShuttingDown = false
             configurationTestInputClosed = false
             pendingPermissionRequests.removeAll()
+            permissionReceiptByNativeID.removeAll()
             clearTurnIDQueue()
             isInitialized = initialized
             hasCompletedInitialFlagSettings = initialized
             sessionID = "application-proof-session"
             configurationTestControlRequest = controlRequest
             configurationTestWrite = write
+        }
+
+        /// Hold the actual shutdown producer before its final PID/configuration/event cleanup.
+        package func test_setBeforeShutdownCompletion(_ action: @escaping @Sendable () async -> Void) {
+            configurationTestBeforeShutdownCompletion = action
         }
 
         package func test_setBeforeApplicationErrorReturn(_ action: @escaping @Sendable () async -> Void) {
@@ -2060,10 +2154,6 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
             beginTurnTracking()
         }
 
-        package func test_storePendingPermissionRequest(id: String, request: [String: Any]) {
-            pendingPermissionRequests[id] = PendingPermissionRequest(requestID: id, request: request)
-        }
-
         package func test_handleControlRequest(
             requestID: String,
             subtype: String,
@@ -2127,6 +2217,23 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
                 emit(.providerTurnStarted(turnID: providerID))
             }
             let payload = request.request
+            if let receipt = permissionReceiptByNativeID[request.requestID] {
+                // Control-error recovery may replay the same still-pending permission.
+                // Preserve that receipt, but never authorize changed content with it.
+                if let pending = pendingPermissionRequests[receipt],
+                   let original = try? JSONSerialization.data(withJSONObject: pending.request, options: [.sortedKeys]),
+                   let incoming = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+                   original == incoming,
+                   let approval = buildApprovalRequest(from: request, responseReceipt: receipt)
+                {
+                    emit(.approvalRequest(approval))
+                    return
+                }
+                permissionReceiptByNativeID.removeValue(forKey: request.requestID)
+                if pendingPermissionRequests.removeValue(forKey: receipt) != nil {
+                    emit(.approvalCancelled(requestID: receipt))
+                }
+            }
             let toolName = (payload["tool_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let input = payload["input"] as? [String: Any] ?? [:]
             if let repoPromptMatch = host.repoPromptPermissionMatch(toolName: toolName, requestPayload: payload) {
@@ -2155,13 +2262,16 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
                 }
                 return
             }
-            if let approval = buildApprovalRequest(from: request) {
-                pendingPermissionRequests[request.requestID] = PendingPermissionRequest(
+            let receipt = UUID().uuidString
+            if let approval = buildApprovalRequest(from: request, responseReceipt: receipt) {
+                permissionReceiptByNativeID[request.requestID] = receipt
+                pendingPermissionRequests[receipt] = PendingPermissionRequest(
                     requestID: request.requestID,
                     request: payload
                 )
                 writeRawEventLogRecord(kind: "approval.request.emitted", payload: [
                     "requestID": request.requestID,
+                    "responseReceipt": receipt,
                     "toolName": toolName,
                     "kind": String(describing: approval.kind)
                 ] as [String: Any])
@@ -2205,8 +2315,10 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
 
     private func handleControlCancelRequest(requestID: String) {
         writeRawEventLogRecord(kind: "control.request.cancelled", payload: ["requestID": requestID])
-        if pendingPermissionRequests.removeValue(forKey: requestID) != nil {
-            emit(.approvalCancelled(requestID: requestID))
+        if let receipt = permissionReceiptByNativeID.removeValue(forKey: requestID),
+           pendingPermissionRequests.removeValue(forKey: receipt) != nil
+        {
+            emit(.approvalCancelled(requestID: receipt))
         }
     }
 
@@ -2250,6 +2362,7 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
     private func handleStdoutEOF() async {
         guard !isShuttingDown else { return }
         pendingPermissionRequests.removeAll()
+        permissionReceiptByNativeID.removeAll()
         writeRawEventLogRecord(kind: "process.stdoutEOF")
         var remainingLines: [Data] = []
         stdoutFramer.flush { line in
@@ -2360,7 +2473,7 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
         return args
     }
 
-    private func buildApprovalRequest(from request: ClaudeSDKProtocolCodec.ControlRequest) -> AgentApprovalRequest? {
+    private func buildApprovalRequest(from request: ClaudeSDKProtocolCodec.ControlRequest, responseReceipt: String) -> AgentApprovalRequest? {
         let payload = request.request
         let toolName = (payload["tool_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "tool"
         let input = payload["input"] as? [String: Any] ?? [:]
@@ -2380,7 +2493,7 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
         let itemID = (toolUseID?.isEmpty == false ? toolUseID! : request.requestID)
 
         let approvalID = AgentApprovalRequest.stableID(
-            requestID: .claudeControl(request.requestID),
+            requestID: .claudeControl(responseReceipt),
             method: "control/can_use_tool",
             kind: kind,
             threadID: threadID,
@@ -2423,7 +2536,7 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
 
         return AgentApprovalRequest(
             id: approvalID,
-            requestID: .claudeControl(request.requestID),
+            requestID: .claudeControl(responseReceipt),
             method: "control/can_use_tool",
             kind: kind,
             threadID: threadID,
@@ -2494,36 +2607,51 @@ package final actor ClaudeNativeProcessSessionController: NativeAgentRuntimeCont
         return FileManager.default.homeDirectoryForCurrentUser.path
     }
 
-    private func registerExpectedAgentPIDIfNeeded(_ pid: pid_t) async {
+    private func registerExpectedAgentPIDIfNeeded(_ pid: pid_t, registrar suppliedRegistrar: ExpectedAgentPIDRegistrar?) async {
         guard config.toolContext == .agentRun,
               let clientName = host.expectedAgentClientName(for: config.runtimeVariant)
         else {
             return
         }
-        registeredExpectedAgentPID = pid
-        await host.registerExpectedAgentPID(pid, clientName: clientName, runID: runID)
-        if isShuttingDown {
-            await host.clearExpectedAgentPID(pid, clientName: clientName, runID: runID)
-            if registeredExpectedAgentPID == pid {
-                registeredExpectedAgentPID = nil
-            }
-            return
-        }
+        let host = host
+        let runID = runID
+        let registrar = suppliedRegistrar ?? ExpectedAgentPIDRegistrar(
+            register: { pid, name, run in await host.registerExpectedAgentPID(pid, clientName: name, runID: run) },
+            clear: { pid, name, run in await host.clearExpectedAgentPID(pid, clientName: name, runID: run) }
+        )
+        let task = Task { await registrar.register(pid, clientName, runID) }
+        let origin = ExpectedAgentPIDRegistration(pid: pid, clientName: clientName, registrar: registrar, registration: task)
+        registeredExpectedAgentPID = origin
+        await task.value
+        // Shutdown owns clearance after the original process is reaped. It joins
+        // this producer; awaiting shutdown here would make that join cyclic.
+        if isShuttingDown { return }
         if config.enableDebugLogging {
             print("[ClaudeNativeSession] Registered expected MCP parent PID \(pid) for \(clientName) runID=\(runID.uuidString)")
         }
     }
 
     private func clearExpectedAgentPIDIfNeeded() async {
-        guard let registeredExpectedAgentPID,
-              let clientName = host.expectedAgentClientName(for: config.runtimeVariant)
-        else {
-            return
+        guard let origin = registeredExpectedAgentPID else { return }
+        let runID = runID
+        let cleanup: Task<Void, Never>
+        if let existing = origin.cleanup {
+            cleanup = existing
+        } else {
+            cleanup = Task {
+                await origin.registration.value
+                await origin.registrar.clear(origin.pid, origin.clientName, runID)
+            }
+            if registeredExpectedAgentPID?.id == origin.id {
+                registeredExpectedAgentPID?.cleanup = cleanup
+            }
         }
-        await host.clearExpectedAgentPID(registeredExpectedAgentPID, clientName: clientName, runID: runID)
-        self.registeredExpectedAgentPID = nil
+        await cleanup.value
+        if registeredExpectedAgentPID?.id == origin.id {
+            registeredExpectedAgentPID = nil
+        }
         if config.enableDebugLogging {
-            print("[ClaudeNativeSession] Cleared expected MCP parent PID for \(clientName) runID=\(runID.uuidString)")
+            print("[ClaudeNativeSession] Cleared expected MCP parent PID for \(origin.clientName) runID=\(runID.uuidString)")
         }
     }
 

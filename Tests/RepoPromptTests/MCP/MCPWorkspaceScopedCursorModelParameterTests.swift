@@ -212,6 +212,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         let viewModel = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
         let session = await viewModel.ensureSessionReady(tabID: tabID)
+        try installRestoredParameterWriter(session, in: window)
         session.selectedAgent = .openCode
         session.selectedModelRaw = "ollama-cloud/kimi-k3"
 
@@ -238,6 +239,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         let viewModel = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
         let session = await viewModel.ensureSessionReady(tabID: tabID)
+        try installRestoredParameterWriter(session, in: window)
         session.selectedAgent = .openCode
         session.selectedModelRaw = "ollama-cloud/kimi-k3"
 
@@ -440,6 +442,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         let viewModel = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
         let session = await viewModel.ensureSessionReady(tabID: tabID)
+        try installRestoredParameterWriter(session, in: window)
         session.selectedAgent = .cursor
         session.selectedModelRaw = "grok-4.6"
         try viewModel.mcpApplyModelParameterSelections(tabID: tabID, selections: [selection(value: "low")])
@@ -463,6 +466,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         let viewModel = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
         let session = await viewModel.ensureSessionReady(tabID: tabID)
+        try installRestoredParameterWriter(session, in: window)
         session.selectedAgent = .cursor
         session.selectedModelRaw = "grok-4.6"
         try viewModel.mcpApplyModelParameterSelections(tabID: tabID, selections: [selection(value: "low")])
@@ -623,7 +627,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         var steerService = makeRunService(window: window)
         steerService.testDispatchSteerInstruction = { dispatchedSessionID, _, _, agentModeVM in
             XCTAssertEqual(dispatchedSessionID, sessionID)
-            let controlledSession = try XCTUnwrap(agentModeVM.mcpControlledSession(sessionID: dispatchedSessionID))
+            let controlledSession = try XCTUnwrap(agentModeVM.mcpRuntime.controlledWriter(sessionID: dispatchedSessionID)?.session)
             XCTAssertTrue(controlledSession.mcpFollowUpRunPending)
             controlledSession.runState = .running
             agentModeVM.publishMCPStateChange(for: controlledSession)
@@ -1004,6 +1008,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         let viewModel = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
         let session = await viewModel.ensureSessionReady(tabID: tabID)
+        try installRestoredParameterWriter(session, in: window)
         session.selectedAgent = .cursor
         session.selectedModelRaw = "grok-4.6"
         let speed: (String) -> ACPModelParameterSelection = { value in
@@ -1076,6 +1081,20 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
 
     private var cursorModelID: String {
         AgentModelSelectionID(agentRaw: AgentProviderKind.cursor.rawValue, modelRaw: "grok-4.6").rawValue
+    }
+
+    /// Parameter-only fixtures start with a restored writer, not an unbound local draft.
+    private func installRestoredParameterWriter(_ session: AgentTabSession, in window: WindowState) throws {
+        let viewModel = window.agentModeViewModel
+        let workspaceID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.id)
+        let sessionID = UUID()
+        XCTAssertNil(viewModel.runtimeSessionStore.bindingRejection(sessionID, on: session))
+        _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(
+            sessionID: sessionID, on: session, compareAndSetInWorkspaceID: workspaceID
+        ))
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        let command = try XCTUnwrap(viewModel.runtimeCommand(sessionID: sessionID))
+        XCTAssertIdentical(command.writer.session, session)
     }
 
     /// These downstream rollback/control tests need an existing configured session. Complete its
