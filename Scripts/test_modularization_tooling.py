@@ -362,7 +362,8 @@ class CatalogTests(unittest.TestCase):
         self.assertIn('modularization_affected_tests.py --all', ci)
         self.assertNotIn('matrix.module', main)
         self.assertIn('name: Style', ci)
-        cache_save = ci.split('uses: actions/cache/save@v6', 1)[1].split('\n      - name:', 1)[0]
+        # Accept both tag-pinned and SHA-pinned forms of actions/cache/save.
+        cache_save = ci.split('uses: actions/cache/save@', 1)[1].split('\n      - name:', 1)[0]
         self.assertNotIn('compression-level:', cache_save)
         self.assertNotIn('if-no-files-found:', cache_save)
 
