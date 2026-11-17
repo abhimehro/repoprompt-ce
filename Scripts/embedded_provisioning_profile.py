@@ -48,10 +48,12 @@ def install_profile(source: Path, destination: Path) -> None:
             prefix=f".{destination.name}.",
             dir=destination.parent,
         )
-        os.close(descriptor)
         temporary_path = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, DEPLOYED_MODE)
+        finally:
+            os.close(descriptor)
         shutil.copyfile(source, temporary_path)
-        os.chmod(temporary_path, DEPLOYED_MODE)
         validate_profile(temporary_path)
         os.replace(temporary_path, destination)
         temporary_path = None
