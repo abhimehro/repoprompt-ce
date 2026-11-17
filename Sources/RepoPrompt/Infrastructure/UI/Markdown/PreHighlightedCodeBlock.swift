@@ -45,6 +45,7 @@ struct PreHighlightedCodeBlock: View {
                     isCopyHovering = hovering
                 }
             }
+            .accessibilityLabel("Copy code block")
         }
     }
 
