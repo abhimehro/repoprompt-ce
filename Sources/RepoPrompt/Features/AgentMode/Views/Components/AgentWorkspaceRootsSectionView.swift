@@ -1016,6 +1016,7 @@ struct AgentWorkspaceRootsSectionView: View {
             }
             .buttonStyle(CustomButtonStyle(verticalPadding: 0, horizontalPadding: 6, height: 24))
             .hoverTooltip("Agent Mode Settings", .top)
+            .accessibilityLabel("Agent Mode Settings")
         }
     }
 }
