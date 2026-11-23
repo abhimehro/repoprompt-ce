@@ -135,6 +135,9 @@ def forbidden_ui_imports(roots: list[Path]) -> list[str]:
             continue
         for path in sorted(root.rglob('*.swift')):
             source = path.read_text(encoding='utf-8', errors='replace')
+            # Fast pre-filter: skip expensive parsing if no forbidden UI module appears in text.
+            if not any(module in source for module in UI_MODULES):
+                continue
             try:
                 imports = scan_imports(source)
             except SwiftImportScanError as error:
