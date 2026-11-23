@@ -18,6 +18,9 @@ has one capability:
 The allowlist does not grant repository access. Invitations and organization
 membership are managed separately.
 
+By participating, you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+Issue and pull request templates live under [`.github/`](.github/).
+
 Maintainers may reply `lgtmi` on an issue to approve its author for future
 issues, or `lgtm` to approve its author for future issues and pull requests.
 Contributors may also propose ordinary reviewed changes to the tracked list.
